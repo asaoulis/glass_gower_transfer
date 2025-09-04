@@ -1,0 +1,21 @@
+# all the usual ignores
+*.pyc
+*.npz
+*.npy
+*.pkl
+*.sh
+*.log
+*.out
+iolaus/
+__pycache__/
+.vscode/
+.DS_Store
+.ipynb_checkpoints
+nonLimber_matter_shells/
+kids-legacy-sbi/
+glass/
+*.h5
+build/
+*.so.0
+*.err
+*.ipynb
