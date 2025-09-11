@@ -103,6 +103,9 @@ class BaseSimulator(ABC):
         self.rng = rng if rng is not None else np.random.default_rng()
         self.ws = []
         self.debug = debug
+        self.row_dtype = np.empty(0, dtype=[('RA', float), ('DEC', float),
+                                        ('Z_TRUE', float), ('ZBIN', int),
+                                        ('E1', float), ('E2', float)]).dtype
 
     @abstractmethod
     def get_matter_fields(self):
@@ -119,7 +122,7 @@ class BaseSimulator(ABC):
         n_aug = n_rot * num_shape_noise_realisations
 
         # Preallocate a list for each augmentation
-        all_catalogues = all_catalogues_lists = [[] for _ in range(n_aug)]
+        all_catalogues_lists = [[] for _ in range(n_aug)]
 
         n_shells = len(self.ws)
         # mask = np.where(self.mask > 0)[0]
@@ -152,17 +155,16 @@ class BaseSimulator(ABC):
                     self.nla['b_ia'],
                     self.nla['log10_M_eff'][tomo]
                 )
-                total_kappa = kappa + kappa_ia
-                g1, g2 = glass.lensing.shear_from_convergence(total_kappa)
+                kappa += kappa_ia
+                g1, g2 = glass.lensing.shear_from_convergence(kappa)
 
                 # --- Loop over rotations and shape-noise realizations ---
                 for rot_idx, ang in enumerate(rotation_angles):
                     # Rotate mask pixels
                     rot_mask = rotate_mask_array(mask=self.mask, nside=self.nside, rot_deg=ang, flip=False)
-
+                    # rot_mask = self.mask
                     for noise_idx in range(num_shape_noise_realisations):
                         aug_idx = rot_idx * num_shape_noise_realisations + noise_idx
-                        cat = all_catalogues[aug_idx]
 
                         # Sample galaxies
                         for lon, lat, count in glass.points.positions_from_delta(
@@ -178,7 +180,7 @@ class BaseSimulator(ABC):
                             )
                             shear = glass.galaxies.galaxy_shear(
                                 lon, lat, gal_eps,
-                                total_kappa, g1, g2
+                                kappa, g1, g2
                             )
 
                             E1, E2 = self._apply_shear_bias(tomo, shear, lat)
@@ -188,9 +190,7 @@ class BaseSimulator(ABC):
                             # ra_final, dec_final = inv_rot(lon, lat, lonlat=True)
 
                             # Append rows to preallocated augmentation array
-                            rows = np.empty(count, dtype=[('RA', float), ('DEC', float),
-                                                        ('Z_TRUE', float), ('ZBIN', int),
-                                                        ('E1', float), ('E2', float)])
+                            rows = np.empty(count, dtype=self.row_dtype)
 
                             rows['RA'] = lon
                             rows['DEC'] = lat
@@ -204,7 +204,7 @@ class BaseSimulator(ABC):
                 print(f"Shell {i+1}/{n_shells} processed in {time.time() - start_time:.2f} seconds.")
         # all_catalogues = [np.concatenate(cat_list) for cat_list in all_catalogues_lists]
         print(f"Total augmentations generated: {n_aug}")
-        return all_catalogues
+        return all_catalogues_lists
 
 
 

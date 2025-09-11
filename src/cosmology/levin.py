@@ -58,21 +58,22 @@ def make_kernels(pars, z_distance, chi_distance, zbins):
     kernels = []
 
     for i in range(len(zbins) - 1):
-        in_bin = (zbins[i + 1] >= z_distance) & (z_distance > zbins[i])
-        z_range = z_distance[in_bin]
-        chi_range = chi_distance[in_bin]
+        z_range = z_distance[((zbins[i + 1] >= z_distance) & (z_distance > zbins[i]))]
+        chi_range = chi_distance[((zbins[i + 1] >= z_distance) & (z_distance > zbins[i]))]
+        w = pars.DarkEnergy.w + pars.DarkEnergy.wa * np.divide(z_range, z_range + 1)
 
-        w = pars.DarkEnergy.w + pars.DarkEnergy.wa * z_range / (1 + z_range)
+        # E_of_z      = np.sqrt(config['omega_m']*(1+z_range)**3 + config['omega_k']*(1+z_range)**2 + config['omega_lambda']*(1+z_range)**(3*(1+w)))
         omega_de = 1 + pars.omk - pars.omegam - pars.omeganu
-
         E_of_z = np.sqrt(
-            pars.omegam * (1 + z_range) ** 3 +
-            pars.omk * (1 + z_range) ** 2 +
-            omega_de * (1 + z_range) ** (3 * (1 + w))
+            pars.omegam * (1 + z_range) ** 3
+            + pars.omk * (1 + z_range) ** 2
+            + omega_de * (1 + z_range) ** (3 * (1 + w))
         )
 
         k = np.zeros(len(z_distance))
-        k[in_bin] = chi_range**2 / E_of_z
+        k[((zbins[i + 1] >= z_distance) & (z_distance > zbins[i]))] = np.divide(
+            chi_range**2, E_of_z
+        )
         k /= np.trapezoid(k, z_distance)
         kernels.append(k)
 

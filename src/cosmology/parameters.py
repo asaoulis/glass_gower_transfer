@@ -8,12 +8,13 @@ from cosmology import Cosmology
 
 DEFAULT_PARAMS = {
     "h": 0.6736,
-    "omch2": 0.12,
+    "omega_m": 0.32,
     "ombh2": 0.022,
     "s8": 0.8,
     "w0": -1.0,
     "wa": 0.0,
     "ns": 0.965,
+    "logT_AGN": 7.8,
     "A_baryon": 3.10,
     "omega_k": 0.0,
     "mnu": 0.06,
@@ -41,9 +42,9 @@ DEFAULT_PARAMS = {
 
 def compute_omegas(params):
     h = params["h"]
-    Omega_c = params["omch2"] / h**2
     Omega_b = params["ombh2"] / h**2
-    Omega_m = Omega_c + Omega_b
+    Omega_m = params["omega_m"] 
+    Omega_c = Omega_m - Omega_b
     return Omega_c, Omega_b, Omega_m
 
 def compute_eta(params):
@@ -53,7 +54,7 @@ def s8_to_As(params):
     h = params["h"]
     s8 = params["s8"]
     ombh2 = params["ombh2"]
-    omch2 = params["omch2"]
+    omega_m = params["omega_m"]
     omega_k = params["omega_k"]
     mnu = params["mnu"]
     fid_As = params["fid_As"]
@@ -65,6 +66,7 @@ def s8_to_As(params):
     k_per_logint = params["k_per_logint"]
 
     Omega_c, Omega_b, Omega_m = compute_omegas(params)
+    omch2 = Omega_c * h**2
     sigma8 = s8 / ((Omega_m / 0.3) ** alpha)
 
     p = camb.CAMBparams(WantTransfer=True, Want_CMB=False, Want_CMB_lensing=False, DoLensing=False,
@@ -99,20 +101,27 @@ def build_cosmology(params):
 
     z_grid = np.linspace(params["zmin"], params["zmax"], params["nz"])
 
+    # Prefer HMCode_logT_AGN if provided, else fall back to (A_baryon, eta)
+    hmcode_kwargs = {}
+    if "logT_AGN" in params and params["logT_AGN"] is not None:
+        hmcode_kwargs["HMCode_logT_AGN"] = params["logT_AGN"]
+    else:
+        hmcode_kwargs["HMCode_A_baryon"] = params["A_baryon"]
+        hmcode_kwargs["HMCode_eta_baryon"] = eta
+
     pars = camb.set_params(H0=params["h"] * 100,
                            ombh2=params["ombh2"],
-                           omch2=params["omch2"],
-                           HMCode_A_baryon=params["A_baryon"],
-                           HMCode_eta_baryon=eta,
+                           omch2=Omega_c*params["h"]**2,
                            As=As,
                            ns=params["ns"],
                            w=params["w0"],
                            wa=params["wa"],
-                           halofit_version='mead',
+                           halofit_version='mead2020',
                            neutrino_hierarchy='normal',
                            DoLensing=False,
                            NonLinear=camb.model.NonLinear_both,
-                           lmax=3000)
+                           lmax=3000,
+                           **hmcode_kwargs)
 
     pars.set_matter_power(redshifts=z_grid, kmax=20.0)
     cosmo = Cosmology.from_camb(pars)

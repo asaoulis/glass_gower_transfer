@@ -1,6 +1,9 @@
 import numpy as np
 import healpy as hp
 
+import h5py
+import numpy as np
+from pathlib import Path
 
 # use the CAMB cosmology that generated the matter power spectra
 import camb
@@ -20,32 +23,6 @@ import iolaus
 
 from numba import njit
 
-import time
-import os
-from src.cosmology import nla, glass_utils, levin, parameters, priors
-from src.cosmology.map_shears import map_shears
-from src.cosmology.simulators import GowerStreetSimulator
-
-from src.cosmology.gower_street import GowerStCosmologies
-
-from src.cosmology.manip_cls import denoise_shear_cls, unmix_shear_cl, cat2mask, maskcls, compute_cl_bandpowers
-from src.cosmology.pixelise_maps import get_patch_values
-from src.cosmology.map_shears  import make_alm_shear_convergence
-
-
-def process_cls(catalogue, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands):
-    shear_cls_noiseless = denoise_shear_cls(nbins, alm, alm_rand, lmax)
-    bin_masks = cat2mask(catalogue, nbins, nside)
-    bin_mask_cls = maskcls(bin_masks, lmax=int(1.5*lmax), nbins=nbins)
-    realised_unmixed_shear_cls = unmix_shear_cl(num_bins = nbins, shear_cls = shear_cls_noiseless, mask_cl = bin_mask_cls, lmin = lmin, lmax = lmax)
-    realised_unmixed_shear_cls_cut = realised_unmixed_shear_cls[:, :, :, lower_lscale:upper_lscale+1]
-    cll_bands, bandpowers = compute_cl_bandpowers(realised_unmixed_shear_cls_cut, nbins, lower_lscale, upper_lscale, nbands)
-    return realised_unmixed_shear_cls, cll_bands, bandpowers
-
-import h5py
-import numpy as np
-from pathlib import Path
-
 def save_results_h5(filename, cat_idx, cls_results, pixelised_results, cosmo_dict):
     filename = Path(filename)
     # if filename has no suffix, leave it; else keep extension:
@@ -62,13 +39,25 @@ def save_results_h5(filename, cat_idx, cls_results, pixelised_results, cosmo_dic
             if isinstance(value, dict):
                 subgroup = h5group.create_group(str(key))
                 _save_dict(subgroup, value)
+
+            elif isinstance(value, str):
+                dt = h5py.string_dtype(encoding="utf-8")
+                h5group.create_dataset(str(key), data=value, dtype=dt)
+
             else:
-                if isinstance(value, str):
-                    dt = h5py.string_dtype(encoding='utf-8')
-                    h5group.create_dataset(str(key), data=np.array(value, dtype=dt), dtype=dt)
-                else:
-                    arr = np.array(value)
-                    h5group.create_dataset(str(key), data=arr)
+                arr = np.asarray(value)
+
+                # force cast object arrays to float64
+                if arr.dtype == object:
+                    try:
+                        arr = arr.astype(np.float64)
+                    except Exception as e:
+                        raise TypeError(
+                            f"Cannot cast key '{key}' to float64: {e}\nValue={value}"
+                        )
+
+                h5group.create_dataset(str(key), data=arr)
+
 
     with h5py.File(outname, "w") as f:
         _save_dict(f.create_group("cls_results"), cls_results)
@@ -76,6 +65,31 @@ def save_results_h5(filename, cat_idx, cls_results, pixelised_results, cosmo_dic
         _save_dict(f.create_group("cosmo_dict"), cosmo_dict)
 
     print(f"Results saved to {outname}")
+
+
+import time
+import os
+from src.cosmology import nla, glass_utils, levin, parameters, priors
+from src.cosmology.map_shears import map_shears
+from src.cosmology.simulators import GowerStreetSimulator, GlassLogNormalSimulator
+
+from src.cosmology.gower_street import GowerStCosmologies, GowerStDatasetBuilder
+
+from src.cosmology.manip_cls import denoise_shear_cls, unmix_shear_cl, cat2mask, maskcls, compute_cl_bandpowers
+from src.cosmology.pixelise_maps import get_patch_values
+
+from src.cosmology.map_shears  import make_alm_shear_convergence, filter_EB_alms_and_make_maps
+
+from src.KiDS.tomo import calculate_tomo_nz
+
+def process_cls(catalogue, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands):
+    shear_cls_noiseless = denoise_shear_cls(nbins, alm, alm_rand, lmax)
+    bin_masks = cat2mask(catalogue, nbins, nside)
+    bin_mask_cls = maskcls(bin_masks, lmax=int(1.5*lmax), nbins=nbins)
+    realised_unmixed_shear_cls = unmix_shear_cl(num_bins = nbins, shear_cls = shear_cls_noiseless, mask_cl = bin_mask_cls, lmin = lmin, lmax = lmax)
+    realised_unmixed_shear_cls_cut = realised_unmixed_shear_cls[:, :, :, lower_lscale:upper_lscale+1]
+    cll_bands, bandpowers = compute_cl_bandpowers(realised_unmixed_shear_cls_cut, nbins, lower_lscale, upper_lscale, nbands)
+    return realised_unmixed_shear_cls, cll_bands, bandpowers
 
 
 data_dir = '/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data'
@@ -94,8 +108,6 @@ c_1_bias_south_unc = np.array([1.626, 1.519, 1.835, 1.653, 1.910, 2.151])*1e-4
 c_2_bias_south = np.array([-8.002, -6.026, -4.766, -5.152, -5.082, -9.027])*1e-4
 c_2_bias_south_unc = np.array([1.572, 1.590, 1.731, 1.594, 1.834, 2.282])*1e-4
 
-# Galaxy density in each tomographic bin
-n_arcmin2 = np.array([1.7698, 1.6494, 1.4974, 1.4578, 1.3451, 1.0682]) # per arcmin^2
 
 # Instrinsic galaxy shape dispersion per tomographic bin
 sigma_e = np.array([0.2772, 0.2716, 0.2899, 0.2619, 0.2802, 0.3002])
@@ -111,46 +123,45 @@ levin_params = dict(
 # Tomographic redshift bins
 nbins = 6
 
-ztomo = [
-    (0.10, 0.42),
-    (0.42, 0.58),
-    (0.58, 0.71),
-    (0.71, 0.90),
-    (0.90, 1.14),
-    (1.14, 2.00)
-]
-
-ztomo_label = [
-    ('0.10', '0.42'),
-    ('0.42', '0.58'),
-    ('0.58', '0.71'),
-    ('0.71', '0.90'),
-    ('0.90', '1.14'),
-    ('1.14', '2.00')
-]
-
 bias = 1
+SIMULATOR_TYPE = 'gower'
 
-rotation_angles=[0, 180]
-num_shape_noise_realisations=1
+nside = 1024
+n_ell = 20
+# lmax = 300
+lmax = 2*nside
+lmin = 0
+
+rotation_angles=[0, 90, 180, 270]
+num_shape_noise_realisations=4
 lower_lscale = 76
-upper_lscale = 948
+upper_lscale = 1500
 nbands = 20
 named_patches = {
-    "south":(12, -31, 85, 10),     # (lon_center, lat_center, lon_range, lat_range)
+    "south":(12, -31, 90, 11),     # (lon_center, lat_center, lon_range, lat_range)
     "north":(-178, 0, 112, 10)
 }
 patches = list(named_patches.values())
 rotation_values = [rot for rot in rotation_angles for _ in range(num_shape_noise_realisations)]
 
+csv_path = '/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv'
+gower_data_dir = '/share/gpu5/asaoulis/gowerstreet/'
 
-cosmo_loader = GowerStCosmologies('/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv')
+OUTPUT_DIR = Path('/share/gpu5/asaoulis/transfer_datasets/gower_full_only_mocks')
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
-    
+    # class DummyComm:
+    #     def Get_rank(self): return 0
+    #     def Get_size(self): return 1
+    #     def bcast(self, value, root=0): return value
+    #     def Scatterv(self, *args, **kwargs): return args[1]  # naive pass-through
+    # comm = DummyComm()
+    # rank = 0
+    # size = 1
     s = time.time() # Start timer 
     sim_batch_name = 'sobol_batch_1'
     
@@ -171,8 +182,9 @@ if __name__ == "__main__":
     
     # ------------------ distribute sim_samples using Scatterv (robust) ------------------
     if rank == 0:
-        # create an (N,1) float64 array of sim indices (or load your NxK array)
-        sim_samples = np.arange(16).reshape(-1, 1).astype(np.float64)  # shape (N, cols)
+        offset = 193  # <-- starting point
+        FINAL_INDEX = 791
+        sim_samples = np.arange(offset, FINAL_INDEX).reshape(-1, 1).astype(np.float64)
         cols = sim_samples.shape[1]
         N = sim_samples.shape[0]
     else:
@@ -231,6 +243,9 @@ if __name__ == "__main__":
     # loop over received sim rows
     for num_sim_this_batch in range(len(recvbuf)):
         sim_num = sims[num_sim_this_batch]
+
+        gower_street_loader = GowerStDatasetBuilder(csv_path, gower_data_dir)
+
         # ... rest of your per-simulation code ...
 
         omega_k = 0.0
@@ -242,46 +257,22 @@ if __name__ == "__main__":
         log10_M_eff_cov = massdep_cov[2:,2:] 
         f_red = np.array([0.15, 0.2, 0.17, 0.24, 0.19, 0.03])
         log10_M_eff = np.random.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
-        # ia_params = dict(
-        #     a_ia = a_ia,
-        #     b_ia = b_ia,
-        #     f_red = f_red,
-        #     log10_M_eff = log10_M_eff,
-        # )
-        # Save the cosmology ---------------------------------------------------------------------
 
+        logT_AGN_realised = 7.8
+        a_ia_realised     = np.random.uniform(*prior['a_ia'])
+        b_ia_realised     = np.random.uniform(*prior['b_ia'])
+        nuisance_params = {"a_ia": a_ia_realised, "b_ia": b_ia_realised}
 
-        # basic parameters of the simulation
-        nside = 512
-        n_ell = 20
-        # lmax = 300
-        lmax = 2*nside
-        lmin = 0
         # intrinsic alignments params
         ia_params = dict(
-            a_ia = 5.74,
-            b_ia = 0.44,
+            a_ia = a_ia_realised,
+            b_ia = b_ia_realised,
             f_red = np.array([0.15, 0.2, 0.17, 0.24, 0.19, 0.03]),
-            log10_M_eff = np.array([11.69, 12.46, 12.76, 12.93, 13.08, 13.21]),
+            log10_M_eff = log10_M_eff,
         )
+        vis = mask = hp.read_map(f'{data_dir}/masks/KiDS_Legacy_N_healpix_1024_frac_withAstrom.fits') + hp.read_map(f'{data_dir}/masks/KiDS_Legacy_S_healpix_1024_frac_withAstrom.fits')
 
-        # Random settings
-        seed_num = 12
-
-
-        # Levin settings
-        levin_params = dict(
-            kmax=500.0,
-            kmin=1e10,
-            nmin=50,
-            npoint=3,
-            nmax=200
-        )
-        kids_mask = hp.read_map(f'{data_dir}/masks/KiDS_Legacy_N_healpix_1024_frac_withAstrom.fits') + hp.read_map(f'{data_dir}/masks/KiDS_Legacy_S_healpix_1024_frac_withAstrom.fits')
-        vis = mask = hp.ud_grade(kids_mask, nside_out=nside, order_in='RING', order_out='RING', power=-2)
-
-        cosmo, pars, param_dict  = cosmo_loader.get_simulation_cosmology(200)
-        #Get the result
+        cosmo, pars, param_dict  = gower_street_loader.get_simulation_cosmology(sim_num, nuisance_params)
         results = camb.get_results(pars)
         results.calc_power_spectra(pars)
         k, z_grid, pk = results.get_nonlinear_matter_power_spectrum()
@@ -294,44 +285,14 @@ if __name__ == "__main__":
         # GLASS setup --------------------------------------------------------------------
         # shells of 200 Mpc in comoving distance spacing
         zb = glass.shells.distance_grid(cosmo, 0.000, 3.1, dx=200.)
-        print("Setting up LevinPower...")
-        s_levin = time.time()
 
-        ws, lp, ell = levin.setup_levin_power(zb, z_grid, chi_grid, extended_k, extended_pk, results, pars)
-        print("Computing angular power spectra...")
-        # Cl_gg, Cl_gs, Cl_ss = lp.compute_C_ells(ell)
-        # Cl_gg = np.array(Cl_gg)
-        # print(f"LevinPower took {time.time() - s_levin:.2f} seconds")
-        # chi_lims = results.angular_diameter_distance(zb) * (1+zb)
-        # zbins = [(zb[i], zb[i+1]) for i in range(len(zb)-1)]
-        
         n_los_chi = 1000 #define the integration limits here
         los_z_integration = np.linspace(zb[0], zb[-1], n_los_chi)
         los_chi_integration = np.asarray(results.angular_diameter_distance(los_z_integration) * (1+los_z_integration))
         print('Setting up KiDS-Legacy properties...')
         
 
-        tomo_nz = np.zeros((nbins, n_los_chi))
-        
-        if shift_nz:
-            dz_biases = np.loadtxt(f'{data_dir}/nofzs/dz/Nz_biases.txt')
-            dz_cov = np.loadtxt(f'{data_dir}/nofzs/dz/Nz_covariance.txt')
-            shift_dz_realised = np.random.multivariate_normal(mean=dz_biases, cov=dz_cov, size=1)[0]
-            
-
-        for i in range(nbins):
-            hdu = np.loadtxt(f'{data_dir}/nofzs/nz/BLINDSHAPES_KIDS_Legacy_NS_shear_noSG_noWeiCut_newCut_blindABC_A1_rmcol_filt_lab_filt_lab_filt_PSF_RAD_calc_filt_ZB{str(ztomo_label[i][0]).split(".")[0]}p{str(ztomo_label[i][0]).split(".")[1]}t{str(ztomo_label[i][1]).split(".")[0]}p{str(ztomo_label[i][1]).split(".")[1]}_calib_goldwt_Nz.ascii').T
-            z = hdu[0]
-            if shift_nz:
-                z_shifted = z - shift_dz_realised[i]
-                n_z = np.interp(z, z_shifted, hdu[1])
-                zmid = z[:-1] + 0.5*(z[1:] - z[:-1])
-                dndz_interpolated = np.interp(los_z_integration, zmid, n_arcmin2[i]*n_z[:-1]/np.trapezoid((n_z[:-1]), zmid))
-                tomo_nz[i] = np.clip(dndz_interpolated, 0, None)    
-            else:
-                zmid = z[:-1] + 0.5*(z[1:] - z[:-1])
-                dndz_interpolated = np.interp(los_z_integration, zmid, n_arcmin2[i]*hdu[1][:-1]/np.trapezoid(hdu[1][:-1], zmid))
-                tomo_nz[i] = np.clip(dndz_interpolated, 0, None)
+        tomo_nz = calculate_tomo_nz(data_dir, n_los_chi, los_z_integration, shift_nz)
 
         # Read in the KiDS-Legacy mask
         # Realised shear bias --------------------------------------------------------------------
@@ -346,7 +307,6 @@ if __name__ == "__main__":
         # TODO: add GLASS lognormals here
         print('Simulating the galaxy catalogue...')
         s_catalogue = time.time()
-        gower_data_dir = '/share/gpu5/asaoulis/gowerstreet/sim00200'
 
         kwargs = {
             'cosmo': cosmo,
@@ -365,10 +325,20 @@ if __name__ == "__main__":
             'mask': mask,
             'nside': nside,
             'nbins': nbins,
-            'rng': np.random.default_rng(seed=seed_num)
+            'rng': np.random.default_rng()
         }
 
-        simulator = GowerStreetSimulator(gower_data_dir, **kwargs)
+        if SIMULATOR_TYPE == 'glass':
+            ws, lp, ell = levin.setup_levin_power(zb, z_grid, chi_grid, extended_k, extended_pk, results, pars)
+            glass_cls, ws, n_glass_shells = glass_utils.compute_glass_cls(lp, ws, ell)
+            glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
+            fields = glass.lognormal_fields(ws)
+            gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
+            matter = glass.generate(fields, gls, nside, ncorr=1, rng=kwargs['rng'])
+            simulator = GlassLogNormalSimulator(matter, ws, **kwargs)
+        elif SIMULATOR_TYPE == 'gower':
+            simulator = gower_street_loader.setup_simulator(sim_num, **kwargs)
+
         catalogues = simulator.run(rotation_angles=rotation_angles, num_shape_noise_realisations=num_shape_noise_realisations)
 
         print(f'Total number of augmentations sampled: {len(catalogues):,}')
@@ -381,34 +351,38 @@ if __name__ == "__main__":
             ang = rotation_values[cat_idx]
             cls_results = {cl_type:{} for cl_type in ['full', 'north', 'south']}
 
-            alm, alm_rand, shear, E, B  = make_alm_shear_convergence(catalogue, m_bias_realised, nbins, nside, lmax)
+            alm, alm_rand, shear = make_alm_shear_convergence(
+                catalogue, m_bias_realised, nbins, nside, lmax, nosh=False
+            )
+
+            E, B = filter_EB_alms_and_make_maps(
+                alm_list=alm, nside_out=512, lmax_out=None, fwhm_arcmin=8.0, taper_start_frac=0.95
+            )
             realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(catalogue, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands, )
-            map_types = {"shear_real": shear.real, "shear_imag": shear.imag, "E":E, "B":B}
+            # map_types = {"shear_real": shear.real, "shear_imag": shear.imag, "E":E, "B":B}
+            map_types = {"E":E, "B":B}
             pixelised_results = {name:{} for name in map_types.keys()}
             for name, cat_data in map_types.items():
-                pixelised_tomobin_patches = get_patch_values(cat_data, patches, nside, ang)
+                pixelised_tomobin_patches = get_patch_values(cat_data, patches, 512, ang)
                 for patch_idx, patch_name in enumerate(named_patches.keys()):
                     pixelised_results[name][patch_name] = pixelised_tomobin_patches[patch_idx]
 
 
             cls_results['full'] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
 
-            patch_defs = {
-                "north": (np.abs(catalogue['DEC']) < 15),
-                "south": (np.abs(catalogue['DEC']) >= 15),
-            }
-            for patch_name, selector in patch_defs.items():
-                subcat = catalogue[selector]
-                alm, alm_rand, _, _, _  = make_alm_shear_convergence(subcat, m_bias_realised, nbins, nside, lmax, compute_convergence=False)
-                realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(subcat, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands, )
-                cls_results[patch_name] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
-        
-            save_results_h5(f"output_{sim_num}.h5", cat_idx, cls_results, pixelised_results, param_dict)
+            # patch_defs = {
+            #     "north": (np.abs(catalogue['DEC']) < 15),
+            #     "south": (np.abs(catalogue['DEC']) >= 15),
+            # }
+            # for patch_name, selector in patch_defs.items():
+            #     subcat = catalogue[selector]
+            #     alm, alm_rand, _ = make_alm_shear_convergence(subcat, m_bias_realised, nbins, nside, lmax, nosh=False)
+            #     realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(subcat, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands, )
+            #     cls_results[patch_name] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
+
+            save_results_h5( OUTPUT_DIR / f"output_{sim_num}.h5", cat_idx, cls_results, pixelised_results, param_dict)
 
             del catalogue
-
-
-        print(f'Saved bandpowers for sim {sim_num}')
+        print(f'Saved results for sim {sim_num}')
         
         print(f'Entire simulation took {time.time() - s:.2f} seconds')
-        

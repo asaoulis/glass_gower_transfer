@@ -14,6 +14,7 @@ class GowerStCosmologies:
         "w": "w0",
         "n_s": "ns",
         "m_nu": "mnu",
+        "Omega_m": "omega_m"
     }
 
     def __init__(self, csv_path: str):
@@ -29,7 +30,7 @@ class GowerStCosmologies:
 
         return df
 
-    def get_simulation_cosmology(self, serial_id: int):
+    def get_simulation_cosmology(self, serial_id: int, extra_params, **kwargs):
         if serial_id not in self.df["Serial Number"].values:
             raise KeyError(f"Serial ID {serial_id} not found in dataset.")
         
@@ -42,27 +43,23 @@ class GowerStCosmologies:
                 val = row[csv_key]
                 if pd.notna(val):
                     params[model_key] = float(val)
+        params = {**params, **extra_params}
         return *build_cosmology(params), params
     
 class GowerStDatasetBuilder:
 
-    def __init__(self, csv_path: str, dataset_path: str, simulation_kwargs: Dict):
+    def __init__(self, csv_path: str, dataset_path: str):
         self.cosmology_loader = GowerStCosmologies(csv_path)
         self.dataset_path = dataset_path
-        self.simulation_kwargs = simulation_kwargs
     
-    def build_catalogue(self, serial_id: int):
+    def get_simulation_cosmology(self, serial_id: int, *args, **kwargs):
+        return self.cosmology_loader.get_simulation_cosmology(serial_id, *args,**kwargs)
+    
+    def setup_simulator(self, serial_id: int, **simulation_kwargs):
         """
         Build a Gower Street dataset map for a given serial ID.
         """
-        cosmo, pars = self.cosmology_loader.get_simulation_cosmology(serial_id)
-        cosmo_sim_kwargs = {
-            "cosmo": cosmo,
-            **self.simulation_kwargs
-        }
         sim_path = f"{self.dataset_path}/sim{serial_id:05d}"
-        simulator = GowerStreetSimulator(sim_path, **cosmo_sim_kwargs)
+        simulator = GowerStreetSimulator(sim_path, **simulation_kwargs)
         
-        # Generate the map using the simulator
-        catalogues = simulator.run()
-        return catalogues
+        return simulator
