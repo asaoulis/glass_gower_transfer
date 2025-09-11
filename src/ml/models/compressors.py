@@ -1,32 +1,9 @@
-
 import torch
 import torch.nn as nn
 from torchvision import models
 
 import torch
 import torch.nn as nn
-
-class ConvBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, first_block=False):
-        super(ConvBlock, self).__init__()
-        layers = [
-            nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=True, padding_mode='circular'),
-            nn.LeakyReLU(negative_slope=0.2)
-        ]
-        if not first_block:
-            layers.insert(1, nn.BatchNorm2d(out_channels))
-        layers += [
-            nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=True, padding_mode='circular'),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(negative_slope=0.2),
-            nn.Conv2d(out_channels, out_channels, kernel_size=2, stride=2, padding=0, bias=True, padding_mode='circular'),
-            nn.BatchNorm2d(out_channels),
-            nn.LeakyReLU(negative_slope=0.2)
-        ]
-        self.block = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.block(x)
 
 class ConvBlock(nn.Module):
     def __init__(self, in_channels, out_channels, first_block=False):
@@ -192,6 +169,98 @@ class model_o3_err(nn.Module):
 ####################################################################################
 ####################################################################################
 
+
+class FlexibleO3(nn.Module):
+    """
+    O3-like CNN that works with arbitrary input sizes.
+    - Uses repeated stages with stride-2 downsampling.
+    - Applies adaptive pooling to 1x1 then a 1x1 tail conv to fix channel count.
+    - Infers the linear head input feature size via a dummy forward using max_hw.
+    """
+    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.35, max_hw=(256, 256), predict_sigmas: bool = False):
+        super().__init__()
+        self.predict_sigmas = predict_sigmas
+        self.num_outputs = num_outputs
+        if predict_sigmas:
+            num_outputs = 2 * num_outputs
+        self.hidden = hidden
+
+        # Build stages programmatically
+        ch_mults = [2, 4, 8, 16, 32, 64]
+        stages = []
+        in_ch = channels
+        for i, m in enumerate(ch_mults):
+            out_ch = m * hidden
+            stages.append(self._make_stage(in_ch, out_ch, first=(i == 0)))
+            in_ch = out_ch
+        self.stages = nn.Sequential(*stages)
+
+        # Tail: adaptive pool to 1x1, conv1x1 to 128*hidden, BN identity for 1x1
+        self.adapt_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.tail_conv = nn.Conv2d(ch_mults[-1] * hidden, 128 * hidden, kernel_size=1, bias=True)
+        self.tail_bn = nn.Identity()
+        self.act = nn.LeakyReLU(0.2)
+
+        # Infer feature dim with a dummy pass
+        self.feature_dim = self._infer_feature_dim(max_hw, channels)
+
+        self.FC1 = nn.Linear(self.feature_dim, 64 * hidden)
+        self.FC2 = nn.Linear(64 * hidden, num_outputs)
+        self.dropout = nn.Dropout(p=dr)
+
+        # Init
+        for m in self.modules():
+            if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
+                nn.init.kaiming_normal_(m.weight)
+
+    def _make_stage(self, in_ch, out_ch, first=False):
+        layers = [
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, padding_mode='circular', bias=True),
+            nn.LeakyReLU(0.2),
+        ]
+        if not first:
+            layers.insert(1, nn.BatchNorm2d(out_ch))
+        layers += [
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1, padding_mode='circular', bias=True),
+            nn.BatchNorm2d(out_ch),
+            nn.LeakyReLU(0.2),
+            nn.Conv2d(out_ch, out_ch, kernel_size=2, stride=2, padding=0, padding_mode='circular', bias=True),
+            nn.BatchNorm2d(out_ch),
+            nn.LeakyReLU(0.2),
+        ]
+        return nn.Sequential(*layers)
+
+    def _infer_feature_dim(self, max_hw, in_channels):
+        with torch.no_grad():
+            h, w = max_hw
+            device = next(self.stages.parameters()).device if any(p.requires_grad for p in self.stages.parameters()) else torch.device('cpu')
+            x = torch.zeros(1, in_channels, h, w, device=device)
+            x = self.stages(x)
+            x = self.act(self.tail_bn(self.tail_conv(self.adapt_pool(x))))
+            x = x.view(1, -1)
+            return x.shape[1]
+
+    def forward(self, x):
+        x = self.stages(x)
+        x = self.act(self.tail_bn(self.tail_conv(self.adapt_pool(x))))
+        x = x.flatten(1)
+        x = self.dropout(x)
+        x = self.dropout(self.act(self.FC1(x)))
+        x = self.FC2(x)
+        if self.predict_sigmas:
+            y = torch.clone(x)
+            y[:, self.num_outputs:2*self.num_outputs] = torch.square(x[:, self.num_outputs:2*self.num_outputs])
+            return y
+        return x
+
+
+def flexible_o3_model(num_outputs, hidden=12, channels=1, max_hw=(256, 256), predict_sigmas=False, **kwargs):
+    return FlexibleO3(num_outputs=num_outputs, hidden=hidden, channels=channels, max_hw=max_hw, predict_sigmas=predict_sigmas)
+
+
 # Example usage
 
 
@@ -262,6 +331,7 @@ def build_convnext(num_outputs, pretrained=True):
 
 _MODEL_BUILDERS = {
     "o3": lambda num_outputs, **kwargs: model_o3_err(num_outputs, hidden=12).to(device='cuda'),
+    "flex_o3": lambda num_outputs, max_hw=(256, 256), channels=1, hidden=12, **kwargs: flexible_o3_model(num_outputs, hidden=hidden, channels=channels, max_hw=max_hw),
     "resnet": lambda num_outputs, pretrained=True, **kwargs: build_resnet(num_outputs, pretrained=pretrained),
     "convnext": lambda num_outputs, pretrained=True, **kwargs: build_convnext(num_outputs, pretrained=pretrained)
 }

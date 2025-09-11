@@ -135,44 +135,6 @@ def to_heracles_noise_cl(num_bins, cl_noise, lmin, lmax):
     return mask_cls
 
 
-def to_heracles_mask_cl(num_bins, cl_mask, lmin, lmax):
-    mask_cls = {}
-    bin_incrementer = 0
-    cl_mask = cl_mask[lmin : lmax + 1]
-    for i in range(num_bins):
-        for j in range(i + 1):
-            mask_cls[("WHT", "WHT", i + 1, j + 1)] = cl_mask
-            bin_incrementer += 1
-    return mask_cls
-
-def unmix_mask_shear_cl(num_bins, shear_cls, mask_cl, lmin, lmax):
-    B = np.identity(lmax - lmin + 1)
-
-    data_cls = to_heracles_cl(
-        num_bins=6,
-        shear_cls=shear_cls
-    )
-
-    mask_cls = to_heracles_mask_cl(num_bins=num_bins, cl_mask=mask_cl, lmin=lmin, lmax=lmax)
-    dnp = iolaus.Naive_Polspice(data_cls, mask_cls, B, patch_hole=True)
-    compsep_dnp = iolaus.compsep_cls(dnp)
-    
-    unmixed_cls = np.zeros(shear_cls.shape, dtype=np.ndarray)
-    for i in range(num_bins):
-        for j in range(i + 1):
-            unmixed_cls[i][j][0] = compsep_dnp[("G_E", "G_E", i + 1, j + 1)]
-            unmixed_cls[i][j][1] = compsep_dnp[("G_B", "G_B", i + 1, j + 1)]
-            unmixed_cls[i][j][2] = compsep_dnp[("G_E", "G_B", i + 1, j + 1)]
-            unmixed_cls[j][i] = unmixed_cls[i][j]
-            
-            #unmixed_cls[i][j][0] = dnp[("SHE", "SHE", i + 1, j + 1)][0, 0]
-            #unmixed_cls[i][j][1] = dnp[("SHE", "SHE", i + 1, j + 1)][1, 1]
-            #unmixed_cls[i][j][2] = dnp[("SHE", "SHE", i + 1, j + 1)][0, 1]
-            #unmixed_cls[j][i] = unmixed_cls[i][j]
-            
-    
-    return unmixed_cls
-
 def unmix_shear_cl(num_bins, shear_cls, mask_cl, lmin, lmax):
     B = np.identity(lmax - lmin + 1)
 
@@ -182,7 +144,6 @@ def unmix_shear_cl(num_bins, shear_cls, mask_cl, lmin, lmax):
     )
 
     mask_cls = to_heracles_noise_cl(num_bins=num_bins, cl_noise=mask_cl, lmin=lmin, lmax=lmax)
-    #dnp = heracles.unmixing.natural_unmixing(data_cls, mask_cls, patch_hole=True)
     dnp = iolaus.Naive_Polspice(data_cls, mask_cls, B, patch_hole=True)
     compsep_dnp = iolaus.compsep_cls(dnp)
     
@@ -193,11 +154,6 @@ def unmix_shear_cl(num_bins, shear_cls, mask_cl, lmin, lmax):
             unmixed_cls[i][j][1] = compsep_dnp[("G_B", "G_B", i + 1, j + 1)]
             unmixed_cls[i][j][2] = compsep_dnp[("G_E", "G_B", i + 1, j + 1)]
             unmixed_cls[j][i] = unmixed_cls[i][j]
-            
-            # unmixed_cls[i][j][0] = dnp[("SHE", "SHE", i + 1, j + 1)][0, 0]
-            # unmixed_cls[i][j][1] = dnp[("SHE", "SHE", i + 1, j + 1)][1, 1]
-            # unmixed_cls[i][j][2] = dnp[("SHE", "SHE", i + 1, j + 1)][0, 1]
-            # unmixed_cls[j][i] = unmixed_cls[i][j]
     
     return unmixed_cls
     

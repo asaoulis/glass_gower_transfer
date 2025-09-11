@@ -152,67 +152,12 @@ class GaussianLightningModule(BaseLightningModule):
 
 
 from transfer_sbi.toy.custom_sbi import build_maf, build_maf_rqs, build_nsf
-from nflows import flows, transforms
-from typing import NamedTuple
 from torch.optim import Adam, AdamW
 import torch
 from sbi import utils as utils
-import torch.nn.functional as F
-import torch.nn.init as init
+
 import torch.nn as nn
-import time
 
-from nflows.distributions.normal import StandardNormal
-
-def prepare_identity_maf(extra_blocks_builder, embeddings, bounds=(0., 1.), n_epochs=250, device='cpu', dim=2, loss_threshold_scale=0.005, init_scale=0.01):
-    distribution = StandardNormal(shape=(dim,))
-    min_loss = float('inf')
-    loss_threshold = loss_threshold_scale * dim
-
-    print('Training identity maf blocks', flush=True)
-    while min_loss > loss_threshold:
-        extra_blocks = extra_blocks_builder()
-        reinitialise_made_layers(extra_blocks, scale=init_scale)
-        print(f"Reinitializing due to high loss...; {min_loss}", flush=True)
-        random_samples = distribution.sample(embeddings.shape[0]).to(device)
-        embeddings = embeddings.to(device)
-        neural_net = flows.Flow(extra_blocks._transform, distribution).to(device)
-        opt = torch.optim.Adam(neural_net._transform.parameters(), lr=0.001, weight_decay=0.05)
-
-        def identity_loss_with_jacobian(model, x, y):
-            z, _ = model._transform(x, y)
-            loss_identity = F.mse_loss(z, x)  # Identity mapping loss
-            return loss_identity
-        
-        # min_loss = float('inf')
-        # for epoch in range(n_epochs):
-        #     opt.zero_grad()
-        #     loss = identity_loss_with_jacobian(neural_net, random_samples, embeddings)
-        #     loss.backward()
-        #     opt.step()
-        #     min_loss = min(min_loss, loss.item())
-            
-        #     if epoch % 50 == 0:
-        #         pass
-        #         # print(f"Fine-tune Epoch {epoch + 1}, Loss: {loss.item()}, Min Loss: {min_loss}")
-        min_loss = identity_loss_with_jacobian(neural_net, random_samples, embeddings)
-        
-    print(f'Reached acceptable loss: {min_loss}', flush=True)
-    return neural_net
-
-def reinitialise_layer(layer, scale=1e-5):
-    """Reinitialise the layer of a MADE block."""
-    if isinstance(layer, torch.nn.Linear) or 'MaskedLinear' in layer.__class__.__name__:
-        init.uniform_(layer.weight, a=-scale, b=scale)  # Small random weights
-        if layer.bias is not None:
-            init.uniform_(layer.bias, a=-scale, b=scale)
-def reinitialise_made_layers(model, scale=1e-5):
-    """Reinitialise all 'final_layer' instances in a MADE block."""
-    for name, module in model.named_modules():
-        # if 'final_layer' in name:  # Check if the name matches 'final_layer'
-            reinitialise_layer(module,scale)
-
-from functools import partial
 
 class NDELightningModule(BaseLightningModule):
     flow_type_map = {"nsf": build_nsf, "maf": build_maf, "rqs": build_maf_rqs}
@@ -227,9 +172,6 @@ class NDELightningModule(BaseLightningModule):
         self.loss_name = "log_prob"
         self.set_up_model(embedding_net)
         self.test_loss_values = []
-        if num_extra_blocks:
-            y_dataset, x_dataset = self.test_dataloader.dataset.tensors
-            self.append_maf_blocks(x_dataset[:10], y_dataset[:10], num_extra_blocks, (), 'cuda')
         if checkpoint_path:
             self.load_from_checkpoint(checkpoint_path)
 
@@ -295,25 +237,6 @@ class NDELightningModule(BaseLightningModule):
         all_samples = torch.cat(all_samples, dim=0)
         return all_samples
 
-    def append_maf_blocks(self, cheap_x_dataset, cheap_y_dataset, num_extra_blocks, bounds, device, init_scale = 1.e-2):
-        """Appends extra MAF blocks to the pretrained model."""
-        if num_extra_blocks > 0:
-            with torch.no_grad():
-                embeddings = self.model._embedding_net(cheap_y_dataset.to(device)).detach().cpu()
-            extra_blocks_builder = partial(build_maf,
-                cheap_x_dataset, embeddings, num_transforms=num_extra_blocks, use_residual_blocks=True, use_batch_norm=True, 
-               z_score_x=None, z_score_y=None, random_permutation=True, use_identity_made=True
-            )
-            
-            extra_blocks = prepare_identity_maf(extra_blocks_builder, embeddings, bounds=bounds, n_epochs=251, device=device, dim=cheap_x_dataset.shape[1], init_scale=init_scale)
-            
-            new_flow = flows.Flow(
-                transform=transforms.CompositeTransform((self.model._transform, extra_blocks._transform,)),
-                distribution=self.model._distribution,
-                embedding_net=self.model._embedding_net
-            )
-            
-            self.model = new_flow
 
     def compute_loss(self, preds, y):   
         """Uses log probability as the loss for density estimation."""

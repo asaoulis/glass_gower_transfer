@@ -1,4 +1,3 @@
-
 import os
 import re
 import glob
@@ -136,6 +135,35 @@ class H5CosmoDataset(Dataset):
         if self.transform is not None:
             data = self.transform(data)
         return data, cosmo
+
+
+# Default mapping from simple quantity names to HDF5 nested key paths
+DEFAULT_QUANTITY_PATHS = {
+    "E_north": ("pixelised_results", "E", "north"),
+    "E_south": ("pixelised_results", "E", "south"),
+    "B_north": ("pixelised_results", "B", "north"),
+    "B_south": ("pixelised_results", "B", "south"),
+    "bandpowers": ("cls_results", "full", "bandpowers"),
+    "bandpower_ls": ("cls_results", "full", "bandpower_ls"),
+    "cls": ("cls_results", "full", "cls"),
+}
+
+
+def build_nested_keys_from_quantities(quantities: Sequence[str]) -> Dict[str, Tuple[str, ...]]:
+    """
+    Convert a list of dataset quantity names into the nested_keys mapping
+    expected by the H5CosmoDataset/build_dataloaders utilities.
+
+    Known quantities and their default locations are defined in DEFAULT_QUANTITY_PATHS.
+    """
+    nested: Dict[str, Tuple[str, ...]] = {}
+    unknown = [q for q in quantities if q not in DEFAULT_QUANTITY_PATHS]
+    if unknown:
+        known = ", ".join(sorted(DEFAULT_QUANTITY_PATHS.keys()))
+        raise KeyError(f"Unknown dataset_quantities: {unknown}. Known options: {known}")
+    for q in quantities:
+        nested[q] = DEFAULT_QUANTITY_PATHS[q]
+    return nested
 
 
 def build_datasets(
