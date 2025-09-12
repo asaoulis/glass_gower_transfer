@@ -19,3 +19,6 @@ build/
 *.so.0
 *.err
 *.ipynb
+wandb/
+*.json
+lightning_logs/

@@ -5,7 +5,7 @@ from typing import Dict, Tuple
 
 # Maximum input spatial size (H, W) expected by the CNN to size its head.
 # The FlexibleO3 backbone will run a dummy pass with this size to infer head dims.
-MAX_INPUT_HW: Tuple[int, int] = (256, 256)
+MAX_INPUT_HW: Tuple[int, int] = (100, 1000)
 
 
 class KidsO3NorthSouthEmbedding(nn.Module):
@@ -70,8 +70,8 @@ class KidsO3NorthSouthEmbedding(nn.Module):
         north_stack = torch.cat([e_north, b_north], dim=1)
 
         # Ensure south matches north spatial size by zero-padding (bottom/right)
-        _, _, hn, wn = north_stack.shape
-        south_stack = self._pad_to_size(south_stack, (hn, wn))
+        south_stack = self._pad_to_size(south_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1]))
+        south_stack = self._pad_to_size(south_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1]))
 
         # Shared CNN processes both stacks
         south_feat = self.shared_cnn(south_stack)

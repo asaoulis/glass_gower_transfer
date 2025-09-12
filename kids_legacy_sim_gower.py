@@ -4,24 +4,17 @@ import healpy as hp
 import h5py
 import numpy as np
 from pathlib import Path
+from collections import deque
+import gc
 
-# use the CAMB cosmology that generated the matter power spectra
 import camb
-
 import glass.ext.camb
-
 from mpi4py import MPI
 
 # use the CAMB cosmology that generated the matter power spectra
-import camb
-
-
-# GLASS modules: cosmology and everything in the glass namespace
+import glass
 import glass.shells
 
-import iolaus
-
-from numba import njit
 
 def save_results_h5(filename, cat_idx, cls_results, pixelised_results, cosmo_dict):
     filename = Path(filename)
@@ -133,7 +126,8 @@ lmax = 2*nside
 lmin = 0
 
 rotation_angles=[0, 90, 180, 270]
-num_shape_noise_realisations=4
+inner_num_shape_noise_realisations=1
+outer_num_shape_noise_realisations=4
 lower_lscale = 76
 upper_lscale = 1500
 nbands = 20
@@ -142,10 +136,10 @@ named_patches = {
     "north":(-178, 0, 112, 10)
 }
 patches = list(named_patches.values())
-rotation_values = [rot for rot in rotation_angles for _ in range(num_shape_noise_realisations)]
+# rotation_values = [rot for rot in rotation_angles for _ in range(num_shape_noise_realisations)]
 
 csv_path = '/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv'
-gower_data_dir = '/share/gpu5/asaoulis/gowerstreet/'
+gower_data_dir = '/share/gpu5/asaoulis/gowerstreet'
 
 OUTPUT_DIR = Path('/share/gpu5/asaoulis/transfer_datasets/gower_full_only_mocks')
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -296,93 +290,118 @@ if __name__ == "__main__":
 
         # Read in the KiDS-Legacy mask
         # Realised shear bias --------------------------------------------------------------------
+        for outer_noise_idx in range(outer_num_shape_noise_realisations):
+            rotation_values = [rot for rot in rotation_angles for _ in range(inner_num_shape_noise_realisations)]
+            m_bias_realised = np.array([float(np.random.normal(m_bias[i], m_bias_unc[i], 1)) for i in range(len(m_bias))])
+            c1_bias_north_realised = np.array([float(np.random.normal(c_1_bias_north[i], c_1_bias_north_unc[i], 1)) for i in range(len(c_1_bias_north))])
+            c2_bias_north_realised = np.array([float(np.random.normal(c_2_bias_north[i], c_2_bias_north_unc[i], 1)) for i in range(len(c_2_bias_north))])
+            c1_bias_south_realised = np.array([float(np.random.normal(c_1_bias_south[i], c_1_bias_south_unc[i], 1)) for i in range(len(c_1_bias_south))])
+            c2_bias_south_realised = np.array([float(np.random.normal(c_2_bias_south[i], c_2_bias_south_unc[i], 1)) for i in range(len(c_2_bias_south))])
 
-        m_bias_realised = np.array([float(np.random.normal(m_bias[i], m_bias_unc[i], 1)) for i in range(len(m_bias))])
-        c1_bias_north_realised = np.array([float(np.random.normal(c_1_bias_north[i], c_1_bias_north_unc[i], 1)) for i in range(len(c_1_bias_north))])
-        c2_bias_north_realised = np.array([float(np.random.normal(c_2_bias_north[i], c_2_bias_north_unc[i], 1)) for i in range(len(c_2_bias_north))])
-        c1_bias_south_realised = np.array([float(np.random.normal(c_1_bias_south[i], c_1_bias_south_unc[i], 1)) for i in range(len(c_1_bias_south))])
-        c2_bias_south_realised = np.array([float(np.random.normal(c_2_bias_south[i], c_2_bias_south_unc[i], 1)) for i in range(len(c_2_bias_south))])
+            # Make the catalogue ---------------------------------------------------
+            # TODO: add GLASS lognormals here
+            print('Simulating the galaxy catalogue...')
+            s_catalogue = time.time()
 
-        # Make the catalogue ---------------------------------------------------
-        # TODO: add GLASS lognormals here
-        print('Simulating the galaxy catalogue...')
-        s_catalogue = time.time()
+            kwargs = {
+                'cosmo': cosmo,
+                'los_z_integration': los_z_integration,
+                'tomo_nz': tomo_nz,
+                'galaxy_bias': 1.0,
+                'shear_bias_params': {
+                    'm_bias': m_bias_realised,
+                    'c1_north': c1_bias_north_realised,
+                    'c2_north': c2_bias_north_realised,
+                    'c1_south': c1_bias_south_realised,
+                    'c2_south': c2_bias_south_realised
+                },
+                'nla_params': ia_params,
+                'sigma_e': sigma_e,
+                'mask': mask,
+                'nside': nside,
+                'nbins': nbins,
+                'rng': np.random.default_rng()
+            }
 
-        kwargs = {
-            'cosmo': cosmo,
-            'los_z_integration': los_z_integration,
-            'tomo_nz': tomo_nz,
-            'galaxy_bias': 1.0,
-            'shear_bias_params': {
-                'm_bias': m_bias_realised,
-                'c1_north': c1_bias_north_realised,
-                'c2_north': c2_bias_north_realised,
-                'c1_south': c1_bias_south_realised,
-                'c2_south': c2_bias_south_realised
-            },
-            'nla_params': ia_params,
-            'sigma_e': sigma_e,
-            'mask': mask,
-            'nside': nside,
-            'nbins': nbins,
-            'rng': np.random.default_rng()
-        }
+            if SIMULATOR_TYPE == 'glass':
+                ws, lp, ell = levin.setup_levin_power(zb, z_grid, chi_grid, extended_k, extended_pk, results, pars)
+                glass_cls, ws, n_glass_shells = glass_utils.compute_glass_cls(lp, ws, ell)
+                glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
+                fields = glass.lognormal_fields(ws)
+                gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
+                matter = glass.generate(fields, gls, nside, ncorr=1, rng=kwargs['rng'])
+                simulator = GlassLogNormalSimulator(matter, ws, **kwargs)
+            elif SIMULATOR_TYPE == 'gower':
+                simulator = gower_street_loader.setup_simulator(sim_num, **kwargs)
 
-        if SIMULATOR_TYPE == 'glass':
-            ws, lp, ell = levin.setup_levin_power(zb, z_grid, chi_grid, extended_k, extended_pk, results, pars)
-            glass_cls, ws, n_glass_shells = glass_utils.compute_glass_cls(lp, ws, ell)
-            glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
-            fields = glass.lognormal_fields(ws)
-            gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
-            matter = glass.generate(fields, gls, nside, ncorr=1, rng=kwargs['rng'])
-            simulator = GlassLogNormalSimulator(matter, ws, **kwargs)
-        elif SIMULATOR_TYPE == 'gower':
-            simulator = gower_street_loader.setup_simulator(sim_num, **kwargs)
+            catalogues = simulator.run(rotation_angles=rotation_angles, num_shape_noise_realisations=inner_num_shape_noise_realisations)
 
-        catalogues = simulator.run(rotation_angles=rotation_angles, num_shape_noise_realisations=num_shape_noise_realisations)
+            print(f'Total number of augmentations sampled: {len(catalogues):,}')
+            print(f'Simulated the galaxy catalogue in {time.time() - s_catalogue:.2f} seconds')
 
-        print(f'Total number of augmentations sampled: {len(catalogues):,}')
-        print(f'Simulated the galaxy catalogue in {time.time() - s_catalogue:.2f} seconds')
+            print('Calculating the shear power spectra...')
 
-        print('Calculating the shear power spectra...')
+            # Process catalogues one-by-one and free memory immediately
+            cat_queue = deque(catalogues)
+            del catalogues
+            gc.collect()
 
-        for cat_idx, catalogue in enumerate(catalogues):
-            catalogue = np.concatenate(catalogue)
-            ang = rotation_values[cat_idx]
-            cls_results = {cl_type:{} for cl_type in ['full', 'north', 'south']}
+            cat_idx = 0
+            while cat_queue:
+                cat_parts = cat_queue.popleft()
+                try:
+                    catalogue = np.concatenate(cat_parts)
+                finally:
+                    del cat_parts
 
-            alm, alm_rand, shear = make_alm_shear_convergence(
-                catalogue, m_bias_realised, nbins, nside, lmax, nosh=False
-            )
+                ang = rotation_values[cat_idx]
+                cls_results = {cl_type:{} for cl_type in ['full', 'north', 'south']}
 
-            E, B = filter_EB_alms_and_make_maps(
-                alm_list=alm, nside_out=512, lmax_out=None, fwhm_arcmin=8.0, taper_start_frac=0.95
-            )
-            realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(catalogue, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands, )
-            # map_types = {"shear_real": shear.real, "shear_imag": shear.imag, "E":E, "B":B}
-            map_types = {"E":E, "B":B}
-            pixelised_results = {name:{} for name in map_types.keys()}
-            for name, cat_data in map_types.items():
-                pixelised_tomobin_patches = get_patch_values(cat_data, patches, 512, ang)
-                for patch_idx, patch_name in enumerate(named_patches.keys()):
-                    pixelised_results[name][patch_name] = pixelised_tomobin_patches[patch_idx]
+                alm, alm_rand, shear = make_alm_shear_convergence(
+                    catalogue, m_bias_realised, nbins, nside, lmax, nosh=False
+                )
+
+                E, B = filter_EB_alms_and_make_maps(
+                    alm_list=alm, nside_out=512, lmax_out=None, fwhm_arcmin=8.0, taper_start_frac=0.95
+                )
+
+                realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(catalogue, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands, )
+
+                # map_types = {"shear_real": shear.real, "shear_imag": shear.imag, "E":E, "B":B}
+                map_types = {"E":E, "B":B}
+                pixelised_results = {name:{} for name in map_types.keys()}
+                for name, cat_data in map_types.items():
+                    pixelised_tomobin_patches = get_patch_values(cat_data, patches, 512, ang)
+                    for patch_idx, patch_name in enumerate(named_patches.keys()):
+                        pixelised_results[name][patch_name] = pixelised_tomobin_patches[patch_idx]
+  
+                # patch_defs = {
+                #     "north": (np.abs(catalogue['DEC']) < 15),
+                #     "south": (np.abs(catalogue['DEC']) >= 15),
+                # }
+                # for patch_name, selector in patch_defs.items():
+                #     subcat = catalogue[selector]
+                #     alm, alm_rand, _ = make_alm_shear_convergence(subcat, m_bias_realised, nbins, nside, lmax, nosh=False)
+                #     realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(subcat, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands, )
+                #     cls_results[patch_name] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
 
 
-            cls_results['full'] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
+                cls_results['full'] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
 
-            # patch_defs = {
-            #     "north": (np.abs(catalogue['DEC']) < 15),
-            #     "south": (np.abs(catalogue['DEC']) >= 15),
-            # }
-            # for patch_name, selector in patch_defs.items():
-            #     subcat = catalogue[selector]
-            #     alm, alm_rand, _ = make_alm_shear_convergence(subcat, m_bias_realised, nbins, nside, lmax, nosh=False)
-            #     realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(subcat, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands, )
-            #     cls_results[patch_name] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
+                total_idx = outer_noise_idx * inner_num_shape_noise_realisations + cat_idx
+                save_results_h5( OUTPUT_DIR / f"output_{sim_num}.h5", total_idx, cls_results, pixelised_results, param_dict)
+
+                # free per-catalogue heavy products
+                del catalogue, cls_results, pixelised_results, realised_unmixed_shear_cls, cll_bands, bandpowers, map_types, E, B, alm, alm_rand, shear
+                gc.collect()
+
+                cat_idx += 1
 
             save_results_h5( OUTPUT_DIR / f"output_{sim_num}.h5", cat_idx, cls_results, pixelised_results, param_dict)
 
-            del catalogue
+            del catalogue, cat_queue, simulator
+            gc.collect()
+
         print(f'Saved results for sim {sim_num}')
         
         print(f'Entire simulation took {time.time() - s:.2f} seconds')

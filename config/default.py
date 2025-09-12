@@ -3,37 +3,29 @@ import ml_collections
 def get_default_config():
     config = ml_collections.ConfigDict()
     # Training
-    config.lr = 0.0005
+    config.lr = 0.0004
     config.epochs = 400
-    config.batch_size = 128
+    config.batch_size = 32
     config.val_batch_size = None  # defaults to batch_size if None
     config.test_batch_size = None # defaults to val_batch_size if None
-    config.latent_dim = 128
+    config.latent_dim = 512
     config.extra_blocks = 0
     config.checkpoint_path = None
     config.scheduler_type = 'exp'
     config.optimizer_kwargs = {'weight_decay': 0.01, 'betas': (0.9, 0.999)}
-    config.scheduler_kwargs = {'warmup': 250, 'gamma': 0.9}
-    config.model_type = "o3"
+    config.scheduler_kwargs = {'warmup': 250, 'gamma': 0.99}
+    config.model_type = "kids_o3_dual"
     config.freeze_cnn = False
 
     # Data loading (new dataset interface)
     config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_full_only_mocks/output_*.h5"
-    config.dataset_nested_keys = {
-        # Example defaults; override per experiment as needed
-        # 'E': ("pixelised_results", "E", "north"),
-        # 'B': ("pixelised_results", "B", "north"),
-        # 'bandpowers': ("cls_results", "full", "bandpowers"),
-        # 'bandpower_ls': ("cls_results", "full", "bandpower_ls"),
-        # 'cls': ("cls_results", "full", "cls"),
-    }
+    config.dataset_nested_keys = None
     # Alternatively, specify simple quantity names and we will build dataset_nested_keys
     # Valid options (defaults): E_north, E_south, B_north, B_south, bandpowers, bandpower_ls, cls
-    config.dataset_quantities = None  # e.g. ["E_north", "E_south", "bandpowers"]
+    config.dataset_quantities = ["E_north", "E_south", "B_north", "B_south",]
 
     config.cosmo_param_names = [
-        # Example; override as needed
-        # "Omega_c", "Omega_b", "n_s", "sigma_8", "h0"
+        "omega_m", "s8"
     ]
     config.train_frac = 0.8
     config.val_frac = 0.1

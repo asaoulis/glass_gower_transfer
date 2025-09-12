@@ -1,4 +1,3 @@
-
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
@@ -8,7 +7,6 @@ from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts, CyclicLR, Lamb
 import numpy as np
 from sklearn.metrics import r2_score
 from tqdm import tqdm
-from .custom_sbi import CustomSNPE_C, sample_batched
 from types import MethodType
 from functools import partial
 
@@ -57,10 +55,13 @@ class BaseLightningModule(pl.LightningModule):
         optimizer_kwargs = {**default_optimizer_kwargs, **self.optimizer_kwargs}
         print(optimizer_kwargs)
         if self.freeze_CNN:
-            optimizer = Adam(self.model._transform.parameters(), lr=self.lr, **optimizer_kwargs)
+            # When freezing the embedding CNN, optimize only the flow parameters
+            for p in self.model.embedding_net.parameters():
+                p.requires_grad = False
+            from torch.optim import Adam
+            optimizer = Adam(self.model.flow.parameters(), lr=self.lr, **optimizer_kwargs)
         else:
             optimizer = AdamW(self.model.parameters(), lr=self.lr, **optimizer_kwargs)
-        # optimizer = AdamW(self.model._transform.parameters(), lr=self.lr, **optimizer_kwargs)
         interval = "step"
 
         if self.scheduler_type == 'cosine':
@@ -76,10 +77,10 @@ class BaseLightningModule(pl.LightningModule):
         elif self.scheduler_type == 'plateau':
             scheduler = ReduceLROnPlateau(
                 optimizer,
-                mode='min',  # Adjust based on whether you're tracking loss ('min') or accuracy ('max')
-                factor=0.95,  # Reduce LR by a factor of 0.9
-                patience=10,  # Number of steps with no improvement before reducing LR
-                threshold=1e-4,  # Minimum change to qualify as an improvement
+                mode='min',
+                factor=0.95,
+                patience=10,
+                threshold=1e-4,
                 min_lr=1e-9
             )
             interval = "epoch"
@@ -151,36 +152,71 @@ class GaussianLightningModule(BaseLightningModule):
         return loss
 
 
-from transfer_sbi.toy.custom_sbi import build_maf, build_maf_rqs, build_nsf
+from sbi.neural_nets.net_builders import build_nsf, build_maf
 from torch.optim import Adam, AdamW
 import torch
 from sbi import utils as utils
 
 import torch.nn as nn
 
+class _CondEmbeddingFlow(nn.Module):
+    """A lightweight wrapper that embeds y then delegates to the flow."""
+    def __init__(self, embedding_net: nn.Module, flow: nn.Module):
+        super().__init__()
+        self.embedding_net = embedding_net if embedding_net is not None else nn.Identity()
+        self.flow = flow
+    
+    def log_prob(self, x, y):
+        y_emb = self.embedding_net(y)
+        x = x.unsqueeze(0)
+        return self.flow.log_prob(x, y_emb)
+    
+    def sample(self, shape, y, **kwargs):
+        y_emb = self.embedding_net(y)
+        return self.flow.sample(shape, y_emb, **kwargs)
+    
+    def sample_batched(self, shape, y, **kwargs):
+        y_emb = self.embedding_net(y)
+        return self.flow.sample_batched(shape, y_emb, **kwargs)
 
 class NDELightningModule(BaseLightningModule):
-    flow_type_map = {"nsf": build_nsf, "maf": build_maf, "rqs": build_maf_rqs}
+    flow_type_map = {"nsf": build_nsf, "maf": build_maf}
 
-    def __init__(self, model, conditioning_dim, lr=0.0001, scheduler_type='cosine', test_dataloader=None, flow_type='nsf', num_extra_blocks=None, checkpoint_path=None,  **kwargs):
+    def __init__(self, model, conditioning_dim, inference_dim, lr=0.0001, scheduler_type='cosine', test_dataloader=None, flow_type='nsf', num_extra_blocks=None, checkpoint_path=None,  **kwargs):
         super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
-        embedding_net = model if model is not None else nn.Identity()
+        # Keep embedding net separate from the flow
+        self.embedding_net = model if model is not None else nn.Identity()
         self.conditioning_dim = conditioning_dim
+        self.inference_dim = inference_dim
         self.build_flow = self.flow_type_map[flow_type]  # Function to build the normalizing flow model
         self.flow_kwargs = {"conditional_dim": self.conditioning_dim}
         self.test_dataloader = test_dataloader
         self.loss_name = "log_prob"
-        self.set_up_model(embedding_net)
+        self.set_up_model()
         self.test_loss_values = []
         if checkpoint_path:
             self.load_from_checkpoint(checkpoint_path)
 
-    def set_up_model(self, embedding_net):
-        """Builds the flow model dynamically when training starts."""
-        y_dataset, x_dataset = self.test_dataloader.dataset.tensors
-        self.model = self.build_flow(x_dataset, y_dataset, num_transforms=4, z_score_x=None, z_score_y=None, 
-                                     embedding_net=embedding_net, hidden_features=128, use_batch_norm=True, 
-                                     **self.flow_kwargs)
+    def set_up_model(self):
+        """Builds the flow model with Identity embedding; wrap with an embedding+flow module."""
+        # Dummy datasets to infer x/y dims (y here is already the embedded size)
+        y_dataset = torch.randn(10, self.conditioning_dim)
+        x_dataset = torch.randn(10, self.inference_dim)
+        # Build flow expecting pre-embedded y (embedding_net=Identity)
+        flow = self.build_flow(
+            x_dataset,
+            y_dataset,
+            num_transforms=4,
+            z_score_x=None,
+            z_score_y=None,
+            embedding_net=nn.Identity(),
+            hidden_features=128,
+            use_batch_norm=True,
+            **self.flow_kwargs,
+        )
+        # Expose raw flow separately and create a simple wrapper as self.model
+        self.flow = flow
+        self.model = _CondEmbeddingFlow(self.embedding_net, self.flow)
 
     def load_from_checkpoint(self, checkpoint_path):
         """Loads model weights from a given checkpoint."""
@@ -243,12 +279,24 @@ class NDELightningModule(BaseLightningModule):
         return -preds.mean()  # Negative log-likelihood loss
 
     def forward(self, x, cond=None):
-        return self.model.log_prob(cond, x)
+        # Delegate to wrapped model which embeds cond then calls flow.log_prob
+        return self.model.log_prob(x, cond)
 
-    # def predict_step(self, batch, batch_idx):
-    #     batch = self.transfer_batch_to_device(batch, self.device, 0)
-    #     x, cond = batch
-    #     return self.forward(x, cond)
+    # Override steps to pass (theta|data) ordering correctly
+    def training_step(self, batch, batch_idx):
+        data_dict, theta = batch  # dataset yields (data, cosmo)
+        preds = self.forward(theta, cond=data_dict)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"train_{self.loss_name}", loss, prog_bar=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        data_dict, theta = batch
+        preds = self.forward(theta, cond=data_dict)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"val_{self.loss_name}", loss, prog_bar=True)
+        self.log_custom_evals(preds, theta)
+        return loss
 
     def on_validation_epoch_end(self):
         """Logs custom evaluation metrics at the end of each validation epoch."""
@@ -266,7 +314,8 @@ class NDELightningModule(BaseLightningModule):
         predictions = []
         for batch in self.test_dataloader:
             batch = self.transfer_batch_to_device(batch, self.device, 0)
-            predictions.append(self.forward(batch[0], batch[1]))
+            data_dict, theta = batch
+            predictions.append(self.forward(theta, data_dict))
         all_log_probs = torch.cat(predictions, dim=0)  # Collect predictions
         avg_log_prob = all_log_probs.mean().item()
         return avg_log_prob

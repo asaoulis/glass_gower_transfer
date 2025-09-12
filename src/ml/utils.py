@@ -210,14 +210,15 @@ def prepare_data_and_model(config, data_parameters=None):
         except Exception:
             est_warmup = 250
         base_sched_kwargs['warmup'] = est_warmup
-
+    batch = next(iter(train_loader))
     model = NDELightningModule(
         embedding_model,
         conditioning_dim=config.latent_dim,
+        inference_dim = len(config.cosmo_param_names),
         lr=config.lr,
         scheduler_type=config.scheduler_type,
         element_names=["Omega", "sigma8"],
-        test_dataloader=test_loader,
+        test_dataloader=None,
         optimizer_kwargs=config.optimizer_kwargs,
         num_extra_blocks=config.extra_blocks,
         checkpoint_path=config.checkpoint_path,

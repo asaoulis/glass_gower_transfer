@@ -37,7 +37,7 @@ def train_model(config):
         train_loader, val_loader, model, _ = prepare_data_and_model(config)
         match_string_logger = config.match_string if config.match_string else ""
         logger = wandb.init(
-            project="camels-nbody-illustris-paper-SB",
+            project="kids-transfer-tests",
             group=config.experiment_name,
             name=f"{'pretrain' if pretrain else 'finetune'}_{config.dataset_name}_{config.dataset_suite}_{config.scheduler_type}_{config.lr}_{match_string_logger}_ds{config.dataset_size}_{i}",
             reinit=True
