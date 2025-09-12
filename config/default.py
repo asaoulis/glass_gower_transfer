@@ -15,6 +15,14 @@ def get_default_config():
     config.optimizer_kwargs = {'weight_decay': 0.01, 'betas': (0.9, 0.999)}
     config.scheduler_kwargs = {'warmup': 250, 'gamma': 0.99}
     config.model_type = "kids_o3_dual"
+    config.model_kwargs = {
+        "hidden": 12,
+        "channels_per_map": 6,
+        "d_model": 512,
+        "n_heads": 4,
+        "n_layers": 4,
+        "n_queries": 8,
+    }
     config.freeze_cnn = False
 
     # Data loading (new dataset interface)
@@ -46,6 +54,7 @@ def get_default_config():
         'data': {'type': 'standard', 'keys': None},
         'cosmo': {'type': 'minmax'},
     }
+
 
     # Misc/legacy fields kept for compatibility with older code paths
     config.dataset_name = "illustris"

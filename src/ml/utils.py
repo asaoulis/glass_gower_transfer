@@ -200,7 +200,7 @@ def prepare_data_and_model(config, data_parameters=None):
         scalers, train_loader, val_loader, test_loader = data_parameters
 
     # Select the correct backbone dynamically (merged registry)
-    embedding_model = MODEL_BUILDERS[config.model_type](config.latent_dim).to(device='cuda')
+    embedding_model = MODEL_BUILDERS[config.model_type](config.latent_dim, config.model_kwargs).to(device='cuda')
 
     # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})
