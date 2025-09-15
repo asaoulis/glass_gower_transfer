@@ -130,14 +130,14 @@ def load_best_checkpoint_model(config, run_folder, data_parameters=None):
         return None, None, None
     
     config.checkpoint_path = best_checkpoint
-    _, _, model, _ = prepare_data_and_model(config, data_parameters)
+    _, model, _ = prepare_data_and_model(config, data_parameters)
     model.to("cuda")
     model.eval()
     return model, best_checkpoint, best_val_loss
 
 
 def evaluate_best_checkpoint(config, data_parameters=None, reference_samples=None):
-    experiment_path = f"/share/gpu0/asaoulis/cmd/checkpoints/{config.experiment_name}"
+    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}"
     if not os.path.exists(experiment_path):
         return
     run_folders = [os.path.join(experiment_path, d) for d in os.listdir(experiment_path) if os.path.isdir(os.path.join(experiment_path, d))]
@@ -242,12 +242,13 @@ def parse_results(experiment_name, base_path="/share/gpu0/asaoulis/cmd/checkpoin
     return final_results
 
 def load_best_model_and_build_posterior(config, ds_string_match="", data_parameters = None):
-    experiment_path = f"/share/gpu0/asaoulis/cmd/checkpoints/{config.experiment_name}"
+    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}"
     run_folders = [os.path.join(experiment_path, d) for d in os.listdir(experiment_path) if os.path.isdir(os.path.join(experiment_path, d))]
 
     best_model_path = None
     best_val_loss = float("inf")
     best_model = None
+    scalers = None
 
     for run_folder in run_folders:
         if ds_string_match not in run_folder:
@@ -257,9 +258,9 @@ def load_best_model_and_build_posterior(config, ds_string_match="", data_paramet
             best_model = model
             best_model_path = best_model_path
             best_val_loss = val_loss
-            scalers = data_parameters[0]
+            # scalers = data_parameters[0]
     if best_model is not None:
-        return best_model, best_model.test_dataloader, scalers
+        return best_model, scalers
     else:
         print("No valid checkpoints found.")
         return None

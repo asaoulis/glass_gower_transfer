@@ -8,17 +8,18 @@ def get_default_config():
     config.batch_size = 32
     config.val_batch_size = None  # defaults to batch_size if None
     config.test_batch_size = None # defaults to val_batch_size if None
-    config.latent_dim = 512
+    config.latent_dim = 256
     config.extra_blocks = 0
     config.checkpoint_path = None
     config.scheduler_type = 'exp'
     config.optimizer_kwargs = {'weight_decay': 0.01, 'betas': (0.9, 0.999)}
     config.scheduler_kwargs = {'warmup': 250, 'gamma': 0.99}
+    config.flow_type = 'nsf'  # Options: 'nsf', 'maf', 'zuko_nsf'
     config.model_type = "kids_o3_dual"
     config.model_kwargs = {
         "hidden": 12,
         "channels_per_map": 6,
-        "d_model": 512,
+        "d_model": 256,
         "n_heads": 4,
         "n_layers": 4,
         "n_queries": 8,
@@ -31,7 +32,7 @@ def get_default_config():
     # Alternatively, specify simple quantity names and we will build dataset_nested_keys
     # Valid options (defaults): E_north, E_south, B_north, B_south, bandpowers, bandpower_ls, cls
     config.dataset_quantities = ["E_north", "E_south", "B_north", "B_south",]
-
+    config.base_path = "/share/gpu5/asaoulis/transfer_models"
     config.cosmo_param_names = [
         "omega_m", "s8"
     ]

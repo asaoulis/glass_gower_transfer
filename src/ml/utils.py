@@ -10,7 +10,8 @@ from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 # Centralized dataloader builder
 from .data.data import build_dataloaders, build_nested_keys_from_quantities
 from .data.data_loading import unpack_data, load_cosmo_params
-from .data.scaling import DataScaler
+# Use new abstracted scalers
+from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler
 
 # Merge model registries (compressors + kids-specific architectures)
 MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
@@ -18,22 +19,20 @@ MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
 
 class DataDictScalerTransform:
     """
-    Applies per-key standard scaling to entries in the data dict.
-    Uses means/stds fitted on the training split.
+    Applies per-key scaling to entries in the data dict using provided scaler objects
+    that implement transform() / inverse_transform().
     """
-    def __init__(self, key_scalers: Dict[str, DataScaler]):
+    def __init__(self, key_scalers: Dict[str, BaseScaler]):
         self.key_scalers = key_scalers or {}
 
     def __call__(self, data: Dict[str, Union[np.ndarray, torch.Tensor]]):
         out = {}
         for k, v in data.items():
             scaler = self.key_scalers.get(k)
-            if scaler is None or scaler.std is None:
+            if scaler is None:
                 out[k] = v
-                continue
-            mean = float(scaler.mean)
-            std = float(scaler.std) if scaler.std != 0 else 1.0
-            out[k] = (v - mean) / std
+            else:
+                out[k] = scaler.transform(v)
         return out
 
 
@@ -45,7 +44,7 @@ class TransformingDataset(torch.utils.data.Dataset):
         self,
         base_ds: torch.utils.data.Dataset,
         data_transform: Optional[DataDictScalerTransform] = None,
-        cosmo_scaler: Optional[DataScaler] = None,
+        cosmo_scaler: Optional[BaseScaler] = None,
     ):
         self.base_ds = base_ds
         self.data_transform = data_transform
@@ -58,11 +57,8 @@ class TransformingDataset(torch.utils.data.Dataset):
         data, cosmo = self.base_ds[idx]
         if self.data_transform is not None:
             data = self.data_transform(data)
-        if self.cosmo_scaler is not None and self.cosmo_scaler.min is not None and self.cosmo_scaler.max is not None:
-            min_v = torch.as_tensor(self.cosmo_scaler.min, dtype=cosmo.dtype, device=cosmo.device)
-            max_v = torch.as_tensor(self.cosmo_scaler.max, dtype=cosmo.dtype, device=cosmo.device)
-            denom = torch.clamp(max_v - min_v, min=1e-12)
-            cosmo = (cosmo - min_v) / denom
+        if self.cosmo_scaler is not None:
+            cosmo = self.cosmo_scaler.transform(cosmo)
         return data, cosmo
 
 
@@ -70,8 +66,8 @@ def _fit_data_key_scalers_from_paths(
     train_paths: Sequence[str],
     nested_keys: Dict[str, Tuple[str, ...]],
     keys_to_scale: Optional[Sequence[str]] = None,
-) -> Dict[str, DataScaler]:
-    key_scalers: Dict[str, DataScaler] = {}
+) -> Dict[str, BaseScaler]:
+    key_scalers: Dict[str, BaseScaler] = {}
     if keys_to_scale is None:
         keys_to_scale = list(nested_keys.keys())
 
@@ -87,15 +83,18 @@ def _fit_data_key_scalers_from_paths(
         if not vals:
             continue
         stacked = np.concatenate(vals, axis=0)
-        scaler = DataScaler()
-        scaler.fit_standard(stacked)
-        if scaler.std == 0:
-            scaler.std = 1.0
+
+        # Choose scaler: ensure 'bandpowers' uses LogNormalScaler
+        if key == "bandpowers":
+            scaler: BaseScaler = LogNormalScaler()
+        else:
+            scaler = StandardScaler()
+        scaler.fit(stacked)
         key_scalers[key] = scaler
     return key_scalers
 
 
-def _fit_cosmo_minmax_scaler_from_paths(train_paths: Sequence[str], cosmo_params: Sequence[str]) -> Optional[DataScaler]:
+def _fit_cosmo_minmax_scaler_from_paths(train_paths: Sequence[str], cosmo_params: Sequence[str]) -> Optional[BaseScaler]:
     if not cosmo_params:
         return None
     rows: List[np.ndarray] = []
@@ -105,11 +104,8 @@ def _fit_cosmo_minmax_scaler_from_paths(train_paths: Sequence[str], cosmo_params
     if not rows:
         return None
     X = np.stack(rows, axis=0)
-    scaler = DataScaler()
-    scaler.fit_minmax(X)
-    span = scaler.max - scaler.min
-    span[span == 0] = 1.0
-    scaler.max = scaler.min + span
+    scaler = MinMaxScaler()
+    scaler.fit(X)
     return scaler
 
 
@@ -172,7 +168,6 @@ def prepare_data_parameters(config):
     data_keys_to_scale = None
     if 'data' in scaler_options and isinstance(scaler_options['data'], dict):
         data_keys_to_scale = scaler_options['data'].get('keys')
-
     key_scalers = _fit_data_key_scalers_from_paths(train_paths, nested_keys, keys_to_scale=data_keys_to_scale)
 
     cosmo_scaler = None
@@ -200,7 +195,7 @@ def prepare_data_and_model(config, data_parameters=None):
         scalers, train_loader, val_loader, test_loader = data_parameters
 
     # Select the correct backbone dynamically (merged registry)
-    embedding_model = MODEL_BUILDERS[config.model_type](config.latent_dim, config.model_kwargs).to(device='cuda')
+    embedding_model = MODEL_BUILDERS[config.model_type](config.latent_dim, **config.model_kwargs.to_dict()).to(device='cuda')
 
     # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})
@@ -210,12 +205,13 @@ def prepare_data_and_model(config, data_parameters=None):
         except Exception:
             est_warmup = 250
         base_sched_kwargs['warmup'] = est_warmup
-    batch = next(iter(train_loader))
+
     model = NDELightningModule(
         embedding_model,
         conditioning_dim=config.latent_dim,
         inference_dim = len(config.cosmo_param_names),
         lr=config.lr,
+        flow_type=config.flow_type,
         scheduler_type=config.scheduler_type,
         element_names=["Omega", "sigma8"],
         test_dataloader=None,
@@ -226,4 +222,4 @@ def prepare_data_and_model(config, data_parameters=None):
         scheduler_kwargs=base_sched_kwargs,
     )
 
-    return train_loader, val_loader, model, scalers
+    return (train_loader, val_loader, test_loader), model, scalers

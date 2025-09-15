@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from torchvision import models
+# from torchvision import models
 
 
 class ConvBlock(nn.Module):
@@ -162,7 +162,7 @@ class FlexibleO3(nn.Module):
     - Infers the linear head input feature size via a dummy forward using max_hw.
     - Optionally returns spatial feature maps instead of flatten+FFN.
     """
-    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.35, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False):
+    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.35, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False, ch_mults = [8, 8, 16, 16, 32, 32]):
         super().__init__()
         self.predict_sigmas = predict_sigmas
         self.num_outputs = num_outputs
@@ -171,7 +171,6 @@ class FlexibleO3(nn.Module):
             num_outputs = 2 * num_outputs
         self.hidden = hidden
         # Build stages programmatically
-        ch_mults = [2, 4, 8, 16, 32, 64]
         self._ch_mults = ch_mults
         stages = []
         in_ch = channels
@@ -202,16 +201,16 @@ class FlexibleO3(nn.Module):
 
     def _make_stage(self, in_ch, out_ch, first=False):
         layers = [
-            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, padding_mode='zero', bias=True),
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1, padding_mode='zeros', bias=True),
             nn.LeakyReLU(0.2),
         ]
         if not first:
             layers.insert(1, nn.BatchNorm2d(out_ch))
         layers += [
-            nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1, padding_mode='zero', bias=True),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1, padding_mode='zeros', bias=True),
             nn.BatchNorm2d(out_ch),
             nn.LeakyReLU(0.2),
-            nn.Conv2d(out_ch, out_ch, kernel_size=2, stride=2, padding=0, padding_mode='zero', bias=True),
+            nn.Conv2d(out_ch, out_ch, kernel_size=2, stride=2, padding=0, padding_mode='zeros', bias=True),
             nn.BatchNorm2d(out_ch),
             nn.LeakyReLU(0.2),
         ]

@@ -9,6 +9,7 @@ from sklearn.metrics import r2_score
 from tqdm import tqdm
 from types import MethodType
 from functools import partial
+from sbi.inference.trainers.npe import SNPE_C
 
 class BaseLightningModule(pl.LightningModule):
     def __init__(self, model, loss_fn, lr=0.0001, scheduler_type='cosine', element_names=None, optimizer_kwargs = {}, scheduler_kwargs= {}, freeze_CNN=False, **kwargs):
@@ -152,7 +153,7 @@ class GaussianLightningModule(BaseLightningModule):
         return loss
 
 
-from sbi.neural_nets.net_builders import build_nsf, build_maf
+from sbi.neural_nets.net_builders import build_nsf, build_maf, build_zuko_nsf
 from torch.optim import Adam, AdamW
 import torch
 from sbi import utils as utils
@@ -180,7 +181,7 @@ class _CondEmbeddingFlow(nn.Module):
         return self.flow.sample_batched(shape, y_emb, **kwargs)
 
 class NDELightningModule(BaseLightningModule):
-    flow_type_map = {"nsf": build_nsf, "maf": build_maf}
+    flow_type_map = {"nsf": build_nsf, "maf": build_maf, 'zuko_nsf': build_zuko_nsf}
 
     def __init__(self, model, conditioning_dim, inference_dim, lr=0.0001, scheduler_type='cosine', test_dataloader=None, flow_type='nsf', num_extra_blocks=None, checkpoint_path=None,  **kwargs):
         super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
@@ -189,7 +190,10 @@ class NDELightningModule(BaseLightningModule):
         self.conditioning_dim = conditioning_dim
         self.inference_dim = inference_dim
         self.build_flow = self.flow_type_map[flow_type]  # Function to build the normalizing flow model
-        self.flow_kwargs = {"conditional_dim": self.conditioning_dim}
+        if 'zuko' in flow_type:
+            self.flow_kwargs = {}
+        else:
+            self.flow_kwargs = {"conditional_dim": self.conditioning_dim, "use_batch_norm":True}
         self.test_dataloader = test_dataloader
         self.loss_name = "log_prob"
         self.set_up_model()
@@ -206,12 +210,11 @@ class NDELightningModule(BaseLightningModule):
         flow = self.build_flow(
             x_dataset,
             y_dataset,
-            num_transforms=4,
+            num_transforms=5,
             z_score_x=None,
             z_score_y=None,
             embedding_net=nn.Identity(),
-            hidden_features=128,
-            use_batch_norm=True,
+            hidden_features=self.conditioning_dim,
             **self.flow_kwargs,
         )
         # Expose raw flow separately and create a simple wrapper as self.model
@@ -224,11 +227,11 @@ class NDELightningModule(BaseLightningModule):
         self.load_state_dict(checkpoint['state_dict'])  # Ensure the key matches the saved checkpoint format
     
     def build_posterior_object(self):
-        y_dataset, x_dataset = self.test_dataloader.dataset.tensors
-        dim = x_dataset.shape[1]
-        prior = utils.BoxUniform(low=0 * torch.ones(dim), high=1. * torch.ones(dim), device="cuda")
-        inference_method = CustomSNPE_C(prior=prior, device='cuda')
-        inference_method.append_simulations(x_dataset[:10], y_dataset[:10])
+        y_dataset = torch.randn(10, self.conditioning_dim)
+        x_dataset = torch.randn(10, self.inference_dim)
+        prior = utils.BoxUniform(low=0 * torch.ones(self.inference_dim), high=1. * torch.ones(self.inference_dim), device="cuda")
+        inference_method = SNPE_C(prior=prior, device='cuda')
+        inference_method.append_simulations(x_dataset, y_dataset)
         posterior_sbi = inference_method.build_posterior(self.model.to('cuda'))
         return posterior_sbi
 

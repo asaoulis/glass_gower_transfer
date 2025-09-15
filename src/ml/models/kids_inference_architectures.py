@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Sequence
 
 # Maximum input spatial size (H, W) expected by the CNN to size its head.
 # The FlexibleO3 backbone will run a dummy pass with this size to infer head dims.
@@ -20,7 +20,7 @@ class KidsO3NorthSouthEmbedding(nn.Module):
         to produce a final latent vector of size `latent_dim`.
     """
 
-    def __init__(self, latent_dim: int, cnn_out_dim: int = 256, hidden: int = 12, channels_per_map: int = 6):
+    def __init__(self, latent_dim: int, cnn_out_dim: int = 256, hidden: int = 12, channels_per_map: int = 6, **kwargs):
         super().__init__()
         self.latent_dim = latent_dim
         self.cnn_out_dim = cnn_out_dim
@@ -102,6 +102,7 @@ class KidsCombinedCNNTransformer(nn.Module):
         n_queries: int = 8,
         mlp_ratio: float = 4.0,
         dropout: float = 0.1,
+        **kwargs
     ):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
@@ -146,16 +147,14 @@ class KidsCombinedCNNTransformer(nn.Module):
             )
         self.encoder = nn.ModuleList([make_encoder_layer() for _ in range(n_layers)])
 
-        # Per-layer learnable queries and cross-attn modules
-        self.query_tokens = nn.ParameterList([
-            nn.Parameter(torch.randn(n_queries, d_model) * 0.02) for _ in range(n_layers)
-        ])
-        self.cross_attn = nn.ModuleList([
-            nn.MultiheadAttention(d_model, n_heads, dropout=dropout, batch_first=True) for _ in range(n_layers)
-        ])
-        self.query_ln = nn.LayerNorm(d_model)
+        self.cls_tokens = nn.Parameter(torch.randn(n_queries, d_model) * 0.02)
 
-        # Final head from aggregated query to latent_dim
+        # Gated pooling over the K CLS tokens (better than plain mean)
+        self.cls_pool = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, 1)
+        )
+
         self.head = nn.Sequential(
             nn.Linear(d_model, max(latent_dim, d_model // 2)),
             nn.GELU(),
@@ -188,7 +187,6 @@ class KidsCombinedCNNTransformer(nn.Module):
         Returns [B, W, d_model].
         """
         B, C, H, W = feat.shape
-        print(feat.shape)
         x = feat.mean(dim=2)  # [B, C, W]
         x = x.transpose(1, 2)  # [B, W, C]
         x = self.proj(x)       # [B, W, d_model]
@@ -225,23 +223,102 @@ class KidsCombinedCNNTransformer(nn.Module):
         south_tokens = south_tokens + cls_s
         north_tokens = north_tokens + cls_n
 
-        # Concatenate sequences only after PE + class embedding
         tokens = torch.cat([south_tokens, north_tokens], dim=1)  # [B, W_s+W_n, d]
 
-        # Self-attention over data tokens with per-layer query extraction
-        collected_queries = []
-        x = tokens
+        # Prepend K CLS tokens
+        B = tokens.size(0)
+        cls = self.cls_tokens.unsqueeze(0).expand(B, -1, -1)  # [B, K, d]
+        x = torch.cat([cls, tokens], dim=1)  # [B, K + T, d]
+
+        # Pass through encoder stack
         for l in range(self.n_layers):
             x = self.encoder[l](x)
-            q = self.query_tokens[l].unsqueeze(0).expand(B, -1, -1)  # [B, Q, D]
-            q_out, _ = self.cross_attn[l](q, x, x)  # queries attend over data tokens
-            q_out = self.query_ln(q_out)
-            collected_queries.append(q_out)
 
-        # Aggregate queries across layers and tokens
-        Q_all = torch.stack(collected_queries, dim=1)  # [B, Lc, Q, D]
-        q_mean = Q_all.mean(dim=(1, 2))  # [B, D]
-        z = self.head(q_mean)  # [B, latent_dim]
+        # Read out the first K positions (CLS tokens)
+        cls_out = x[:, :self.n_queries, :]  # [B, K, d]
+
+        # Gated attention pooling over K CLS tokens
+        gate = torch.softmax(self.cls_pool(cls_out).squeeze(-1), dim=1)  # [B, K]
+        pooled = (gate.unsqueeze(-1) * cls_out).sum(dim=1)  # [B, d]
+
+        z = self.head(pooled)  # [B, latent_dim]
+        return z
+
+
+# New simple models for bandpowers inputs
+class KidsBandpowersMLP(nn.Module):
+    """
+    Simple MLP that flattens bandpowers of shape [B, 21, 20] and maps to latent_dim.
+    Hidden layer width is latent_dim * hidden_multiple (default 2), with an
+    adaptive number of hidden layers controlled by num_layers.
+    """
+    def __init__(
+        self,
+        latent_dim: int,
+        input_shape: Tuple[int, int] = (21, 20),
+        hidden_multiple: int = 2,
+        num_layers: int = 5,
+        dropout: float = 0.1,
+        **kwargs,
+    ):
+        super().__init__()
+        in_features = int(input_shape[0] * input_shape[1])
+        width = int(latent_dim * hidden_multiple)
+        layers = [nn.Linear(in_features, width), nn.GELU(), nn.Dropout(dropout)]
+        for _ in range(max(0, num_layers - 1)):
+            layers += [nn.Linear(width, width), nn.GELU(), nn.Dropout(dropout)]
+        layers += [nn.Linear(width, latent_dim)]
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        x = data["bandpowers"]  # [B, 21, 20]
+        x = x.view(x.shape[0], -1)
+        return self.net(x)
+
+
+class KidsBandpowersCNN1D(nn.Module):
+    """
+    1D CNN over length-20 series with 21 channels (bandpowers stacked on channel dim).
+    The number of Conv1d blocks is controlled by the length of `channels`.
+    Produces a latent vector of size latent_dim.
+    """
+    def __init__(
+        self,
+        latent_dim: int,
+        in_channels: int = 21,
+        seq_len: int = 20,
+        channels: Sequence[int] = (64, 128),
+        kernel_size: int = 3,
+        dropout: float = 0.1,
+        **kwargs,
+    ):
+        super().__init__()
+        padding = kernel_size // 2
+        conv_layers: list[nn.Module] = []
+        curr_in = in_channels
+        for c in channels:
+            conv_layers += [
+                nn.Conv1d(curr_in, c, kernel_size=kernel_size, padding=padding, bias=True),
+                nn.BatchNorm1d(c),
+                nn.GELU(),
+                nn.Dropout(dropout),
+            ]
+            curr_in = c
+        self.conv = nn.Sequential(*conv_layers)
+        # Keep length dimension; project flattened [B, C_out * L] -> latent_dim
+        in_features = curr_in * seq_len
+        self.head = nn.Sequential(
+            nn.Flatten(),
+            nn.Dropout(dropout),
+            nn.Linear(in_features, latent_dim),
+        )
+
+    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        x = data["bandpowers"]  # [B, 21, 20]
+        if x.dim() != 3:
+            raise ValueError(f"Expected bandpowers tensor with 3 dims [B, C, L], got shape {tuple(x.shape)}")
+        x = self.conv(x)
+        z = self.head(x)
         return z
 
 
@@ -249,4 +326,6 @@ class KidsCombinedCNNTransformer(nn.Module):
 KIDS_MODEL_BUILDERS = {
     "kids_o3_dual": lambda num_outputs, **kwargs: KidsO3NorthSouthEmbedding(latent_dim=num_outputs, **kwargs),
     "kids_combined_cnn_transformer": lambda num_outputs, **kwargs: KidsCombinedCNNTransformer(latent_dim=num_outputs, **kwargs),
+    "kids_bandpowers_mlp": lambda num_outputs, **kwargs: KidsBandpowersMLP(latent_dim=num_outputs, **kwargs),
+    "kids_bandpowers_cnn1d": lambda num_outputs, **kwargs: KidsBandpowersCNN1D(latent_dim=num_outputs, **kwargs),
 }

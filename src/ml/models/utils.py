@@ -5,13 +5,13 @@ import os
 from ..eval.utils import find_best_checkpoint, get_best_checkpoint
 from ..utils import prepare_data_and_model
 
-def fit_model(model, epochs, logger, train_loader, val_loader, experiment_name):
+def fit_model(model, epochs, logger, train_loader, val_loader, experiment_name, base_path):
     monitor_string = f"val_{model.loss_name}"
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=f"{monitor_string}",
-        dirpath=f"/share/gpu0/asaoulis/cmd/checkpoints/{experiment_name}/run_{wandb.run.name}",
+        dirpath=f"{base_path}/checkpoints/{experiment_name}/run_{wandb.run.name}",
         filename=f"checkpoint-{{epoch:02d}}-{{{monitor_string}:.4f}}",
-        save_top_k=5,
+        save_top_k=3,
         mode="min",
     )
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval='step')
@@ -34,14 +34,15 @@ def train_model(config):
         best_checkpoints, _ = get_best_checkpoint(config.checkpoint_path, config.match_string)
     for i in range(config.repeats):
         config.checkpoint_path = best_checkpoints[i] if not pretrain else None
-        train_loader, val_loader, model, _ = prepare_data_and_model(config)
+        loaders, model, _ = prepare_data_and_model(config)
+        train_loader, val_loader, _ = loaders
         match_string_logger = config.match_string if config.match_string else ""
         logger = wandb.init(
             project="kids-transfer-tests",
             group=config.experiment_name,
-            name=f"{'pretrain' if pretrain else 'finetune'}_{config.dataset_name}_{config.dataset_suite}_{config.scheduler_type}_{config.lr}_{match_string_logger}_ds{config.dataset_size}_{i}",
+            name=f"{'pretrain' if pretrain else 'finetune'}_{config.model_type}_{config.scheduler_type}_{config.lr}_{match_string_logger}_ds{config.dataset_size}_{i}",
             reinit=True
         )
 
-        fit_model(model, config.epochs, logger, train_loader, val_loader, config.experiment_name)
+        fit_model(model, config.epochs, logger, train_loader, val_loader, config.experiment_name, config.base_path)
 

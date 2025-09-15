@@ -177,7 +177,7 @@ if __name__ == "__main__":
     # ------------------ distribute sim_samples using Scatterv (robust) ------------------
     if rank == 0:
         offset = 193  # <-- starting point
-        FINAL_INDEX = 791
+        FINAL_INDEX = 791 + 1
         sim_samples = np.arange(offset, FINAL_INDEX).reshape(-1, 1).astype(np.float64)
         cols = sim_samples.shape[1]
         N = sim_samples.shape[0]
@@ -374,6 +374,8 @@ if __name__ == "__main__":
                     pixelised_tomobin_patches = get_patch_values(cat_data, patches, 512, ang)
                     for patch_idx, patch_name in enumerate(named_patches.keys()):
                         pixelised_results[name][patch_name] = pixelised_tomobin_patches[patch_idx]
+
+                cls_results['full'] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
   
                 # patch_defs = {
                 #     "north": (np.abs(catalogue['DEC']) < 15),
@@ -386,9 +388,7 @@ if __name__ == "__main__":
                 #     cls_results[patch_name] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
 
 
-                cls_results['full'] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
-
-                total_idx = outer_noise_idx * inner_num_shape_noise_realisations + cat_idx
+                total_idx = outer_noise_idx * outer_num_shape_noise_realisations + cat_idx
                 save_results_h5( OUTPUT_DIR / f"output_{sim_num}.h5", total_idx, cls_results, pixelised_results, param_dict)
 
                 # free per-catalogue heavy products
@@ -397,9 +397,7 @@ if __name__ == "__main__":
 
                 cat_idx += 1
 
-            save_results_h5( OUTPUT_DIR / f"output_{sim_num}.h5", cat_idx, cls_results, pixelised_results, param_dict)
-
-            del catalogue, cat_queue, simulator
+            del cat_queue, simulator
             gc.collect()
 
         print(f'Saved results for sim {sim_num}')

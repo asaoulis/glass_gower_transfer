@@ -22,3 +22,4 @@ build/
 wandb/
 *.json
 lightning_logs/
+sbi-logs/
