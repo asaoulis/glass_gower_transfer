@@ -66,7 +66,7 @@ from src.cosmology import nla, glass_utils, levin, parameters, priors
 from src.cosmology.map_shears import map_shears
 from src.cosmology.simulators import GowerStreetSimulator, GlassLogNormalSimulator
 
-from src.cosmology.gower_street import GowerStCosmologies, GowerStDatasetBuilder
+from src.cosmology.gower_street import GowerStCosmologies, GowerStDatasetBuilder, GowerStPrior
 
 from src.cosmology.manip_cls import denoise_shear_cls, unmix_shear_cl, cat2mask, maskcls, compute_cl_bandpowers
 from src.cosmology.pixelise_maps import get_patch_values
@@ -138,6 +138,7 @@ named_patches = {
 }
 patches = list(named_patches.values())
 # rotation_values = [rot for rot in rotation_angles for _ in range(num_shape_noise_realisations)]
+csv_path = '/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv'
 
 OUTPUT_DIR = Path('/share/gpu5/asaoulis/transfer_datasets/glass_full_only_mocks')
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -171,6 +172,9 @@ if __name__ == "__main__":
                 'mnu': (0.06, 0.06),
                 'a_ia': (4.48, 7.0),
                 'b_ia': (0.28, 0.6),}
+
+    # Build Gower Street prior for cosmological parameters (before MPI distribution)
+    gower_prior = GowerStPrior.from_csv(csv_path)
     
     # ------------------ distribute sim_samples using Scatterv (robust) ------------------
     if rank == 0:
@@ -233,9 +237,6 @@ if __name__ == "__main__":
     # loop over received sim rows
     for num_sim_this_batch in range(len(recvbuf)):
         sim_num = sims[num_sim_this_batch]
-
-        gower_street_loader = GowerStDatasetBuilder(csv_path, gower_data_dir)
-
         # ... rest of your per-simulation code ...
 
         omega_k = 0.0
@@ -248,10 +249,22 @@ if __name__ == "__main__":
         f_red = np.array([0.15, 0.2, 0.17, 0.24, 0.19, 0.03])
         log10_M_eff = np.random.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
 
-        logT_AGN_realised = 7.8
+        logT_AGN_realised = np.random.uniform(*prior['logT_AGN'])
         a_ia_realised     = np.random.uniform(*prior['a_ia'])
         b_ia_realised     = np.random.uniform(*prior['b_ia'])
         nuisance_params = {"a_ia": a_ia_realised, "b_ia": b_ia_realised}
+
+        # Build cosmological parameter dict by sampling from GowerStPrior and combining with nuisances
+        sampled_cosmo_params = gower_prior.draw_param_dict_sample()
+        param_dict = {
+            **sampled_cosmo_params,
+            "logT_AGN": float(logT_AGN_realised),
+            "a_ia": float(a_ia_realised),
+            "b_ia": float(b_ia_realised),
+        }
+
+        # Build cosmology and CAMB parameters
+        cosmo, pars = parameters.build_cosmology(param_dict)
 
         # intrinsic alignments params
         ia_params = dict(
@@ -262,7 +275,6 @@ if __name__ == "__main__":
         )
         vis = mask = hp.read_map(f'{data_dir}/masks/KiDS_Legacy_N_healpix_1024_frac_withAstrom.fits') + hp.read_map(f'{data_dir}/masks/KiDS_Legacy_S_healpix_1024_frac_withAstrom.fits')
 
-        cosmo, pars, param_dict  = gower_street_loader.get_simulation_cosmology(sim_num, nuisance_params)
         results = camb.get_results(pars)
         results.calc_power_spectra(pars)
         k, z_grid, pk = results.get_nonlinear_matter_power_spectrum()
