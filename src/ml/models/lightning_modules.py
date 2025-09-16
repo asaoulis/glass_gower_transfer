@@ -9,7 +9,6 @@ from sklearn.metrics import r2_score
 from tqdm import tqdm
 from types import MethodType
 from functools import partial
-from sbi.inference.trainers.npe import SNPE_C
 
 class BaseLightningModule(pl.LightningModule):
     def __init__(self, model, loss_fn, lr=0.0001, scheduler_type='cosine', element_names=None, optimizer_kwargs = {}, scheduler_kwargs= {}, freeze_CNN=False, **kwargs):
@@ -180,6 +179,68 @@ class _CondEmbeddingFlow(nn.Module):
         y_emb = self.embedding_net(y)
         return self.flow.sample_batched(shape, y_emb, **kwargs)
 
+from sbi.neural_nets.estimators import ConditionalDensityEstimator
+from sbi.samplers.rejection import rejection
+from sbi.utils.sbiutils import within_support
+
+from collections.abc import Mapping
+
+class ConditionDict(dict):
+    """
+    Dict-like that additionally exposes a .shape so that .shape[0]
+    returns the batch dimension of the first value.
+    """
+    def __init__(self, data: Mapping):
+        if not isinstance(data, Mapping):
+            raise TypeError("ConditionDict expects a mapping.")
+        super().__init__(data)
+
+    @property
+    def shape(self):
+        try:
+            first_val = next(iter(self.values()))
+        except StopIteration:
+            raise ValueError("ConditionDict is empty; cannot infer .shape[0].")
+        if not hasattr(first_val, "shape"):
+            raise AttributeError("First value has no .shape attribute.")
+        # Return a 1-tuple so code using .shape[0] works.
+        return first_val.shape
+
+    def copy(self):
+        # Ensure copies keep the subclass (some libs call .copy())
+        return ConditionDict(self)
+
+class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
+    def __init__(self, model, prior, input_shape=(1,), condition_shape=(1,)):
+        super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
+        self.prior = prior
+        self.max_sampling_batch_size = 10_000
+    def _check_condition_shape(self, condition):
+        pass
+
+    def _check_input_shape(self, input):
+        pass
+
+    def log_prob(self, x, y):
+        return self.net.log_prob(x, y)
+    def loss(self, x, y):
+        return -self.net.log_prob(x, y).mean()
+    def sample(self, num_samples, condition):
+        return self.net.sample(num_samples, condition)
+
+    def gen_samples(self, num_samples, x):
+        samples = rejection.accept_reject_sample(
+            proposal=self.sample,
+            accept_reject_fn=lambda theta: within_support(self.prior, theta),
+            num_samples=num_samples,
+            show_progress_bars=False,
+            max_sampling_batch_size=self.max_sampling_batch_size,
+            proposal_sampling_kwargs={"condition": ConditionDict(x)},
+            alternative_method="build_posterior(..., sample_with='mcmc')",
+        )[0]
+        return samples
+
+
 class NDELightningModule(BaseLightningModule):
     flow_type_map = {"nsf": build_nsf, "maf": build_maf, 'zuko_nsf': build_zuko_nsf}
 
@@ -193,7 +254,7 @@ class NDELightningModule(BaseLightningModule):
         if 'zuko' in flow_type:
             self.flow_kwargs = {}
         else:
-            self.flow_kwargs = {"conditional_dim": self.conditioning_dim, "use_batch_norm":True}
+            self.flow_kwargs = {"conditional_dim": self.conditioning_dim, "use_batch_norm":False}
         self.test_dataloader = test_dataloader
         self.loss_name = "log_prob"
         self.set_up_model()
@@ -227,13 +288,9 @@ class NDELightningModule(BaseLightningModule):
         self.load_state_dict(checkpoint['state_dict'])  # Ensure the key matches the saved checkpoint format
     
     def build_posterior_object(self):
-        y_dataset = torch.randn(10, self.conditioning_dim)
-        x_dataset = torch.randn(10, self.inference_dim)
         prior = utils.BoxUniform(low=0 * torch.ones(self.inference_dim), high=1. * torch.ones(self.inference_dim), device="cuda")
-        inference_method = SNPE_C(prior=prior, device='cuda')
-        inference_method.append_simulations(x_dataset, y_dataset)
-        posterior_sbi = inference_method.build_posterior(self.model.to('cuda'))
-        return posterior_sbi
+        density_estimator = PatchedConditionalDensityEstimator(self.model, prior)
+        return density_estimator
 
     def generate_samples(self, dummy_loader, num_samples=10000):
         test_y, test_x = self.test_dataloader.dataset.tensors

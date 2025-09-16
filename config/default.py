@@ -4,7 +4,7 @@ def get_default_config():
     config = ml_collections.ConfigDict()
     # Training
     config.lr = 0.0004
-    config.epochs = 400
+    config.epochs = 50
     config.batch_size = 32
     config.val_batch_size = None  # defaults to batch_size if None
     config.test_batch_size = None # defaults to val_batch_size if None
@@ -13,7 +13,7 @@ def get_default_config():
     config.checkpoint_path = None
     config.scheduler_type = 'exp'
     config.optimizer_kwargs = {'weight_decay': 0.01, 'betas': (0.9, 0.999)}
-    config.scheduler_kwargs = {'warmup': 250, 'gamma': 0.99}
+    config.scheduler_kwargs = {'warmup': 250, 'gamma': 0.9999}
     config.flow_type = 'nsf'  # Options: 'nsf', 'maf', 'zuko_nsf'
     config.model_type = "kids_o3_dual"
     config.model_kwargs = {
@@ -41,9 +41,10 @@ def get_default_config():
     config.test_frac = 0.1
     config.split_seed = 42
     config.shuffle_train = True
-    config.num_workers = 0
+    config.num_workers = 8
     config.pin_memory = False
     config.stack_groups = False
+    config.augment_eb_patches = True
 
     # Optional: limit training dataset size (None => no trimming)
     config.dataset_size = None

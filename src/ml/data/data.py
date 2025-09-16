@@ -148,6 +148,81 @@ DEFAULT_QUANTITY_PATHS = {
     "cls": ("cls_results", "full", "cls"),
 }
 
+# Keys that may contain E/B patches in the data dict
+EB_MAP_KEYS: Tuple[str, str, str, str] = (
+    "E_north", "E_south", "B_north", "B_south"
+)
+
+
+class RandomEBPatchAugment:
+    """
+    Random E/B patch augmentation with flips and 180° rotation.
+    - Operates only on keys in EB_MAP_KEYS that are present in the data dict.
+    - Groups by patch suffix ("north"/"south") so that E and B of the same patch
+      receive identical random ops.
+    - If only one of E/B exists for a patch, it is augmented alone.
+    - Augmentations: vertical flip, horizontal flip, 180° rotation (2^3 combos).
+    """
+    def __init__(self):
+        # Define augmentation functions operating on the last two spatial dims
+        self._augs = [
+            ("vflip", self._vflip),
+            ("hflip", self._hflip),
+            ("rot180", self._rot180),
+        ]
+
+    @staticmethod
+    def _vflip(x):
+        if torch.is_tensor(x):
+            return torch.flip(x, dims=[-2])
+        return np.flip(x, axis=-2)
+
+    @staticmethod
+    def _hflip(x):
+        if torch.is_tensor(x):
+            return torch.flip(x, dims=[-1])
+        return np.flip(x, axis=-1)
+
+    @staticmethod
+    def _rot180(x):
+        if torch.is_tensor(x):
+            return torch.rot90(x, k=2, dims=(-2, -1))
+        return np.rot90(x, k=2, axes=(-2, -1))
+
+    @staticmethod
+    def _rand_bool(use_torch: bool) -> bool:
+        if use_torch:
+            return bool(torch.randint(0, 2, ()).item())
+        return bool(np.random.randint(0, 2))
+
+    def __call__(self, data: Dict[str, Union[np.ndarray, torch.Tensor]]):
+        # Collect available E/B keys per patch suffix
+        present = [k for k in EB_MAP_KEYS if k in data]
+        if not present:
+            return data
+        by_patch: Dict[str, List[str]] = {}
+        for k in present:
+            parts = k.split("_", 1)
+            if len(parts) != 2:
+                continue
+            patch = parts[1]  # 'north' or 'south'
+            by_patch.setdefault(patch, []).append(k)
+
+        # Apply independent random combo per patch
+        for patch, keys in by_patch.items():
+            # Determine RNG backend from first tensor in this patch
+            first_val = data[keys[0]]
+            use_torch = torch.is_tensor(first_val)
+            flags = [self._rand_bool(use_torch) for _ in self._augs]
+            # Apply selected augs in order to all keys of this patch
+            for k in keys:
+                x = data[k]
+                for flag, (_, fn) in zip(flags, self._augs):
+                    if flag:
+                        x = fn(x)
+                data[k] = x
+        return data
+
 
 def build_nested_keys_from_quantities(quantities: Sequence[str]) -> Dict[str, Tuple[str, ...]]:
     """
@@ -178,6 +253,7 @@ def build_datasets(
     as_torch: bool = True,
     dtype=np.float32,
     stack_groups: bool = False,
+    transform: Optional[object] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     """
     Convenience: split by cosmology and return three datasets.
@@ -187,15 +263,15 @@ def build_datasets(
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
-        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups
+        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=transform
     )
     val_ds = H5CosmoDataset(
         val_paths, nested_keys, cosmo_params,
-        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups
+        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=None
     )
     test_ds = H5CosmoDataset(
         test_paths, nested_keys, cosmo_params,
-        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups
+        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=None
     )
     return train_ds, val_ds, test_ds
 
@@ -219,14 +295,19 @@ def build_dataloaders(
     as_torch: bool = True,
     dtype=np.float32,
     stack_groups: bool = False,
+    augment_eb_patches: bool = False,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Return DataLoaders for train/val/test ensuring no cosmology leakage.
+    Optionally applies random E/B patch augmentations to the training set only.
     """
+    transform = RandomEBPatchAugment() if augment_eb_patches else None
+
     train_ds, val_ds, test_ds = build_datasets(
         patterns, nested_keys, cosmo_params,
         train_frac=train_frac, val_frac=val_frac, test_frac=test_frac,
-        seed=seed, as_torch=as_torch, dtype=dtype, stack_groups=stack_groups
+        seed=seed, as_torch=as_torch, dtype=dtype, stack_groups=stack_groups,
+        transform=transform,
     )
 
     if val_batch_size is None:
@@ -280,4 +361,5 @@ def build_dataloaders(
 #     cosmo_params,
 #     batch_size=8,
 #     as_torch=False,  # or True if you want tensors
+#     augment_eb_patches=True,
 # )

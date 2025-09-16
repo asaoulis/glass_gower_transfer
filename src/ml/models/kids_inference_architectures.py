@@ -71,7 +71,7 @@ class KidsO3NorthSouthEmbedding(nn.Module):
 
         # Ensure south matches north spatial size by zero-padding (bottom/right)
         south_stack = self._pad_to_size(south_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1]))
-        south_stack = self._pad_to_size(south_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1]))
+        north_stack = self._pad_to_size(north_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1]))
 
         # Shared CNN processes both stacks
         south_feat = self.shared_cnn(south_stack)
@@ -322,10 +322,54 @@ class KidsBandpowersCNN1D(nn.Module):
         return z
 
 
+class KidsHybridBandpowersMaps(nn.Module):
+    """
+    Hybrid model that processes both bandpowers and map patches:
+      - A bandpowers encoder (choose 'mlp' or 'cnn') maps bandpowers -> latent_b
+      - A CNN+Transformer encoder maps patches -> latent_p
+      - Concatenate [latent_b, latent_p] to form final latent of size latent_dim
+    Each branch produces roughly half the requested latent_dim (handles odd by
+    allocating the remainder to the transformer branch).
+    """
+    def __init__(
+        self,
+        latent_dim: int,
+        bandpower_type: str = 'mlp',  # 'mlp' or 'cnn'
+        bandpower_kwargs: Dict = None,
+        transformer_kwargs: Dict = None,
+        **kwargs,
+    ):
+        super().__init__()
+        bandpower_kwargs = {} if bandpower_kwargs is None else bandpower_kwargs
+        transformer_kwargs = {} if transformer_kwargs is None else transformer_kwargs
+
+        # Split latent dims between the two branches
+        dim_band = latent_dim // 2
+        dim_trans = latent_dim - dim_band
+
+        # Select bandpowers encoder
+        bp_builders = {
+            'mlp': KidsBandpowersMLP,
+            'cnn': KidsBandpowersCNN1D,
+        }
+        if bandpower_type not in bp_builders:
+            raise ValueError(f"Unknown bandpower_type '{bandpower_type}', expected one of {list(bp_builders.keys())}")
+        self.band_encoder = bp_builders[bandpower_type](latent_dim=dim_band, **bandpower_kwargs)
+
+        # Build transformer-based patch encoder
+        self.patch_encoder = KidsCombinedCNNTransformer(latent_dim=dim_trans, **transformer_kwargs)
+
+    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        z_band = self.band_encoder(data)      # [B, dim_band]
+        z_patch = self.patch_encoder(data)    # [B, dim_trans]
+        return torch.cat([z_band, z_patch], dim=1)
+
+
 # Simple registry to integrate with the existing model selection flow
 KIDS_MODEL_BUILDERS = {
     "kids_o3_dual": lambda num_outputs, **kwargs: KidsO3NorthSouthEmbedding(latent_dim=num_outputs, **kwargs),
     "kids_combined_cnn_transformer": lambda num_outputs, **kwargs: KidsCombinedCNNTransformer(latent_dim=num_outputs, **kwargs),
     "kids_bandpowers_mlp": lambda num_outputs, **kwargs: KidsBandpowersMLP(latent_dim=num_outputs, **kwargs),
     "kids_bandpowers_cnn1d": lambda num_outputs, **kwargs: KidsBandpowersCNN1D(latent_dim=num_outputs, **kwargs),
+    "kids_hybrid_bandpowers_maps": lambda num_outputs, bandpower_type='mlp', bandpower_kwargs=None, transformer_kwargs=None, **kwargs: KidsHybridBandpowersMaps(latent_dim=num_outputs, bandpower_type=bandpower_type, bandpower_kwargs=bandpower_kwargs, transformer_kwargs=transformer_kwargs, **kwargs),
 }

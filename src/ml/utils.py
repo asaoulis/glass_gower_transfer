@@ -156,6 +156,7 @@ def prepare_data_parameters(config):
         as_torch=True,
         dtype=np.float32,
         stack_groups=getattr(config, 'stack_groups', False),
+        augment_eb_patches=getattr(config, 'augment_eb_patches', False),
     )
 
     # Fit scalers from the training split

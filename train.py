@@ -1,7 +1,7 @@
 import sys
 from config.default import get_default_config
 from config.experiments import experiments
-from src.train.utils import train_model
+from src.ml.models.utils import train_model
 
 def retrieve_first_list_from_experiments(experiments):
     list_key = None
@@ -24,16 +24,12 @@ if __name__ == "__main__":
         sys.exit(1)
 
     experiment_config = experiments[experiment_name]
-    list_key, list_values = retrieve_first_list_from_experiments(experiment_config)
 
-    for value in list_values:
-        config = get_default_config()
-        config.experiment_name = experiment_name
-        # Set the non-list values
-        for key, val in experiment_config.items():
-            if key != list_key:
-                setattr(config, key, val)
-        # Set the list value
-        setattr(config, list_key, value)
-        print(f"Running experiment '{experiment_name}' with {list_key}={value}")
-        train_model(config)
+    config = get_default_config()
+    config.experiment_name = experiment_name
+    # Set the non-list values
+    for key, val in experiment_config.items():
+        setattr(config, key, val)
+    # Set the list value
+    print(f"Running experiment '{experiment_name}'")
+    train_model(config)

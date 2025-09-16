@@ -1,6 +1,12 @@
 import torch
 import torch.nn as nn
-# from torchvision import models
+from typing import Optional
+
+# optional torchvision import for auxiliary builders
+try:
+    from torchvision import models
+except Exception:  # pragma: no cover - allow environments without torchvision
+    models = None
 
 
 class ConvBlock(nn.Module):
@@ -161,12 +167,16 @@ class FlexibleO3(nn.Module):
     - Applies adaptive pooling to 1x1 then a 1x1 tail conv to fix channel count.
     - Infers the linear head input feature size via a dummy forward using max_hw.
     - Optionally returns spatial feature maps instead of flatten+FFN.
+    - Supports configurable normalization per stage: GroupNorm (default) or BatchNorm2d.
     """
-    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.35, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False, ch_mults = [8, 8, 16, 16, 32, 32]):
+    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.35, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False, ch_mults = [8, 8, 16, 16, 32, 32], norm_type: str = 'group', gn_groups: Optional[int] = None):
         super().__init__()
         self.predict_sigmas = predict_sigmas
         self.num_outputs = num_outputs
         self.return_features = return_features
+        # normalization config
+        self.norm_type = (norm_type or 'group').lower()
+        self.gn_groups = gn_groups
         if predict_sigmas and not return_features:
             num_outputs = 2 * num_outputs
         self.hidden = hidden
@@ -193,11 +203,24 @@ class FlexibleO3(nn.Module):
             self.dropout = nn.Dropout(p=dr)
         # Init
         for m in self.modules():
-            if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+            if isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d, nn.GroupNorm)):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
             elif isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
                 nn.init.kaiming_normal_(m.weight)
+
+    def _make_norm(self, num_channels: int):
+        if self.norm_type in ('group', 'gn', 'groupnorm'):
+            g = self.gn_groups
+            if g is None or num_channels % g != 0:
+                # choose largest suitable group count from a safe set
+                for candidate in [32, 16, 8, 4, 2, 1]:
+                    if num_channels % candidate == 0:
+                        g = candidate
+                        break
+            return nn.GroupNorm(g, num_channels)
+        # default to BatchNorm2d
+        return nn.BatchNorm2d(num_channels)
 
     def _make_stage(self, in_ch, out_ch, first=False):
         layers = [
@@ -205,13 +228,13 @@ class FlexibleO3(nn.Module):
             nn.LeakyReLU(0.2),
         ]
         if not first:
-            layers.insert(1, nn.BatchNorm2d(out_ch))
+            layers.insert(1, self._make_norm(out_ch))
         layers += [
             nn.Conv2d(out_ch, out_ch, kernel_size=3, stride=1, padding=1, padding_mode='zeros', bias=True),
-            nn.BatchNorm2d(out_ch),
+            self._make_norm(out_ch),
             nn.LeakyReLU(0.2),
             nn.Conv2d(out_ch, out_ch, kernel_size=2, stride=2, padding=0, padding_mode='zeros', bias=True),
-            nn.BatchNorm2d(out_ch),
+            self._make_norm(out_ch),
             nn.LeakyReLU(0.2),
         ]
         return nn.Sequential(*layers)
@@ -246,12 +269,14 @@ class FlexibleO3(nn.Module):
 
 
 def flexible_o3_model(num_outputs, hidden=12, channels=1, max_hw=(256, 256), predict_sigmas=False, return_features=False, **kwargs):
-    return FlexibleO3(num_outputs=num_outputs, hidden=hidden, channels=channels, max_hw=max_hw, predict_sigmas=predict_sigmas, return_features=return_features)
+    return FlexibleO3(num_outputs=num_outputs, hidden=hidden, channels=channels, max_hw=max_hw, predict_sigmas=predict_sigmas, return_features=return_features, **kwargs)
 
 
 # Example usage
 
 def build_resnet(num_outputs, pretrained=True):
+    if models is None:
+        raise ImportError("torchvision is required for build_resnet but is not installed.")
     resnet = models.resnet18(pretrained=pretrained)
     # Copy weights from the original layer
     original_weights = resnet.conv1.weight.data
@@ -277,6 +302,8 @@ def build_resnet(num_outputs, pretrained=True):
 
 
 def build_convnext(num_outputs, pretrained=True):
+    if models is None:
+        raise ImportError("torchvision is required for build_convnext but is not installed.")
     convnext = models.convnext_tiny(pretrained=pretrained)
 
     # Get the original first convolution layer
