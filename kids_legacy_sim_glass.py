@@ -125,7 +125,7 @@ n_ell = 20
 lmax = 2*nside
 lmin = 0
 
-NUM_JOBS = 10000
+NUM_JOBS = 12500
 rotation_angles=[0, 90, 180, 270]
 inner_num_shape_noise_realisations=1
 outer_num_shape_noise_realisations=1
@@ -140,21 +140,73 @@ patches = list(named_patches.values())
 # rotation_values = [rot for rot in rotation_angles for _ in range(num_shape_noise_realisations)]
 csv_path = '/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv'
 
-OUTPUT_DIR = Path('/share/gpu5/asaoulis/transfer_datasets/glass_full_only_mocks')
+OUTPUT_DIR = Path('/share/gpu5/asaoulis/transfer_datasets/glass_gower_prior')
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+import os, socket
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
     size = comm.Get_size()
-    # class DummyComm:
-    #     def Get_rank(self): return 0
-    #     def Get_size(self): return 1
-    #     def bcast(self, value, root=0): return value
-    #     def Scatterv(self, *args, **kwargs): return args[1]  # naive pass-through
-    # comm = DummyComm()
-    # rank = 0
-    # size = 1
+    local_comm = comm.Split_type(MPI.COMM_TYPE_SHARED)  # no extra args
+    local_rank = local_comm.Get_rank()
+    local_size = local_comm.Get_size()
+    hostname = socket.gethostname()
+    all_hosts = comm.gather(hostname, root=0)
+    if rank == 0:
+        from collections import Counter
+        host_counts = Counter(all_hosts)
+        print("[NODES] Host distribution:")
+        for h, c in host_counts.items():
+            print(f"  {h}: {c} ranks")
+        print("[NODES] Total unique nodes:", len(host_counts), flush=True)
+
+    CONCURRENT_PER_NODE = 10
+
+    if rank == 0:
+        print(f"[INFO] Total MPI ranks={size}. Per-node local_size(s) will vary. CONCURRENT_PER_NODE={CONCURRENT_PER_NODE}", flush=True)
+
+    # Node‑local shared integer (token counter) stored only once per node (local_rank==0)
+    if local_rank == 0:
+        token_buf = np.array([CONCURRENT_PER_NODE], dtype='i')  # length-1 array
+    else:
+        token_buf = np.zeros(1, dtype='i')
+    token_win = MPI.Win.Create(token_buf, disp_unit=token_buf.itemsize, comm=local_comm)
+
+    # --- Robust acquire using Compare-and-swap to avoid negative transients ---
+    def acquire_token(backoff=0.2, max_backoff=0.5):
+        cur = np.zeros(1, dtype='i')
+        cmp = np.zeros(1, dtype='i')
+        new = np.zeros(1, dtype='i')
+        got = np.zeros(1, dtype='i')
+        delay = backoff
+        while True:
+            token_win.Lock(0, MPI.LOCK_SHARED)
+            token_win.Get(cur, 0)
+            token_win.Flush(0)
+            if cur[0] > 0:
+                cmp[0] = cur[0]
+                new[0] = cur[0] - 1
+                token_win.Compare_and_swap(new, cmp, got, 0)
+                token_win.Flush(0)
+                token_win.Unlock(0)
+                # Success iff previous value equals expected compare value
+                if got[0] == cmp[0]:
+                    return new[0]
+            else:
+                token_win.Unlock(0)
+            time.sleep(delay)
+            delay = min(max_backoff, delay * 1.5)
+
+    def release_token():
+        inc = np.array([1], dtype='i')
+        prev = np.zeros(1, dtype='i')
+        token_win.Lock(0, MPI.LOCK_SHARED)
+        token_win.Fetch_and_op(inc, prev, target_rank=0, op=MPI.SUM)
+        token_win.Flush(0)
+        token_win.Unlock(0)
+        remaining_now = int(prev[0]) + 1  # value after release
+        return remaining_now
     s = time.time() # Start timer 
     sim_batch_name = 'sobol_batch_1'
     
@@ -228,8 +280,6 @@ if __name__ == "__main__":
         recvbuf = recvbuf_flat.reshape(-1, cols)
     else:
         recvbuf = np.empty((0, cols), dtype=np.float64)
-
-    print(f"[rank {rank}] received chunk (shape {recvbuf.shape}):\n{recvbuf}")
 
     # sims: last column interpreted as integers (works even if recvbuf is empty)
     sims = recvbuf[:, -1].astype(int) if recvbuf.size else np.array([], dtype=int)
@@ -332,13 +382,32 @@ if __name__ == "__main__":
             }
 
             if SIMULATOR_TYPE == 'glass':
-                ws, lp, ell = levin.setup_levin_power(zb, z_grid, chi_grid, extended_k, extended_pk, results, pars)
-                glass_cls, ws, n_glass_shells = glass_utils.compute_glass_cls(lp, ws, ell)
-                glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
-                fields = glass.lognormal_fields(ws)
-                gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
-                matter = glass.generate(fields, gls, nside, ncorr=1, rng=kwargs['rng'])
-                simulator = GlassLogNormalSimulator(matter, ws, **kwargs)
+                remaining_est = acquire_token()
+                print(f"[TOKEN] Rank {rank} host {hostname} local {local_rank}/{local_size} acquired token for sim {sim_num}. Remaining on node (approx): {remaining_est}", flush=True)
+                try:
+                    # Heavy CAMB / Levin / GLASS allocations (memory peak section)
+                    ws, lp, ell = levin.setup_levin_power(
+                        zb, z_grid, chi_grid, extended_k, extended_pk, results, pars
+                    )
+                    glass_cls, ws, n_glass_shells = glass_utils.compute_glass_cls(lp, ws, ell)
+                    print(f'[GLASS] Rank {rank} sim {sim_num}: GLASS Cls computed', flush=True)
+                    glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
+                    fields = glass.lognormal_fields(ws)
+                    gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
+                    matter = glass.generate(fields, gls, nside, ncorr=1, rng=kwargs['rng'])
+                    simulator = GlassLogNormalSimulator(matter, ws, **kwargs)
+                except Exception as e:
+                    import traceback
+                    print(f"[ERROR] Rank {rank} sim {sim_num}: error setting up GLASS simulator: {e}", flush=True)
+                    traceback.print_exc()
+                finally:
+                    release_token()
+                    print(f"[TOKEN] Rank {rank} host {hostname} released token for sim {sim_num}", flush=True)
+                    try:
+                        del ws, lp, ell, glass_cls, glass_cls_discretized, fields, gls, matter
+                    except NameError:
+                        pass
+                    gc.collect()
             elif SIMULATOR_TYPE == 'gower':
                 simulator = gower_street_loader.setup_simulator(sim_num, **kwargs)
 
@@ -396,7 +465,7 @@ if __name__ == "__main__":
                 #     cls_results[patch_name] = {"cls": realised_unmixed_shear_cls, "bandpowers":bandpowers, "bandpower_ls":cll_bands}
 
 
-                total_idx = outer_noise_idx * outer_num_shape_noise_realisations + cat_idx
+                total_idx = int(outer_noise_idx * outer_num_shape_noise_realisations + cat_idx + np.random.randint(0, 10000))
                 save_results_h5( OUTPUT_DIR / f"output_{sim_num}.h5", total_idx, cls_results, pixelised_results, param_dict)
 
                 # free per-catalogue heavy products
@@ -411,3 +480,19 @@ if __name__ == "__main__":
         print(f'Saved results for sim {sim_num}')
         
         print(f'Entire simulation took {time.time() - s:.2f} seconds')
+
+    # After processing all local sims, optional diagnostic
+    token_win.Lock(0, MPI.LOCK_SHARED)
+    final_val = np.zeros(1, dtype='i')
+    token_win.Get(final_val, 0)
+    token_win.Flush(0)
+    token_win.Unlock(0)
+    print(f"[TOKEN] Rank {rank} host {hostname} local {local_rank}/{local_size} final counter on node: {final_val[0]}", flush=True)
+
+    comm.Barrier()
+    if rank == 0:
+        print("All simulations completed.")
+
+    token_win.Free()
+    local_comm.Free()
+
