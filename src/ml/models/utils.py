@@ -23,6 +23,7 @@ def fit_model(model, epochs, logger, train_loader, val_loader, experiment_name, 
         check_val_every_n_epoch=1,
         logger=pl.loggers.WandbLogger() if logger else None,
         callbacks=[checkpoint_callback, lr_monitor],
+        gradient_clip_val=0.5,     
     )
     
     trainer.fit(model, train_loader, val_loader)
@@ -38,7 +39,7 @@ def train_model(config):
         train_loader, val_loader, _ = loaders
         match_string_logger = config.match_string if config.match_string else ""
         logger = wandb.init(
-            project="kids-transfer-tests",
+            project=config.project,
             group=config.experiment_name,
             name=f"{'pretrain' if pretrain else 'finetune'}_{config.model_type}_{config.scheduler_type}_{config.lr}_{match_string_logger}_ds{config.dataset_size}_{i}",
             reinit=True

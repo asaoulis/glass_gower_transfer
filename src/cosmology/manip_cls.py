@@ -88,6 +88,98 @@ def cat2mask(catalogue, nbins, nside):
 
     return bin_masks
 
+
+import numpy as np
+import healpy as hp
+
+def cat2mask_fractional_2(catalogue, nbins, frac_mask,
+                                                         nside=None, return_diagnostics=False):
+    """
+    Build bin-dependent sampling masks W_p = 1 - exp(-mu_p) using a fractional mask
+    already at the target nside.
+
+    Parameters
+    ----------
+    catalogue : structured array or dict-like
+        Fields: 'RA' (deg), 'DEC' (deg), 'ZBIN' (int from 0..nbins-1)
+    nbins : int
+        number of tomographic bins
+    frac_mask : ndarray, length = hp.nside2npix(nside)
+        fractional mask values in [0,1] at the desired nside (the "true" mask)
+    nside : int, optional
+        healpix nside of frac_mask; deduced from length if None
+    return_diagnostics : bool
+        if True return (masks, mu_maps, rho_bins, fsky_bins)
+
+    Returns
+    -------
+    masks : ndarray shape (nbins, npix)
+        sampling masks in [0,1] for each bin
+    (optionally) mu_maps : ndarray (nbins, npix)
+        expected counts per pixel mu_p
+    rho_bins : ndarray (nbins,)
+        surface density used for each bin (gal/steradian)
+    fsky_bins : ndarray (nbins,)
+        effective f_sky (sum W_p * A_pix / 4pi) for each bin
+    """
+    if nside is None:
+        nside = hp.npix2nside(len(frac_mask))
+    npix = hp.nside2npix(nside)
+    assert len(frac_mask) == npix, "frac_mask length does not match nside"
+
+    # pixel area (steradian)
+    A_pix = 4.0 * np.pi / float(npix)
+
+    masks = np.zeros((nbins, npix), dtype=np.float64)
+    mu_maps = np.zeros_like(masks)
+    rho_bins = np.zeros(nbins, dtype=np.float64)
+    fsky_bins = np.zeros(nbins, dtype=np.float64)
+
+    # effective unmasked area for this fractional mask
+    Omega_eff = np.sum(frac_mask) * A_pix  # steradian
+
+    # Precompute pixel indices of catalogue
+    ra = np.asarray(catalogue['RA'])
+    dec = np.asarray(catalogue['DEC'])
+    theta = np.deg2rad(90.0 - dec)
+    phi = np.deg2rad(ra)
+    pix_cat = hp.ang2pix(nside, theta, phi)
+
+    for ibin in range(nbins):
+        sel = (catalogue['ZBIN'] == ibin)
+        Nbin = np.count_nonzero(sel)
+        if Nbin == 0:
+            masks[ibin, :] = 0.0
+            mu_maps[ibin, :] = 0.0
+            rho_bins[ibin] = 0.0
+            fsky_bins[ibin] = 0.0
+            continue
+
+        # surface density (gal/steradian) estimated using the fractional mask area
+        rho = Nbin / Omega_eff
+        rho_bins[ibin] = rho
+
+        # expected counts per pixel (including fractional area f_p)
+        mu = rho * A_pix * frac_mask  # vector length npix
+        mu_maps[ibin, :] = mu
+
+        # sampling probability (= fractional sampling mask)
+        W = 1.0 - np.exp(-mu)
+
+        # enforce zero where the fractional mask is exactly zero
+        W[frac_mask <= 0.0] = 0.0
+
+        masks[ibin, :] = W
+
+        # compute f_sky as effective fraction of full sky contributed by sampling mask
+        fsky_bins[ibin] = np.sum(W) * A_pix / (4.0 * np.pi)
+
+    if return_diagnostics:
+        return masks, mu_maps, rho_bins, fsky_bins
+    return masks
+
+
+
 def maskcls(masks, lmax, nbins):
     """
     Compute the masked power spectrum of the catalogue

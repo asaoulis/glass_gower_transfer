@@ -326,26 +326,32 @@ class KidsHybridBandpowersMaps(nn.Module):
     """
     Hybrid model that processes both bandpowers and map patches:
       - A bandpowers encoder (choose 'mlp' or 'cnn') maps bandpowers -> latent_b
-      - A CNN+Transformer encoder maps patches -> latent_p
+      - A patch encoder (choose 'transformer' or 'o3_dual') maps patches -> latent_p
       - Concatenate [latent_b, latent_p] to form final latent of size latent_dim
     Each branch produces roughly half the requested latent_dim (handles odd by
-    allocating the remainder to the transformer branch).
+    allocating the remainder to the patch branch).
     """
     def __init__(
         self,
         latent_dim: int,
         bandpower_type: str = 'mlp',  # 'mlp' or 'cnn'
         bandpower_kwargs: Dict = None,
+        map_encoder_type: str = 'transformer',  # 'transformer' or 'o3_dual'
+        map_kwargs: Dict = None,
+        # Backward-compat alias; if provided and map_kwargs is None, will be used
         transformer_kwargs: Dict = None,
         **kwargs,
     ):
         super().__init__()
         bandpower_kwargs = {} if bandpower_kwargs is None else bandpower_kwargs
-        transformer_kwargs = {} if transformer_kwargs is None else transformer_kwargs
+        # backward-compat for existing configs using transformer_kwargs
+        if map_kwargs is None and transformer_kwargs is not None:
+            map_kwargs = transformer_kwargs
+        map_kwargs = {} if map_kwargs is None else map_kwargs
 
         # Split latent dims between the two branches
         dim_band = latent_dim // 2
-        dim_trans = latent_dim - dim_band
+        dim_patch = latent_dim - dim_band
 
         # Select bandpowers encoder
         bp_builders = {
@@ -356,12 +362,20 @@ class KidsHybridBandpowersMaps(nn.Module):
             raise ValueError(f"Unknown bandpower_type '{bandpower_type}', expected one of {list(bp_builders.keys())}")
         self.band_encoder = bp_builders[bandpower_type](latent_dim=dim_band, **bandpower_kwargs)
 
-        # Build transformer-based patch encoder
-        self.patch_encoder = KidsCombinedCNNTransformer(latent_dim=dim_trans, **transformer_kwargs)
+        # Select patch encoder
+        patch_builders = {
+            'transformer': KidsCombinedCNNTransformer,
+            'o3_dual': KidsO3NorthSouthEmbedding,
+            'kids_o3_dual': KidsO3NorthSouthEmbedding,  # alias
+            'dual': KidsO3NorthSouthEmbedding,          # alias
+        }
+        if map_encoder_type not in patch_builders:
+            raise ValueError(f"Unknown map_encoder_type '{map_encoder_type}', expected one of {list(patch_builders.keys())}")
+        self.patch_encoder = patch_builders[map_encoder_type](latent_dim=dim_patch, **map_kwargs)
 
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         z_band = self.band_encoder(data)      # [B, dim_band]
-        z_patch = self.patch_encoder(data)    # [B, dim_trans]
+        z_patch = self.patch_encoder(data)    # [B, dim_patch]
         return torch.cat([z_band, z_patch], dim=1)
 
 
@@ -371,5 +385,21 @@ KIDS_MODEL_BUILDERS = {
     "kids_combined_cnn_transformer": lambda num_outputs, **kwargs: KidsCombinedCNNTransformer(latent_dim=num_outputs, **kwargs),
     "kids_bandpowers_mlp": lambda num_outputs, **kwargs: KidsBandpowersMLP(latent_dim=num_outputs, **kwargs),
     "kids_bandpowers_cnn1d": lambda num_outputs, **kwargs: KidsBandpowersCNN1D(latent_dim=num_outputs, **kwargs),
-    "kids_hybrid_bandpowers_maps": lambda num_outputs, bandpower_type='mlp', bandpower_kwargs=None, transformer_kwargs=None, **kwargs: KidsHybridBandpowersMaps(latent_dim=num_outputs, bandpower_type=bandpower_type, bandpower_kwargs=bandpower_kwargs, transformer_kwargs=transformer_kwargs, **kwargs),
+    "kids_hybrid_bandpowers_maps": (
+        lambda num_outputs,
+               bandpower_type='mlp',
+               bandpower_kwargs=None,
+               map_encoder_type='o3_dual',
+               map_kwargs=None,
+               transformer_kwargs=None,
+               **kwargs: KidsHybridBandpowersMaps(
+                   latent_dim=num_outputs,
+                   bandpower_type=bandpower_type,
+                   bandpower_kwargs=bandpower_kwargs,
+                   map_encoder_type=map_encoder_type,
+                   map_kwargs=(map_kwargs if map_kwargs is not None else transformer_kwargs),
+                   transformer_kwargs=transformer_kwargs,
+                   **kwargs,
+               )
+    ),
 }

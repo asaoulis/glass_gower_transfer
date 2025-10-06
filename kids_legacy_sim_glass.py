@@ -72,8 +72,27 @@ from src.cosmology.manip_cls import denoise_shear_cls, unmix_shear_cl, cat2mask,
 from src.cosmology.pixelise_maps import get_patch_values
 
 from src.cosmology.map_shears  import make_alm_shear_convergence, filter_EB_alms_and_make_maps
+from src.cosmology.mpi import compute_levin_glass_in_child_npz_subproc,load_levin_child_pickle
 
 from src.KiDS.tomo import calculate_tomo_nz
+
+# ---- Helper utilities for robustness / diagnostics ----
+import traceback
+
+def _is_probable_oom(exc: Exception, tb: str = "") -> bool:
+    msg = (str(exc) + "\n" + (tb or "")).lower()
+    keywords = [
+        "memoryerror",
+        "out of memory",
+        "cannot allocate memory",
+        "bad_alloc",
+        "std::bad_alloc",
+        "killed process",
+        "oom",
+        "failed to allocate",
+    ]
+    return any(k in msg for k in keywords)
+
 
 def process_cls(catalogue, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale, nbands):
     shear_cls_noiseless = denoise_shear_cls(nbins, alm, alm_rand, lmax)
@@ -382,36 +401,104 @@ if __name__ == "__main__":
             }
 
             if SIMULATOR_TYPE == 'glass':
-                remaining_est = acquire_token()
-                print(f"[TOKEN] Rank {rank} host {hostname} local {local_rank}/{local_size} acquired token for sim {sim_num}. Remaining on node (approx): {remaining_est}", flush=True)
-                try:
-                    # Heavy CAMB / Levin / GLASS allocations (memory peak section)
-                    ws, lp, ell = levin.setup_levin_power(
-                        zb, z_grid, chi_grid, extended_k, extended_pk, results, pars
-                    )
-                    glass_cls, ws, n_glass_shells = glass_utils.compute_glass_cls(lp, ws, ell)
-                    print(f'[GLASS] Rank {rank} sim {sim_num}: GLASS Cls computed', flush=True)
-                    glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
-                    fields = glass.lognormal_fields(ws)
-                    gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
-                    matter = glass.generate(fields, gls, nside, ncorr=1, rng=kwargs['rng'])
-                    simulator = GlassLogNormalSimulator(matter, ws, **kwargs)
-                except Exception as e:
-                    import traceback
-                    print(f"[ERROR] Rank {rank} sim {sim_num}: error setting up GLASS simulator: {e}", flush=True)
-                    traceback.print_exc()
-                finally:
-                    release_token()
-                    print(f"[TOKEN] Rank {rank} host {hostname} released token for sim {sim_num}", flush=True)
+                # Retry-and-skip logic to handle transient OOMs in heavy allocation section
+                max_heavy_retries = 2  # total attempts = max_heavy_retries + 1
+                backoff_sec = 5.0
+                attempts = 0
+                simulator = None
+                have_token = False
+                while attempts <= max_heavy_retries and simulator is None:
+                    if not have_token:
+                        remaining_est = acquire_token()
+                        have_token = True
+                        print(f"[TOKEN] Rank {rank} host {hostname} local {local_rank}/{local_size} acquired token for sim {sim_num}. Remaining on node (approx): {remaining_est}", flush=True)
                     try:
-                        del ws, lp, ell, glass_cls, glass_cls_discretized, fields, gls, matter
-                    except NameError:
+                        # Heavy CAMB / Levin / GLASS allocations (memory peak section)
+                        # ws, lp, ell = levin.setup_levin_power(
+                        #     zb, z_grid, chi_grid, extended_k, extended_pk, results, pars
+                        # )
+                        # glass_cls, ws, n_glass_shells = glass_utils.compute_glass_cls(lp, ws, ell)
+                        npz_out_path = compute_levin_glass_in_child_npz_subproc(
+                            param_dict,
+                            zb, z_grid, chi_grid, extended_k, extended_pk,
+                            mem_limit_gb=200,
+                            timeout_s=1800,
+                            sim_tag=f"sim{sim_num}"
+                        )
+
+                        glass_cls, ws, n_glass_shells = load_levin_child_pickle(npz_out_path, remove_after_load=True)
+
+
+                        print(f'[GLASS] Rank {rank} sim {sim_num}: GLASS Cls computed', flush=True)
+                        glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
+                        fields = glass.lognormal_fields(ws)
+                        gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
+                        matter = glass.generate(fields, gls, nside, ncorr=1, rng=kwargs['rng'])
+                        simulator = GlassLogNormalSimulator(matter, ws, **kwargs)
+                        print(f"[GLASS] Rank {rank} sim {sim_num}: Simulator ready after attempt {attempts+1}", flush=True)
+                        gc.collect()
+                    except Exception as e:
+                        tb = traceback.format_exc()
+                        # Cleanup any partially created heavy objects
+                        try:
+                            del ws, glass_cls, glass_cls_discretized, fields, gls, matter
+                        except NameError:
+                            pass
+                        gc.collect()
+                        if _is_probable_oom(e, tb) and attempts < max_heavy_retries:
+                            # Release token to reduce pressure, backoff, then retry
+                            print(f"[WARN] Rank {rank} sim {sim_num}: Probable OOM during GLASS setup (attempt {attempts+1}/{max_heavy_retries+1}). Backing off {backoff_sec:.1f}s and retrying. Error: {e}", flush=True)
+                            if have_token:
+                                try:
+                                    release_token()
+                                    print(f"[TOKEN] Rank {rank} host {hostname} released token after failure (attempt {attempts+1}) for sim {sim_num}", flush=True)
+                                finally:
+                                    have_token = False
+                            time.sleep(backoff_sec)
+                            attempts += 1
+                            continue
+                        else:
+                            # Not recoverable or no retries left -> log and skip this sim
+                            print(f"[ERROR] Rank {rank} sim {sim_num}: error setting up GLASS simulator on attempt {attempts+1}: {e}", flush=True)
+                            print(tb, flush=True)
+                            simulator = None
+                            break
+                    finally:
+                        # If success, keep token for now and release below; if failure and we will retry, token already released above
                         pass
+                # Ensure token released before proceeding
+                if have_token:
+                    try:
+                        release_token()
+                        print(f"[TOKEN] Rank {rank} host {hostname} released token for sim {sim_num}", flush=True)
+                    finally:
+                        have_token = False
+                # If simulator could not be created, skip this sim safely
+                if simulator is None:
+                    print(f"[SKIP] Rank {rank} sim {sim_num}: Skipping after {attempts+1} attempts to set up GLASS simulator.", flush=True)
                     gc.collect()
+                    continue 
+
             elif SIMULATOR_TYPE == 'gower':
                 simulator = gower_street_loader.setup_simulator(sim_num, **kwargs)
 
-            catalogues = simulator.run(rotation_angles=rotation_angles, num_shape_noise_realisations=inner_num_shape_noise_realisations)
+            # Run the simulator with guard; skip on OOM instead of crashing the job
+            try:
+                catalogues = simulator.run(rotation_angles=rotation_angles, num_shape_noise_realisations=inner_num_shape_noise_realisations)
+            except Exception as e:
+                tb = traceback.format_exc()
+                if _is_probable_oom(e, tb):
+                    print(f"[SKIP] Rank {rank} sim {sim_num}: Probable OOM during simulator.run(). Skipping this sim. Error: {e}", flush=True)
+                else:
+                    print(f"[ERROR] Rank {rank} sim {sim_num}: simulator.run() failed. Skipping this sim. Error: {e}", flush=True)
+                    print(tb, flush=True)
+                try:
+                    del ws, glass_cls, glass_cls_discretized, fields, gls, matter
+                    del simulator
+                except Exception:
+                    pass
+                gc.collect()
+                continue
 
             print(f'Total number of augmentations sampled: {len(catalogues):,}')
             print(f'Simulated the galaxy catalogue in {time.time() - s_catalogue:.2f} seconds')

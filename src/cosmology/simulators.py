@@ -7,6 +7,8 @@ from abc import ABC, abstractmethod
 from .nla import kappa_ia_nla_m
 import healpy as hp
 import numpy as np
+ZERO_TOL = 1e-12   # numerical tolerance for "zero"
+
 
 def rotate_mask_array(mask, nside, rot_deg, delta_shift=0.0, flip=False):
     """
@@ -126,7 +128,7 @@ class BaseSimulator(ABC):
 
         n_shells = len(self.ws)
         # mask = np.where(self.mask > 0)[0]
-
+        print("Original simulations fixed kappa", flush=True)
         for i, delta in self.get_matter_fields():
             if self.debug:
                 print(f"Processing shell {i+1}/{n_shells}...", flush=True)
@@ -134,7 +136,7 @@ class BaseSimulator(ABC):
 
             # Lens planes
             self.convergence.add_window(delta, self.ws[i])
-            kappa = self.convergence.kappa
+            kappa = self.convergence.kappa.copy()
 
             for tomo in range(self.nbins):
                 z_vals, dndz = glass.shells.restrict(
@@ -143,8 +145,12 @@ class BaseSimulator(ABC):
                     self.ws[i]
                 )
                 ngal = np.trapezoid(dndz, z_vals)
+                if ngal <= ZERO_TOL:
+                    # nothing to do for this tomo and shell
+                    continue
                 z_eff = np.average(self.los_z_integration, weights=self.tomo_nz[tomo])
-
+                # z_eff = np.average(z_vals, weights=dndz)
+                # z_eff = self.ws[i].zeff
                 # Intrinsic alignments
                 kappa_ia = kappa_ia_nla_m(
                     delta,
@@ -155,8 +161,8 @@ class BaseSimulator(ABC):
                     self.nla['b_ia'],
                     self.nla['log10_M_eff'][tomo]
                 )
-                kappa += kappa_ia
-                g1, g2 = glass.lensing.shear_from_convergence(kappa)
+                kappa_i = kappa + kappa_ia
+                g1, g2 = glass.lensing.shear_from_convergence(kappa_i)
 
                 # --- Loop over rotations and shape-noise realizations ---
                 for rot_idx, ang in enumerate(rotation_angles):
@@ -180,7 +186,7 @@ class BaseSimulator(ABC):
                             )
                             shear = glass.galaxies.galaxy_shear(
                                 lon, lat, gal_eps,
-                                kappa, g1, g2
+                                kappa_i, g1, g2
                             )
 
                             E1, E2 = self._apply_shear_bias(tomo, shear, lat)
@@ -248,6 +254,26 @@ class GowerStreetSimulator(BaseSimulator):
             shells.append(glass.shells.RadialWindow(za, wa, 0.5*(zmin+zmax)))
             steps.append(step)
         return steps, shells
+    # COPIED FROM GLASS CODE EXAMPLES
+    # def _load_shells(self, data_dir):
+    #     zvals = np.genfromtxt(
+    #         os.path.join(data_dir, 'z_values.txt'),
+    #         delimiter=',', names=True
+    #     )[::-1]
+    #     wht = np.ones_like
+    #     dz = 0.001
+    #     steps, shells = [], []
+    #     for row in zvals:
+    #         step, zmin, zmax = int(row['Step']), row['z_near'], row['z_far']
+    #         if zmin > 2: break
+    #         n = max(round((zmax - zmin) / dz), 2)
+    #         z = np.linspace(zmin, zmax, n, dtype=np.float64)
+    #         # za = np.linspace(zmin, zmax, 100)
+    #         w = wht(z)
+    #         zeff = np.trapezoid(w * z, z) / np.trapezoid(w, z)
+    #         shells.append(glass.shells.RadialWindow(z, w, zeff.item()))
+    #         steps.append(step)
+    #     return steps, shells
 
     def get_matter_fields(self):
         for i, step in enumerate(self.steps):
