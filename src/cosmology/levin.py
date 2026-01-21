@@ -112,7 +112,7 @@ def setup_levin_power(zb, z_grid, chi_grid, extended_k, extended_pk, results, pa
         lp: LevinPower object
     """
     # Shells / Window functions
-    ws = glass.shells.tophat_windows(zb)
+    ws = glass.shells.linear_windows(zb)
 
     # Line-of-sight integration
     los_z_integration, los_chi_integration = compute_los_integrals(zb, results)

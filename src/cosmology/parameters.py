@@ -32,7 +32,7 @@ DEFAULT_PARAMS = {
     "zmin": 0.0,
     "zmid": 2.0,
     "nz_mid": 50,
-    "zmax": 6.0,
+    "zmax": 3.0,
     "nz": 256,
 
 }
@@ -52,7 +52,8 @@ def compute_eta(params):
 
 def s8_to_As(params):
     h = params["h"]
-    s8 = params["s8"]
+    sigma8 = params["sigma_8"]
+
     ombh2 = params["ombh2"]
     omega_m = params["omega_m"]
     omega_k = params["omega_k"]
@@ -64,10 +65,10 @@ def s8_to_As(params):
     wa = params["wa"]
     kmax = params["kmax_transfer"]
     k_per_logint = params["k_per_logint"]
-
     Omega_c, Omega_b, Omega_m = compute_omegas(params)
+    s8 = sigma8 * ((Omega_m / 0.3) ** alpha)
+    params["s8"] = s8
     omch2 = Omega_c * h**2
-    sigma8 = s8 / ((Omega_m / 0.3) ** alpha)
 
     p = camb.CAMBparams(WantTransfer=True, Want_CMB=False, Want_CMB_lensing=False, DoLensing=False,
                         NonLinear="NonLinear_none", WantTensors=False, WantVectors=False, WantCls=False,
@@ -97,6 +98,7 @@ def build_cosmology(params):
     # Compute derived quantities
     params = {**DEFAULT_PARAMS, **params}
     sigma8, As, Omega_c, Omega_b, Omega_m = s8_to_As(params)
+    print("Derived sigma8 and A_s:", sigma8, As)
     eta = compute_eta(params)
 
     z_grid = np.linspace(params["zmin"], params["zmax"], params["nz"])
@@ -125,5 +127,7 @@ def build_cosmology(params):
 
     pars.set_matter_power(redshifts=z_grid, kmax=20.0)
     cosmo = Cosmology.from_camb(pars)
+    print("sigma8 from A_s is", camb.get_results(pars).get_sigma8_0())
+
 
     return cosmo, pars

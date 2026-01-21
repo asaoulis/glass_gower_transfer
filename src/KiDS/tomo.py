@@ -21,7 +21,7 @@ ztomo_label = [
 ]
 
 # Galaxy density in each tomographic bin
-n_arcmin2 = np.array([1.7698, 1.6494, 1.4974, 1.4578, 1.3451, 1.0682]) # per arcmin^2
+n_arcmin2 = np.array([1.7698, 1.6494, 1.4974, 1.4578, 1.3451, 1.0682])#*1.e-2 # per arcmin^2
 
 def calculate_tomo_nz(data_dir, n_los_chi, los_z_integration, shift_nz=True):
     tomo_nz = np.zeros((nbins, n_los_chi))

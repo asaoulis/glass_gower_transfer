@@ -5,19 +5,22 @@ import camb
 from typing import Dict, Tuple
 from .parameters import build_cosmology
 from .simulators import GowerStreetSimulator
+import glass
+import glass.ext.pkdgrav
 
 class GowerStCosmologies:
     PARAM_MAP = {
         "little_h": "h",
         "Omega_b little_h^2": "ombh2",
-        "sigma_8": "s8",
+        "sigma_8": "sigma_8",
         "w": "w0",
         "n_s": "ns",
         "m_nu": "mnu",
         "Omega_m": "omega_m"
     }
 
-    def __init__(self, csv_path: str):
+    def __init__(self, dataset_path, csv_path: str):
+        self.dataset_path = dataset_path
         self.df = pd.read_csv(csv_path, skiprows=1)  # Skips first line of extra header
         self.df = self._clean_dataframe(self.df)
 
@@ -32,6 +35,7 @@ class GowerStCosmologies:
 
     def get_simulation_cosmology(self, serial_id: int, extra_params, **kwargs):
         params = self.get_params_from_sim_id(serial_id, extra_params)
+        print("Raw params", params)
         return *build_cosmology(params), params
 
     def get_params_from_sim_id(self, serial_id, extra_params):
@@ -49,11 +53,20 @@ class GowerStCosmologies:
                     params[model_key] = float(val)
         params = {**params, **extra_params}
         return params
+    def load_shells_matter_and_cosmology(self, serial_id: int, nside, **kwargs):
+        sim_path = f"{self.dataset_path}/sim{serial_id:05d}"
+        sim = glass.ext.pkdgrav.load(f"{sim_path}/control.par")
+        cosmo = sim.cosmology
+
+        shells = glass.tophat_windows(sim.redshifts)
+
+        matter = glass.ext.pkdgrav.read_gowerst(sim, zmax=2.0, nside=nside)
+        return shells, matter, cosmo
     
 class GowerStDatasetBuilder:
 
     def __init__(self, csv_path: str, dataset_path: str):
-        self.cosmology_loader = GowerStCosmologies(csv_path)
+        self.cosmology_loader = GowerStCosmologies('', csv_path)
         self.dataset_path = dataset_path
     
     def get_simulation_cosmology(self, serial_id: int, *args, **kwargs):
@@ -128,7 +141,7 @@ class GowerStPrior:
 
     @classmethod
     def from_csv(cls, csv_path: str, drop_first: int | None = None, nbins_list=np.arange(10, 30, 1)):
-        loader = GowerStCosmologies(csv_path)
+        loader = GowerStCosmologies('', csv_path)
         df = loader.df.copy()
         if drop_first is not None and drop_first > 0:
             df = df.iloc[drop_first:].reset_index(drop=True)

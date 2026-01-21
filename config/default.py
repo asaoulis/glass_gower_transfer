@@ -4,7 +4,7 @@ def get_default_config():
     config = ml_collections.ConfigDict()
     # Training
     config.lr = 0.0004
-    config.epochs = 50
+    config.epochs = 80
     config.batch_size = 32
     config.val_batch_size = None  # defaults to batch_size if None
     config.test_batch_size = None # defaults to val_batch_size if None
@@ -56,17 +56,17 @@ def get_default_config():
         'data': {'type': 'standard', 'keys': None},
         'cosmo': {'type': 'minmax'},
     }
-
+    config.project = "kids-transfer-tests"
 
     # Misc/legacy fields kept for compatibility with older code paths
     config.dataset_name = "illustris"
     config.dataset_suite = "LH"
     config.scaling_dataset = None
-    config.repeats = 6
+    config.repeats = 1
     config.experiment_name = None
     config.data_seed = None
     config.log_normal_dataset_path = None
     config.unpaired = False
-    config.match_string = None
+    config.match_string = ""
 
     return config
