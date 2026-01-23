@@ -104,10 +104,9 @@ def filter_EB_alms_and_make_maps(alm_list, nside_out=512, lmax_out=None, fwhm_ar
 
     return E_maps_out, B_maps_out
 
-def make_alm_shear_convergence(catalogue, m_bias, nbins, nside, lmax, mask = None, nosh=False):
-    print('fixed shear with mask')
-    shear = np.zeros((nbins, hp.nside2npix(nside)), dtype=complex)
-    counts = np.zeros_like(shear, dtype=int)
+def make_alm_shear_convergence(catalogue, m_bias, nbins, nside, lmax, mask = None, nosh=False, return_shear = False):
+    if return_shear:
+        all_shear = np.zeros((nbins, hp.nside2npix(nside)), dtype=complex)
     if mask is None:
         npix = hp.nside2npix(nside)
     else:
@@ -117,6 +116,8 @@ def make_alm_shear_convergence(catalogue, m_bias, nbins, nside, lmax, mask = Non
     ell, emm = hp.Alm.getlm(lmax=lmax)
 
     for i in range(nbins):
+        shear = np.zeros(hp.nside2npix(nside), dtype=complex)
+        counts = np.zeros(hp.nside2npix(nside), dtype=int)
         in_bin = (catalogue['ZBIN'] == i)
 
         she = (1/(1+m_bias[i])) * (
@@ -124,13 +125,13 @@ def make_alm_shear_convergence(catalogue, m_bias, nbins, nside, lmax, mask = Non
             + 1j*(catalogue['E2'][in_bin] - np.mean(catalogue['E2'][in_bin]))
         )
 
-        map_shears(shear[i], counts[i],
+        map_shears(shear, counts,
                    catalogue['RA'][in_bin],
                    catalogue['DEC'][in_bin],
                    she, gal_wht=None)
 
         # shear[i][counts[i] > 0] = shear[i][counts[i] > 0] / counts[i][counts[i] > 0]
-        shear[i][counts[i] > 0] = shear[i][counts[i] > 0] / (sum(counts[i]) / npix)
+        shear[counts > 0] = shear[counts > 0] / (sum(counts) / npix)
 
         # Make randomized shear field
         gal_num = len(catalogue[in_bin])
@@ -147,7 +148,7 @@ def make_alm_shear_convergence(catalogue, m_bias, nbins, nside, lmax, mask = Non
         rand[_ > 0] = rand[_ > 0] / (sum(_) / npix)
 
         # Compute spin-2 alm decomposition
-        almE, almB = hp.sphtfunc.map2alm_spin([shear[i].real, shear[i].imag],
+        almE, almB = hp.sphtfunc.map2alm_spin([shear.real, shear.imag],
                                               spin=2, lmax=lmax)
         almE_rand, almB_rand = hp.sphtfunc.map2alm_spin([rand.real, rand.imag],
                                                         spin=2, lmax=lmax)
@@ -159,12 +160,14 @@ def make_alm_shear_convergence(catalogue, m_bias, nbins, nside, lmax, mask = Non
             almE_rand *= factor
             almB_rand *= factor
 
-
+        if return_shear:
+            all_shear[i] = shear
         # Save
         alm.append((almE, almB))
         alm_rand.append((almE_rand, almB_rand))
-
-    return alm, alm_rand, shear
+    if return_shear:
+        return alm, alm_rand, all_shear
+    return alm, alm_rand
 
 import numpy as np
 import healpy as hp

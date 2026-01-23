@@ -1,4 +1,4 @@
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple, Union, Optional
 import numpy as np
 import h5py
 
@@ -32,15 +32,28 @@ def _stack_group_datasets(group: h5py.Group) -> np.ndarray:
         shapes = [a.shape for a in arrays]
         raise ValueError(f"Cannot stack datasets under {group.name}; shapes: {shapes}") from e
 
-def load_cosmo_params(file_path: str, cosmo_params: List[str], as_torch: bool = True, dtype=np.float32):
+def load_cosmo_params(
+    file_path: str,
+    cosmo_params: Optional[List[str]] = None,
+    as_torch: bool = True,
+    dtype=np.float32,
+):
     with h5py.File(file_path, "r") as f:
         grp = f["cosmo_dict"]
+
+        # If no params specified, load everything
+        if cosmo_params is None:
+            cosmo_params = list(grp.keys())
+
         vals = [float(np.asarray(grp[p][()])) for p in cosmo_params]
+
     arr = np.asarray(vals, dtype=dtype)
+
     if as_torch:
         import torch
         arr = torch.from_numpy(arr)
-    return arr
+
+    return arr, cosmo_params
 
 def list_patches(file_path: str, map_type: str = "E") -> List[str]:
     with h5py.File(file_path, "r") as f:

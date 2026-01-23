@@ -13,54 +13,49 @@ from .systematics import NoSystematics
 ZERO_TOL = 1e-12   # numerical tolerance for "zero"
 
 
-def rotate_mask_array(mask, nside, rot_deg, delta_shift=0.0, flip=False):
+def generate_rotation_specs(
+    delta_deg=0,
+    recenter_deg=45.0,
+    flips=(False,),
+    base_angles=(0, 90, 180, 270),
+    backend="pixel"
+):
     """
-    Rotate a healpy mask array and return another mask array of same shape.
+    Generate rotation specifications compatible with hp.Rotator(rot=[a,b,c]).
+    
+    Semantics (unchanged from original code):
+      1. recenter about Y by ±recenter_deg
+      2. rotate about Z by base_angle + delta_deg
+      3. optional flip: theta -> pi - theta
+      4. undo recentering is handled implicitly by composing rotations
+         (equivalent to R_y(-recenter) * R_z * R_y(recenter))
 
-    Parameters
-    ----------
-    mask : ndarray (shape = 12*nside^2)
-        Boolean or float mask array.
-    nside : int
-        Healpix nside.
-    rot_deg : float
-        Rotation angle (about x-axis here), in degrees.
-    delta_shift : float, optional
-        Extra shift in degrees to add to rotation (default 0).
-    flip : bool, optional
-        If True, apply phi → π − phi symmetry flip.
-
-    Returns
-    -------
-    rotated_mask : ndarray
-        Rotated mask array (same shape as input).
+    Returns a list of rotation specs:
+        {
+            "rot": [alpha, beta, gamma],
+            "flip": bool,
+            "label": str
+        }
     """
-    npix = hp.nside2npix(nside)
+    specs = []
 
-    # Get the indices of masked pixels
-    mask_pix = np.where(mask > 0)[0]
+    for ang in base_angles:
+        for flip in flips:
+            alpha = ang + delta_deg       # Z
+            beta  = recenter_deg          # Y
+            gamma = 0.0                   # Z
 
-    # Define rotation
-    rot_angles = [rot_deg + delta_shift, 0, 0]
-    rot = hp.Rotator(rot=rot_angles, deg=True)
+            specs.append({
+                "rot": [alpha, beta, gamma],
+                "flip": bool(flip),
+                "label": (
+                    f"rot=[{alpha:.1f}, {beta:.1f}, {gamma:.1f}] deg, "
+                    f"flip={flip}"
+                ),
+                "backend": backend
+            })
 
-    # Convert to spherical angles (radians)
-    alpha, delta = hp.pix2ang(nside, mask_pix)
-
-    # Apply rotation
-    rot_alpha, rot_delta = rot(alpha, delta)
-
-    if flip:
-        rot_alpha = np.pi - rot_alpha
-
-    # Back to pixel indices
-    rotated_pix = hp.ang2pix(nside, rot_alpha, rot_delta)
-
-    # Build rotated mask with same shape
-    rotated_mask = np.zeros(npix, dtype=mask.dtype)
-    rotated_mask[rotated_pix] = mask[mask_pix]
-
-    return rotated_mask
+    return specs
 
 
 
@@ -108,6 +103,7 @@ class BaseSimulator(ABC):
         self.row_dtype = np.empty(0, dtype=[('RA', float), ('DEC', float),
                                         ('Z_TRUE', float), ('ZBIN', int),
                                         ('E1', float), ('E2', float)]).dtype
+        self.lmax = 2 * nside - 1
 
         self.systematics = systematics or NoSystematics()
         print(f"Using systematics model: {self.systematics}", flush=True)
@@ -118,12 +114,65 @@ class BaseSimulator(ABC):
         Yield tuples (i, delta_i) for each shell index and density contrast map.
         """
         pass
-    def run(self, rotation_angles=[0], num_shape_noise_realisations=4):
+
+    def rotate_field(self, m, rot, flip, rotation_backend):
+        if rotation_backend == "alm":
+            return self._rotate_map_alm(m, rot, flip)
+        elif rotation_backend == "pixel":
+            return self._rotate_map_pixel(m, rot, flip)
+        else:
+            raise ValueError("Unsupported rotation backend")
+
+    def _rotate_map_alm(self, m, rot, flip):
+        # rotate latitude, then flip, then longitude (rot[0])
+        rotator = hp.Rotator(rot=[0,rot[1],0], deg=True)
+        m_rot = rotator.rotate_map_alms(
+            m,
+            lmax=self.lmax,
+            use_pixel_weights=True,
+        )
+        if flip:
+            ipix = np.arange(m_rot.size)
+            theta, phi = hp.pix2ang(self.nside, ipix)
+            theta_f = np.pi - theta
+            ipix_f = hp.ang2pix(self.nside, theta_f, phi)
+            m_flip = np.zeros_like(m_rot)
+            m_flip[ipix_f] = m_rot[ipix]
+            m_rot = m_flip
+        rotator = hp.Rotator(rot=[rot[0],0,0], deg=True)
+        m_rot = rotator.rotate_map_alms(
+            m_rot,
+            lmax=self.lmax,
+            use_pixel_weights=True,
+        )
+
+        return m_rot
+
+    def _rotate_map_pixel(self, m, rot, flip):
+        """
+        Rotate a scalar HEALPix map using pixel-space Rotator.
+        Exact only for special rotations.
+        """
+        rot = hp.Rotator(rot=rot, deg=True)
+        m_rot = rot.rotate_map_pixel(m)
+
+        if flip:
+            ipix = np.arange(m_rot.size)
+            theta, phi = hp.pix2ang(self.nside, ipix)
+            theta_f = np.pi - theta
+            ipix_f = hp.ang2pix(self.nside, theta_f, phi)
+            m_flip = np.zeros_like(m_rot)
+            m_flip[ipix_f] = m_rot[ipix]
+            return m_flip
+
+        return m_rot
+
+    def run(self, rotation_specs, num_shape_noise_realisations=4):
         """
         Generate galaxy catalogues with rotations and shape-noise realizations.
         Preallocates storage so that the first dimension indexes each augmentation.
         """
-        n_rot = len(rotation_angles)
+        n_rot = len(rotation_specs)
         n_aug = n_rot * num_shape_noise_realisations
 
         # Preallocate a list for each augmentation
@@ -132,7 +181,6 @@ class BaseSimulator(ABC):
         n_shells = len(self.ws)
         # mask = np.where(self.mask > 0)[0]
         print("Original simulations fixed kappa, partition version", flush=True)
-        ngals_per_bin = [glass.partition(self.los_z_integration, self.tomo_nz[i], self.ws) for i in range(len(self.tomo_nz))]
         for i, delta in self.get_matter_fields():
             # hp.mollview(np.log10(delta+1), title=f"Delta shell {i}")
             if self.debug:
@@ -142,62 +190,64 @@ class BaseSimulator(ABC):
             # Lens planes
             self.convergence.add_window(delta, self.ws[i])
             kappa = self.convergence.kappa.copy()
-            # hp.mollview(kappa, title=f"Kappa shell {i}")
+            # --- Rotate delta and kappa once per rotation spec ---# preallocate lists to avoid append
+            rotated_deltas = [None] * n_rot
+            rotated_kappas = [None] * n_rot
+            for rot_idx, spec in enumerate(rotation_specs):
+                rot = spec["rot"]
+                flip = spec["flip"]
+                backend = spec["backend"]
+
+                delta_rot = self.rotate_field(delta, rot, flip, backend)
+                kappa_rot = self.rotate_field(kappa, rot, flip, backend)
+                # gamma_rot, = glass.lensing.from_convergence(kappa_rot, shear=True)
+
+                rotated_deltas[rot_idx] = delta_rot
+                rotated_kappas[rot_idx] = (kappa_rot)
+            # --- Now loop over tomographic bins ---
             for tomo in range(self.nbins):
                 z_vals, dndz = glass.shells.restrict(
                     self.los_z_integration,
                     self.tomo_nz[tomo],
                     self.ws[i]
                 )
+                z_eff = np.average(self.los_z_integration, weights=self.tomo_nz[tomo])
                 ngal = np.trapezoid(dndz, z_vals)
 
-                z_eff = np.average(self.los_z_integration, weights=self.tomo_nz[tomo])
-                # z_eff = np.average(z_vals, weights=dndz)
-                # z_eff = self.ws[i].zeff
-                # Intrinsic alignments
-                kappa_i = self.systematics.apply_intrinsic_alignments(
-                    delta=delta,
-                    kappa=kappa,
-                    z_eff=z_eff,
-                    tomo=tomo,
-                )
-                gamma_i, = glass.lensing.from_convergence(kappa_i, shear=True)
+                # Intrinsic alignments per bin
+                for rot_idx, spec in enumerate(rotation_specs):
+                    delta_rot = rotated_deltas[rot_idx]
+                    kappa_rot = rotated_kappas[rot_idx]
 
-                # --- Loop over rotations and shape-noise realizations ---
-                for rot_idx, ang in enumerate(rotation_angles):
-                    # Rotate mask pixels
-                    # rot_mask = rotate_mask_array(mask=self.mask, nside=self.nside, rot_deg=ang, flip=False)
-                    # self.mask
-                    # rot_mask = self.mask
+                    kappa_i = self.systematics.apply_intrinsic_alignments(
+                        delta=delta_rot,
+                        kappa=kappa_rot,
+                        z_eff=z_eff,
+                        tomo=tomo
+                    )
+                    gamma_rot, = glass.lensing.from_convergence(kappa_i, shear=True)
+
+
                     for noise_idx in range(num_shape_noise_realisations):
                         aug_idx = rot_idx * num_shape_noise_realisations + noise_idx
 
                         # Sample galaxies
                         for lon, lat, count in glass.points.positions_from_delta(
-                            ngal, delta, self.galaxy_bias, self.mask,
-                            # rng=self.rng
+                            ngal, delta_rot, self.galaxy_bias, self.mask,
+                            rng=self.rng
                         ):
-                            # gal_z = glass.galaxies.redshifts_from_nz(
-                            #     count, z_vals, dndz,
-                            #     rng=self.rng
-                            # )
                             gal_z = glass.galaxies.redshifts(count,self.ws[i], rng=self.rng)
                             gal_eps = glass.shapes.ellipticity_intnorm(
                                 count, self.sigma_e[tomo], rng=self.rng
                             )
                             shear = glass.galaxies.galaxy_shear(
                                 lon, lat, gal_eps,
-                                kappa_i, gamma_i.real, gamma_i.imag
+                                kappa_i, gamma_rot.real, gamma_rot.imag
                             )
                             # Apply shear bias
-                            # E1, E2 = shear.real, shear.imag
+
                             E1, E2 = self.systematics.apply_shear_bias(tomo, shear, lat)
 
-                            # Undo rotation to original frame
-                            # inv_rot = hp.Rotator(rot=[-ang, 0, 0], deg=True)
-                            # ra_final, dec_final = inv_rot(lon, lat, lonlat=True)
-
-                            # Append rows to preallocated augmentation array
                             rows = np.empty(count, dtype=self.row_dtype)
 
                             rows['RA'] = lon
