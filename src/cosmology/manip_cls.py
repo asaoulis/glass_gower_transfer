@@ -255,7 +255,7 @@ def to_heracles_data_cl(num_bins, data_cls):
 
 def unmix_shear_cl(num_bins, shear_cls, mask_cl, lmin, lmax, patch_hole=True):
     data_cls = to_heracles_data_cl(
-        num_bins=6,
+        num_bins=num_bins,
         data_cls=shear_cls
     )
 
@@ -304,8 +304,11 @@ def compute_cl_bandpowers(realised_unmixed_shear_cls_cut, nbins, lower_lscale, u
     theory_bandpowers = theory_bandpowers_stacked.reshape(int(nbins*(nbins+1)/2), -1)
     return centre_ell, theory_bandpowers
 
-def unmixing_mask_cls(catalogue, nbins, nside, lmax, lmin):
-    bin_masks = cat2mask(catalogue, nbins, nside)
+def unmixing_mask_cls(catalogue, nbins, nside, lmax, lmin, mask = None):
+    if mask is None:
+        bin_masks = cat2mask(catalogue, nbins, nside)
+    else:
+        bin_masks = [mask for _ in range(nbins)]
     bin_mask_cls = maskcls(bin_masks, lmax=int(1.5 * lmax), nbins=nbins)
     return bin_mask_cls
 

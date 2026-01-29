@@ -14,8 +14,8 @@ DEFAULT_PARAMS = {
     "w0": -1.0,
     "wa": 0.0,
     "ns": 0.965,
-    "logT_AGN": 7.8,
-    "A_baryon": 3.10,
+    # "logT_AGN": 7.8,
+    # "A_baryon": 3.10,
     "omega_k": 0.0,
     "mnu": 0.06,
     "alpha": 0.5,
@@ -71,11 +71,11 @@ def s8_to_As(params):
     omch2 = Omega_c * h**2
 
     p = camb.CAMBparams(WantTransfer=True, Want_CMB=False, Want_CMB_lensing=False, DoLensing=False,
-                        NonLinear="NonLinear_none", WantTensors=False, WantVectors=False, WantCls=False,
+                        NonLinear="NonLinear_both", WantTensors=False, WantVectors=False, WantCls=False,
                         WantDerivedParameters=False, want_zdrag=False, want_zstar=False)
     
     p.set_accuracy(DoLateRadTruncation=True)
-    p.Transfer.high_precision = False
+    p.Transfer.high_precision = True
     p.Transfer.accurate_massive_neutrino_transfers = False
     p.Transfer.kmax = kmax
     p.Transfer.k_per_logint = k_per_logint
@@ -93,41 +93,39 @@ def s8_to_As(params):
     As = fid_As * (sigma8 / fid_sigma8) ** 2
 
     return sigma8, As, Omega_c, Omega_b, Omega_m
-
-def build_cosmology(params):
-    # Compute derived quantities
+def build_cosmology(params, include_baryons=False):
     params = {**DEFAULT_PARAMS, **params}
     sigma8, As, Omega_c, Omega_b, Omega_m = s8_to_As(params)
     print("Derived sigma8 and A_s:", sigma8, As)
-    eta = compute_eta(params)
+
+    # Choose halofit / HMCode mode
+    if include_baryons:
+        halofit_version = "mead2020_feedback"   # use the feedback recipe
+        hmcode_kwargs = {"HMCode_logT_AGN": params.get("logT_AGN", 7.8)}
+    else:
+        halofit_version = "mead2020"            # gravity-only Mead2020
+        hmcode_kwargs = {}                      # do NOT pass HMCode_* params
+
+    pars = camb.set_params(
+        H0=params["h"] * 100,
+        ombh2=params["ombh2"],
+        omch2=Omega_c * params["h"]**2,
+        As=As,
+        ns=params["ns"],
+        w=params["w0"],
+        wa=params["wa"],
+        halofit_version=halofit_version,
+        neutrino_hierarchy="normal",
+        NonLinear=camb.model.NonLinear_both,
+        lmax=3000,
+        **hmcode_kwargs,
+    )
+    pars.AccuracyBoost = 2
+    pars.lSampleBoost = 2
 
     z_grid = np.linspace(params["zmin"], params["zmax"], params["nz"])
-
-    # Prefer HMCode_logT_AGN if provided, else fall back to (A_baryon, eta)
-    hmcode_kwargs = {}
-    if "logT_AGN" in params and params["logT_AGN"] is not None:
-        hmcode_kwargs["HMCode_logT_AGN"] = params["logT_AGN"]
-    else:
-        hmcode_kwargs["HMCode_A_baryon"] = params["A_baryon"]
-        hmcode_kwargs["HMCode_eta_baryon"] = eta
-
-    pars = camb.set_params(H0=params["h"] * 100,
-                           ombh2=params["ombh2"],
-                           omch2=Omega_c*params["h"]**2,
-                           As=As,
-                           ns=params["ns"],
-                           w=params["w0"],
-                           wa=params["wa"],
-                           halofit_version='mead2020',
-                           neutrino_hierarchy='normal',
-                           DoLensing=False,
-                           NonLinear=camb.model.NonLinear_both,
-                           lmax=3000,
-                           **hmcode_kwargs)
-
     pars.set_matter_power(redshifts=z_grid, kmax=20.0)
     cosmo = Cosmology.from_camb(pars)
     print("sigma8 from A_s is", camb.get_results(pars).get_sigma8_0())
-
 
     return cosmo, pars

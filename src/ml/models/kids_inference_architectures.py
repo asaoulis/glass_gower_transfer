@@ -3,12 +3,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Tuple, Sequence
 
+from .neural_operators import KidsFNONorthSouthEmbedding
+from .transformers import QueryCrossAttentionBlock
+
+# Small common interface for encoders used by NDELightningModule
+class KidsInferenceEncoder(nn.Module):
+    """Common interface for kids encoders.
+
+    - compress(data) -> latent representation z
+    """
+    def compress(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        # Default implementation: call ``forward``.
+        return self.forward(data)
+
 # Maximum input spatial size (H, W) expected by the CNN to size its head.
 # The FlexibleO3 backbone will run a dummy pass with this size to infer head dims.
 MAX_INPUT_HW: Tuple[int, int] = (100, 1000)
 
 
-class KidsO3NorthSouthEmbedding(nn.Module):
+class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
     """
     Embedding network that:
       - expects a data dict with keys: 'E_south', 'B_south', 'E_north', 'B_north'
@@ -83,14 +96,7 @@ class KidsO3NorthSouthEmbedding(nn.Module):
         return z
 
 
-class KidsCombinedCNNTransformer(nn.Module):
-    """
-    Combined architecture that preserves spatial structure from the flexible O3 CNN,
-    applies hemisphere-specific sinusoidal positional embeddings and a categorical
-    class embedding (0=south, 1=north) to tokens before concatenation, and then
-    runs Transformer self-attention with per-layer learnable queries.
-    """
-
+class KidsCombinedCNNTransformer(KidsInferenceEncoder):
     def __init__(
         self,
         latent_dim: int,
@@ -100,25 +106,23 @@ class KidsCombinedCNNTransformer(nn.Module):
         n_heads: int = 4,
         n_layers: int = 4,
         n_queries: int = 8,
-        mlp_ratio: float = 4.0,
-        dropout: float = 0.1,
+        mlp_ratio: float = 2.0,
+        dropout: float = 0.15,
+        pool_queries: str = "mean",
         **kwargs
     ):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         self.latent_dim = latent_dim
-        self.channels_per_map = channels_per_map
-        self.hidden = hidden
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_queries = n_queries
+        self.pool_queries = pool_queries
 
         from .compressors import flexible_o3_model
 
         in_channels = 2 * channels_per_map
-        # Shared CNN backbone returning spatial features [B, Cout, H', W']
         self.shared_cnn = flexible_o3_model(
-            num_outputs=0,  # ignored when return_features=True
+            num_outputs=None, # we are using return features = True so this is ignored
             hidden=hidden,
             channels=in_channels,
             max_hw=MAX_INPUT_HW,
@@ -126,34 +130,30 @@ class KidsCombinedCNNTransformer(nn.Module):
             return_features=True,
         )
         # CNN channel dim is 128*hidden after tail_conv
-        self.cnn_out_channels = 128 * hidden
+        self.cnn_out_channels = 32 * hidden
         # Project per-width tokens to d_model
         self.proj = nn.Linear(self.cnn_out_channels, d_model)
         self.token_ln = nn.LayerNorm(d_model)
 
-        # Hemisphere class embedding: 0=south, 1=north
         self.class_embed = nn.Embedding(2, d_model)
 
-        # Transformer encoder layers for data tokens (batch_first)
-        def make_encoder_layer():
-            return nn.TransformerEncoderLayer(
-                d_model=d_model,
-                nhead=n_heads,
-                dim_feedforward=int(mlp_ratio * d_model),
-                dropout=dropout,
-                activation="gelu",
-                batch_first=True,
-                norm_first=True,
-            )
-        self.encoder = nn.ModuleList([make_encoder_layer() for _ in range(n_layers)])
-
-        self.cls_tokens = nn.Parameter(torch.randn(n_queries, d_model) * 0.02)
-
-        # Gated pooling over the K CLS tokens (better than plain mean)
-        self.cls_pool = nn.Sequential(
-            nn.LayerNorm(d_model),
-            nn.Linear(d_model, 1)
+        # Learnable query tokens (persistent)
+        self.query_tokens = nn.Parameter(
+            torch.randn(1, n_queries, d_model) * 0.05
         )
+
+        # Cross-attention blocks
+        self.blocks = nn.ModuleList([
+            QueryCrossAttentionBlock(
+                d_model=d_model,
+                n_heads=n_heads,
+                mlp_ratio=mlp_ratio,
+                dropout=dropout,
+            )
+            for _ in range(n_layers)
+        ])
+
+        self.final_ln = nn.LayerNorm(d_model)
 
         self.head = nn.Sequential(
             nn.Linear(d_model, max(latent_dim, d_model // 2)),
@@ -201,52 +201,52 @@ class KidsCombinedCNNTransformer(nn.Module):
         north_stack = torch.cat([e_north, b_north], dim=1)
         south_stack, north_stack = self._pad_to_match(south_stack, north_stack)
 
-        # CNN features preserve spatial structure
-        south_feat = self.shared_cnn(south_stack)  # [B, Cc, H', W']
+        south_feat = self.shared_cnn(south_stack)
         north_feat = self.shared_cnn(north_stack)
 
-        # Build width tokens per hemisphere
-        south_tokens = self._to_width_tokens(south_feat)  # [B, W_s, d]
-        north_tokens = self._to_width_tokens(north_feat)  # [B, W_n, d]
+        south_tokens = self._to_width_tokens(south_feat)
+        north_tokens = self._to_width_tokens(north_feat)
 
-        # Apply sinusoidal PE separately
         B, W_s, D = south_tokens.shape
         _, W_n, _ = north_tokens.shape
-        pe_s = self._sinusoidal_positional_encoding(W_s, D, south_tokens.device).unsqueeze(0)
-        pe_n = self._sinusoidal_positional_encoding(W_n, D, north_tokens.device).unsqueeze(0)
-        south_tokens = south_tokens + pe_s
-        north_tokens = north_tokens + pe_n
 
-        # Add class embedding (0=south, 1=north)
-        cls_s = self.class_embed(torch.tensor(0, device=south_tokens.device)).view(1, 1, -1)
-        cls_n = self.class_embed(torch.tensor(1, device=north_tokens.device)).view(1, 1, -1)
-        south_tokens = south_tokens + cls_s
-        north_tokens = north_tokens + cls_n
+        # pe_s = self._sinusoidal_positional_encoding(W_s, D, south_tokens.device).unsqueeze(0)
+        # pe_n = self._sinusoidal_positional_encoding(W_n, D, north_tokens.device).unsqueeze(0)
 
-        tokens = torch.cat([south_tokens, north_tokens], dim=1)  # [B, W_s+W_n, d]
+        # south_tokens = south_tokens + pe_s
+        # north_tokens = north_tokens + pe_n
 
-        # Prepend K CLS tokens
-        B = tokens.size(0)
-        cls = self.cls_tokens.unsqueeze(0).expand(B, -1, -1)  # [B, K, d]
-        x = torch.cat([cls, tokens], dim=1)  # [B, K + T, d]
+        # south_tokens = south_tokens + self.class_embed(
+        #     torch.tensor(0, device=south_tokens.device)
+        # ).view(1, 1, -1)
 
-        # Pass through encoder stack
-        for l in range(self.n_layers):
-            x = self.encoder[l](x)
+        # north_tokens = north_tokens + self.class_embed(
+        #     torch.tensor(1, device=north_tokens.device)
+        # ).view(1, 1, -1)
 
-        # Read out the first K positions (CLS tokens)
-        cls_out = x[:, :self.n_queries, :]  # [B, K, d]
+        x = torch.cat([south_tokens, north_tokens], dim=1)  # (B, T, D)
 
-        # Gated attention pooling over K CLS tokens
-        gate = torch.softmax(self.cls_pool(cls_out).squeeze(-1), dim=1)  # [B, K]
-        pooled = (gate.unsqueeze(-1) * cls_out).sum(dim=1)  # [B, d]
+        # Expand persistent queries
+        q = self.query_tokens.expand(B, -1, -1)  # (B, Q, D)
 
-        z = self.head(pooled)  # [B, latent_dim]
+        # Query ↔ data interaction
+        for blk in self.blocks:
+            q, x = blk(q, x)
+
+        q = self.final_ln(q)
+
+        # Pool queries (default: mean)
+        if self.pool_queries == "first":
+            pooled = q[:, 0]
+        else:
+            pooled = q.mean(dim=1)
+
+        z = self.head(pooled)
         return z
 
 
 # New simple models for bandpowers inputs
-class KidsBandpowersMLP(nn.Module):
+class KidsBandpowersMLP(KidsInferenceEncoder):
     """
     Simple MLP that flattens bandpowers of shape [B, 21, 20] and maps to latent_dim.
     Hidden layer width is latent_dim * hidden_multiple (default 2), with an
@@ -255,7 +255,7 @@ class KidsBandpowersMLP(nn.Module):
     def __init__(
         self,
         latent_dim: int,
-        input_shape: Tuple[int, int] = (21, 20),
+        input_shape: Tuple[int, int] = (21, 8),
         hidden_multiple: int = 2,
         num_layers: int = 5,
         dropout: float = 0.1,
@@ -271,12 +271,12 @@ class KidsBandpowersMLP(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        x = data["bandpowers"]  # [B, 21, 20]
+        x = data["mixed_bandpowers"]  # [B, 21, 20]
         x = x.view(x.shape[0], -1)
         return self.net(x)
 
 
-class KidsBandpowersCNN1D(nn.Module):
+class KidsBandpowersCNN1D(KidsInferenceEncoder):
     """
     1D CNN over length-20 series with 21 channels (bandpowers stacked on channel dim).
     The number of Conv1d blocks is controlled by the length of `channels`.
@@ -286,10 +286,10 @@ class KidsBandpowersCNN1D(nn.Module):
         self,
         latent_dim: int,
         in_channels: int = 21,
-        seq_len: int = 20,
+        seq_len: int = 8,
         channels: Sequence[int] = (64, 128),
         kernel_size: int = 3,
-        dropout: float = 0.1,
+        dropout: float = 0.15,
         **kwargs,
     ):
         super().__init__()
@@ -314,7 +314,7 @@ class KidsBandpowersCNN1D(nn.Module):
         )
 
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        x = data["bandpowers"]  # [B, 21, 20]
+        x = data["mixed_bandpowers"]  # [B, 21, 20]
         if x.dim() != 3:
             raise ValueError(f"Expected bandpowers tensor with 3 dims [B, C, L], got shape {tuple(x.shape)}")
         x = self.conv(x)
@@ -322,7 +322,7 @@ class KidsBandpowersCNN1D(nn.Module):
         return z
 
 
-class KidsHybridBandpowersMaps(nn.Module):
+class KidsHybridBandpowersMaps(KidsInferenceEncoder):
     """
     Hybrid model that processes both bandpowers and map patches:
       - A bandpowers encoder (choose 'mlp' or 'cnn') maps bandpowers -> latent_b
@@ -334,26 +334,28 @@ class KidsHybridBandpowersMaps(nn.Module):
     def __init__(
         self,
         latent_dim: int,
-        bandpower_type: str = 'mlp',  # 'mlp' or 'cnn'
+        bandpower_type: str = 'mlp',
         bandpower_kwargs: Dict = None,
-        map_encoder_type: str = 'transformer',  # 'transformer' or 'o3_dual'
+        map_encoder_type: str = 'transformer',
         map_kwargs: Dict = None,
-        # Backward-compat alias; if provided and map_kwargs is None, will be used
         transformer_kwargs: Dict = None,
+        bandpower_latent_dim: int = None,
         **kwargs,
     ):
         super().__init__()
-        bandpower_kwargs = {} if bandpower_kwargs is None else bandpower_kwargs
-        # backward-compat for existing configs using transformer_kwargs
+        bandpower_kwargs = bandpower_kwargs or {}
+        # Backward-compat for existing configs using transformer_kwargs
         if map_kwargs is None and transformer_kwargs is not None:
             map_kwargs = transformer_kwargs
-        map_kwargs = {} if map_kwargs is None else map_kwargs
+        map_kwargs = map_kwargs or {}
 
-        # Split latent dims between the two branches
-        dim_band = latent_dim // 2
+        if bandpower_latent_dim is None:
+            dim_band = latent_dim // 2
+        else:
+            dim_band = bandpower_latent_dim
         dim_patch = latent_dim - dim_band
 
-        # Select bandpowers encoder
+        # Bandpowers encoder
         bp_builders = {
             'mlp': KidsBandpowersMLP,
             'cnn': KidsBandpowersCNN1D,
@@ -362,20 +364,20 @@ class KidsHybridBandpowersMaps(nn.Module):
             raise ValueError(f"Unknown bandpower_type '{bandpower_type}', expected one of {list(bp_builders.keys())}")
         self.band_encoder = bp_builders[bandpower_type](latent_dim=dim_band, **bandpower_kwargs)
 
-        # Select patch encoder
+        # Patch encoder
         patch_builders = {
             'transformer': KidsCombinedCNNTransformer,
             'o3_dual': KidsO3NorthSouthEmbedding,
-            'kids_o3_dual': KidsO3NorthSouthEmbedding,  # alias
-            'dual': KidsO3NorthSouthEmbedding,          # alias
+            'kids_o3_dual': KidsO3NorthSouthEmbedding,
+            'dual': KidsO3NorthSouthEmbedding,
         }
         if map_encoder_type not in patch_builders:
             raise ValueError(f"Unknown map_encoder_type '{map_encoder_type}', expected one of {list(patch_builders.keys())}")
         self.patch_encoder = patch_builders[map_encoder_type](latent_dim=dim_patch, **map_kwargs)
 
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        z_band = self.band_encoder(data)      # [B, dim_band]
-        z_patch = self.patch_encoder(data)    # [B, dim_patch]
+        z_band = self.band_encoder(data)
+        z_patch = self.patch_encoder(data)
         return torch.cat([z_band, z_patch], dim=1)
 
 
@@ -402,4 +404,5 @@ KIDS_MODEL_BUILDERS = {
                    **kwargs,
                )
     ),
+    "kids_fno_dual": lambda num_outputs, **kwargs: KidsFNONorthSouthEmbedding(latent_dim=num_outputs, **kwargs),
 }

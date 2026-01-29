@@ -4,7 +4,7 @@ from typing import Dict, List, Sequence, Tuple, Union, Optional
 import torch
 
 from .models.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 
 # Centralized dataloader builder
@@ -66,6 +66,7 @@ def _fit_data_key_scalers_from_paths(
     train_paths: Sequence[str],
     nested_keys: Dict[str, Tuple[str, ...]],
     keys_to_scale: Optional[Sequence[str]] = None,
+    max_obs : int = 1_000,
 ) -> Dict[str, BaseScaler]:
     key_scalers: Dict[str, BaseScaler] = {}
     if keys_to_scale is None:
@@ -76,7 +77,9 @@ def _fit_data_key_scalers_from_paths(
             continue
         vals: List[np.ndarray] = []
         single_key = {key: nested_keys[key]}
-        for p in train_paths:
+        # shuffle
+        np.random.shuffle(train_paths)
+        for p in train_paths[:max_obs]:
             data, _ = unpack_data(p, single_key, [], as_torch=False, dtype=np.float32, stack_groups=False)
             arr = data[key]
             vals.append(arr.reshape(-1))
@@ -85,7 +88,7 @@ def _fit_data_key_scalers_from_paths(
         stacked = np.concatenate(vals, axis=0)
 
         # Choose scaler: ensure 'bandpowers' uses LogNormalScaler
-        if key == "bandpowers":
+        if "bandpowers" in key.lower():
             scaler: BaseScaler = LogNormalScaler()
         else:
             scaler = StandardScaler()
@@ -99,7 +102,7 @@ def _fit_cosmo_minmax_scaler_from_paths(train_paths: Sequence[str], cosmo_params
         return None
     rows: List[np.ndarray] = []
     for p in train_paths:
-        vec = load_cosmo_params(p, list(cosmo_params), as_torch=False, dtype=np.float32)
+        vec = load_cosmo_params(p, list(cosmo_params), as_torch=False, dtype=np.float32)[0]
         rows.append(np.asarray(vec))
     if not rows:
         return None
@@ -206,8 +209,9 @@ def prepare_data_and_model(config, data_parameters=None):
         except Exception:
             est_warmup = 250
         base_sched_kwargs['warmup'] = est_warmup
-
-    model = NDELightningModule(
+    use_KL_loss = getattr(config, 'use_KL_loss', False)
+    LightningModule = KLDRegularisedNDELightningModule if use_KL_loss else NDELightningModule
+    model = LightningModule(
         embedding_model,
         conditioning_dim=config.latent_dim,
         inference_dim = len(config.cosmo_param_names),
@@ -221,6 +225,8 @@ def prepare_data_and_model(config, data_parameters=None):
         checkpoint_path=config.checkpoint_path,
         freeze_CNN=config.freeze_cnn,
         scheduler_kwargs=base_sched_kwargs,
+        pretrained_band_ckpt_path=getattr(config, 'pretrained_band_ckpt_path', None),
+        freeze_band=getattr(config, 'freeze_band', False),
     )
 
     return (train_loader, val_loader, test_loader), model, scalers

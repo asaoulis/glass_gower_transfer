@@ -17,7 +17,7 @@ def update_pars_config(old_pars):
 
     # Lensing & nonlinear
     pars.DoLensing = True       # CHANGED
-    pars.NonLinear = camb.model.NonLinear_lens
+    pars.NonLinear = camb.model.NonLinear_both
     tr = pars.Transfer
 
     tr.high_precision = True   # flipped
@@ -37,5 +37,5 @@ def get_camb_matter_cls(pars, lmax, zmin, zmax, dx):
     # ws = glass.shells.tophat_windows(zb)
     ws = glass.shells.linear_windows(zb)
     updated_pars = update_pars_config(pars)
-    camb_cls = glass.ext.camb.matter_cls(updated_pars, lmax, ws, limber=False, limber_lmin=1600)
+    camb_cls = glass.ext.camb.matter_cls(updated_pars, lmax, ws, limber=False, limber_lmin=100)
     return ws, camb_cls

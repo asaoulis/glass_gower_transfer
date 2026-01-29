@@ -57,7 +57,93 @@ def generate_rotation_specs(
 
     return specs
 
+def unrotate_longitude_points(lon, lat, rot):
+    """
+    Undo a pure longitude rotation for galaxy positions.
+    lon, lat in degrees.
+    """
+    alpha = rot
+    lon_unrot = (lon - alpha) % 360.0
+    return lon_unrot, lat
 
+class Rotator:
+
+    def __init__(self, nside, lmax):
+        self.nside = nside
+        self.lmax = lmax
+
+    def rotate_map_alm(self, m, rot, flip):
+        # rotate latitude, then flip, then longitude (rot[0])
+        rotator = hp.Rotator(rot=[0,rot[1],0], deg=True)
+        m_rot = rotator.rotate_map_alms(
+            m,
+            lmax=self.lmax,
+            use_pixel_weights=True,
+        )
+        if flip:
+            ipix = np.arange(m_rot.size)
+            theta, phi = hp.pix2ang(self.nside, ipix)
+            theta_f = np.pi - theta
+            ipix_f = hp.ang2pix(self.nside, theta_f, phi)
+            m_flip = np.zeros_like(m_rot)
+            m_flip[ipix_f] = m_rot[ipix]
+            m_rot = m_flip
+        # rotator = hp.Rotator(rot=[rot[0],0,0], deg=True)
+        # m_rot = rotator.rotate_map_alms(
+        #     m_rot,
+        #     lmax=self.lmax,
+        #     use_pixel_weights=True,
+        # )
+
+        return m_rot
+
+    def rotate_map_pixel(self, m, rot, flip):
+        """
+        Rotate a scalar HEALPix map using pixel-space Rotator.
+        Exact only for special rotations.
+        """
+        rot = hp.Rotator(rot=rot, deg=True)
+        m_rot = rot.rotate_map_pixel(m)
+
+        if flip:
+            ipix = np.arange(m_rot.size)
+            theta, phi = hp.pix2ang(self.nside, ipix)
+            theta_f = np.pi - theta
+            ipix_f = hp.ang2pix(self.nside, theta_f, phi)
+            m_flip = np.zeros_like(m_rot)
+            m_flip[ipix_f] = m_rot[ipix]
+            return m_flip
+
+        return m_rot
+
+    def rotate_map_longitude_exact(self, m, rot, flip):
+        """
+        Exact longitude-only rotation by multiples of 90 deg.
+        rot = [alpha, beta, gamma] in deg, but we REQUIRE beta == gamma == 0.
+        """
+        alpha, beta, gamma = rot
+        if beta != 0.0 or gamma != 0.0:
+            raise ValueError("lon_exact backend only supports pure Z rotations")
+
+        npix = hp.nside2npix(self.nside)
+        ipix = np.arange(npix)
+
+        theta, phi = hp.pix2ang(self.nside, ipix)
+        phi2 = (phi + np.deg2rad(alpha)) % (2 * np.pi)
+
+        ipix2 = hp.ang2pix(self.nside, theta, phi2)
+
+        m_rot = np.empty_like(m)
+        m_rot[ipix2] = m[ipix]
+
+        if flip:
+            theta_f = np.pi - theta
+            ipix_f = hp.ang2pix(self.nside, theta_f, phi2)
+            m_flip = np.zeros_like(m_rot)
+            m_flip[ipix_f] = m_rot[ipix2]
+            return m_flip
+
+        return m_rot
 
 class BaseSimulator(ABC):
     """
@@ -104,6 +190,7 @@ class BaseSimulator(ABC):
                                         ('Z_TRUE', float), ('ZBIN', int),
                                         ('E1', float), ('E2', float)]).dtype
         self.lmax = 2 * nside - 1
+        self.rotator = Rotator(nside, self.lmax)
 
         self.systematics = systematics or NoSystematics()
         print(f"Using systematics model: {self.systematics}", flush=True)
@@ -115,66 +202,40 @@ class BaseSimulator(ABC):
         """
         pass
 
-    def rotate_field(self, m, rot, flip, rotation_backend):
+    def rotate_field(self, m, rot_spec):
+        rot = rot_spec["rot"]
+        flip = rot_spec["flip"]
+        rotation_backend = rot_spec["backend"]
+
         if rotation_backend == "alm":
-            return self._rotate_map_alm(m, rot, flip)
+            return self.rotator.rotate_map_alm(m, rot, flip)
         elif rotation_backend == "pixel":
-            return self._rotate_map_pixel(m, rot, flip)
+            return self.rotator.rotate_map_pixel(m, rot, flip)
+        elif rotation_backend == "lon_exact":
+            if rot[1] != 0.0 or rot[2] != 0.0:
+                raise ValueError("lon_exact backend requires pure Z rotation")
+            return self.rotator.rotate_map_longitude_exact(m, rot, flip)
+        elif rotation_backend == "identity":
+            return m
         else:
-            raise ValueError("Unsupported rotation backend")
+            raise ValueError(f"Unsupported rotation backend: {rotation_backend}")
 
-    def _rotate_map_alm(self, m, rot, flip):
-        # rotate latitude, then flip, then longitude (rot[0])
-        rotator = hp.Rotator(rot=[0,rot[1],0], deg=True)
-        m_rot = rotator.rotate_map_alms(
-            m,
-            lmax=self.lmax,
-            use_pixel_weights=True,
-        )
-        if flip:
-            ipix = np.arange(m_rot.size)
-            theta, phi = hp.pix2ang(self.nside, ipix)
-            theta_f = np.pi - theta
-            ipix_f = hp.ang2pix(self.nside, theta_f, phi)
-            m_flip = np.zeros_like(m_rot)
-            m_flip[ipix_f] = m_rot[ipix]
-            m_rot = m_flip
-        rotator = hp.Rotator(rot=[rot[0],0,0], deg=True)
-        m_rot = rotator.rotate_map_alms(
-            m_rot,
-            lmax=self.lmax,
-            use_pixel_weights=True,
-        )
 
-        return m_rot
-
-    def _rotate_map_pixel(self, m, rot, flip):
-        """
-        Rotate a scalar HEALPix map using pixel-space Rotator.
-        Exact only for special rotations.
-        """
-        rot = hp.Rotator(rot=rot, deg=True)
-        m_rot = rot.rotate_map_pixel(m)
-
-        if flip:
-            ipix = np.arange(m_rot.size)
-            theta, phi = hp.pix2ang(self.nside, ipix)
-            theta_f = np.pi - theta
-            ipix_f = hp.ang2pix(self.nside, theta_f, phi)
-            m_flip = np.zeros_like(m_rot)
-            m_flip[ipix_f] = m_rot[ipix]
-            return m_flip
-
-        return m_rot
-
-    def run(self, rotation_specs, num_shape_noise_realisations=4):
+    def run(self, rotation_spec, mask_rotation_angles, num_shape_noise_realisations=4):
         """
         Generate galaxy catalogues with rotations and shape-noise realizations.
         Preallocates storage so that the first dimension indexes each augmentation.
         """
-        n_rot = len(rotation_specs)
-        n_aug = n_rot * num_shape_noise_realisations
-
+        n_rot = 1
+        n_aug = n_rot * num_shape_noise_realisations * len(mask_rotation_angles)
+        precomputed_masks = []
+        for angle in mask_rotation_angles:
+            backend = "identity" if angle == 0 else "lon_exact"
+            rot_spec = {"rot": [angle,0,0], "flip": False, "backend": backend}
+            rotated_mask = self.rotate_field(self.mask, rot_spec)
+            precomputed_masks.append(rotated_mask)
+        print(f"Total augmentations to be generated: {n_aug}", flush=True)
+        print(f"Using rotation backends: {rotation_spec['backend']}", flush=True)
         # Preallocate a list for each augmentation
         all_catalogues_lists = [[] for _ in range(n_aug)]
 
@@ -187,23 +248,11 @@ class BaseSimulator(ABC):
                 print(f"Processing shell {i+1}/{n_shells}...", flush=True)
                 start_time = time.time()
 
-            # Lens planes
+            delta = self.rotate_field(delta, rotation_spec)
             self.convergence.add_window(delta, self.ws[i])
+                        # --- Rotate delta and kappa once per rotation spec ---# preallocate lists to avoid append
+
             kappa = self.convergence.kappa.copy()
-            # --- Rotate delta and kappa once per rotation spec ---# preallocate lists to avoid append
-            rotated_deltas = [None] * n_rot
-            rotated_kappas = [None] * n_rot
-            for rot_idx, spec in enumerate(rotation_specs):
-                rot = spec["rot"]
-                flip = spec["flip"]
-                backend = spec["backend"]
-
-                delta_rot = self.rotate_field(delta, rot, flip, backend)
-                kappa_rot = self.rotate_field(kappa, rot, flip, backend)
-                # gamma_rot, = glass.lensing.from_convergence(kappa_rot, shear=True)
-
-                rotated_deltas[rot_idx] = delta_rot
-                rotated_kappas[rot_idx] = (kappa_rot)
             # --- Now loop over tomographic bins ---
             for tomo in range(self.nbins):
                 z_vals, dndz = glass.shells.restrict(
@@ -214,26 +263,22 @@ class BaseSimulator(ABC):
                 z_eff = np.average(self.los_z_integration, weights=self.tomo_nz[tomo])
                 ngal = np.trapezoid(dndz, z_vals)
 
-                # Intrinsic alignments per bin
-                for rot_idx, spec in enumerate(rotation_specs):
-                    delta_rot = rotated_deltas[rot_idx]
-                    kappa_rot = rotated_kappas[rot_idx]
-
-                    kappa_i = self.systematics.apply_intrinsic_alignments(
-                        delta=delta_rot,
-                        kappa=kappa_rot,
-                        z_eff=z_eff,
-                        tomo=tomo
-                    )
-                    gamma_rot, = glass.lensing.from_convergence(kappa_i, shear=True)
+                kappa_i = self.systematics.apply_intrinsic_alignments(
+                    delta=delta,
+                    kappa=kappa,
+                    z_eff=z_eff,
+                    tomo=tomo
+                )
+                gamma_rot, = glass.lensing.from_convergence(kappa_i, shear=True)
 
 
-                    for noise_idx in range(num_shape_noise_realisations):
-                        aug_idx = rot_idx * num_shape_noise_realisations + noise_idx
-
-                        # Sample galaxies
+                for noise_idx in range(num_shape_noise_realisations):
+                    # Sample galaxies
+                    for mask_idx, mask_rot_angle in enumerate(mask_rotation_angles):
+                        aug_idx = (noise_idx * len(mask_rotation_angles)) + mask_idx
+                        mask = precomputed_masks[mask_idx]
                         for lon, lat, count in glass.points.positions_from_delta(
-                            ngal, delta_rot, self.galaxy_bias, self.mask,
+                            ngal, delta, self.galaxy_bias, mask,
                             rng=self.rng
                         ):
                             gal_z = glass.galaxies.redshifts(count,self.ws[i], rng=self.rng)
@@ -247,6 +292,7 @@ class BaseSimulator(ABC):
                             # Apply shear bias
 
                             E1, E2 = self.systematics.apply_shear_bias(tomo, shear, lat)
+                            lon, lat = unrotate_longitude_points(lon, lat, mask_rot_angle)
 
                             rows = np.empty(count, dtype=self.row_dtype)
 

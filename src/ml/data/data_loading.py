@@ -85,7 +85,7 @@ def unpack_data(
                 raise TypeError(f"Unsupported HDF5 node type at {'/'.join(path)}: {type(node)}")
             data[out_key] = arr
 
-    cosmo = load_cosmo_params(file_path, cosmo_params, as_torch=as_torch, dtype=dtype)
+    cosmo = load_cosmo_params(file_path, cosmo_params, as_torch=as_torch, dtype=dtype)[0]
 
     if as_torch:
         import torch

@@ -11,6 +11,8 @@ def get_default_config():
     config.latent_dim = 256
     config.extra_blocks = 0
     config.checkpoint_path = None
+    config.pretrained_band_ckpt_path = None
+    config.freeze_band = False
     config.scheduler_type = 'exp'
     config.optimizer_kwargs = {'weight_decay': 0.01, 'betas': (0.9, 0.999)}
     config.scheduler_kwargs = {'warmup': 250, 'gamma': 0.9999}
@@ -27,14 +29,14 @@ def get_default_config():
     config.freeze_cnn = False
 
     # Data loading (new dataset interface)
-    config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_full_only_mocks/output_*.h5"
+    config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5"
     config.dataset_nested_keys = None
     # Alternatively, specify simple quantity names and we will build dataset_nested_keys
     # Valid options (defaults): E_north, E_south, B_north, B_south, bandpowers, bandpower_ls, cls
     config.dataset_quantities = ["E_north", "E_south", "B_north", "B_south",]
     config.base_path = "/share/gpu5/asaoulis/transfer_models"
     config.cosmo_param_names = [
-        "omega_m", "s8"
+        "omega_m", "sigma_8"
     ]
     config.train_frac = 0.8
     config.val_frac = 0.1

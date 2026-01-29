@@ -169,7 +169,7 @@ class FlexibleO3(nn.Module):
     - Optionally returns spatial feature maps instead of flatten+FFN.
     - Supports configurable normalization per stage: GroupNorm (default) or BatchNorm2d.
     """
-    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.35, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False, ch_mults = [8, 8, 16, 16, 32, 32], norm_type: str = 'group', gn_groups: Optional[int] = None):
+    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.15, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False, ch_mults = [8, 8, 16, 16, 32, 32], norm_type: str = 'group', gn_groups: Optional[int] = None):
         super().__init__()
         self.predict_sigmas = predict_sigmas
         self.num_outputs = num_outputs
@@ -191,15 +191,15 @@ class FlexibleO3(nn.Module):
         self.stages = nn.Sequential(*stages)
         # Tail conv; for features path we skip pooling
         self.adapt_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.tail_conv = nn.Conv2d(ch_mults[-1] * hidden, 128 * hidden, kernel_size=1, bias=True)
+        self.tail_conv = nn.Conv2d(ch_mults[-1] * hidden, 32 * hidden, kernel_size=1, bias=True)
         self.tail_bn = nn.Identity()
         self.act = nn.LeakyReLU(0.2)
         # If returning features, we do not build FFN head
         if not self.return_features:
             # Infer feature dim with a dummy pass
             self.feature_dim = self._infer_feature_dim(max_hw, channels)
-            self.FC1 = nn.Linear(self.feature_dim, 64 * hidden)
-            self.FC2 = nn.Linear(64 * hidden, num_outputs)
+            self.FC1 = nn.Linear(self.feature_dim, 32 * hidden)
+            self.FC2 = nn.Linear(32 * hidden, num_outputs)
             self.dropout = nn.Dropout(p=dr)
         # Init
         for m in self.modules():

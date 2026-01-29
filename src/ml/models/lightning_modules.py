@@ -9,6 +9,58 @@ from sklearn.metrics import r2_score
 from tqdm import tqdm
 from types import MethodType
 from functools import partial
+from typing import Dict
+
+
+def load_partial_weights(
+    target_module: nn.Module,
+    source_state_dict: Dict[str, torch.Tensor],
+    prefix: str = "",
+    freeze: bool = False,
+    verbose: bool = True,
+):
+    """Safely load a subset of weights into target_module.
+
+    - Optionally strips a prefix from keys in `source_state_dict`.
+    - Only loads keys that exist in `target_module.state_dict()` and
+      whose shapes match.
+    - Optionally freezes the loaded module's parameters.
+    """
+    target_state = target_module.state_dict()
+    loaded_weights = {}
+
+    for k, v in source_state_dict.items():
+        # Strip prefix if requested
+        if prefix and k.startswith(prefix):
+            local_key = k[len(prefix) :]
+        elif not prefix:
+            local_key = k
+        else:
+            continue  # key does not belong to this submodule
+
+        # Match key and shape
+        if local_key in target_state:
+            if v.shape == target_state[local_key].shape:
+                loaded_weights[local_key] = v
+            elif verbose:
+                print(
+                    f"[load_partial_weights] Skipping {local_key}: shape mismatch "
+                    f"{tuple(v.shape)} vs {tuple(target_state[local_key].shape)}"
+                )
+
+    missing, unexpected = target_module.load_state_dict(loaded_weights, strict=False)
+
+    if verbose and loaded_weights:
+        print(
+            f"[load_partial_weights] Loaded {len(loaded_weights)} keys into {target_module.__class__.__name__}. "
+            f"Missing: {len(missing)}, unexpected (ignored): {len(unexpected)}"
+        )
+
+    if freeze:
+        for p in target_module.parameters():
+            p.requires_grad = False
+        # target_module.eval()
+
 
 class BaseLightningModule(pl.LightningModule):
     def __init__(self, model, loss_fn, lr=0.0001, scheduler_type='cosine', element_names=None, optimizer_kwargs = {}, scheduler_kwargs= {}, freeze_CNN=False, **kwargs):
@@ -160,11 +212,18 @@ from sbi import utils as utils
 import torch.nn as nn
 
 class _CondEmbeddingFlow(nn.Module):
-    """A lightweight wrapper that embeds y then delegates to the flow."""
+    """Wrapper that delegates to an embedding_net and a conditional flow.
+
+    The embedding_net is responsible for turning high-dimensional data_dict
+    into a fixed-size representation used as the flow condition.
+    """
     def __init__(self, embedding_net: nn.Module, flow: nn.Module):
         super().__init__()
         self.embedding_net = embedding_net if embedding_net is not None else nn.Identity()
         self.flow = flow
+    
+    def encode(self, y):
+        return self.embedding_net(y)
     
     def log_prob(self, x, y):
         y_emb = self.embedding_net(y)
@@ -244,30 +303,52 @@ class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
 class NDELightningModule(BaseLightningModule):
     flow_type_map = {"nsf": build_nsf, "maf": build_maf, 'zuko_nsf': build_zuko_nsf}
 
-    def __init__(self, model, conditioning_dim, inference_dim, lr=0.0001, scheduler_type='cosine', test_dataloader=None, flow_type='nsf', num_extra_blocks=None, checkpoint_path=None,  **kwargs):
+    def __init__(
+        self,
+        model,
+        conditioning_dim,
+        inference_dim,
+        lr=0.0001,
+        scheduler_type='cosine',
+        test_dataloader=None,
+        flow_type='nsf',
+        num_extra_blocks=None,
+        checkpoint_path=None,
+        pretrained_band_ckpt_path: str | None = None,
+        freeze_band: bool = False,
+        band_prefix: str = 'band_encoder.',
+        **kwargs,
+    ):
         super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
-        # Keep embedding net separate from the flow
+        # Keep embedding net separate from the flow; expected to implement compress().
         self.embedding_net = model if model is not None else nn.Identity()
         self.conditioning_dim = conditioning_dim
         self.inference_dim = inference_dim
-        self.build_flow = self.flow_type_map[flow_type]  # Function to build the normalizing flow model
+        self.build_flow = self.flow_type_map[flow_type]
         if 'zuko' in flow_type:
             self.flow_kwargs = {}
         else:
-            self.flow_kwargs = {"conditional_dim": self.conditioning_dim, "use_batch_norm":False}
+            self.flow_kwargs = {"conditional_dim": self.conditioning_dim, "use_batch_norm": False}
         self.test_dataloader = test_dataloader
         self.loss_name = "log_prob"
         self.set_up_model()
         self.test_loss_values = []
+
         if checkpoint_path:
             self.load_from_checkpoint(checkpoint_path)
 
+        if pretrained_band_ckpt_path is not None:
+            self._load_pretrained_band_encoder(pretrained_band_ckpt_path, freeze_band, band_prefix)
+
     def set_up_model(self):
-        """Builds the flow model with Identity embedding; wrap with an embedding+flow module."""
-        # Dummy datasets to infer x/y dims (y here is already the embedded size)
+        """Builds the flow model and wraps it together with the embedding encoder.
+
+        The flow itself works on latent representations; the encoder is
+        responsible for compressing the high-dimensional data_dict into a
+        fixed-size vector of dimension `conditioning_dim`.
+        """
         y_dataset = torch.randn(10, self.conditioning_dim)
         x_dataset = torch.randn(10, self.inference_dim)
-        # Build flow expecting pre-embedded y (embedding_net=Identity)
         flow = self.build_flow(
             x_dataset,
             y_dataset,
@@ -278,9 +359,17 @@ class NDELightningModule(BaseLightningModule):
             hidden_features=self.conditioning_dim,
             **self.flow_kwargs,
         )
-        # Expose raw flow separately and create a simple wrapper as self.model
         self.flow = flow
         self.model = _CondEmbeddingFlow(self.embedding_net, self.flow)
+
+    def compress(self, data_dict):
+        """Return the latent representation used as condition for the flow.
+
+        Delegates to the wrapper's encode(), which mirrors the internal
+        behaviour of _CondEmbeddingFlow and keeps a single source of truth
+        for how embeddings are computed from data_dict.
+        """
+        return self.model.encode(data_dict)
 
     def load_from_checkpoint(self, checkpoint_path):
         """Loads model weights from a given checkpoint."""
@@ -339,7 +428,12 @@ class NDELightningModule(BaseLightningModule):
         return -preds.mean()  # Negative log-likelihood loss
 
     def forward(self, x, cond=None):
-        # Delegate to wrapped model which embeds cond then calls flow.log_prob
+        """Evaluate log p(x | cond).
+
+        cond is a high-dimensional data dict that will be compressed by
+        the encoder via its compress()/forward method before feeding
+        into the normalising flow.
+        """
         return self.model.log_prob(x, cond)
 
     # Override steps to pass (theta|data) ordering correctly
@@ -383,3 +477,122 @@ class NDELightningModule(BaseLightningModule):
     def log_custom_evals(self, preds, y):
         if len(self.test_loss_values) > 0:
             self.log("test_log_prob", self.test_loss_values.pop())
+
+    def _load_pretrained_band_encoder(self, ckpt_path: str, freeze: bool, band_prefix: str) -> None:
+        """Load weights for a bandpower encoder inside the embedding_net.
+
+        This assumes that `self.embedding_net` has an attribute that contains
+        the desired band-encoder submodule (e.g. `band_encoder`), and that the
+        checkpoint corresponds to a bandpower+NDE model where the band encoder
+        weights live under `band_prefix` (e.g. 'band_encoder.').
+        """
+        print(f"[NDELightningModule] Loading pretrained band encoder from {ckpt_path}...")
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        src_state = checkpoint.get("state_dict", checkpoint)
+
+        # Heuristic: look for a candidate submodule on the embedding net
+        band_module = None
+        for attr in ("band_encoder", "band_model"):
+            if hasattr(self.embedding_net, attr):
+                band_module = getattr(self.embedding_net, attr)
+                print(f"[NDELightningModule] Using embedding_net.{attr} as band encoder target.")
+                break
+        if band_module is None:
+            print("[NDELightningModule] Warning: embedding_net has no band encoder submodule; skipping band loading.")
+            return
+
+        load_partial_weights(
+            target_module=band_module,
+            source_state_dict=src_state,
+            prefix=band_prefix,
+            freeze=freeze,
+            verbose=True,
+        )
+
+
+class KLDRegularisedNDELightningModule(NDELightningModule):
+    """NDE Lightning module with KL-regularisation on the encoder's latent code.
+
+    Uses `self.compress(data_dict)` to obtain the latent embedding `z` and
+    defines a simple Gaussian prior KL on z. The same compress path is used
+    everywhere so that any future API wrapping only needs to live in
+    `_CondEmbeddingFlow.encode` / `NDELightningModule.compress`.
+    """
+    def __init__(
+        self,
+        *args,
+        kl_weight: float = 1e-1,
+        kl_min: float = 0.0,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.kl_weight = kl_weight
+        self.kl_min = kl_min
+
+    def _latent_stats(self, data_dict):
+        """Return mean and logvar for latent z.
+
+        Default: treat the compressed latent as the mean and use unit variance.
+        All compression goes through self.compress(), which in turn uses the
+        same API as _CondEmbeddingFlow.encode.
+        """
+        z_mu = self.compress(data_dict)
+        z_logvar = torch.zeros_like(z_mu)
+        return z_mu, z_logvar
+
+    def _kl_divergence(self, mu, logvar):
+        """KL( N(mu, sigma^2) || N(0, I) ) averaged over batch.
+
+        logvar is log(sigma^2).
+        """
+        kl = 0.5 * (logvar.exp() + mu.pow(2) - 1.0 - logvar)
+        kl = kl.sum(dim=-1).mean()
+        if self.kl_min > 0.0:
+            kl = torch.clamp(kl, min=self.kl_min)
+        return kl
+
+    def _shared_step(self, batch, stage: str):
+        """Run a single train/val step with KL-regularised NDE loss.
+
+        This mirrors the behaviour of _CondEmbeddingFlow.log_prob for the
+        likelihood term while reusing the shared compress/encode path for the
+        latent KL.
+        """
+        data_dict, theta = batch
+
+        # 1) Latent statistics and KL using the shared compress() path
+        mu, logvar = self._latent_stats(data_dict)
+        kl = self._kl_divergence(mu, logvar)
+
+        # 2) Evaluate flow log_prob using the same conventions as
+        #    _CondEmbeddingFlow.log_prob: we call the underlying flow directly
+        #    but respect its expected shapes (unsqueezed theta).
+
+        theta_for_flow = theta.unsqueeze(0)
+        log_prob = self.model.flow.log_prob(theta_for_flow, mu)
+
+        # log_prob has shape [1, batch], so take mean over all entries
+        nll = -log_prob.mean()
+        total = nll + self.kl_weight * kl
+
+        metrics = {
+            f"{stage}_{self.loss_name}": nll,
+            f"{stage}_kl": kl,
+            f"{stage}_weighted_kl": self.kl_weight * kl,
+        }
+        for name, value in metrics.items():
+            on_step = stage == "train"
+            self.log(name, value, prog_bar=(name.endswith(self.loss_name)), on_step=on_step, on_epoch=True)
+
+        return total, log_prob, theta
+
+    def training_step(self, batch, batch_idx):
+        loss, log_prob, theta = self._shared_step(batch, stage="train")
+        # Keep custom evals compatible with base class API
+        # self.log_custom_evals(log_prob, theta)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        loss, log_prob, theta = self._shared_step(batch, stage="val")
+        self.log_custom_evals(log_prob, theta)
+        return loss

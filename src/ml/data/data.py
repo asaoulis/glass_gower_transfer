@@ -11,18 +11,16 @@ from torch.utils.data import Dataset, DataLoader
 from .data_loading import unpack_data
 
 
-_COSMO_RE = re.compile(r"output_(\d+)_\d+\.h5$", re.IGNORECASE)
-
-
 def extract_cosmo_index(path: str) -> int:
     """
-    Extract cosmology index from a filename like .../output_<cosmo>_<sample>.h5
+    Extract cosmology index from a filename like .../output_<cosmo_id>_<stuff>_<sample>.h5
     """
-    m = _COSMO_RE.search(os.path.basename(path))
-    if not m:
-        raise ValueError(f"Could not parse cosmology index from: {path}")
-    return int(m.group(1))
-
+    # split and select first number
+    base = os.path.basename(path)
+    match = re.search(r"output_(\d+)_", base)
+    if match is None:
+        raise ValueError(f"Could not extract cosmology index from path: {path}")
+    return int(match.group(1))
 
 def collect_paths(patterns: Union[str, Sequence[str]]) -> List[str]:
     """
@@ -145,6 +143,7 @@ DEFAULT_QUANTITY_PATHS = {
     "B_south": ("pixelised_results", "B", "south"),
     "bandpowers": ("cls_results", "full", "bandpowers"),
     "bandpower_ls": ("cls_results", "full", "bandpower_ls"),
+    "mixed_bandpowers": ("cls_results", "full", "mixed_bandpowers"),
     "cls": ("cls_results", "full", "cls"),
 }
 
