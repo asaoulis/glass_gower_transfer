@@ -33,9 +33,6 @@ class QueryCrossAttentionBlock(nn.Module):
         self.q_xattn = nn.MultiheadAttention(
             d_model, n_heads, dropout=dropout, batch_first=True
         )
-        self.q_self_attn = nn.MultiheadAttention(
-            d_model, n_heads, dropout=dropout, batch_first=True
-        )
 
         self.q_ln1 = nn.LayerNorm(d_model)
         self.q_ln2 = nn.LayerNorm(d_model)
@@ -62,10 +59,6 @@ class QueryCrossAttentionBlock(nn.Module):
 
         # ---- Update q (cross-attention) ----
         q2, _ = self.q_xattn(self.q_ln1(q), x, x)
-        q = q + q2
-
-        # ---- Optional self-attention on q ----
-        q2, _ = self.q_self_attn(self.q_ln2(q), self.q_ln2(q), self.q_ln2(q))
         q = q + q2
 
         # ---- FFN on q ----

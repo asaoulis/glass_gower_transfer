@@ -27,7 +27,10 @@ from src.cosmology.pixelise_maps import get_patch_values
 
 from src.cosmology.map_shears  import make_alm_shear_convergence, filter_EB_alms_and_make_maps
 from src.cosmology.camb_matter_power import get_camb_matter_cls
-
+from src.cosmology.mpi_camb import (
+    compute_camb_glass_in_child_npz_subproc,
+    load_camb_child_pickle,
+)
 from src.KiDS.tomo import calculate_tomo_nz
 from src.KiDS.rotations import KiDS_PATCH_GOWER_ROTATIONS, KiDS_PATCH_GLASS_ROTATIONS
 
@@ -141,7 +144,8 @@ zmin, zmax = 0.0, 2.0
 dx = 200.0  # Mpc/h
 n_los_chi = 1000  # define the integration limits here
 
-outer_num_shape_noise_realisations=4
+outer_num_shape_noise_realisations=4 # gower
+outer_num_shape_noise_realisations=1 # glass
 inner_num_shape_noise_realisations=1
 mask_rotation_angles = [0, 90, 180, 270]
 
@@ -154,7 +158,7 @@ named_patches = {
 }
 patches = list(named_patches.values())
 
-GLASS_N_JOBS = 8000
+GLASS_N_JOBS = 3600
 
 prior = {
             'logT_AGN':(7.3, 8.3),
@@ -259,25 +263,25 @@ if __name__ == "__main__":
         for num_sim_this_batch in range(len(recvbuf)):
             for outer_idx in range(outer_num_shape_noise_realisations):
                 for rot_idx, rotation_spec in enumerate(rotation_specs):
-                    if rot_idx == 0 and outer_idx ==0:
-                        continue
+                    # if rot_idx == 0 and outer_idx ==0:
+                    #     continue
                     rng = np.random.default_rng()
 
                     sim_num = sims[num_sim_this_batch]
                     # ... rest of your per-simulation code ...
+                    if SIMULATOR_TYPE == "glass" and outer_idx == 0 or SIMULATOR_TYPE == "gower_street" :
+                        log10_M_eff = np.random.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
+                        a_ia_realised     = np.random.uniform(*prior['a_ia'])
+                        b_ia_realised     = np.random.uniform(*prior['b_ia'])
+                        nuisance_params = {"a_ia": a_ia_realised, "b_ia": b_ia_realised}
 
-                    log10_M_eff = np.random.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
-                    a_ia_realised     = np.random.uniform(*prior['a_ia'])
-                    b_ia_realised     = np.random.uniform(*prior['b_ia'])
-                    nuisance_params = {"a_ia": a_ia_realised, "b_ia": b_ia_realised}
-
-                    # intrinsic alignments params
-                    ia_params = dict(
-                        a_ia = a_ia_realised,
-                        b_ia = b_ia_realised,
-                        f_red = f_red,
-                        log10_M_eff = log10_M_eff,
-                    )
+                        # intrinsic alignments params
+                        ia_params = dict(
+                            a_ia = a_ia_realised,
+                            b_ia = b_ia_realised,
+                            f_red = f_red,
+                            log10_M_eff = log10_M_eff,
+                        )
                     if USE_KIDS_MASK:
                         mask = hp.read_map(f'{data_dir}/masks/KiDS_Legacy_N_healpix_1024_frac_withAstrom.fits') + hp.read_map(f'{data_dir}/masks/KiDS_Legacy_S_healpix_1024_frac_withAstrom.fits')
                     else:
@@ -302,15 +306,31 @@ if __name__ == "__main__":
                             **sampled_cosmo_params,
                             **nuisance_params,
                         }
-                        # Build cosmology and CAMB parameters
-                        cosmo, pars = parameters.build_cosmology(param_dict)
-                        print("Computing CAMB matter power spectra...")
-                        shells, glass_cls = get_camb_matter_cls(pars, lmax, zmin, zmax, dx)
+                        # only recompute theory on first outer_idx
+                        if outer_idx == 0:
+                            print("Computing CAMB matter power spectra...")
+
+                            npz_out_path = compute_camb_glass_in_child_npz_subproc(
+                                param_dict,
+                                lmax,
+                                zmin,
+                                zmax,
+                                dx,
+                                mem_limit_gb=200,
+                                timeout_s=3600*4,
+                                sim_tag=f"sim{sim_num}",
+                            )
+
+                            shells, glass_cls = load_camb_child_pickle(npz_out_path, remove_after_load=True)
+                            # Build cosmology and CAMB parameters
+                            cosmo, pars = parameters.build_cosmology(param_dict)
+                            # shells, glass_cls = get_camb_matter_cls(pars, lmax, zmin, zmax, dx)
                         glass_cls_discretized = glass.discretized_cls(glass_cls, nside=nside, lmax=lmax, ncorr=1)
                         fields = glass.lognormal_fields(shells)
                         gls = glass.solve_gaussian_spectra(fields, glass_cls_discretized)
                         matter = glass.generate(fields, gls, nside, ncorr=1, rng=rng)
                         cosmo = Cosmology.from_camb(pars)
+                        print(f"Finished computing CAMB matter power spectra afrer {time.time() - s_catalogue:.2f}s.")
                     else:
                         gower_street_loader = GowerStCosmologies(gower_data_dir, csv_path)
                         param_dict = gower_street_loader.get_params_from_sim_id(sim_num, extra_params=nuisance_params)
@@ -407,7 +427,8 @@ if __name__ == "__main__":
                             for patch_idx, patch_name in enumerate(named_patches.keys()):
                                 pixelised_results[name][patch_name] = pixelised_tomobin_patches[patch_idx]
 
-                        cls_results['full'] = {"cls": mixed_cls, "mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands}
+                        # cls_results['full'] = {"cls": mixed_cls, "mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands}
+                        cls_results['full'] = {"mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands}
 
                         # patch_defs = {
                         #     "north": (np.abs(catalogue['DEC']) < 15),

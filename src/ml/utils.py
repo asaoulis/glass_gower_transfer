@@ -198,8 +198,10 @@ def prepare_data_and_model(config, data_parameters=None):
     else:
         scalers, train_loader, val_loader, test_loader = data_parameters
 
-    # Select the correct backbone dynamically (merged registry)
-    embedding_model = MODEL_BUILDERS[config.model_type](config.latent_dim, **config.model_kwargs.to_dict()).to(device='cuda')
+    redundancy_dim = getattr(config, 'redundancy_dim', 0)
+    conditioning_dim = config.latent_dim + redundancy_dim
+    model_kwargs = {**config.model_kwargs.to_dict(), 'redundancy_dim': redundancy_dim}
+    embedding_model = MODEL_BUILDERS[config.model_type](conditioning_dim, **model_kwargs).to(device='cuda')
 
     # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})
@@ -211,9 +213,10 @@ def prepare_data_and_model(config, data_parameters=None):
         base_sched_kwargs['warmup'] = est_warmup
     use_KL_loss = getattr(config, 'use_KL_loss', False)
     LightningModule = KLDRegularisedNDELightningModule if use_KL_loss else NDELightningModule
+
     model = LightningModule(
         embedding_model,
-        conditioning_dim=config.latent_dim,
+        conditioning_dim=conditioning_dim,
         inference_dim = len(config.cosmo_param_names),
         lr=config.lr,
         flow_type=config.flow_type,
@@ -227,6 +230,7 @@ def prepare_data_and_model(config, data_parameters=None):
         scheduler_kwargs=base_sched_kwargs,
         pretrained_band_ckpt_path=getattr(config, 'pretrained_band_ckpt_path', None),
         freeze_band=getattr(config, 'freeze_band', False),
+        load_pretrained_flow=getattr(config, 'load_pretrained_flow', False)
     )
 
     return (train_loader, val_loader, test_loader), model, scalers

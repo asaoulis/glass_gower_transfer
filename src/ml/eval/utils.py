@@ -260,6 +260,7 @@ def load_best_model_and_build_posterior(config, ds_string_match="", data_paramet
             best_val_loss = val_loss
             # scalers = data_parameters[0]
     if best_model is not None:
+        print(f"Loaded best model from {best_model_path} with val loss {best_val_loss}")
         return best_model, scalers
     else:
         print("No valid checkpoints found.")

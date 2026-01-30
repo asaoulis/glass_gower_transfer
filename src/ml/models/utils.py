@@ -41,7 +41,7 @@ def train_model(config):
         logger = wandb.init(
             project=config.project,
             group=config.experiment_name,
-            name=f"{'pretrain' if pretrain else 'finetune'}_{config.model_type}_{config.scheduler_type}_{config.lr}_{match_string_logger}_ds{config.dataset_size}_{i}",
+            name=f"{config.experiment_name}/{'pretrain' if pretrain else 'finetune'}_{config.model_type}_{config.scheduler_type}_{config.lr}_{match_string_logger}_ds{config.dataset_size}_{i}",
             reinit=True
         )
 

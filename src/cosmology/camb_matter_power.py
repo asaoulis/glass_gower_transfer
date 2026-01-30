@@ -1,7 +1,7 @@
-from .levin import extrapolate_section
 from cosmology import Cosmology
 import camb
 import glass
+import glass.ext.camb
 def update_pars_config(old_pars):
     pars = old_pars.copy()
     # What to compute
@@ -37,5 +37,5 @@ def get_camb_matter_cls(pars, lmax, zmin, zmax, dx):
     # ws = glass.shells.tophat_windows(zb)
     ws = glass.shells.linear_windows(zb)
     updated_pars = update_pars_config(pars)
-    camb_cls = glass.ext.camb.matter_cls(updated_pars, lmax, ws, limber=False, limber_lmin=100)
+    camb_cls = glass.ext.camb.matter_cls(updated_pars, lmax, ws, limber=False, limber_lmin=1600)
     return ws, camb_cls

@@ -30,6 +30,176 @@ class ConvBlock(nn.Module):
 
     def forward(self, x):
         return self.block(x)
+# drop-in pooling + projection module
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class GeM(nn.Module):
+    """Generalized mean pooling with learnable p (shared or per-channel)."""
+    def __init__(self, p_init: float = 3.0, eps: float = 1e-6, per_channel: bool = False, clamp=(0.1, 10.0)):
+        super().__init__()
+        if per_channel:
+            self.p = nn.Parameter(torch.ones(1, 1) * float(p_init))  # will expand for channels if needed
+        else:
+            self.p = nn.Parameter(torch.tensor(float(p_init)))
+        self.eps = eps
+        self.per_channel = per_channel
+        self.clamp_min, self.clamp_max = clamp
+
+    def forward(self, x):
+        # x: (B, C, H, W)
+        x = torch.clamp(x, min=self.eps)
+        p = self.p
+        if self.per_channel and p.dim() == 2:
+            # expand to (1, C) at runtime if needed (works with channels known from input)
+            p = p.expand(1, x.size(1))
+        p = torch.clamp(p, min=self.clamp_min, max=self.clamp_max)
+        # mean over H,W of x**p then raise to 1/p
+        return x.pow(p.unsqueeze(-1).unsqueeze(-1)).mean(dim=(-2, -1)).pow(1.0 / p.unsqueeze(-1).unsqueeze(-1)).squeeze(-1).squeeze(-1)
+
+class SpatialPyramidPooling(nn.Module):
+    """SPP -> concatenates flattened grids for output_sizes (e.g. (1,2,4))."""
+    def __init__(self, output_sizes=(1,2,4), mode='avg'):
+        super().__init__()
+        assert mode in ('avg', 'max')
+        self.output_sizes = tuple(output_sizes)
+        self.mode = mode
+
+    def forward(self, x):
+        # x: (B, C, H, W) -> returns (B, C * sum(s*s))
+        B, C, H, W = x.shape
+        parts = []
+        for s in self.output_sizes:
+            if self.mode == 'avg':
+                p = F.adaptive_avg_pool2d(x, output_size=(s, s))
+            else:
+                p = F.adaptive_max_pool2d(x, output_size=(s, s))
+            parts.append(p.view(B, C * s * s))
+        return torch.cat(parts, dim=1)
+
+class SpatialAttentionPool(nn.Module):
+    """Lightweight spatial attention pooling: weighted average with learned logits."""
+    def __init__(self, in_channels, hidden=128):
+        super().__init__()
+        self.proj = nn.Conv2d(in_channels, hidden, kernel_size=1)
+        self.attn = nn.Conv2d(hidden, 1, kernel_size=1)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+        h = F.relu(self.proj(x))                # (B, hidden, H, W)
+        logits = self.attn(h).view(B, -1)       # (B, H*W)
+        weights = F.softmax(logits, dim=-1).view(B, 1, H, W)
+        out = (x * weights).sum(dim=(-2, -1))   # (B, C)
+        return out
+
+class TransformerPool(nn.Module):
+    """Tiny transformer encoder readout. Use only if H*W is modest."""
+    def __init__(self, in_channels, nhead=4, nhid=128, nlayers=1, add_cls_token=True):
+        super().__init__()
+        d_model = in_channels
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, dim_feedforward=nhid, batch_first=True)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=nlayers)
+        self.add_cls_token = add_cls_token
+        if add_cls_token:
+            self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.ln = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        # x: (B, C, H, W)
+        B, C, H, W = x.shape
+        tokens = x.view(B, C, H*W).permute(0, 2, 1)   # (B, H*W, C)
+        if self.add_cls_token:
+            cls = self.cls_token.expand(B, -1, -1)    # (B,1,C)
+            tokens = torch.cat([cls, tokens], dim=1)  # (B, 1+H*W, C)
+        out = self.transformer(tokens)                # (B, seq, C)
+        if self.add_cls_token:
+            pooled = out[:, 0]
+        else:
+            pooled = out.mean(dim=1)
+        return self.ln(pooled)                        # (B, C)
+
+class PoolProj(nn.Module):
+    """
+    Pooling factory + learned projection.
+    - pool_types: list of strings from {'avg','max','gem','spp','attn','trans'}
+    - in_channels: number of channels spatial map (tail_conv.out_channels)
+    - proj_dim: output dimension of projection (e.g. 32*hidden)
+    - spp_sizes: grid sizes for SPP (default (1,2,4)); SPP output expands quickly
+    - gem_per_channel: whether GeM has per-channel p
+    - transformer_args: dict forwarded to TransformerPool
+    """
+    def __init__(self, pool_types, in_channels, proj_dim, spp_sizes=(1,2,4), gem_per_channel=False, transformer_args=None, attn_hidden=128):
+        super().__init__()
+        assert isinstance(pool_types, (list, tuple))
+        self.pool_types = list(pool_types)
+        self.in_ch = in_channels
+        self.proj_dim = proj_dim
+        self.spp_sizes = tuple(spp_sizes)
+        self.transformer_args = transformer_args or {}
+        self.attn_hidden = attn_hidden
+
+        # instantiate subpool modules if needed
+        if 'gem' in self.pool_types:
+            self.gem = GeM(per_channel=gem_per_channel)
+        if 'spp' in self.pool_types:
+            self.spp = SpatialPyramidPooling(output_sizes=self.spp_sizes, mode='avg')
+        if 'attn' in self.pool_types:
+            self.attn = SpatialAttentionPool(in_channels, hidden=self.attn_hidden)
+        if 'trans' in self.pool_types or 'transformer' in self.pool_types:
+            # alias 'trans' or 'transformer'
+            self.trans = TransformerPool(in_channels, **self.transformer_args)
+
+        # compute concatenated descriptor dimension (needed to build projection)
+        concat_dim = 0
+        for t in self.pool_types:
+            if t == 'avg' or t == 'max':
+                concat_dim += in_channels
+            elif t == 'gem':
+                concat_dim += in_channels
+            elif t == 'spp':
+                # C * sum(s*s)
+                concat_dim += in_channels * sum([s*s for s in self.spp_sizes])
+            elif t == 'attn':
+                concat_dim += in_channels
+            elif t in ('trans', 'transformer'):
+                concat_dim += in_channels
+            else:
+                raise ValueError(f"Unknown pool type: {t}")
+
+        self.concat_dim = concat_dim
+
+        # learned projection from concat_dim -> proj_dim
+        # include a small bottleneck with activation + layernorm for stability
+        self.proj = nn.Sequential(
+            nn.Linear(self.concat_dim, max(self.proj_dim, 64)),
+            nn.ReLU(inplace=True),
+            nn.LayerNorm(max(self.proj_dim, 64)),
+            nn.Linear(max(self.proj_dim, 64), self.proj_dim)
+        )
+
+    def forward(self, x):
+        """
+        x: (B, C, H, W)
+        returns: (B, proj_dim)
+        """
+        B, C, H, W = x.shape
+        parts = []
+        for t in self.pool_types:
+            if t == 'avg':
+                parts.append(F.adaptive_avg_pool2d(x, 1).view(B, C))
+            elif t == 'max':
+                parts.append(F.adaptive_max_pool2d(x, 1).view(B, C))
+            elif t == 'gem':
+                parts.append(self.gem(x).view(B, C))
+            elif t == 'spp':
+                parts.append(self.spp(x))  # already (B, C * sum(s*s))
+            elif t == 'attn':
+                parts.append(self.attn(x))  # (B, C)
+            elif t in ('trans', 'transformer'):
+                parts.append(self.trans(x)) # (B, C)
+        desc = torch.cat(parts, dim=1)  # (B, concat_dim)
+        return self.proj(desc)          # (B, proj_dim)
 
 
 #####################################################################################
@@ -169,7 +339,7 @@ class FlexibleO3(nn.Module):
     - Optionally returns spatial feature maps instead of flatten+FFN.
     - Supports configurable normalization per stage: GroupNorm (default) or BatchNorm2d.
     """
-    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.15, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False, ch_mults = [8, 8, 16, 16, 32, 32], norm_type: str = 'group', gn_groups: Optional[int] = None):
+    def __init__(self, num_outputs: int, hidden: int = 12, channels: int = 1, dr: float = 0.15, max_hw=(256, 256), predict_sigmas: bool = False, return_features: bool = False, ch_mults = [8, 8, 16, 16, 32, 32], pool_types = ('avg', 'max', 'gem',), norm_type: str = 'group', gn_groups: Optional[int] = None):
         super().__init__()
         self.predict_sigmas = predict_sigmas
         self.num_outputs = num_outputs
@@ -197,7 +367,16 @@ class FlexibleO3(nn.Module):
         # If returning features, we do not build FFN head
         if not self.return_features:
             # Infer feature dim with a dummy pass
-            self.feature_dim = self._infer_feature_dim(max_hw, channels)
+            # self.feature_dim = self._infer_feature_dim(max_hw, channels)
+            # self.FC1 = nn.Linear(self.feature_dim, 32 * hidden)
+            # self.FC2 = nn.Linear(32 * hidden, num_outputs)
+            # self.dropout = nn.Dropout(p=dr)
+            self.poolproj = PoolProj(pool_types=pool_types, in_channels=32*hidden, proj_dim=32*hidden,
+                                    spp_sizes=(1,2,4), gem_per_channel=False,
+                                    transformer_args={'nhead':4, 'nlayers':1, 'nhid':128}, attn_hidden=128)
+
+            # keep rest of head but set FC1 input dim to proj_dim
+            self.feature_dim = self.poolproj.proj_dim
             self.FC1 = nn.Linear(self.feature_dim, 32 * hidden)
             self.FC2 = nn.Linear(32 * hidden, num_outputs)
             self.dropout = nn.Dropout(p=dr)
@@ -256,8 +435,8 @@ class FlexibleO3(nn.Module):
             x = self.act(self.tail_bn(self.tail_conv(x)))
             return x
         # Original head path
-        x = self.act(self.tail_bn(self.tail_conv(self.adapt_pool(x))))
-        x = x.flatten(1)
+        x = self.act(self.tail_bn(self.tail_conv(x)))   # (B, tail_ch, H, W)
+        x = self.poolproj(x)                             # (B, 32*hidden) == self.feature_dim
         x = self.dropout(x)
         x = self.dropout(self.act(self.FC1(x)))
         x = self.FC2(x)

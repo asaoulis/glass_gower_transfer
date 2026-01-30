@@ -308,6 +308,7 @@ class NDELightningModule(BaseLightningModule):
         model,
         conditioning_dim,
         inference_dim,
+        redundancy_dim = 0,
         lr=0.0001,
         scheduler_type='cosine',
         test_dataloader=None,
@@ -317,6 +318,7 @@ class NDELightningModule(BaseLightningModule):
         pretrained_band_ckpt_path: str | None = None,
         freeze_band: bool = False,
         band_prefix: str = 'band_encoder.',
+        load_pretrained_flow = False,
         **kwargs,
     ):
         super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
@@ -324,6 +326,7 @@ class NDELightningModule(BaseLightningModule):
         self.embedding_net = model if model is not None else nn.Identity()
         self.conditioning_dim = conditioning_dim
         self.inference_dim = inference_dim
+        self.redundancy_dim = redundancy_dim
         self.build_flow = self.flow_type_map[flow_type]
         if 'zuko' in flow_type:
             self.flow_kwargs = {}
@@ -339,6 +342,8 @@ class NDELightningModule(BaseLightningModule):
 
         if pretrained_band_ckpt_path is not None:
             self._load_pretrained_band_encoder(pretrained_band_ckpt_path, freeze_band, band_prefix)
+            if load_pretrained_flow:
+                self._load_pretrained_flow(pretrained_band_ckpt_path, freeze=False)
 
     def set_up_model(self):
         """Builds the flow model and wraps it together with the embedding encoder.
@@ -505,6 +510,20 @@ class NDELightningModule(BaseLightningModule):
             target_module=band_module,
             source_state_dict=src_state,
             prefix=band_prefix,
+            freeze=freeze,
+            verbose=True,
+        )
+    
+    def _load_pretrained_flow(self, ckpt_path: str, freeze: bool) -> None:
+        """Load weights for the normalising flow from a given checkpoint."""
+        print(f"[NDELightningModule] Loading pretrained flow from {ckpt_path}...")
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        src_state = checkpoint.get("state_dict", checkpoint)
+
+        load_partial_weights(
+            target_module=self.flow,
+            source_state_dict=src_state,
+            prefix="model.flow.",
             freeze=freeze,
             verbose=True,
         )
