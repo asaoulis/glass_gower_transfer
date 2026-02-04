@@ -241,27 +241,59 @@ def parse_results(experiment_name, base_path="/share/gpu0/asaoulis/cmd/checkpoin
     
     return final_results
 
-def load_best_model_and_build_posterior(config, ds_string_match="", data_parameters = None):
-    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}"
-    run_folders = [os.path.join(experiment_path, d) for d in os.listdir(experiment_path) if os.path.isdir(os.path.join(experiment_path, d))]
+def load_best_model_and_build_posterior(config, ds_string_match="", data_parameters=None):
+    """Load the single best model across all matching run folders.
 
-    best_model_path = None
-    best_val_loss = float("inf")
-    best_model = None
-    scalers = None
+    Instead of loading a model per run folder and comparing their validation
+    losses, we now:
+      1. Scan all (matching) run folders for their best checkpoint and loss
+         using `find_best_checkpoint`.
+      2. Select the *global* best checkpoint across all these runs.
+    """
+    patterns = [ f"{config.base_path}/checkpoints/{config.experiment_name}/run_{config.experiment_name}",
+                 f"{config.base_path}/checkpoints/{config.experiment_name}" ]
+    run_folders = []
+    for experiment_path in patterns:
+        run_folders += [
+            os.path.join(experiment_path, d)
+            for d in os.listdir(experiment_path)
+            if os.path.isdir(os.path.join(experiment_path, d))
+        ]
+    print(
+        f"Loading best model for {config.experiment_name} from {experiment_path} with {len(run_folders)} runs"
+    )
 
+    global_best_val_loss = float("inf")
+    global_best_run_folder = None
+
+    # First pass: only look at checkpoint files / losses, do not instantiate models
     for run_folder in run_folders:
-        if ds_string_match not in run_folder:
+        if ds_string_match and ds_string_match not in run_folder:
             continue
-        model, best_model_path, val_loss = load_best_checkpoint_model(config, run_folder, data_parameters)
-        if model and val_loss < best_val_loss:
-            best_model = model
-            best_model_path = best_model_path
-            best_val_loss = val_loss
-            # scalers = data_parameters[0]
-    if best_model is not None:
-        print(f"Loaded best model from {best_model_path} with val loss {best_val_loss}")
-        return best_model, scalers
-    else:
+
+        best_checkpoint, best_val_loss = find_best_checkpoint(run_folder)
+        if best_checkpoint is None:
+            continue
+
+        if best_val_loss < global_best_val_loss:
+            global_best_val_loss = best_val_loss
+            global_best_run_folder = run_folder
+
+    if global_best_run_folder is None:
         print("No valid checkpoints found.")
         return None
+
+    # Second pass: actually construct the model only for the globally best run
+    model, best_model_path, _ = load_best_checkpoint_model(
+        config, global_best_run_folder, data_parameters
+    )
+
+    if model is not None:
+        print(
+            f"Loaded best model from {best_model_path} with val loss {global_best_val_loss}"
+        )
+        scalers = None  # keep previous behaviour (scalers not used/returned yet)
+        return model, scalers
+
+    print("Failed to load model for the best checkpoint.")
+    return None

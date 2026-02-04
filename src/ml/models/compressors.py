@@ -359,6 +359,9 @@ class FlexibleO3(nn.Module):
             stages.append(self._make_stage(in_ch, out_ch, first=(i == 0)))
             in_ch = out_ch
         self.stages = nn.Sequential(*stages)
+        # Expose a backbone attribute for compatibility with UNetO3StyleEncoder
+        # so that loaders can uniformly access the convolutional feature extractor.
+        self.backbone = self.stages
         # Tail conv; for features path we skip pooling
         self.adapt_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.tail_conv = nn.Conv2d(ch_mults[-1] * hidden, 32 * hidden, kernel_size=1, bias=True)
@@ -366,11 +369,6 @@ class FlexibleO3(nn.Module):
         self.act = nn.LeakyReLU(0.2)
         # If returning features, we do not build FFN head
         if not self.return_features:
-            # Infer feature dim with a dummy pass
-            # self.feature_dim = self._infer_feature_dim(max_hw, channels)
-            # self.FC1 = nn.Linear(self.feature_dim, 32 * hidden)
-            # self.FC2 = nn.Linear(32 * hidden, num_outputs)
-            # self.dropout = nn.Dropout(p=dr)
             self.poolproj = PoolProj(pool_types=pool_types, in_channels=32*hidden, proj_dim=32*hidden,
                                     spp_sizes=(1,2,4), gem_per_channel=False,
                                     transformer_args={'nhead':4, 'nlayers':1, 'nhid':128}, attn_hidden=128)
@@ -429,7 +427,8 @@ class FlexibleO3(nn.Module):
             return x.shape[1]
 
     def forward(self, x):
-        x = self.stages(x)
+        # Use backbone (stages) as the convolutional feature extractor
+        x = self.backbone(x)
         if self.return_features:
             # Keep spatial dims and return feature map after tail conv + activation
             x = self.act(self.tail_bn(self.tail_conv(x)))

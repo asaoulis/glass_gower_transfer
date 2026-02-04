@@ -11,7 +11,81 @@ class KidsInferenceEncoder(nn.Module):
     """Common interface for kids encoders.
 
     - compress(data) -> latent representation z
+
+    If ``use_kl`` is True the encoder is interpreted as predicting a
+    diagonal Gaussian in latent space. In that case ``latent_dim`` is
+    the dimensionality of ``mu`` and the underlying network is assumed
+    to return a tensor of shape ``[B, 2 * latent_dim]`` which is split
+    into ``(mu, logvar)``.
+
+    For backward compatibility, if the underlying network only returns
+    ``[B, latent_dim]`` we assume this to be ``mu`` and set
+    ``logvar = zeros_like(mu)``.
+
+    The public interface is:
+      * forward/compress() ->
+          - train mode: logvar (so downstream modules can do reparam).
+          - eval mode:  mu     (deterministic latents for inference).
+
+    This keeps ``latent_dim`` equal to the dimension of ``mu`` so that
+    downstream code that only cares about latent size does not break.
     """
+
+    def __init__(self, *args, latent_dim: int | None = None, use_kl: bool = False, **kwargs):
+        super().__init__()
+        # latent_dim is the dimension of mu (the latent code used downstream)
+        self.latent_dim = latent_dim
+        self.use_kl = use_kl
+        # model_output_dim is what the concrete network heads actually emit
+        if latent_dim is None:
+            self.model_output_dim = None
+        else:
+            self.model_output_dim = 2 * latent_dim if use_kl else latent_dim
+        # When True, forward()/compress() only return mu, even if KL is used
+        self.only_return_mu = False
+
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Subclasses should override this instead of forward().
+
+        Must return a tensor of shape:
+          * [B, latent_dim]          if ``use_kl=False`` or if only ``mu``
+            is predicted.
+          * [B, 2 * latent_dim]      if ``use_kl=True`` and the network
+            explicitly predicts both (mu, logvar).
+        """
+        raise NotImplementedError
+
+    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        if not self.use_kl:
+            return self._forward_base(data)
+
+        raw = self._forward_base(data)
+        # if self.latent_dim is None:
+        #     # Infer latent_dim on first call from the contract that
+        #     # latent_dim is the dimension of mu.
+        #     if raw.shape[-1] % 2 == 0:
+        #         self.latent_dim = raw.shape[-1] // 2
+        #     else:
+        #         self.latent_dim = raw.shape[-1]
+        #     self.model_output_dim = raw.shape[-1]
+        # else:
+        #     self.model_output_dim = 2 * self.latent_dim
+
+        # if raw.shape[-1] == self.latent_dim:
+        #     mu = raw
+        #     logvar = torch.zeros_like(mu)
+        # else:
+        if raw.shape[-1] != 2 * self.latent_dim:
+            raise ValueError(
+                f"Expected encoder output dim to be latent_dim ({self.latent_dim}) "
+                f"or 2*latent_dim ({2 * self.latent_dim}), got {raw.shape[-1]}"
+            )
+        mu, logvar = torch.chunk(raw, 2, dim=-1)
+
+        if self.only_return_mu:
+            return mu
+        return mu, logvar
+
     def compress(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         # Default implementation: call ``forward``.
         return self.forward(data)
@@ -47,8 +121,7 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         encoder_type: str = "flex_o3",
         **kwargs,
     ):
-        super().__init__()
-        self.latent_dim = latent_dim
+        super().__init__(latent_dim=latent_dim, **kwargs)
         self.cnn_out_dim = cnn_out_dim
         self.channels_per_map = channels_per_map
         self.encoder_type = encoder_type
@@ -57,7 +130,7 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
 
         if encoder_type == "flex_o3":
             from .compressors import flexible_o3_model
-
+            print("Using FlexibleO3 model as shared CNN", flush=True)
             # Shared CNN used for both north and south
             self.shared_cnn = flexible_o3_model(
                 num_outputs=cnn_out_dim,
@@ -70,6 +143,8 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         elif encoder_type == "unet_o3":
             from .unet.unet import UNetO3StyleEncoder
             # Use UNet-style encoder with O3-inspired head
+            print("Using UNetO3StyleEncoder as shared CNN", flush=True)
+            channel_mult = (1, 1, 2, 2,4,8)
             self.shared_cnn = UNetO3StyleEncoder(
                 image_size=MAX_INPUT_HW[0],  # assume roughly square-ish height scale
                 in_channels=in_channels,
@@ -77,7 +152,7 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
                 model_channels=32,
                 num_res_blocks=2,
                 attention_resolutions=(3,),
-                channel_mult=(1, 2, 2, 4,4,8),
+                channel_mult=channel_mult,
                 cascade_conditioning=False,
                 **kwargs
             )
@@ -85,11 +160,11 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
             raise ValueError(f"Unknown encoder_type '{encoder_type}', expected 'flex_o3' or 'unet_o3'")
 
         # Shallow head after concatenation of north/south embeddings
-        hidden_head = max(latent_dim, 2 * cnn_out_dim // 2)
+        hidden_head = max(self.model_output_dim, 2 * cnn_out_dim // 2)
         self.head = nn.Sequential(
             nn.Linear(2 * cnn_out_dim, hidden_head),
             nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(hidden_head, latent_dim),
+            nn.Linear(hidden_head, self.model_output_dim),
         )
 
     @staticmethod
@@ -104,7 +179,7 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         # Pad format: (left, right, top, bottom)
         return F.pad(x, (0, pad_w, 0, pad_h))
 
-    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         # Expect tensors of shape [B, C=6, H, W]
         e_south = data["E_south"]
         b_south = data["B_south"]
@@ -144,14 +219,15 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
         dropout: float = 0.15,
         pool_queries: str = "mean",
         encoder_type: str = "flex_o3",
+        transformer_type: str = "detr",
         **kwargs
     ):
-        super().__init__()
-        self.latent_dim = latent_dim
+        super().__init__(latent_dim=latent_dim, **kwargs)
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_queries = n_queries
         self.pool_queries = pool_queries
+        self.transformer_type = transformer_type
 
         from .compressors import flexible_o3_model
 
@@ -169,8 +245,9 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
 
         elif encoder_type == "unet_o3":
             from .unet.unet import UNetStyleEncoder
+            print("Using UNetStyleEncoder as shared CNN", flush=True)
             model_channels = 32
-            channel_mult = (1,1, 2, 2, 4,4,8)
+            channel_mult = (1, 1, 2, 2,4,8)
             cnn_out_dim = model_channels * channel_mult[-1]
             self.shared_cnn = UNetStyleEncoder(
                 image_size=MAX_INPUT_HW[0],  # assume roughly square-ish height scale
@@ -189,30 +266,70 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
         self.proj = nn.Linear(self.cnn_out_channels, d_model)
         self.token_ln = nn.LayerNorm(d_model)
 
+        # Two classes: south (0) and north (1)
         self.class_embed = nn.Embedding(2, d_model)
 
         # Learnable query tokens (persistent)
         self.query_tokens = nn.Parameter(
-            torch.randn(1, n_queries, d_model)
+            torch.randn(1, n_queries, d_model) * 0.2
         )
 
-        # Cross-attention blocks
-        self.blocks = nn.ModuleList([
-            QueryCrossAttentionBlock(
+        # -------------------------------
+        # Transformer backbone
+        # -------------------------------
+        if self.transformer_type == "detr":
+            # DETR-style encoder/decoder
+            encoder_layer = nn.TransformerEncoderLayer(
                 d_model=d_model,
-                n_heads=n_heads,
-                mlp_ratio=mlp_ratio,
+                nhead=n_heads,
+                dim_feedforward=int(mlp_ratio * d_model),
                 dropout=dropout,
+                batch_first=True,
+                norm_first=True,
             )
-            for _ in range(n_layers)
-        ])
+            self.encoder = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=n_layers,
+            )
+
+            decoder_layer = nn.TransformerDecoderLayer(
+                d_model=d_model,
+                nhead=n_heads,
+                dim_feedforward=int(mlp_ratio * d_model),
+                dropout=dropout,
+                batch_first=True,
+                norm_first=True,
+            )
+            self.decoder = nn.TransformerDecoder(
+                decoder_layer,
+                num_layers=n_layers,
+            )
+            self.blocks = None
+
+        elif self.transformer_type == "perceiver":
+            # Perceiver-style stack of cross-attention blocks
+            self.encoder = None
+            self.decoder = None
+            self.blocks = nn.ModuleList([
+                QueryCrossAttentionBlock(
+                    d_model=d_model,
+                    n_heads=n_heads,
+                    mlp_ratio=mlp_ratio,
+                    dropout=dropout,
+                )
+                for _ in range(n_layers)
+            ])
+        else:
+            raise ValueError(
+                f"Unknown transformer_type '{self.transformer_type}', expected 'detr' or 'perceiver'"
+            )
 
         self.final_ln = nn.LayerNorm(d_model)
 
         self.head = nn.Sequential(
-            nn.Linear(d_model, max(latent_dim, d_model // 2)),
+            nn.Linear(d_model, max(self.model_output_dim, d_model // 2)),
             nn.GELU(),
-            nn.Linear(max(latent_dim, d_model // 2), latent_dim),
+            nn.Linear(max(self.model_output_dim, d_model // 2), self.model_output_dim),
         )
 
     @staticmethod
@@ -237,21 +354,38 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
     def _to_width_tokens(self, feat: torch.Tensor) -> torch.Tensor:
         """
         Convert CNN feature map [B, C, H, W] to token sequence along width.
-        We average over H to keep width structure, then project to d_model.
+        Uses mean over height, projection to d_model, sinusoidal position encoding,
+        then LayerNorm.
         Returns [B, W, d_model].
         """
         B, C, H, W = feat.shape
-        print("Feature map shape:", feat.shape)
-        x = feat.mean(dim=2)  # [B, C, W]
-        x = x.transpose(1, 2)  # [B, W, C]
-        x = self.proj(x)       # [B, W, d_model]
+
+        # Collapse height
+        x = feat.mean(dim=2)          # [B, C, W]
+        x = x.transpose(1, 2)         # [B, W, C]
+
+        # Project to model dim
+        x = self.proj(x)              # [B, W, d_model]
+
+        # --- positional encoding (sinusoidal) ---
+        pe = self._sinusoidal_positional_encoding(
+            length=W,
+            d_model=self.d_model,
+            device=x.device,
+        ).unsqueeze(0)                # [1, W, D]
+
+        # x = x + pe                    # ADD BEFORE LN
+
+        # Normalize
         x = self.token_ln(x)
+
         return x
 
-    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         e_south = data["E_south"]; b_south = data["B_south"]
         e_north = data["E_north"]; b_north = data["B_north"]
 
+        # CNN feature extraction
         south_stack = torch.cat([e_south, b_south], dim=1)
         north_stack = torch.cat([e_north, b_north], dim=1)
         south_stack, north_stack = self._pad_to_match(south_stack, north_stack)
@@ -259,38 +393,37 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
         south_feat = self.shared_cnn(south_stack)
         north_feat = self.shared_cnn(north_stack)
 
-        south_tokens = self._to_width_tokens(south_feat)
-        north_tokens = self._to_width_tokens(north_feat)
+        south_tokens = self._to_width_tokens(south_feat)  # [B, W_s, D]
+        north_tokens = self._to_width_tokens(north_feat)  # [B, W_n, D]
 
-        B, W_s, D = south_tokens.shape
-        _, W_n, _ = north_tokens.shape
+        B_s, W_s, D = south_tokens.shape
+        B_n, W_n, _ = north_tokens.shape
+        assert B_s == B_n, "Batch size mismatch between hemispheres"
+        B = B_s
 
-        # pe_s = self._sinusoidal_positional_encoding(W_s, D, south_tokens.device).unsqueeze(0)
-        # pe_n = self._sinusoidal_positional_encoding(W_n, D, north_tokens.device).unsqueeze(0)
+        # Add learnt class embeddings to each token sequence
+        south_cls = self.class_embed.weight[0].view(1, 1, D)  # [1, 1, D]
+        north_cls = self.class_embed.weight[1].view(1, 1, D)  # [1, 1, D]
+        south_tokens = south_tokens + south_cls
+        north_tokens = north_tokens + north_cls
 
-        # south_tokens = south_tokens + pe_s
-        # north_tokens = north_tokens + pe_n
+        if self.transformer_type == "detr":
+            # DETR-style: encode each hemisphere separately, then decode with queries
+            south_memory = self.encoder(south_tokens)   # [B, W_s, D]
+            north_memory = self.encoder(north_tokens)   # [B, W_n, D]
+            memory = torch.cat([south_memory, north_memory], dim=1)  # [B, T, D]
 
-        # south_tokens = south_tokens + self.class_embed(
-        #     torch.tensor(0, device=south_tokens.device)
-        # ).view(1, 1, -1)
-
-        # north_tokens = north_tokens + self.class_embed(
-        #     torch.tensor(1, device=north_tokens.device)
-        # ).view(1, 1, -1)
-
-        x = torch.cat([south_tokens, north_tokens], dim=1)  # (B, T, D)
-
-        # Expand persistent queries
-        q = self.query_tokens.expand(B, -1, -1)  # (B, Q, D)
-
-        # Query ↔ data interaction
-        for blk in self.blocks:
-            q, x = blk(q, x)
+            q = self.query_tokens.expand(B, -1, -1)  # [B, Q, D]
+            q = self.decoder(tgt=q, memory=memory)   # [B, Q, D]
+        else:
+            # Perceiver-style: concatenate tokens as inputs and update queries
+            x = torch.cat([south_tokens, north_tokens], dim=1)  # [B, T, D]
+            q = self.query_tokens.expand(B, -1, -1)            # [B, Q, D]
+            for blk in self.blocks:
+                q, x = blk(q, x)
 
         q = self.final_ln(q)
 
-        # Pool queries (default: mean)
         if self.pool_queries == "first":
             pooled = q[:, 0]
         else:
@@ -298,6 +431,7 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
 
         z = self.head(pooled)
         return z
+
 
 
 # New simple models for bandpowers inputs
@@ -317,17 +451,17 @@ class KidsBandpowersMLP(KidsInferenceEncoder):
         redundancy_dim: int = 0,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(latent_dim=latent_dim, **kwargs)
         in_features = int(input_shape[0] * input_shape[1])
-        width = int(latent_dim * hidden_multiple)
+        width = int(self.latent_dim * hidden_multiple)
         layers = [nn.Linear(in_features, width), nn.GELU(), nn.Dropout(dropout)]
         for _ in range(max(0, num_layers - 1)):
             layers += [nn.Linear(width, width), nn.GELU(), nn.Dropout(dropout)]
-        layers += [nn.Linear(width, latent_dim)]
+        layers += [nn.Linear(width, self.model_output_dim)]
         self.net = nn.Sequential(*layers)
         self.redundancy_dim = redundancy_dim
 
-    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         x = data["mixed_bandpowers"]  # [B, 21, 20]
         x = x.view(x.shape[0], -1)
         if self.redundancy_dim != 0:
@@ -353,7 +487,7 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
         redundancy_dim: int = 0,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(latent_dim=latent_dim, **kwargs)
         padding = kernel_size // 2
         conv_layers: list[nn.Module] = []
         curr_in = in_channels
@@ -371,11 +505,11 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
         self.head = nn.Sequential(
             nn.Flatten(),
             nn.Dropout(dropout),
-            nn.Linear(in_features, latent_dim),
+            nn.Linear(in_features, self.model_output_dim),
         )
         self.redundancy_dim = redundancy_dim
 
-    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         x = data["mixed_bandpowers"]  # [B, 21, 20]
         if x.dim() != 3:
             raise ValueError(f"Expected bandpowers tensor with 3 dims [B, C, L], got shape {tuple(x.shape)}")
@@ -383,7 +517,7 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
         z = self.head(x)
         if self.redundancy_dim != 0:
             zeros = torch.zeros(z.shape[0], self.redundancy_dim, device=z.device, dtype=z.dtype)
-            x = torch.cat([z, zeros], dim=1)
+            z = torch.cat([z, zeros], dim=1)
         return z
 
 
@@ -407,7 +541,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         bandpower_latent_dim: int = None,
         **kwargs,
     ):
-        super().__init__()
+        super().__init__(latent_dim=latent_dim, **kwargs)
         bandpower_kwargs = bandpower_kwargs or {}
         # Backward-compat for existing configs using transformer_kwargs
         if map_kwargs is None and transformer_kwargs is not None:
@@ -416,10 +550,10 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         print("Map kwargs", map_kwargs, flush=True)
 
         if bandpower_latent_dim is None:
-            dim_band = latent_dim // 2
+            dim_band = self.latent_dim // 2
         else:
             dim_band = bandpower_latent_dim
-        dim_patch = latent_dim - dim_band
+        dim_patch = self.latent_dim - dim_band
 
         # Bandpowers encoder
         bp_builders = {
@@ -441,7 +575,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             raise ValueError(f"Unknown map_encoder_type '{map_encoder_type}', expected one of {list(patch_builders.keys())}")
         self.patch_encoder = patch_builders[map_encoder_type](latent_dim=dim_patch, **map_kwargs)
 
-    def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         z_band = self.band_encoder(data)
         z_patch = self.patch_encoder(data)
         return torch.cat([z_band, z_patch], dim=1)

@@ -67,6 +67,7 @@ def unpack_data(
     as_torch: bool = True,
     dtype=np.float32,
     stack_groups: bool = False,  # default: do NOT stack; require explicit patch (e.g., 'north')
+    return_names: bool = False,
 ):
     data = {}
     with h5py.File(file_path, "r") as f:
@@ -85,10 +86,12 @@ def unpack_data(
                 raise TypeError(f"Unsupported HDF5 node type at {'/'.join(path)}: {type(node)}")
             data[out_key] = arr
 
-    cosmo = load_cosmo_params(file_path, cosmo_params, as_torch=as_torch, dtype=dtype)[0]
+    cosmo = load_cosmo_params(file_path, cosmo_params, as_torch=as_torch, dtype=dtype)
 
     if as_torch:
         import torch
         data = {k: torch.from_numpy(v) if not isinstance(v, torch.Tensor) else v for k, v in data.items()}
-
-    return data, cosmo
+    if return_names:
+        return data, cosmo
+    else:
+        return data, cosmo[0]

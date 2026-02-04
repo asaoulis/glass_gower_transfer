@@ -9,7 +9,7 @@ def fit_model(model, epochs, logger, train_loader, val_loader, experiment_name, 
     monitor_string = f"val_{model.loss_name}"
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=f"{monitor_string}",
-        dirpath=f"{base_path}/checkpoints/{experiment_name}/run_{wandb.run.name}",
+        dirpath=f"{base_path}/checkpoints/{experiment_name}",
         filename=f"checkpoint-{{epoch:02d}}-{{{monitor_string}:.4f}}",
         save_top_k=3,
         mode="min",
@@ -41,7 +41,7 @@ def train_model(config):
         logger = wandb.init(
             project=config.project,
             group=config.experiment_name,
-            name=f"{config.experiment_name}/{'pretrain' if pretrain else 'finetune'}_{config.model_type}_{config.scheduler_type}_{config.lr}_{match_string_logger}_ds{config.dataset_size}_{i}",
+            name=f"{config.experiment_name}/{'pretrain' if pretrain else 'finetune'}_{config.model_type}_{match_string_logger}_ds{config.dataset_size}_{i}",
             reinit=True
         )
 

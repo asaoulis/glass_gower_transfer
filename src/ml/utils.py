@@ -4,7 +4,7 @@ from typing import Dict, List, Sequence, Tuple, Union, Optional
 import torch
 
 from .models.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 
 # Centralized dataloader builder
@@ -111,6 +111,22 @@ def _fit_cosmo_minmax_scaler_from_paths(train_paths: Sequence[str], cosmo_params
     scaler.fit(X)
     return scaler
 
+def _build_cosmo_preset_scaler(preset_minmax: Dict[str, Tuple[float, float]], cosmo_params: Sequence[str]) -> Optional[BaseScaler]: 
+    if not cosmo_params:
+        return None
+    mins = []
+    maxs = []
+    for p in cosmo_params:
+        if p not in preset_minmax:
+            raise ValueError(f"Cosmological parameter '{p}' not found in preset min/max dictionary.")
+        min_v, max_v = preset_minmax[p]
+        mins.append(min_v)
+        maxs.append(max_v)
+    scaler = MinMaxScaler()
+    scaler.min = np.array(mins, dtype=np.float32)
+    scaler.max = np.array(maxs, dtype=np.float32)
+    return scaler
+
 
 def _wrap_loader_with_transforms(loader: torch.utils.data.DataLoader, data_transform, cosmo_scaler, shuffle=True):
     base_ds = loader.dataset
@@ -159,7 +175,7 @@ def prepare_data_parameters(config):
         as_torch=True,
         dtype=np.float32,
         stack_groups=getattr(config, 'stack_groups', False),
-        augment_eb_patches=getattr(config, 'augment_eb_patches', False),
+        augment_eb_patches=getattr(config, 'augment_eb_patches', True),
     )
 
     # Fit scalers from the training split
@@ -176,7 +192,12 @@ def prepare_data_parameters(config):
 
     cosmo_scaler = None
     if 'cosmo' in scaler_options:
-        cosmo_scaler = _fit_cosmo_minmax_scaler_from_paths(train_paths, cosmo_params)
+        scaling_type = scaler_options['cosmo']['type']
+        if scaling_type == 'minmax':
+            cosmo_scaler = _fit_cosmo_minmax_scaler_from_paths(train_paths, cosmo_params)
+        elif scaling_type == "preset":
+            from .data.constants import COSMO_PARAM_PRESET_MINMAX
+
 
     # Build transforms and wrap loaders
     data_transform = DataDictScalerTransform(key_scalers)
@@ -199,9 +220,24 @@ def prepare_data_and_model(config, data_parameters=None):
         scalers, train_loader, val_loader, test_loader = data_parameters
 
     redundancy_dim = getattr(config, 'redundancy_dim', 0)
-    conditioning_dim = config.latent_dim + redundancy_dim
+    use_KL_loss = getattr(config, 'use_KL_loss', False)
+
+    # latent_dim is always the dimension of mu; encoder may output 2*latent_dim when use_kl
+    latent_dim = getattr(config, 'latent_dim', None)
+    if latent_dim is None:
+        raise ValueError("config.latent_dim must be set")
+
+    # Build encoder / embedding model with KL behaviour controlled by use_KL_loss
     model_kwargs = {**config.model_kwargs.to_dict(), 'redundancy_dim': redundancy_dim}
-    embedding_model = MODEL_BUILDERS[config.model_type](conditioning_dim, **model_kwargs).to(device='cuda')
+    # Kids encoders honour use_kl; legacy compressors just ignore it via **model_kwargs
+    if config.model_type in KIDS_MODEL_BUILDERS:
+        model_kwargs = {**model_kwargs, 'use_kl': use_KL_loss}
+
+    # num_outputs passed to builders is the latent_dim (mu dimension)
+    embedding_model = MODEL_BUILDERS[config.model_type](latent_dim, **model_kwargs).to(device='cuda')
+
+    # Effective conditioning dimension seen by the flow is latent_dim (+ optional redundancy)
+    conditioning_dim = latent_dim + redundancy_dim
 
     # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})
@@ -211,13 +247,22 @@ def prepare_data_and_model(config, data_parameters=None):
         except Exception:
             est_warmup = 250
         base_sched_kwargs['warmup'] = est_warmup
-    use_KL_loss = getattr(config, 'use_KL_loss', False)
-    LightningModule = KLDRegularisedNDELightningModule if use_KL_loss else NDELightningModule
 
+    num_flow_heads = getattr(config, 'num_flow_heads', 1)
+
+    # Choose correct LightningModule: ensemble vs single-flow, with optional KL
+    if num_flow_heads > 1:
+        LightningModule = EnsembleNDELightningModule
+        lm_extra_kwargs = {"num_flows": num_flow_heads}
+    else:
+        LightningModule = KLDRegularisedNDELightningModule if use_KL_loss else NDELightningModule
+        lm_extra_kwargs = {}
+
+    # Construct LightningModule without any pretrained-loading kwargs
     model = LightningModule(
         embedding_model,
         conditioning_dim=conditioning_dim,
-        inference_dim = len(config.cosmo_param_names),
+        inference_dim=len(config.cosmo_param_names),
         lr=config.lr,
         flow_type=config.flow_type,
         scheduler_type=config.scheduler_type,
@@ -225,12 +270,42 @@ def prepare_data_and_model(config, data_parameters=None):
         test_dataloader=None,
         optimizer_kwargs=config.optimizer_kwargs,
         num_extra_blocks=config.extra_blocks,
-        checkpoint_path=config.checkpoint_path,
         freeze_CNN=config.freeze_cnn,
         scheduler_kwargs=base_sched_kwargs,
-        pretrained_band_ckpt_path=getattr(config, 'pretrained_band_ckpt_path', None),
-        freeze_band=getattr(config, 'freeze_band', False),
-        load_pretrained_flow=getattr(config, 'load_pretrained_flow', False)
+        flow_kwargs=config.flow_kwargs,
+        **lm_extra_kwargs,
     )
+
+    # --------------------------------------------------------
+    # Explicitly load optional pretrained components
+    # --------------------------------------------------------
+    # 1) Bandpower encoder (inside embedding model)
+    checkpoint_path = getattr(config, 'checkpoint_path', None)
+    if checkpoint_path:
+        model.load_from_checkpoint(checkpoint_path)
+    else:
+        pretrained_band_ckpt = getattr(config, 'pretrained_band_ckpt_path', None)
+        if pretrained_band_ckpt is not None:
+            freeze_band = getattr(config, 'freeze_band', False)
+            band_prefix = getattr(config, 'band_prefix', 'band_encoder.')
+            model._load_pretrained_band_encoder(pretrained_band_ckpt, freeze=freeze_band, band_prefix=band_prefix)
+
+            # Optionally also load the flow from the same checkpoint
+            if getattr(config, 'load_pretrained_flow', False):
+                flow_prefix = getattr(config, 'flow_prefix', 'model.flow.')
+                model._load_pretrained_flow(pretrained_band_ckpt, freeze=False, flow_prefix=flow_prefix)
+
+        # 2) CNN backbone (shared map encoder, e.g. KidsO3NorthSouthEmbedding.shared_cnn.backbone)
+        pretrained_backbone_ckpt = getattr(config, 'pretrained_backbone_ckpt_path', None)
+        if pretrained_backbone_ckpt is not None:
+            freeze_backbone = getattr(config, 'freeze_backbone', False)
+            backbone_prefix = getattr(config, 'backbone_prefix', 'shared_cnn.backbone.')
+            target_prefix = getattr(config, 'target_backbone_prefix', '')
+            model._load_pretrained_cnn_backbone(
+                pretrained_backbone_ckpt,
+                freeze=freeze_backbone,
+                backbone_prefix=backbone_prefix,
+                target_prefix=target_prefix,
+            )
 
     return (train_loader, val_loader, test_loader), model, scalers

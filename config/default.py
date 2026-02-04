@@ -27,6 +27,7 @@ def get_default_config():
         "n_queries": 8,
     }
     config.freeze_cnn = False
+    config.flow_kwargs = {}
 
     # Data loading (new dataset interface)
     config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5"
@@ -70,5 +71,7 @@ def get_default_config():
     config.log_normal_dataset_path = None
     config.unpaired = False
     config.match_string = ""
+    config.num_flow_heads = 1
+    config.load_pretrained_flow = False
 
     return config
