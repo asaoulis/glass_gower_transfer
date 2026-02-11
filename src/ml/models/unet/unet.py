@@ -80,6 +80,7 @@ class UNetStyleEncoder(nn.Module):
         use_scale_shift_norm: bool = True,
         cascade_conditioning: bool = False,
         cond_channels: int | None = None,
+        **kwargs,
     ):
         super().__init__()
         self.image_size = image_size
@@ -233,6 +234,7 @@ class UNetO3StyleEncoder(nn.Module):
         cond_channels: int | None = None,
         head_hidden_mult: float = 1.0,
         pool_types = ("avg", "max", "gem"),
+        **kwargs
     ):
         super().__init__()
         self.backbone = UNetStyleEncoder(

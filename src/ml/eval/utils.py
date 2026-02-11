@@ -3,7 +3,7 @@ import torch
 import glob
 import re
 import json
-from ..utils import prepare_data_and_model
+from ..utils import prepare_data_and_model, build_model
 from .tarp import get_tarp_coverage
 
 from .fom import compute_fom, compute_cov_matrix_per_sim
@@ -130,7 +130,7 @@ def load_best_checkpoint_model(config, run_folder, data_parameters=None):
         return None, None, None
     
     config.checkpoint_path = best_checkpoint
-    _, model, _ = prepare_data_and_model(config, data_parameters)
+    model= build_model(config)
     model.to("cuda")
     model.eval()
     return model, best_checkpoint, best_val_loss

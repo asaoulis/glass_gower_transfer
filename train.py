@@ -27,9 +27,22 @@ if __name__ == "__main__":
 
     config = get_default_config()
     config.experiment_name = experiment_name
-    # Set the non-list values
+
+    # Set all non-list values directly on the config, but skip max_trainval_cosmos
     for key, val in experiment_config.items():
+        if key == "max_trainval_cosmos":
+            continue
         setattr(config, key, val)
-    # Set the list value
-    print(f"Running experiment '{experiment_name}'")
-    train_model(config)
+
+    # Handle max_trainval_cosmos separately so it can be either scalar or list in experiments.py
+    max_tv = experiment_config.get("max_trainval_cosmos", None)
+    if isinstance(max_tv, (list, tuple)):
+        for n_cosmo in max_tv:
+            print(f"Running experiment '{experiment_name}' with max_trainval_cosmos={n_cosmo}")
+            config.max_trainval_cosmos = int(n_cosmo)
+            train_model(config)
+    else:
+        if max_tv is not None:
+            config.max_trainval_cosmos = int(max_tv)
+        print(f"Running experiment '{experiment_name}'")
+        train_model(config)

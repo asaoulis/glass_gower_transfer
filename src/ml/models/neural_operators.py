@@ -183,7 +183,6 @@ class KidsFNONorthSouthEmbedding(nn.Module):
     ):
         super().__init__()
         self.latent_dim = latent_dim
-        self.channels_per_map = channels_per_map
         self.use_coord_channels = use_coord_channels
         self.pos_embedding = pos_embedding.lower()
 

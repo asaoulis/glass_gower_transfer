@@ -302,11 +302,16 @@ if __name__ == "__main__":
             #     continue
             for outer_idx in range(outer_num_shape_noise_realisations):
                 for rot_idx, rotation_spec in enumerate(rotation_specs):
-                    # if rot_idx == 0 and outer_idx ==0:
-                    #     continue
+                    sim_num = sims[num_sim_this_batch]
+                    if SIMULATOR_TYPE == "gower_street" and not OVERWRITE:
+                        # check if any sim files for this sim+rotidx+outeridx already exist, and skip if so
+                        path_glob_pattern = f"output_{sim_num}_out{outer_idx}_rot{rot_idx}*.h5"
+                        existing_files = list(OUTPUT_DIR.glob(path_glob_pattern))
+                        if len(existing_files) > 0:
+                            print(f"[rank {rank}] Skipping sim {sim_num} with rot_idx {rot_idx} and outer_idx {outer_idx} as output files already exist.")
+                            continue
                     rng = np.random.default_rng()
                     log10_M_eff = np.random.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
-                    sim_num = sims[num_sim_this_batch]
                     if USE_KIDS_MASK:
                         mask = hp.read_map(f'{data_dir}/masks/KiDS_Legacy_N_healpix_1024_frac_withAstrom.fits') + hp.read_map(f'{data_dir}/masks/KiDS_Legacy_S_healpix_1024_frac_withAstrom.fits')
                     else:

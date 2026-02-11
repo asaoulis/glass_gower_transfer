@@ -16,6 +16,27 @@ from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalSca
 # Merge model registries (compressors + kids-specific architectures)
 MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
 
+N_BINS = 6
+def _infer_channels_per_map_from_quantities(dataset_quantities: Optional[Sequence[str]]) -> Optional[int]:
+    """Infer channels_per_map from dataset_quantities.
+
+    - If only E maps are present (E_north/E_south), use 3.
+    - If B maps are also present, use 6.
+    - If no map quantities are present, return None.
+    """
+    if not dataset_quantities:
+        return None
+    print("Dataset quantities provided:", dataset_quantities)
+    qs = set(dataset_quantities)
+    has_e = ("E_north" in qs) or ("E_south" in qs)
+    has_b = ("B_north" in qs) or ("B_south" in qs)
+
+    if not has_e and not has_b:
+        return None
+    if has_b:
+        return 2*N_BINS
+    return N_BINS
+
 
 class DataDictScalerTransform:
     """
@@ -156,6 +177,9 @@ def prepare_data_parameters(config):
     else:
         nested_keys = dict(getattr(config, 'dataset_nested_keys', {}))
 
+    # Optional limit on the number of cosmologies used for train+val
+    max_trainval_cosmos = getattr(config, 'max_trainval_cosmos', None)
+
     # Build base dataloaders via the central entrypoint
     train_loader, val_loader, test_loader = build_dataloaders(
         config.data_patterns,
@@ -176,8 +200,13 @@ def prepare_data_parameters(config):
         dtype=np.float32,
         stack_groups=getattr(config, 'stack_groups', False),
         augment_eb_patches=getattr(config, 'augment_eb_patches', True),
+        max_trainval_cosmos=max_trainval_cosmos,
     )
 
+    # Print dataset lengths for visibility
+    print(f"Train dataset length: {len(train_loader.dataset)}")
+    print(f"Val dataset length:   {len(val_loader.dataset)}")
+    print(f"Test dataset length:  {len(test_loader.dataset)}")
     # Fit scalers from the training split
     scaler_options = getattr(config, 'scaler_options', None) or {}
     train_ds = train_loader.dataset
@@ -197,7 +226,9 @@ def prepare_data_parameters(config):
             cosmo_scaler = _fit_cosmo_minmax_scaler_from_paths(train_paths, cosmo_params)
         elif scaling_type == "preset":
             from .data.constants import COSMO_PARAM_PRESET_MINMAX
-
+            cosmo_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, cosmo_params)
+        else:
+            raise ValueError(f"Unsupported cosmo scaler type '{scaling_type}' specified in config.scaler_options['cosmo']['type']")
 
     # Build transforms and wrap loaders
     data_transform = DataDictScalerTransform(key_scalers)
@@ -219,6 +250,13 @@ def prepare_data_and_model(config, data_parameters=None):
     else:
         scalers, train_loader, val_loader, test_loader = data_parameters
 
+    # Build model
+    model = build_model(config, test_dataloader=test_loader)
+
+    return (train_loader, val_loader, test_loader), model, scalers
+
+def build_model(config, test_dataloader=None):
+
     redundancy_dim = getattr(config, 'redundancy_dim', 0)
     use_KL_loss = getattr(config, 'use_KL_loss', False)
 
@@ -229,6 +267,14 @@ def prepare_data_and_model(config, data_parameters=None):
 
     # Build encoder / embedding model with KL behaviour controlled by use_KL_loss
     model_kwargs = {**config.model_kwargs.to_dict(), 'redundancy_dim': redundancy_dim}
+
+    # If channels_per_map not explicitly set, infer it from dataset_quantities
+    if 'channels_per_map' not in model_kwargs:
+        ch = _infer_channels_per_map_from_quantities(getattr(config, 'dataset_quantities', None))
+        if ch is not None:
+            model_kwargs['input_channels'] = ch
+            print("Inferred channels_per_map from dataset_quantities: setting input_channels to", ch)
+    print(model_kwargs)
     # Kids encoders honour use_kl; legacy compressors just ignore it via **model_kwargs
     if config.model_type in KIDS_MODEL_BUILDERS:
         model_kwargs = {**model_kwargs, 'use_kl': use_KL_loss}
@@ -242,10 +288,7 @@ def prepare_data_and_model(config, data_parameters=None):
     # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})
     if 'warmup' not in base_sched_kwargs:
-        try:
-            est_warmup = min(len(train_loader), 1000)
-        except Exception:
-            est_warmup = 250
+        est_warmup = 1000
         base_sched_kwargs['warmup'] = est_warmup
 
     num_flow_heads = getattr(config, 'num_flow_heads', 1)
@@ -267,7 +310,7 @@ def prepare_data_and_model(config, data_parameters=None):
         flow_type=config.flow_type,
         scheduler_type=config.scheduler_type,
         element_names=["Omega", "sigma8"],
-        test_dataloader=None,
+        test_dataloader=test_dataloader,
         optimizer_kwargs=config.optimizer_kwargs,
         num_extra_blocks=config.extra_blocks,
         freeze_CNN=config.freeze_cnn,
@@ -279,7 +322,9 @@ def prepare_data_and_model(config, data_parameters=None):
     # --------------------------------------------------------
     # Explicitly load optional pretrained components
     # --------------------------------------------------------
-    # 1) Bandpower encoder (inside embedding model)
+    band_module_name = None
+    backbone_module_name = None
+
     checkpoint_path = getattr(config, 'checkpoint_path', None)
     if checkpoint_path:
         model.load_from_checkpoint(checkpoint_path)
@@ -288,24 +333,38 @@ def prepare_data_and_model(config, data_parameters=None):
         if pretrained_band_ckpt is not None:
             freeze_band = getattr(config, 'freeze_band', False)
             band_prefix = getattr(config, 'band_prefix', 'band_encoder.')
-            model._load_pretrained_band_encoder(pretrained_band_ckpt, freeze=freeze_band, band_prefix=band_prefix)
+            band_module_name = model._load_pretrained_band_encoder(
+                pretrained_band_ckpt,
+                freeze=freeze_band,
+                band_prefix=band_prefix,
+            )
 
-            # Optionally also load the flow from the same checkpoint
             if getattr(config, 'load_pretrained_flow', False):
                 flow_prefix = getattr(config, 'flow_prefix', 'model.flow.')
                 model._load_pretrained_flow(pretrained_band_ckpt, freeze=False, flow_prefix=flow_prefix)
 
-        # 2) CNN backbone (shared map encoder, e.g. KidsO3NorthSouthEmbedding.shared_cnn.backbone)
         pretrained_backbone_ckpt = getattr(config, 'pretrained_backbone_ckpt_path', None)
         if pretrained_backbone_ckpt is not None:
             freeze_backbone = getattr(config, 'freeze_backbone', False)
             backbone_prefix = getattr(config, 'backbone_prefix', 'shared_cnn.backbone.')
             target_prefix = getattr(config, 'target_backbone_prefix', '')
-            model._load_pretrained_cnn_backbone(
+            backbone_module_name = model._load_pretrained_cnn_backbone(
                 pretrained_backbone_ckpt,
                 freeze=freeze_backbone,
                 backbone_prefix=backbone_prefix,
                 target_prefix=target_prefix,
             )
 
-    return (train_loader, val_loader, test_loader), model, scalers
+    # After we know which submodules were actually used for pretrained
+    # loading, configure optional per-module learning rates, if present
+    # in the config. These are scalars; we build the dicts that
+    # BaseLightningModule._build_param_groups expects.
+    band_lr = getattr(config, 'pretrained_band_lr', None)
+    if band_lr is not None and band_module_name is not None:
+        model.pretrained_band_lrs = {band_module_name: float(band_lr)}
+
+    backbone_lr = getattr(config, 'pretrained_backbone_lr', None)
+    if backbone_lr is not None and backbone_module_name is not None:
+        model.pretrained_backbone_lrs = {backbone_module_name: float(backbone_lr)}
+
+    return model

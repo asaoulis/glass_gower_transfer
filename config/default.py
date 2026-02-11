@@ -20,7 +20,6 @@ def get_default_config():
     config.model_type = "kids_o3_dual"
     config.model_kwargs = {
         "hidden": 12,
-        "channels_per_map": 6,
         "d_model": 256,
         "n_heads": 4,
         "n_layers": 4,
@@ -39,6 +38,7 @@ def get_default_config():
     config.cosmo_param_names = [
         "omega_m", "sigma_8"
     ]
+    config.max_trainval_cosmos = None  # scalar / None, not a list
     config.train_frac = 0.8
     config.val_frac = 0.1
     config.test_frac = 0.1

@@ -302,10 +302,130 @@ def build_maf_rqs(
 
     return flow
 
+from src.ml.models.patched_rqs import DtypePatchedPiecewiseRationalQuadraticCouplingTransform
+
+# def build_nsf(
+#     x_numel: Tensor,
+#     y_numel: Tensor,
+#     z_score_x: Literal[
+#         "none", "independent", "structured", "transform_to_unconstrained"
+#     ] = "independent",
+#     z_score_y: Literal[
+#         "none", "independent", "structured", "transform_to_unconstrained"
+#     ] = "independent",
+#     hidden_features: int = 50,
+#     num_transforms: int = 5,
+#     num_bins: int = 10,
+#     embedding_net: nn.Module = nn.Identity(),
+#     tail_bound: float = 3.0,
+#     hidden_layers_spline_context: int = 1,
+#     num_blocks: int = 2,
+#     dropout_probability: float = 0.0,
+#     use_batch_norm: bool = False,
+#     **kwargs,
+# ) -> NFlowsFlow:
+#     """Builds NSF p(x|y).
+
+#     Args:
+#         batch_x: Batch of xs, used to infer dimensionality and (optional) z-scoring.
+#         batch_y: Batch of ys, used to infer dimensionality and (optional) z-scoring.
+#         z_score_x: Whether to z-score xs passing into the network, can be one of:
+#             - `none`, or None: do not z-score.
+#             - `independent`: z-score each dimension independently.
+#             - `structured`: treat dimensions as related, therefore compute mean and std
+#             over the entire batch, instead of per-dimension. Should be used when each
+#             sample is, for example, a time series or an image.
+#         z_score_y: Whether to z-score ys passing into the network, same options as
+#             z_score_x.
+#         hidden_features: Number of hidden features.
+#         num_transforms: Number of transforms.
+#         num_bins: Number of bins used for the splines.
+#         embedding_net: Optional embedding network for y.
+#         tail_bound: tail bound for each spline.
+#         hidden_layers_spline_context: number of hidden layers of the spline context net
+#             for one-dimensional x.
+#         num_blocks: number of blocks used for residual net for context embedding.
+#         dropout_probability: dropout probability for regularization in residual net.
+#         use_batch_norm: whether to use batch norm in residual net.
+#         kwargs: Additional arguments that are passed by the build function but are not
+#             relevant for maf and are therefore ignored.
+
+#     Returns:
+#         Neural network.
+#     """
+#     # check_data_device(batch_x, batch_y)
+
+#     # Define mask function to alternate between predicted x-dimensions.
+#     def mask_in_layer(i):
+#         return create_alternating_binary_mask(features=x_numel, even=(i % 2 == 0))
+
+#     # If x is just a scalar then use a dummy mask and learn spline parameters using the
+#     # conditioning variables only.
+#     if x_numel == 1:
+#         # Conditioner ignores the data and uses the conditioning variables only.
+#         conditioner = partial(
+#             ContextSplineMap,
+#             hidden_features=hidden_features,
+#             context_features=y_numel,
+#             hidden_layers=hidden_layers_spline_context,
+#         )
+#     else:
+#         # Use conditional resnet as spline conditioner.
+#         conditioner = partial(
+#             nets.ResidualNet,
+#             hidden_features=hidden_features,
+#             context_features=y_numel,
+#             num_blocks=num_blocks,
+#             activation=relu,
+#             dropout_probability=dropout_probability,
+#             use_batch_norm=use_batch_norm,
+#         )
+
+#     # Stack spline transforms.
+#     transform_list = []
+#     for i in range(num_transforms):
+#         block: List[transforms.Transform] = [
+#             DtypePatchedPiecewiseRationalQuadraticCouplingTransform(
+#                 mask=mask_in_layer(i) if x_numel > 1 else tensor([1], dtype=uint8),
+#                 transform_net_create_fn=conditioner,
+#                 num_bins=num_bins,
+#                 tails="linear",
+#                 tail_bound=tail_bound,
+#                 apply_unconditional_transform=False,
+#             )
+#         ]
+#         # Add LU transform only for high D x. Permutation makes sense only for more than
+#         # one feature.
+#         if x_numel > 1:
+#             block.append(
+#                 transforms.LULinear(x_numel, identity_init=True),
+#             )
+#         transform_list += block
+
+#     z_score_x_bool, structured_x = z_score_parser(z_score_x)
+#     if z_score_x_bool:
+#         # Prepend standardizing transform to nsf transforms.
+#         transform_list = [
+#             standardizing_transform(batch_x, structured_x)
+#         ] + transform_list
+
+#     # embedding_net = _prepare_y_embedding(z_score_y, batch_y, embedding_net)
+
+#     distribution = get_base_dist(x_numel, **kwargs)
+
+#     # Combine transforms.
+#     transform = transforms.CompositeTransform(transform_list)
+#     neural_net = flows.Flow(transform, distribution, embedding_net)
+#     # flow = NFlowsFlow(
+#     #     neural_net, input_shape=batch_x[0].shape, condition_shape=batch_y[0].shape
+#     # )
+
+#     return neural_net
+
 
 def build_nsf(
-    x_numel: Tensor,
-    y_numel: Tensor,
+    batch_x: Tensor,
+    batch_y: Tensor,
     z_score_x: Literal[
         "none", "independent", "structured", "transform_to_unconstrained"
     ] = "independent",
@@ -352,7 +472,9 @@ def build_nsf(
     Returns:
         Neural network.
     """
-    # check_data_device(batch_x, batch_y)
+    check_data_device(batch_x, batch_y)
+    x_numel = get_numel(batch_x, embedding_net=None)
+    y_numel = get_numel(batch_y, embedding_net=embedding_net)
 
     # Define mask function to alternate between predicted x-dimensions.
     def mask_in_layer(i):
@@ -384,7 +506,7 @@ def build_nsf(
     transform_list = []
     for i in range(num_transforms):
         block: List[transforms.Transform] = [
-            transforms.PiecewiseRationalQuadraticCouplingTransform(
+            DtypePatchedPiecewiseRationalQuadraticCouplingTransform(
                 mask=mask_in_layer(i) if x_numel > 1 else tensor([1], dtype=uint8),
                 transform_net_create_fn=conditioner,
                 num_bins=num_bins,
@@ -408,18 +530,18 @@ def build_nsf(
             standardizing_transform(batch_x, structured_x)
         ] + transform_list
 
-    # embedding_net = _prepare_y_embedding(z_score_y, batch_y, embedding_net)
+    embedding_net = _prepare_y_embedding(z_score_y, batch_y, embedding_net)
 
     distribution = get_base_dist(x_numel, **kwargs)
 
     # Combine transforms.
     transform = transforms.CompositeTransform(transform_list)
     neural_net = flows.Flow(transform, distribution, embedding_net)
-    # flow = NFlowsFlow(
-    #     neural_net, input_shape=batch_x[0].shape, condition_shape=batch_y[0].shape
-    # )
+    flow = NFlowsFlow(
+        neural_net, input_shape=batch_x[0].shape, condition_shape=batch_y[0].shape
+    )
 
-    return neural_net
+    return flow
 
 
 def build_zuko_nice(

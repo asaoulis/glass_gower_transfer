@@ -11,6 +11,72 @@ experiments = {
         "epochs": 200,
         "batch_size": 64,
     },
+    "cnn_shared_updated": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "model_type": "kids_o3_dual",
+        "model_kwargs":{
+            "encoder_type": "unet_o3",
+            "pool_types": ('avg','max','gem')
+        },
+        "latent_dim": 16,#128,
+        "epochs": 200,
+        "batch_size": 64,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, "cyclic_period_steps":4000,},
+        "lr": 4.e-4,
+        "flow_kwargs": {"hidden_features": 128}
+    },
+    "cnn_shared_updated_E_mode": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "dataset_quantities": [ "E_north", "E_south"],
+        "model_type": "kids_o3_dual",
+        "model_kwargs":{
+            "encoder_type": "unet_o3",
+            "pool_types": ('avg','max','gem')
+        },
+        "latent_dim": 16,#128,
+        "epochs": 200,
+        "batch_size": 64,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, "cyclic_period_steps":4000,},
+        "lr": 4.e-4,
+        "flow_kwargs": {"hidden_features": 128}
+    },
+    "cnn_shared_updated_E_mode_KLDIV": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "dataset_quantities": [ "E_north", "E_south"],
+        "model_type": "kids_o3_dual",
+        "model_kwargs":{
+            "encoder_type": "unet_o3",
+            "pool_types": ('avg','max','gem')
+        },
+        "latent_dim": 16,#128,
+        "epochs": 200,
+        "batch_size": 128,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, "cyclic_period_steps":4000,},
+        "lr": 4.e-4,
+        "flow_kwargs": {"hidden_features": 128},
+        "use_KL_loss": True,
+    },
+    "cnn_shared_NSagg_E_mode_KLDIV": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "dataset_quantities": [ "E_north", "E_south"],
+        "model_type": "kids_o3_dual",
+        "model_kwargs":{
+            "encoder_type": "unet_o3",
+            "pool_types": ('avg','max','gem'),
+            "aggregate_north_south": True,
+        },
+        "latent_dim": 16,#128,
+        "epochs": 200,
+        "batch_size": 128,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, "cyclic_period_steps":4000,},
+        "lr": 4.e-4,
+        "flow_kwargs": {"hidden_features": 128},
+        "use_KL_loss": True,
+    },
     "cnn_transform": {
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
         "model_type": "kids_combined_cnn_transformer",
@@ -63,6 +129,7 @@ experiments = {
         "latent_dim": 8,
         "batch_size": 64,
         "use_KL_loss": True,
+        "flow_kwargs": {"hidden_features": 128}
     },
     "bandpower_cnn_KL_redundancy": {
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
@@ -172,14 +239,65 @@ experiments = {
                 "pool_types": ('avg', 'max', 'gem')
             }
         },
-        "latent_dim": 32 + 8,
-        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "latent_dim": 128 + 8,
+        # "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KLDIV/checkpoint-epoch=44-val_log_prob=-2.9605.ckpt",
         "freeze_band": True,
         "epochs": 200,
         "batch_size": 64,
         "scheduler_kwargs": {'warmup': 4000, 'gamma': 0.998},
         "lr": 0.0005,
         "use_KL_loss": True,
+        "flow_kwargs": {"hidden_features": 128}
+    },
+    "hybrid_frozen_multpools_unet_sched":{
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south"],
+        "model_kwargs": {
+            "bandpower_type": "cnn",
+            "map_encoder_type": "o3_dual",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+                "pool_types": ('avg', 'max', 'gem')
+            }
+        },
+        "latent_dim": 128 + 8,
+        # "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KLDIV/checkpoint-epoch=44-val_log_prob=-2.9605.ckpt",
+        "freeze_band": True,
+        "epochs": 200,
+        "batch_size": 64,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, 'min_factor': 0.1},
+        "lr": 0.0005,
+        "use_KL_loss": False,
+        "flow_kwargs": {"hidden_features": 128}
+    },
+    "hybrid_frozen_multpools_unet_sched_E_modes":{
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south",],
+        "model_kwargs": {
+            "bandpower_type": "cnn",
+            "map_encoder_type": "o3_dual",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+                "pool_types": ('avg', 'max', 'gem')
+            }
+        },
+        "latent_dim": 128 + 8,
+        # "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KLDIV/checkpoint-epoch=44-val_log_prob=-2.9605.ckpt",
+        "freeze_band": True,
+        "epochs": 200,
+        "batch_size": 64,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, 'min_factor': 0.1},
+        "lr": 0.0005,
+        "use_KL_loss": False,
         "flow_kwargs": {"hidden_features": 128}
     },
     "hybrid_frozen_multpools_unet_large":{
@@ -253,19 +371,43 @@ experiments = {
         "model_kwargs": {
             "bandpower_type": "cnn",
             "map_encoder_type": "transformer",
-            "bandpower_latent_dim": 64,
+            "bandpower_latent_dim": 8,
             "map_kwargs":{
                 "encoder_type": "unet_o3",
             }
         },
-        "latent_dim": 128 + 64,
+        "latent_dim": 128 + 8,
         "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_64_KL/run_pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=71-val_log_prob=-2.9770.ckpt",
-        "pretrained_backbone_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/hybrid_frozen_multpools_unet/run_hybrid_frozen_multpools_unet/pretrain_kids_hybrid_bandpowers_maps_exp_0.0004__dsNone_0/checkpoint-epoch=104-val_log_prob=-3.4624.ckpt",
+        "pretrained_backbone_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/hybrid_frozen_multpools_unet_sched/checkpoint-epoch=66-val_log_prob=-3.7011.ckpt",
         "freeze_band": True,
         "epochs": 200,
-        "batch_size": 64,
+        "batch_size": 128,
         "scheduler_kwargs": {'warmup': 5000, 'gamma': 0.999},
-        "lr": 4.e-5
+        "lr": 4.e-4,
+    },
+    "hybrid_frozen_unet_cnntransformer_pretrainedcnn_sched":{
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south"],
+        "model_kwargs": {
+            "bandpower_type": "cnn",
+            "map_encoder_type": "transformer",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+            }
+        },
+        "latent_dim": 128 + 8,
+        "pretrained_band_ckpt_path":  "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KLDIV/checkpoint-epoch=44-val_log_prob=-2.9605.ckpt",
+        "pretrained_backbone_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/hybrid_frozen_multpools_unet_sched/checkpoint-epoch=66-val_log_prob=-3.7011.ckpt",
+        # "freeze_band": True,
+        "epochs": 200,
+        "batch_size": 64,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 5000, 'min_factor': 0.1, "cyclic_period_steps": 2000},
+        "lr": 4.e-4,
+        "pretrained_band_lr": 1.e-5,
+        "pretrained_backbone_lr": 1.e-5,
     },
     "hybrid_frozen_bandpower_maps_small_lr":{
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
@@ -312,9 +454,9 @@ experiments = {
         "use_KL_loss": True,
         "flow_kwargs": {"hidden_features": 256},
         "project": "glass-pretraining",
-        "model_kwargs": {
-            "channels":(64, 128, 128, 256)
-        }
+        # "model_kwargs": {
+        #     "channels":(64, 128, 128, 256)
+        # }
     },
     "glass_bandpower_mlp": {
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks/output_*.h5",
@@ -328,6 +470,22 @@ experiments = {
         "model_kwargs": {
             "hidden_multiple":16,
         },
+        "epochs": 120,
+    },
+    "glass_bandpower_mlp_sched": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks/output_*.h5",
+        "model_type": "kids_bandpowers_mlp",
+        "dataset_quantities": ["mixed_bandpowers"],
+        "project": "glass-pretraining",
+        "batch_size": 256,
+        "latent_dim": 8,
+        "use_KL_loss": True,
+        "flow_kwargs": {"hidden_features": 128},
+        "model_kwargs": {
+            "hidden_multiple":16,
+        },
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, "cyclic_period_steps":4000,},
         "epochs": 120,
     },
     "glass_hybrid_bandpower_maps":{
@@ -350,10 +508,119 @@ experiments = {
         "project": "glass-pretraining",
 
     },
+    "glass_cnn_shared": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks/output_*.h5",
+        "model_type": "kids_o3_dual",
+        "latent_dim": 128,
+        "epochs": 200,
+        "batch_size": 64,
+        "flow_kwargs": {"hidden_features": 128},
+        "model_kwargs": {
+            "encoder_type": "unet_o3",
+            "pool_types": ('avg', 'max', 'gem')
+        },
+        "scheduler_kwargs": {'warmup': 2000, 'gamma': 0.998},
+        "project": "glass-pretraining",
+    },
+    "glass_cnn_E_mode_KLDIV": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks/output_*.h5",
+        "dataset_quantities": [ "E_north", "E_south"],
+        "model_type": "kids_o3_dual",
+        "model_kwargs":{
+            "encoder_type": "unet_o3",
+            "pool_types": ('avg','max','gem')
+        },
+        "latent_dim": 16,#128,
+        "epochs": 200,
+        "batch_size": 128,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, "cyclic_period_steps":4000,},
+        "lr": 4.e-4,
+        "flow_kwargs": {"hidden_features": 128},
+        "use_KL_loss": True,
+        "project": "glass-pretraining",
+    },
     "glass_kids_combined_cnn_transformer": {
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_gower_prior/output_*.h5",
         "model_type": "kids_combined_cnn_transformer",
         "latent_dim": 256,
+        "project": "glass-pretraining"
+    },
+    "glass_hybrid_frozen_multpools_unet_128latent":{
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south"],
+        "model_kwargs": {
+            "bandpower_type": "cnn",
+            "map_encoder_type": "o3_dual",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+                "pool_types": ('avg', 'max', 'gem')
+            }
+        },
+        "latent_dim": 128 + 8,
+        # "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_bandpower_mlp/checkpoint-epoch=32-val_log_prob=-2.9205.ckpt",
+        "freeze_band": True,
+        "epochs": 200,
+        "batch_size": 64,
+        "scheduler_kwargs": {'warmup': 4000, 'gamma': 0.998},
+        "lr": 0.0005,
+        "use_KL_loss": False,
+        "flow_kwargs": {"hidden_features": 128},
+        "project": "glass-pretraining"
+    },
+    "glass_hybrid_frozen_multpools_unet_sched":{
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south"],
+        "model_kwargs": {
+            "bandpower_type": "cnn",
+            "map_encoder_type": "o3_dual",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+                "pool_types": ('avg', 'max', 'gem')
+            }
+        },
+        "latent_dim": 128 + 8,
+        # "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_bandpower_mlp/checkpoint-epoch=32-val_log_prob=-2.9205.ckpt",
+        "freeze_band": True,
+        "epochs": 200,
+        "batch_size": 128,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, 'min_factor': 0.1, "cyclic_period_steps":6000,},
+        "lr": 0.0005,
+        "use_KL_loss": False,
+        "flow_kwargs": {"hidden_features": 128},
+        "project": "glass-pretraining"
+    },
+    "glass_hybrid_multpools_unet_cyc_E_modes":{
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south"],
+        "model_kwargs": {
+            "bandpower_type": "cnn",
+            "map_encoder_type": "o3_dual",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+                "pool_types": ('avg', 'max', 'gem')
+            }
+        },
+        "latent_dim": 128 + 8,
+        # "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_bandpower_mlp/checkpoint-epoch=32-val_log_prob=-2.9205.ckpt",
+        "freeze_band": True,
+        "epochs": 200,
+        "batch_size": 128,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, 'min_factor': 0.1, "cyclic_period_steps":6000,},
+        "lr": 0.0005,
+        "use_KL_loss": False,
+        "flow_kwargs": {"hidden_features": 128},
         "project": "glass-pretraining"
     },
 # finetune gower
@@ -363,5 +630,33 @@ experiments = {
         "latent_dim": 512,
         "checkpoint_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_cnn_shared/",
         "lr": 0.00005
+    },
+    "finetune_cnn_hybrid":{
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south"],
+        "model_kwargs": {
+            "bandpower_type": "cnn",
+            "map_encoder_type": "o3_dual",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+                "pool_types": ('avg', 'max', 'gem')
+            }
+        },
+        "latent_dim": 128 + 8,
+        # "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/bandpower_cnn_8_KL/run_bandpower_cnn_8_KL/pretrain_kids_bandpowers_cnn1d_exp_0.0004__dsNone_0/checkpoint-epoch=56-val_log_prob=-2.9690.ckpt",
+        "epochs": 20,
+        "batch_size": 64,
+        "scheduler_kwargs": {'warmup': 250, "gamma":0.999,},
+        "lr": 1.e-6,
+        "use_KL_loss": False,
+        "flow_kwargs": {"hidden_features": 128},
+        "checkpoint_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_hybrid_frozen_multpools_unet_sched/",
+        "max_trainval_cosmos": [10, 15, 20, 40, 60, 100],
+        "scaler_options": {
+            'data': {'type': 'standard', 'keys': None},
+            'cosmo': {'type': 'preset'},
+        }
     },
 }

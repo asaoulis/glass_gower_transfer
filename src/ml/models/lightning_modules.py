@@ -11,6 +11,8 @@ from torch.optim.lr_scheduler import (
     ReduceLROnPlateau,
     SequentialLR,
 )
+from torch.optim.lr_scheduler import LambdaLR, CyclicLR, SequentialLR, ExponentialLR
+
 import numpy as np
 from sklearn.metrics import r2_score
 from tqdm import tqdm
@@ -85,6 +87,13 @@ class BaseLightningModule(pl.LightningModule):
         self.optimizer_kwargs = optimizer_kwargs
         self.scheduler_kwargs = scheduler_kwargs
         self.freeze_CNN = freeze_CNN
+        # Optional per-module learning rates for pretrained components.
+        # These are expected to be dicts of {module_name: lr} and will be
+        # populated from config in utils.build_model if used.
+        self.pretrained_band_lrs = getattr(self, "pretrained_band_lrs", None)
+        self.pretrained_backbone_lrs = getattr(self, "pretrained_backbone_lrs", None)
+        # Will hold per-param-group "base" LRs used by schedulers
+        self._optimizer_group_base_lrs = None
 
     def forward(self, x, cond):
         return self.model(x)
@@ -111,129 +120,143 @@ class BaseLightningModule(pl.LightningModule):
     def log_custom_evals(self, preds, y):
         pass
 
+    def _build_param_groups(self, base_optimizer_cls):
+        """Build parameter groups, allowing per-module LRs for pretrained parts."""
+        
+        param_groups = []
+        assigned_params = set()
+
+        def add_module_group(mod_name: str, lr_value: float):
+            try:
+                module = self.model.get_submodule(mod_name)
+            except AttributeError:
+                # Fallback for older pytorch versions or simple getattr
+                if not hasattr(self.model, mod_name):
+                    print(f"Warning: Module {mod_name} not found.")
+                    return
+                module = getattr(self.model, mod_name)
+                
+            # Collect params for this module
+            group_params = [p for p in module.parameters() if p.requires_grad]
+            
+            if not group_params:
+                return
+
+            param_groups.append({"params": group_params, "lr": lr_value})
+            
+            # Add these param objects to our set so we don't add them again later
+            for p in group_params:
+                assigned_params.add(p)
+
+        if isinstance(self.pretrained_band_lrs, dict):
+            for name, lr_val in self.pretrained_band_lrs.items():
+                add_module_group(name, lr_val)
+
+        if isinstance(self.pretrained_backbone_lrs, dict):
+            for name, lr_val in self.pretrained_backbone_lrs.items():
+                add_module_group(name, lr_val)
+
+        base_params = [
+            p for p in self.model.parameters() 
+            if p.requires_grad and p not in assigned_params
+        ]
+        
+        if base_params:
+            param_groups.append({"params": base_params, "lr": self.lr})
+
+        optimizer = base_optimizer_cls(param_groups, lr=self.lr, **self.optimizer_kwargs)
+        # Cache the base LR for each param group so schedulers don't lose them
+        self._optimizer_group_base_lrs = [pg["lr"] for pg in optimizer.param_groups]
+        return optimizer
+
     def configure_optimizers(self):
-        # paper is weight_decay=3.53e-7
+        # 1. Setup Optimizer
         default_optimizer_kwargs = dict(weight_decay=3.53e-7, betas=(0.5, 0.999))
         optimizer_kwargs = {**default_optimizer_kwargs, **self.optimizer_kwargs}
-        print(optimizer_kwargs)
-        if self.freeze_CNN:
-            for p in self.model.embedding_net.parameters():
-                p.requires_grad = False
-            from torch.optim import Adam
-            optimizer = Adam(self.model.flow.parameters(), lr=self.lr, **optimizer_kwargs)
+        
+        # Logic to build param groups or single group
+        if (isinstance(self.pretrained_band_lrs, dict) and self.pretrained_band_lrs) or \
+        (isinstance(self.pretrained_backbone_lrs, dict) and self.pretrained_backbone_lrs):
+            self.optimizer_kwargs = optimizer_kwargs
+            optimizer = self._build_param_groups(AdamW)
         else:
             optimizer = AdamW(self.model.parameters(), lr=self.lr, **optimizer_kwargs)
 
-        # --- Scheduler selection ---
+        # CRITICAL: Capture the actual base LRs from the optimizer groups
+        # This list corresponds to the 'max' LR each group should hit after warmup.
+        base_lrs = [pg['lr'] for pg in optimizer.param_groups]
+
+        # 2. Timing logic
+        max_epochs = getattr(self.trainer, "max_epochs", 200)
+        # Estimate total steps for the 'step' interval schedulers
+        total_steps = self.trainer.estimated_stepping_batches
+        if total_steps is None or total_steps <= 0:
+            # Fallback if trainer hasn't attached yet
+            steps_per_epoch = 1000 
+            total_steps = steps_per_epoch * max_epochs
+        else:
+            steps_per_epoch = total_steps // max_epochs
+
+        warmup_frac = float(self.scheduler_kwargs.get("warmup_frac", 0.05))
+        warmup_steps = max(1, int(total_steps * warmup_frac))
+
+        # 3. Build Schedulers
+        # --- STAGE 1: Warmup (Common to all) ---
+        # We use a lambda that scales from 0.1 to 1.0. 
+        # LambdaLR applies this to the INITIAL LRs in the optimizer.
+        warmup_start_factor = float(self.scheduler_kwargs.get("warmup_start_factor", 0.1))
+        def warmup_lambda(step):
+            return warmup_start_factor + (1.0 - warmup_start_factor) * min(1.0, step / warmup_steps)
+        
+        warmup_sched = LambdaLR(optimizer, lr_lambda=warmup_lambda)
+
+        # --- STAGE 2: Main Schedule ---
         sched_type = str(self.scheduler_type).lower()
 
-        # Plateau keeps its own behaviour
-        if sched_type == "plateau":
-            scheduler = ReduceLROnPlateau(
-                optimizer,
-                mode="min",
-                factor=0.95,
-                patience=10,
-                threshold=1e-4,
-                min_lr=1e-9,
-            )
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "interval": "epoch",
-                    "monitor": f"val_{self.loss_name}",
-                },
-            }
-
-        # Try to get max_epochs from trainer (falls back to 500)
-        max_epochs = getattr(self.trainer, "max_epochs", None) or 500
-        warmup_frac = float(self.scheduler_kwargs.get("warmup_frac", 0.05))
-        warmup_epochs = max(1, int(warmup_frac * max_epochs))
-        cosine_epochs = max_epochs - warmup_epochs
-
-        # Cyclic schedule: step-based warmup + CyclicLR
         if sched_type == "cyclic":
-            total_steps = getattr(self.trainer, "estimated_stepping_batches", None)
-            if total_steps is not None and max_epochs > 0:
-                steps_per_epoch = max(1, total_steps // max_epochs)
-            else:
-                steps_per_epoch = getattr(self.trainer, "num_training_batches", None) or 1
-
-            warmup_steps = max(1, warmup_epochs * steps_per_epoch)
-
-            def lr_lambda_warmup(step_idx: int):
-                return min(float(step_idx + 1) / float(max(1, warmup_steps)), 1.0)
-
-            warmup = LambdaLR(optimizer, lr_lambda=lr_lambda_warmup)
-
             cyclic_period_steps = int(self.scheduler_kwargs.get("cyclic_period_steps", 2000))
-            half_period = max(1, cyclic_period_steps // 2)
-
-            cyclic = CyclicLR(
+            min_factor = float(self.scheduler_kwargs.get("cyclic_min_factor", 0.05))
+            
+            # We pass LISTS of LRs to handle the different submodule groups
+            main_sched = CyclicLR(
                 optimizer,
-                base_lr=self.lr * float(self.scheduler_kwargs.get("cyclic_min_factor", 0.05)),
-                max_lr=self.lr,
-                step_size_up=half_period,
-                step_size_down=cyclic_period_steps - half_period,
+                base_lr=[lr * min_factor for lr in base_lrs],
+                max_lr=base_lrs, # The peak is our original defined LRs
+                step_size_up=cyclic_period_steps // 2,
+                step_size_down=cyclic_period_steps // 2,
                 mode="triangular",
-                cycle_momentum=False,
+                cycle_momentum=False
             )
+            interval = "step"
+            milestone = warmup_steps
 
-            scheduler = SequentialLR(
-                optimizer,
-                schedulers=[warmup, cyclic],
-                milestones=[warmup_steps],
-            )
-
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "interval": "step",
-                },
-            }
-
-        # Epoch-based warmup + cosine / exponential style decay (default path)
-        def lr_lambda_warmup(epoch: int):
-            return float(epoch + 1) / float(max(1, warmup_epochs))
-
-        warmup = LambdaLR(optimizer, lr_lambda=lr_lambda_warmup)
-
-        if sched_type in {"cosine", "cosine_simple"}:
-            # New default: cosine decay to 1/5 of initial LR by end of training
-            min_factor = float(self.scheduler_kwargs.get("min_factor", 0.2))
-            eta_min = self.lr * min_factor
-            # decay only over the post-warmup portion
-            T_max = max(1, cosine_epochs)
-            cosine = CosineAnnealingLR(optimizer, T_max=T_max, eta_min=eta_min)
-            main = cosine
-        elif sched_type in {"exp", "exponential"}:
-            # Simple exponential decay after warmup
+        elif sched_type in ["exp", "exponential"]:
             gamma = float(self.scheduler_kwargs.get("gamma", 0.98))
-
-            def lr_lambda_exp(epoch: int):
-                if epoch < warmup_epochs:
-                    return 1.0
-                t = epoch - warmup_epochs
-                return gamma ** t
-
-            main = LambdaLR(optimizer, lr_lambda=lr_lambda_exp)
+            # ExponentialLR is typically epoch-based, but we'll use it per step for smoothness
+            # Adjust gamma from epoch-rate to step-rate
+            step_gamma = gamma ** (1/steps_per_epoch)
+            main_sched = ExponentialLR(optimizer, gamma=step_gamma)
+            interval = "step"
+            milestone = warmup_steps
+        
         else:
-            # Fallback: no second stage, just run warmup then keep LR constant
-            main = LambdaLR(optimizer, lr_lambda=lambda epoch: 1.0)
+            # Fallback: Constant LR
+            main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
+            interval = "step"
+            milestone = warmup_steps
 
+        # 4. Chain them
         scheduler = SequentialLR(
             optimizer,
-            schedulers=[warmup, main],
-            milestones=[warmup_epochs],
+            schedulers=[warmup_sched, main_sched],
+            milestones=[milestone]
         )
 
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "interval": "epoch",
+                "interval": interval,
             },
         }
 
@@ -285,44 +308,42 @@ class GaussianLightningModule(BaseLightningModule):
         return loss
 
 
-from sbi.neural_nets.net_builders import build_nsf, build_maf, build_zuko_nsf
+from sbi.neural_nets.net_builders import build_maf, build_zuko_nsf
+from src.ml.models.custom_sbi import build_nsf
 from torch.optim import Adam, AdamW
-import torch
 from sbi import utils as utils
 
 import torch.nn as nn
 
 class _CondEmbeddingFlow(nn.Module):
-    """Wrapper that delegates to an embedding_net and a conditional flow.
+    """Minimal original wrapper linking an embedding network and a flow.
 
-    The embedding_net is responsible for turning high-dimensional data_dict
-    into a fixed-size representation used as the flow condition.
+    The embedding_net takes the conditioning data and returns a fixed-size
+    representation used as context for the flow. All dtype handling is left
+    to the caller / Trainer (no bf16-specific casting here).
     """
+
     def __init__(self, embedding_net: nn.Module, flow: nn.Module):
         super().__init__()
         self.embedding_net = embedding_net if embedding_net is not None else nn.Identity()
         self.flow = flow
-    
+
     def encode(self, y):
         return self.embedding_net(y)
-    
-    def log_prob(self, x, y):
-        """Return elementwise log p(x|y) for a batch.
 
-        Keeps the original convention required by nflows: the underlying
-        flow sees a leading dimension (typically num_chains) in addition to
-        the batch dimension. We therefore unsqueeze x along dim=0 before
-        calling into the flow. Any wrapper (e.g. MultipleFlow) must respect
-        this convention.
-        """
+    def log_prob(self, x, y):
         y_emb = self.embedding_net(y)
-        x = x.unsqueeze(0)  # [1, batch, dim_x]
+        x = x.unsqueeze(0)
         return self.flow.log_prob(x, y_emb)
-    
+
+    def latent_log_prob(self, x, y_emb):
+        x = x.unsqueeze(0)
+        return self.flow.log_prob(x, y_emb)
+
     def sample(self, shape, y, **kwargs):
         y_emb = self.embedding_net(y)
         return self.flow.sample(shape, y_emb, **kwargs)
-    
+
     def sample_batched(self, shape, y, **kwargs):
         y_emb = self.embedding_net(y)
         return self.flow.sample_batched(shape, y_emb, **kwargs)
@@ -514,6 +535,8 @@ class NDELightningModule(BaseLightningModule):
         self.load_state_dict(checkpoint['state_dict'])  # Ensure the key matches the saved checkpoint format
     
     def build_posterior_object(self):
+        # we need to set use_KL and return_ml correctly
+        self.model.embedding_net.only_return_mu = True
         prior = utils.BoxUniform(low=0 * torch.ones(self.inference_dim), high=1. * torch.ones(self.inference_dim), device="cuda")
         density_estimator = PatchedConditionalDensityEstimator(self.model, prior)
         return density_estimator
@@ -606,22 +629,22 @@ class NDELightningModule(BaseLightningModule):
         for batch in self.test_dataloader:
             batch = self.transfer_batch_to_device(batch, self.device, 0)
             data_dict, theta = batch
-            predictions.append(self.forward(theta, data_dict))
+            predictions.append(self.forward(theta, data_dict).reshape(-1))
         all_log_probs = torch.cat(predictions, dim=0)  # Collect predictions
-        avg_log_prob = all_log_probs.mean().item()
+        avg_log_prob = -all_log_probs.mean().item()
         return avg_log_prob
 
     def log_custom_evals(self, preds, y):
         if len(self.test_loss_values) > 0:
             self.log("test_log_prob", self.test_loss_values.pop())
 
-    def _load_pretrained_band_encoder(self, ckpt_path: str, freeze: bool, band_prefix: str = 'band_encoder.') -> None:
+    def _load_pretrained_band_encoder(self, ckpt_path: str, freeze: bool, band_prefix: str = 'band_encoder.') -> str | None:
         """Load weights for a bandpower encoder inside the embedding_net.
 
-        This assumes that `self.embedding_net` has an attribute that contains
-        the desired band-encoder submodule (e.g. `band_encoder`), and that the
-        checkpoint corresponds to a bandpower+NDE model where the band encoder
-        weights live under `band_prefix` (e.g. 'band_encoder.').
+        Returns the dotted submodule path (relative to ``self.model``)
+        of the band encoder that was used, so that callers can set a
+        dedicated learning rate for that module if desired. If no
+        suitable submodule is found, returns ``None``.
         """
         print(f"[NDELightningModule] Loading pretrained band encoder from {ckpt_path}...")
         checkpoint = torch.load(ckpt_path, map_location="cpu")
@@ -629,14 +652,17 @@ class NDELightningModule(BaseLightningModule):
 
         # Heuristic: look for a candidate submodule on the embedding net
         band_module = None
+        band_module_name = None
         for attr in ("band_encoder", "band_model"):
             if hasattr(self.embedding_net, attr):
                 band_module = getattr(self.embedding_net, attr)
-                print(f"[NDELightningModule] Using embedding_net.{attr} as band encoder target.")
+                band_module_name = f"embedding_net.{attr}"
+                print(f"[NDELightningModule] Using {band_module_name} as band encoder target.")
                 break
+
         if band_module is None:
             print("[NDELightningModule] Warning: embedding_net has no band encoder submodule; skipping band loading.")
-            return
+            return None
 
         load_partial_weights(
             target_module=band_module,
@@ -645,7 +671,9 @@ class NDELightningModule(BaseLightningModule):
             freeze=freeze,
             verbose=True,
         )
-    
+
+        return band_module_name
+
     def _load_pretrained_flow(self, ckpt_path: str, freeze: bool, flow_prefix: str = 'model.flow.') -> None:
         """Load weights for the normalising flow from a given checkpoint."""
         print(f"[NDELightningModule] Loading pretrained flow from {ckpt_path}...")
@@ -666,22 +694,12 @@ class NDELightningModule(BaseLightningModule):
         freeze: bool,
         backbone_prefix: str = 'shared_cnn.backbone.',
         target_prefix: str = '',
-    ) -> None:
+    ) -> str | None:
         """Load weights for the CNN backbone used inside the embedding network.
 
-        This is designed to support scenarios like:
-          * Source: KidsO3NorthSouthEmbedding.shared_cnn.backbone
-            (UNetO3StyleEncoder.backbone -> UNetStyleEncoder)
-          * Target: KidsCombinedCNNTransformer.shared_cnn
-            (a full UNetStyleEncoder without a .backbone attribute)
-
-        In that case, `backbone_prefix` should point at the source backbone
-        inside the checkpoint (e.g. 'shared_cnn.backbone.') while
-        `target_prefix` can be left as the default empty string so that the
-        keys are loaded directly into the target UNetStyleEncoder module.
-
-        The actual loading is delegated to `load_partial_weights`, which only
-        loads matching keys and can optionally freeze the loaded parameters.
+        Returns the dotted submodule path (relative to ``self.model``)
+        of the CNN module that received the weights, or ``None`` if
+        no suitable module was found.
         """
         print(f"[NDELightningModule] Loading pretrained CNN backbone from {ckpt_path}...")
         checkpoint = torch.load(ckpt_path, map_location="cpu")
@@ -689,31 +707,24 @@ class NDELightningModule(BaseLightningModule):
 
         # Locate the CNN module that will receive the backbone weights.
         cnn_module = None
-        # 1) Embedding net itself might already be the CNN (with .backbone)
+        cnn_module_name = None
         if hasattr(self.embedding_net, "patch_encoder"):
             shared = getattr(self.embedding_net, "patch_encoder")
-            # If the shared CNN exposes a .backbone, load into that
             if hasattr(shared, "shared_cnn"):
                 cnn_module = shared.shared_cnn
+                cnn_module_name = "embedding_net.patch_encoder.shared_cnn"
 
         if cnn_module is None:
             print("[NDELightningModule] Warning: could not find a CNN backbone on embedding_net; skipping backbone loading.")
-            return
+            return None
 
-        # Optionally re-map keys by changing their target_prefix. This is
-        # handled by adjusting the prefix we strip and what we expect inside
-        # cnn_module.state_dict(): we pre-strip backbone_prefix on the source
-        # side, and if target_prefix is non-empty we add it back before
-        # matching against cnn_module's keys.
         if target_prefix:
-            # Build a temporary state dict with remapped keys
             remapped = {}
             for k, v in src_state.items():
                 if backbone_prefix and k.startswith(backbone_prefix):
                     inner_key = k[len(backbone_prefix):]
                     remapped[target_prefix + inner_key] = v
             src_state = remapped
-            # We already consumed backbone_prefix in the remap, so clear it
             backbone_prefix = ''
 
         load_partial_weights(
@@ -724,6 +735,7 @@ class NDELightningModule(BaseLightningModule):
             verbose=True,
         )
 
+        return cnn_module_name
 
 
 import torch
@@ -733,7 +745,7 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
     def __init__(
         self,
         *args,
-        kl_weight: float = 1e-4,  
+        kl_weight: float = 1e-3,  
         kl_min: float = 0.0,
         **kwargs,
     ):
@@ -787,8 +799,7 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
             z = mu
 
         # 4) Flow loss
-        theta_for_flow = theta.unsqueeze(0)
-        log_prob = self.model.flow.log_prob(theta_for_flow, z)
+        log_prob = self.model.latent_log_prob(theta, z)
         nll = -log_prob.mean()
 
         total = nll + self.kl_weight * kl
@@ -812,6 +823,19 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
         loss, log_prob, theta = self._shared_step(batch, stage="val")
         self.log_custom_evals(log_prob, theta)
         return loss
+
+    def compute_avg_log_prob(self):
+        """Computes the average log probability over the test dataset."""
+        predictions = []
+        for batch in self.test_dataloader:
+            batch = self.transfer_batch_to_device(batch, self.device, 0)
+            data_dict, theta = batch
+            mu, logvar = self._latent_stats(data_dict)
+            log_prob = self.model.latent_log_prob(theta, mu)
+            predictions.append(log_prob.reshape(-1))
+        all_log_probs = torch.cat(predictions, dim=0)  # Collect predictions
+        avg_log_prob = -all_log_probs.mean().item()
+        return avg_log_prob
 
 
 class EnsembleNDELightningModule(NDELightningModule):
@@ -856,6 +880,5 @@ class EnsembleNDELightningModule(NDELightningModule):
             )
             flows.append(flow)
 
-        self.flow = MultipleFlow(flows)
+        self.flow = nn.ModuleList(flows)
         # Reuse the same embedding network and wrapper API as the base class.
-        self.model = _CondEmbeddingFlow(self.embedding_net, self.flow)

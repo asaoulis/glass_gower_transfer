@@ -44,10 +44,17 @@ def split_by_cosmology(
     val_frac: float = 0.1,
     test_frac: float = 0.1,
     seed: int = 42,
+    max_trainval_cosmos: Optional[int] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """
     Glob files, group by cosmology index, shuffle cosmologies, and split without leakage.
-    Returns lists of file paths for train/val/test.
+
+    The test set is defined as the last ``test_frac`` fraction of the cosmologies (in a
+    random order determined by ``seed``). Optionally, a fixed number of cosmologies
+    for training+validation (``max_trainval_cosmos``) can be requested: in that case,
+    exactly that many cosmologies (if available) are used for train+val, with
+    train/val fractions applied within this subset. The test set remains fixed and
+    includes the remaining cosmologies.
     """
     if not np.isclose(train_frac + val_frac + test_frac, 1.0):
         raise ValueError("train_frac + val_frac + test_frac must sum to 1.0")
@@ -66,17 +73,57 @@ def split_by_cosmology(
     rng = random.Random(seed)
     rng.shuffle(cosmologies)
 
-    n = len(cosmologies)
-    if n == 0:
+    n_total = len(cosmologies)
+    if n_total == 0:
         raise ValueError("No cosmologies found.")
 
-    n_train = int(n * train_frac)
-    n_val = int(n * val_frac)
-    n_test = n - n_train - n_val  # remainder
+    # First, define a fixed test set as the last test_frac of all cosmologies
+    n_test = int(round(n_total * test_frac))
+    n_test = max(1, n_test) if test_frac > 0 else 0
+    if n_test > n_total:
+        n_test = n_total
 
-    train_cosmos = set(cosmologies[:n_train])
-    val_cosmos = set(cosmologies[n_train:n_train + n_val])
-    test_cosmos = set(cosmologies[n_train + n_val:])
+    test_cosmos = set(cosmologies[-n_test:]) if n_test > 0 else set()
+    remaining_cosmos = cosmologies[:-n_test] if n_test > 0 else cosmologies
+
+    n_remaining = len(remaining_cosmos)
+
+    # Optionally limit the total number of training+validation cosmologies
+    if max_trainval_cosmos is not None:
+        if max_trainval_cosmos <= 0:
+            raise ValueError("max_trainval_cosmos must be positive if provided.")
+        if max_trainval_cosmos > n_remaining:
+            raise ValueError(
+                f"Requested max_trainval_cosmos={max_trainval_cosmos} but only "
+                f"{n_remaining} cosmologies are available after reserving the test set."
+            )
+        # Take the first max_trainval_cosmos cosmologies from the shuffled remaining list
+        trainval_cosmos = remaining_cosmos[:max_trainval_cosmos]
+    else:
+        trainval_cosmos = remaining_cosmos
+
+    n_trainval = len(trainval_cosmos)
+    if n_trainval == 0:
+        raise ValueError("No cosmologies left for training/validation after reserving test set.")
+
+    # Compute train/val counts within the selected train+val pool
+    # Use relative fractions renormalised to (train_frac + val_frac)
+    trainval_total_frac = train_frac + val_frac
+    if trainval_total_frac <= 0:
+        raise ValueError("train_frac + val_frac must be positive.")
+
+    rel_train_frac = train_frac / trainval_total_frac
+    rel_val_frac = val_frac / trainval_total_frac
+
+    n_train = int(n_trainval * rel_train_frac)
+    n_val = n_trainval - n_train  # remainder goes to validation
+    # ensure there is at least one cosmology for valdiation
+    if n_val == 0 and val_frac > 0:
+        n_train = max(0, n_train - 1)
+        n_val = 1
+
+    train_cosmos = set(trainval_cosmos[:n_train])
+    val_cosmos = set(trainval_cosmos[n_train:n_train + n_val])
 
     train_paths: List[str] = []
     val_paths: List[str] = []
@@ -253,12 +300,13 @@ def build_datasets(
     dtype=np.float32,
     stack_groups: bool = False,
     transform: Optional[object] = None,
+    max_trainval_cosmos: Optional[int] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     """
     Convenience: split by cosmology and return three datasets.
     """
     train_paths, val_paths, test_paths = split_by_cosmology(
-        patterns, train_frac=train_frac, val_frac=val_frac, test_frac=test_frac, seed=seed
+        patterns, train_frac=train_frac, val_frac=val_frac, test_frac=test_frac, seed=seed, max_trainval_cosmos=max_trainval_cosmos
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
@@ -295,6 +343,7 @@ def build_dataloaders(
     dtype=np.float32,
     stack_groups: bool = False,
     augment_eb_patches: bool = False,
+    max_trainval_cosmos: Optional[int] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Return DataLoaders for train/val/test ensuring no cosmology leakage.
@@ -306,7 +355,7 @@ def build_dataloaders(
         patterns, nested_keys, cosmo_params,
         train_frac=train_frac, val_frac=val_frac, test_frac=test_frac,
         seed=seed, as_torch=as_torch, dtype=dtype, stack_groups=stack_groups,
-        transform=transform,
+        transform=transform, max_trainval_cosmos=max_trainval_cosmos,
     )
 
     if val_batch_size is None:
