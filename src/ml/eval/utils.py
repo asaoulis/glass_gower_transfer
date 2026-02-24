@@ -3,8 +3,9 @@ import torch
 import glob
 import re
 import json
-from ..utils import prepare_data_and_model, build_model
 from .tarp import get_tarp_coverage
+from ..utils import load_best_checkpoint_model, build_model
+from .loading_model import find_best_checkpoint, get_best_checkpoint
 
 from .fom import compute_fom, compute_cov_matrix_per_sim
 
@@ -31,6 +32,7 @@ def find_best_checkpoint(checkpoint_dir):
 
 def get_best_checkpoint(experiment_path, match_string):
     run_folders = [os.path.join(experiment_path, d) for d in os.listdir(experiment_path) if os.path.isdir(os.path.join(experiment_path, d))]
+    print("Searching for best checkpoints in:", run_folders)
     best_checkpoints = []
     val_losses = []
     for run_folder in run_folders:
@@ -61,28 +63,63 @@ def rescale_parameters(tensor, scaler):
     """
     original_shape = tensor.shape
     reshaped_tensor = tensor.reshape(-1, original_shape[-1])  # Flatten to (N, d) for scaling
-    scaled_array = scaler.inverse_transform_minmax(reshaped_tensor.cpu().numpy())  # Apply inverse scaling
+    scaled_array = scaler.inverse_transform(reshaped_tensor.cpu().numpy())  # Apply inverse scaling
     scaled_tensor = torch.tensor(scaled_array, device='cuda', dtype=torch.float32)  # Convert back to tensor
     return scaled_tensor.reshape(original_shape)  # Restore original shape
 
 def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, compute_calibration=True):
     
     theta0s, samples = model.generate_samples(model.test_dataloader, num_samples=10000)
-    
+    cosmological_params = param_scaler.parameter_names
     scaled_theta0s = rescale_parameters(theta0s, param_scaler)
     scaled_samples = rescale_parameters(samples, param_scaler)
     sample_means = scaled_samples.mean(axis=0)
     mse = torch.nn.functional.mse_loss(sample_means, scaled_theta0s, reduction='none')
     bias = scaled_samples.mean(axis=0) - scaled_theta0s
+    # compute posterior ensemble per-parameter standard deviation
+    std_devs = scaled_samples.std(axis=0)
+    # also compute 68 and 95 CI widths per parameter
+    width_68 = torch.quantile(scaled_samples, 0.84, dim=0) - torch.quantile(scaled_samples, 0.16, dim=0)
+    width_95 = torch.quantile(scaled_samples, 0.975, dim=0) - torch.quantile(scaled_samples, 0.025, dim=0)
 
     eval_metrics = {
         "fom": compute_fom(samples),  # Compute Figure of Merit
         "sample_ensemble_mse": mse.mean().item(),  # Mean Squared Error of samples
     }
     per_dim_mse = mse.mean(dim=0).cpu().numpy()
-    for dim in range(theta0s.shape[1]):
-        eval_metrics[f"mse_{dim}"] = per_dim_mse[dim].item()
-        eval_metrics[f"bias_{dim}"] = bias.mean(dim=0)[dim].item()
+    for dim, param_name in enumerate(cosmological_params):
+        eval_metrics[param_name] = {}
+        eval_metrics[param_name]["mse"] = per_dim_mse[dim].item()
+        eval_metrics[param_name]["bias"] = bias.mean(dim=0)[dim].item()
+        eval_metrics[param_name]["std_dev"] = std_devs.mean(dim=0)[dim].item()
+        eval_metrics[param_name]["width_68"] = width_68.mean(dim=0)[dim].item()
+        eval_metrics[param_name]["width_95"] = width_95.mean(dim=0)[dim].item()
+    if "omega_m" in cosmological_params and "sigma_8" in cosmological_params:
+        i_sigma8 = cosmological_params.index("sigma_8")
+        i_omegam = cosmological_params.index("omega_m")
+        s8_samples = (
+            scaled_samples[:, :, i_sigma8]
+            * (scaled_samples[:, :, i_omegam] / 0.3) ** 0.5
+        )  # (N_cosmo, N_samples)
+        s8_theta0s = (
+            scaled_theta0s[:, i_sigma8]
+            * (scaled_theta0s[:, i_omegam] / 0.3) ** 0.5
+        )  # (N_cosmo,)
+
+        s8_mean = s8_samples.mean(dim=0)  # mean over samples → (N_cosmo,)
+
+        eval_metrics["s8"] = {}
+        eval_metrics["s8"]["mse"] = torch.mean((s8_mean - s8_theta0s) ** 2).item()
+        eval_metrics["s8"]["bias"] = (s8_mean - s8_theta0s).mean().item()
+        eval_metrics["s8"]["std_dev"] = s8_samples.std(dim=0).mean().item()
+        eval_metrics["s8"]["width_68"] = (
+            torch.quantile(s8_samples, 0.84, dim=0)
+            - torch.quantile(s8_samples, 0.16, dim=0)
+        ).mean().item()
+        eval_metrics["s8"]["width_95"] = (
+            torch.quantile(s8_samples, 0.975, dim=0)
+            - torch.quantile(s8_samples, 0.025, dim=0)
+        ).mean().item()
     cov_matrices = compute_cov_matrix_per_sim(scaled_samples)
     inv_covariances = torch.linalg.inv(cov_matrices)
 
@@ -114,59 +151,88 @@ def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, c
     return eval_metrics
 
 
-def load_best_checkpoint_model(config, run_folder, data_parameters=None):
-    """Find the best checkpoint in a run folder and load its model.
-    
-    Args:
-        config: Configuration object containing experiment settings
-        run_folder: Path to the run folder containing checkpoints
-        data_parameters: Optional data parameters for model preparation
-    
-    Returns:
-        tuple: (model, best_checkpoint_path, best_val_loss) or (None, None, None) if no checkpoint found
+def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_samples=None, model_builder=None):
+    """Evaluate all matching run folders for an experiment.
+
+    Parameters
+    ----------
+    config : object
+        Experiment configuration (must have base_path, experiment_name, etc.).
+    test_loader : DataLoader
+        Test dataloader to attach to the model.
+    param_scaler : object
+        Cosmology parameter scaler (with inverse_transform_minmax).
+    reference_samples : np.ndarray or torch.Tensor, optional
+        Reference posterior samples for comparison.
+    model_builder : callable, optional
+        Custom function to build a model given (config, test_loader).
+        Defaults to src.ml.utils.build_model.
     """
-    best_checkpoint, best_val_loss = find_best_checkpoint(run_folder)
-    if not best_checkpoint:
-        return None, None, None
-    
-    config.checkpoint_path = best_checkpoint
-    model= build_model(config)
-    model.to("cuda")
-    model.eval()
-    return model, best_checkpoint, best_val_loss
+    print("Running evaluation for experiment:", config.experiment_name, flush=True)
 
-
-def evaluate_best_checkpoint(config, data_parameters=None, reference_samples=None):
-    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}"
+    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/run_{config.experiment_name}"
     if not os.path.exists(experiment_path):
+        print("Experiment path does not exist:", experiment_path, flush=True)
         return
-    run_folders = [os.path.join(experiment_path, d) for d in os.listdir(experiment_path) if os.path.isdir(os.path.join(experiment_path, d))]
-    print(f'Running eval on {config.experiment_name} with {len(run_folders)} runs')
+
+    run_folders = [
+        os.path.join(experiment_path, d)
+        for d in os.listdir(experiment_path)
+        if os.path.isdir(os.path.join(experiment_path, d))
+    ]
+
+    # only keep folders that have config.match_string in their name
+    if hasattr(config, "match_string") and config.match_string:
+        run_folders = [f for f in run_folders if config.match_string in f]
+
+    print(f"Running eval on {config.experiment_name} with {len(run_folders)} runs")
+
+    # Default model builder if none provided
+    if model_builder is None:
+        def model_builder(cfg, loader):
+            # Build a fresh model with the given test loader
+            model = build_model(cfg, test_dataloader=loader)
+            model.to("cuda" if torch.cuda.is_available() else "cpu")
+            model.eval()
+            return model
+
     results = {}
-    
+
     for run_folder in run_folders:
-        # only run if ds1200 or ds2400 in run foler
-        # if "ds1200" not in run_folder and "ds2400" not in run_folder:
-        #     continue
         print(run_folder, flush=True)
-        model, best_checkpoint, best_val_loss = load_best_checkpoint_model(config, run_folder, data_parameters)
-        
-        if model:            
-            param_scaler = data_parameters[0][0]
-            
-            metrics = compute_log_prob(model)
-            eval_metrics = generate_samples_and_run_eval(model, param_scaler, reference_samples)
-            
-            results[run_folder] = {
-                "best_checkpoint": best_checkpoint,
-                "best_val_loss": best_val_loss,
-                "metrics": {**metrics, **eval_metrics}
-            }
-            
-            results_path = os.path.join(run_folder, "evaluation_results.json")
-            with open(results_path, "w") as f:
-                json.dump(results[run_folder], f, indent=4)
-    
+
+        # Find best checkpoint file and validation loss in this run folder
+        best_checkpoint, best_val_loss = find_best_checkpoint(run_folder)
+        if best_checkpoint is None:
+            print(f"No valid checkpoint found in run folder: {run_folder}")
+            continue
+
+        # Temporarily set checkpoint_path on a shallow copy of the config to avoid
+        # mutating the caller's config in-place across runs.
+        from copy import copy
+        cfg_for_run = copy(config)
+        cfg_for_run.checkpoint_path = best_checkpoint
+
+        # Build and prepare model using the provided or default model_builder
+        model = model_builder(cfg_for_run, test_loader)
+
+        if model is None:
+            print(f"Failed to build model for run folder: {run_folder}")
+            continue
+
+        metrics = compute_log_prob(model)
+        eval_metrics = generate_samples_and_run_eval(model, param_scaler, reference_samples)
+
+        results[run_folder] = {
+            "best_checkpoint": best_checkpoint,
+            "best_val_loss": best_val_loss,
+            "metrics": {**metrics, **eval_metrics},
+        }
+
+        results_path = os.path.join(run_folder, "evaluation_results.json")
+        with open(results_path, "w") as f:
+            json.dump(results[run_folder], f, indent=4)
+
     return results
 
 import os
@@ -174,73 +240,109 @@ import json
 import numpy as np
 from pathlib import Path
 
+def flatten_dict(d, parent_key="", sep="."):
+    items = {}
+    for k, v in d.items():
+        new_key = f"{parent_key}{sep}{k}" if parent_key else k
+        if isinstance(v, dict):
+            items.update(flatten_dict(v, new_key, sep=sep))
+        else:
+            items[new_key] = v
+    return items
+
+
+def unflatten_dict(d, sep="."):
+    result = {}
+    for k, v in d.items():
+        keys = k.split(sep)
+        cur = result
+        for key in keys[:-1]:
+            cur = cur.setdefault(key, {})
+        cur[keys[-1]] = v
+    return result
+
+import os
+import json
+import numpy as np
+from pathlib import Path
+
+
 def parse_results(experiment_name, base_path="/share/gpu0/asaoulis/cmd/checkpoints"):
-    """
-    Parses evaluation results from checkpoint directories and computes mean and standard error for metrics.
-    
-    Args:
-        experiment_name (str): The name of the experiment.
-        base_path (str): The base directory where experiment folders are stored.
-    
-    Returns:
-        dict: A dictionary where the keys are the base run names (without _i suffix) and values contain
-              mean and standard error for each metric.
-    """
-    experiment_path = os.path.join(base_path, experiment_name)
-    run_folders = [os.path.join(experiment_path, d) for d in os.listdir(experiment_path) if os.path.isdir(os.path.join(experiment_path, d))]
-    
+    experiment_path = os.path.join(base_path, f"{experiment_name}/run_{experiment_name}")
+    # check if experiment path exists
+    run_folders = [
+        os.path.join(experiment_path, d)
+        for d in os.listdir(experiment_path)
+        if os.path.isdir(os.path.join(experiment_path, d))
+    ]
+
     results = {}
     aggregated_results = {}
-    ensemble_results ={}
-    # parse ensemble results
-    ensemble_result_paths = Path(experiment_path).glob('ensemble_evaluation_results_*.json')
+    ensemble_results = {}
+
+    # ---- Parse ensemble results (no aggregation) ----
+    ensemble_result_paths = Path(experiment_path).glob("ensemble_evaluation_results_*.json")
     for ensemble_result in ensemble_result_paths:
-        # extract match_string from file name
-        match_string = ensemble_result.name.split('_')[-1].split('.')[0]
+        match_string = ensemble_result.name.split("_")[-1].split(".")[0]
         with open(ensemble_result, "r") as f:
-            results_data = json.load(f)
-            ensemble_results['ensemble_'+match_string] = results_data["metrics"]
-    
+            data = json.load(f)
+            ensemble_results[f"ensemble_{match_string}"] = data["metrics"]
+
+    # ---- Parse individual runs ----
     for run_folder in run_folders:
         results_file = os.path.join(run_folder, "evaluation_results.json")
-        if os.path.exists(results_file):
-            with open(results_file, "r") as f:
-                results_data = json.load(f)
-                lowest_level_folder = os.path.basename(run_folder)  # Extract the last folder name
-                results[lowest_level_folder] = results_data["metrics"]
-    
-    # Aggregate results by base run name (without _i suffix)
+        if not os.path.exists(results_file):
+            continue
+
+        with open(results_file, "r") as f:
+            data = json.load(f)
+
+        run_name = os.path.basename(run_folder)
+        metrics = flatten_dict(data["metrics"])
+        results[run_name] = metrics
+
+    # ---- Aggregate by base run name ----
     for run_name, metrics in results.items():
-        base_name = "_".join(run_name.split("_")[:-1]) if run_name.split("_")[-1].isdigit() else run_name
-        
-        if base_name not in aggregated_results:
-            aggregated_results[base_name] = {}
-        
+        base_name = (
+            "_".join(run_name.split("_")[:-1])
+            if run_name.split("_")[-1].isdigit()
+            else run_name
+        )
+
+        aggregated_results.setdefault(base_name, {})
+
         for metric, value in metrics.items():
-            if metric not in aggregated_results[base_name]:
-                aggregated_results[base_name][metric] = []
+            aggregated_results[base_name].setdefault(metric, [])
             aggregated_results[base_name][metric].append(value)
-    
-    # Compute mean and standard error for each metric
+
+    # ---- Compute mean + stderr ----
     final_results = {}
+
+    # Ensemble results: copy as-is
     for ensemble_name, metrics in ensemble_results.items():
-        final_results[ensemble_name] = {}
-        for metric, values in metrics.items():
-            if metric == "fom":
-                values = values
-            final_results[ensemble_name][metric] = values
+        final_results[ensemble_name] = metrics
+
     for base_name, metrics in aggregated_results.items():
         final_results[base_name] = {}
-        for metric, values in metrics.items():
-            values = np.array(values)
-            if metric == "calibration_error":
-                values = values
-            mean = np.mean(values)
-            stderr = np.std(values, ddof=1) / np.sqrt(len(values))  # Standard error
-            final_results[base_name][metric] = {"mean": mean, "stderr": stderr}
-    
-    return final_results
 
+        for metric, values in metrics.items():
+            values = np.asarray(values, dtype=float)
+            values = values[np.isfinite(values)]
+
+            if len(values) == 0:
+                mean, stderr = np.nan, np.nan
+            elif len(values) == 1:
+                mean, stderr = values[0], 0.0
+            else:
+                mean = np.mean(values)
+                stderr = np.std(values, ddof=1) / np.sqrt(len(values))
+
+            final_results[base_name][metric] = {
+                "mean": mean,
+                "stderr": stderr,
+            }
+
+    return final_results
 def load_best_model_and_build_posterior(config, ds_string_match="", data_parameters=None):
     """Load the single best model across all matching run folders.
 

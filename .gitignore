@@ -25,3 +25,4 @@ lightning_logs/
 sbi-logs/
 logs/
 *.png
+*.svg

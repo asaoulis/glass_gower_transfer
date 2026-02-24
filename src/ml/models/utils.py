@@ -34,7 +34,7 @@ def fit_model(model, epochs, logger, train_loader, val_loader, experiment_name, 
         logger=pl.loggers.WandbLogger() if logger else None,
         callbacks=[checkpoint_callback, lr_monitor],
         gradient_clip_val=0.5,     
-        precision="bf16"
+        precision="bf16-mixed"
     )
     
     trainer.fit(model, train_loader, val_loader)
@@ -48,6 +48,7 @@ def train_model(config):
         best_checkpoints, _ = get_best_checkpoint(config.checkpoint_path, config.match_string)
     for i in range(config.repeats):
         config.checkpoint_path = best_checkpoints[i] if not pretrain else None
+        print("Will try to use checkpoint:", config.checkpoint_path, flush=True)
         loaders, model, _ = prepare_data_and_model(config)
         train_loader, val_loader, _ = loaders
 

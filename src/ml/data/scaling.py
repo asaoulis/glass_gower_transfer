@@ -54,7 +54,8 @@ class BaseScaler:
 
 
 class MinMaxScaler(BaseScaler):
-    def __init__(self):
+    def __init__(self, parameter_names= None):
+        self.parameter_names = parameter_names
         self.min: Optional[np.ndarray] = None
         self.max: Optional[np.ndarray] = None
 

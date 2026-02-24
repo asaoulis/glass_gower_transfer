@@ -33,11 +33,12 @@ def get_default_config():
     config.dataset_nested_keys = None
     # Alternatively, specify simple quantity names and we will build dataset_nested_keys
     # Valid options (defaults): E_north, E_south, B_north, B_south, bandpowers, bandpower_ls, cls
-    config.dataset_quantities = ["E_north", "E_south", "B_north", "B_south",]
+    config.dataset_quantities = ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south",]
     config.base_path = "/share/gpu5/asaoulis/transfer_models"
     config.cosmo_param_names = [
         "omega_m", "sigma_8"
     ]
+    config.test_shape_noise_idx = None
     config.max_trainval_cosmos = None  # scalar / None, not a list
     config.train_frac = 0.8
     config.val_frac = 0.1
@@ -71,6 +72,7 @@ def get_default_config():
     config.log_normal_dataset_path = None
     config.unpaired = False
     config.match_string = ""
+    config.pretrained_band_match_string = ""
     config.num_flow_heads = 1
     config.load_pretrained_flow = False
 

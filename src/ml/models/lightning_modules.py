@@ -217,11 +217,10 @@ class BaseLightningModule(pl.LightningModule):
             cyclic_period_steps = int(self.scheduler_kwargs.get("cyclic_period_steps", 2000))
             min_factor = float(self.scheduler_kwargs.get("cyclic_min_factor", 0.05))
             
-            # We pass LISTS of LRs to handle the different submodule groups
             main_sched = CyclicLR(
                 optimizer,
                 base_lr=[lr * min_factor for lr in base_lrs],
-                max_lr=base_lrs, # The peak is our original defined LRs
+                max_lr=base_lrs,  # The peak is our original defined LRs
                 step_size_up=cyclic_period_steps // 2,
                 step_size_down=cyclic_period_steps // 2,
                 mode="triangular",
@@ -232,18 +231,48 @@ class BaseLightningModule(pl.LightningModule):
 
         elif sched_type in ["exp", "exponential"]:
             gamma = float(self.scheduler_kwargs.get("gamma", 0.98))
-            # ExponentialLR is typically epoch-based, but we'll use it per step for smoothness
-            # Adjust gamma from epoch-rate to step-rate
-            step_gamma = gamma ** (1/steps_per_epoch)
+            step_gamma = gamma ** (1 / steps_per_epoch)
             main_sched = ExponentialLR(optimizer, gamma=step_gamma)
             interval = "step"
             milestone = warmup_steps
-        
+
+        elif sched_type in ["cyclic_exp", "exp_cyclic"]:
+            # Cyclic LR whose peak decays exponentially over time
+            cyclic_period_steps = int(self.scheduler_kwargs.get("cyclic_period_steps", 2000))
+            min_factor = float(self.scheduler_kwargs.get("cyclic_min_factor", 0.05))
+            gamma = float(self.scheduler_kwargs.get("gamma", 0.98))
+            # Convert epoch-wise gamma to step-wise, as you did above
+            step_gamma = gamma ** (1 / steps_per_epoch)
+
+            def combined_lambda(global_step: int):
+                # Exponential envelope
+                exp_factor = step_gamma ** global_step
+
+                # Triangle wave in [0, 1]
+                if cyclic_period_steps <= 0:
+                    cyc = 1.0
+                else:
+                    phase = (global_step % cyclic_period_steps) / cyclic_period_steps  # [0, 1)
+                    if phase < 0.5:
+                        cyc01 = phase / 0.5           # ramp up 0 -> 1
+                    else:
+                        cyc01 = (1.0 - phase) / 0.5    # ramp down 1 -> 0
+                    # Map to [min_factor, 1]
+                    cyc = min_factor + (1.0 - min_factor) * cyc01
+
+                return exp_factor * cyc
+
+            # LambdaLR applies this factor to each group's *base* LR
+            main_sched = LambdaLR(optimizer, lr_lambda=combined_lambda)
+            interval = "step"
+            milestone = warmup_steps
+
         else:
             # Fallback: Constant LR
             main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
             interval = "step"
             milestone = warmup_steps
+# ...existing code...
 
         # 4. Chain them
         scheduler = SequentialLR(
@@ -330,6 +359,9 @@ class _CondEmbeddingFlow(nn.Module):
 
     def encode(self, y):
         return self.embedding_net(y)
+    
+    def get_representation(self, y):
+        return self.embedding_net.get_representation(y)
 
     def log_prob(self, x, y):
         y_emb = self.embedding_net(y)
@@ -451,14 +483,19 @@ class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
         return self.net.sample(num_samples, condition)
 
     def gen_samples(self, num_samples, x):
+        if isinstance(x, dict):
+            cond = ConditionDict(x)
+        else:
+            cond = x
         samples = rejection.accept_reject_sample(
             proposal=self.sample,
             accept_reject_fn=lambda theta: within_support(self.prior, theta),
             num_samples=num_samples,
             show_progress_bars=False,
             max_sampling_batch_size=self.max_sampling_batch_size,
-            proposal_sampling_kwargs={"condition": ConditionDict(x)},
+            proposal_sampling_kwargs={"condition": cond},
             alternative_method="build_posterior(..., sample_with='mcmc')",
+            num_xos=cond.shape[0]
         )[0]
         return samples
 
@@ -536,29 +573,27 @@ class NDELightningModule(BaseLightningModule):
     
     def build_posterior_object(self):
         # we need to set use_KL and return_ml correctly
+        self.model.eval()
         self.model.embedding_net.only_return_mu = True
         prior = utils.BoxUniform(low=0 * torch.ones(self.inference_dim), high=1. * torch.ones(self.inference_dim), device="cuda")
         density_estimator = PatchedConditionalDensityEstimator(self.model, prior)
         return density_estimator
 
     def generate_samples(self, dummy_loader, num_samples=10000):
-        test_y, test_x = self.test_dataloader.dataset.tensors
         posterior = self.build_posterior_object()
-        test_y = torch.tensor(test_y).to('cuda', dtype=torch.float32).unsqueeze(1)
         theta0s = []
         samples = []
-        num_tarp_samples = len(test_x)
-        for i in tqdm(range(num_tarp_samples), desc="Sampling", total=num_tarp_samples):
-            x= test_x[i]
-            y = test_y[i]
-            try:
-                x_samples = posterior.sample((num_samples,), x=y, show_progress_bars=False)
-            except:
-                pass
-            theta0s.append(x)
-            samples.append(x_samples)
-        theta0s = torch.stack(theta0s)
-        samples = torch.stack(samples).permute(1, 0, 2)
+        num_tarp_samples = len(self.test_dataloader.dataset)
+        for test_data, test_cosmo in tqdm(self.test_dataloader, desc="Generating samples"):
+            if isinstance(test_data, dict):
+                ycond = {key: test_data[key].to("cuda") for key in test_data.keys()}
+            else:
+                ycond = test_data.to("cuda")    
+            samples_i = posterior.gen_samples(num_samples=num_samples, x=ycond)
+            theta0s.append(test_cosmo)
+            samples.append(samples_i.cpu())  # [num_samples, batch , dim]
+        theta0s = torch.cat(theta0s, dim=0)
+        samples = torch.cat(samples, dim=1)#.permute(1, 0, 2)
         return theta0s, samples
     
 
@@ -671,6 +706,8 @@ class NDELightningModule(BaseLightningModule):
             freeze=freeze,
             verbose=True,
         )
+        if freeze:
+            self.embedding_net.freeze_band = True  # Set to eval mode if we're freezing, to disable dropout/batchnorm updates
 
         return band_module_name
 

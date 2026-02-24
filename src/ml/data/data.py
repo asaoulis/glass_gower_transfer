@@ -22,6 +22,7 @@ def extract_cosmo_index(path: str) -> int:
         raise ValueError(f"Could not extract cosmology index from path: {path}")
     return int(match.group(1))
 
+
 def collect_paths(patterns: Union[str, Sequence[str]]) -> List[str]:
     """
     Expand one or multiple glob patterns into a sorted list of files.
@@ -38,6 +39,33 @@ def collect_paths(patterns: Union[str, Sequence[str]]) -> List[str]:
     return paths
 
 
+def _filter_paths_by_shape_noise_idx(paths: List[str], test_shape_noise_idx: Optional[Sequence[int]]) -> List[str]:
+    """Optionally filter file paths by shape-noise repeat index.
+
+    Expected filename pattern (before extension) is something like
+    ..._SN<idx>.h5 or ..._<idx>.h5; we conservatively extract the final
+    integer before the extension and keep only those whose index is in
+    ``test_shape_noise_idx``.
+    """
+    if not test_shape_noise_idx:
+        return paths
+
+    allowed = set(int(i) for i in test_shape_noise_idx)
+    filtered: List[str] = []
+    for p in paths:
+        base = os.path.basename(p)
+        m = re.search(r"(\d+)(?=\.h5$)", base)
+        if m is None:
+            # If we cannot parse an index, keep the file to avoid
+            # accidentally dropping data.
+            filtered.append(p)
+            continue
+        idx = int(m.group(1))
+        if idx in allowed:
+            filtered.append(p)
+    return filtered
+
+
 def split_by_cosmology(
     patterns: Union[str, Sequence[str]],
     train_frac: float = 0.8,
@@ -45,6 +73,7 @@ def split_by_cosmology(
     test_frac: float = 0.1,
     seed: int = 42,
     max_trainval_cosmos: Optional[int] = None,
+    test_shape_noise_idx: Optional[Sequence[int]] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """
     Glob files, group by cosmology index, shuffle cosmologies, and split without leakage.
@@ -55,6 +84,10 @@ def split_by_cosmology(
     exactly that many cosmologies (if available) are used for train+val, with
     train/val fractions applied within this subset. The test set remains fixed and
     includes the remaining cosmologies.
+
+    Optionally, ``test_shape_noise_idx`` can be used to further restrict which
+    samples (e.g. shape-noise repeats) are kept in the *test* split only, based on
+    an index parsed from the filename.
     """
     if not np.isclose(train_frac + val_frac + test_frac, 1.0):
         raise ValueError("train_frac + val_frac + test_frac must sum to 1.0")
@@ -124,7 +157,7 @@ def split_by_cosmology(
 
     train_cosmos = set(trainval_cosmos[:n_train])
     val_cosmos = set(trainval_cosmos[n_train:n_train + n_val])
-
+    print(f"Total cosmologies: {n_total}, Train: {len(train_cosmos)}, Val: {len(val_cosmos)}, Test: {len(test_cosmos)}")
     train_paths: List[str] = []
     val_paths: List[str] = []
     test_paths: List[str] = []
@@ -135,6 +168,9 @@ def split_by_cosmology(
         val_paths.extend(by_cosmo[c])
     for c in test_cosmos:
         test_paths.extend(by_cosmo[c])
+
+    # Optionally restrict test paths by shape-noise index
+    test_paths = _filter_paths_by_shape_noise_idx(test_paths, test_shape_noise_idx)
 
     return train_paths, val_paths, test_paths
 
@@ -301,12 +337,19 @@ def build_datasets(
     stack_groups: bool = False,
     transform: Optional[object] = None,
     max_trainval_cosmos: Optional[int] = None,
+    test_shape_noise_idx: Optional[Sequence[int]] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     """
     Convenience: split by cosmology and return three datasets.
     """
     train_paths, val_paths, test_paths = split_by_cosmology(
-        patterns, train_frac=train_frac, val_frac=val_frac, test_frac=test_frac, seed=seed, max_trainval_cosmos=max_trainval_cosmos
+        patterns,
+        train_frac=train_frac,
+        val_frac=val_frac,
+        test_frac=test_frac,
+        seed=seed,
+        max_trainval_cosmos=max_trainval_cosmos,
+        test_shape_noise_idx=test_shape_noise_idx,
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
@@ -344,18 +387,31 @@ def build_dataloaders(
     stack_groups: bool = False,
     augment_eb_patches: bool = False,
     max_trainval_cosmos: Optional[int] = None,
+    test_shape_noise_idx: Optional[Sequence[int]] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Return DataLoaders for train/val/test ensuring no cosmology leakage.
     Optionally applies random E/B patch augmentations to the training set only.
+
+    ``test_shape_noise_idx`` can be used to further filter the test-set files to
+    specific shape-noise repeats, while leaving train/val untouched.
     """
     transform = RandomEBPatchAugment() if augment_eb_patches else None
 
     train_ds, val_ds, test_ds = build_datasets(
-        patterns, nested_keys, cosmo_params,
-        train_frac=train_frac, val_frac=val_frac, test_frac=test_frac,
-        seed=seed, as_torch=as_torch, dtype=dtype, stack_groups=stack_groups,
-        transform=transform, max_trainval_cosmos=max_trainval_cosmos,
+        patterns,
+        nested_keys,
+        cosmo_params,
+        train_frac=train_frac,
+        val_frac=val_frac,
+        test_frac=test_frac,
+        seed=seed,
+        as_torch=as_torch,
+        dtype=dtype,
+        stack_groups=stack_groups,
+        transform=transform,
+        max_trainval_cosmos=max_trainval_cosmos,
+        test_shape_noise_idx=test_shape_noise_idx,
     )
 
     if val_batch_size is None:
@@ -410,4 +466,5 @@ def build_dataloaders(
 #     batch_size=8,
 #     as_torch=False,  # or True if you want tensors
 #     augment_eb_patches=True,
+#     test_shape_noise_idx=[0, 1, 2],
 # )

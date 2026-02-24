@@ -6,6 +6,7 @@ import torch
 from .models.compressors import _MODEL_BUILDERS
 from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
+from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
 # Centralized dataloader builder
 from .data.data import build_dataloaders, build_nested_keys_from_quantities
@@ -128,7 +129,7 @@ def _fit_cosmo_minmax_scaler_from_paths(train_paths: Sequence[str], cosmo_params
     if not rows:
         return None
     X = np.stack(rows, axis=0)
-    scaler = MinMaxScaler()
+    scaler = MinMaxScaler(cosmo_params)
     scaler.fit(X)
     return scaler
 
@@ -143,7 +144,7 @@ def _build_cosmo_preset_scaler(preset_minmax: Dict[str, Tuple[float, float]], co
         min_v, max_v = preset_minmax[p]
         mins.append(min_v)
         maxs.append(max_v)
-    scaler = MinMaxScaler()
+    scaler = MinMaxScaler(cosmo_params)
     scaler.min = np.array(mins, dtype=np.float32)
     scaler.max = np.array(maxs, dtype=np.float32)
     return scaler
@@ -180,6 +181,9 @@ def prepare_data_parameters(config):
     # Optional limit on the number of cosmologies used for train+val
     max_trainval_cosmos = getattr(config, 'max_trainval_cosmos', None)
 
+    # Optional shape-noise repeat indices for test set filtering
+    test_shape_noise_idx = getattr(config, 'test_shape_noise_idx', None)
+
     # Build base dataloaders via the central entrypoint
     train_loader, val_loader, test_loader = build_dataloaders(
         config.data_patterns,
@@ -201,6 +205,7 @@ def prepare_data_parameters(config):
         stack_groups=getattr(config, 'stack_groups', False),
         augment_eb_patches=getattr(config, 'augment_eb_patches', True),
         max_trainval_cosmos=max_trainval_cosmos,
+        test_shape_noise_idx=test_shape_noise_idx,
     )
 
     # Print dataset lengths for visibility
@@ -328,11 +333,14 @@ def build_model(config, test_dataloader=None):
     checkpoint_path = getattr(config, 'checkpoint_path', None)
     if checkpoint_path:
         model.load_from_checkpoint(checkpoint_path)
+        print("Loaded full model state from checkpoint:", checkpoint_path)
     else:
-        pretrained_band_ckpt = getattr(config, 'pretrained_band_ckpt_path', None)
-        if pretrained_band_ckpt is not None:
+        pretrained_band_ckpt_folder = getattr(config, 'pretrained_band_ckpt_path', None)
+        if pretrained_band_ckpt_folder is not None:
+            pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
             freeze_band = getattr(config, 'freeze_band', False)
             band_prefix = getattr(config, 'band_prefix', 'band_encoder.')
+            pretrained_band_ckpt = pretrained_band_ckpts[0]  # TODO: fix this
             band_module_name = model._load_pretrained_band_encoder(
                 pretrained_band_ckpt,
                 freeze=freeze_band,
@@ -368,3 +376,24 @@ def build_model(config, test_dataloader=None):
         model.pretrained_backbone_lrs = {backbone_module_name: float(backbone_lr)}
 
     return model
+
+def load_best_checkpoint_model(config, run_folder, test_loader=None):
+    """Find the best checkpoint in a run folder and load its model.
+    
+    Args:
+        config: Configuration object containing experiment settings
+        run_folder: Path to the run folder containing checkpoints
+        data_parameters: Optional data parameters for model preparation
+    
+    Returns:
+        tuple: (model, best_checkpoint_path, best_val_loss) or (None, None, None) if no checkpoint found
+    """
+    best_checkpoint, best_val_loss = find_best_checkpoint(run_folder)
+    if not best_checkpoint:
+        return None, None, None
+
+    config.checkpoint_path = best_checkpoint
+    model= build_model(config, test_dataloader=test_loader)
+    model.to("cuda")
+    model.eval()
+    return model, best_checkpoint, best_val_loss

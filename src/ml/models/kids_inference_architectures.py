@@ -47,17 +47,51 @@ class KidsInferenceEncoder(nn.Module):
             self.model_output_dim = 2 * latent_dim if use_kl else latent_dim
         # When True, forward()/compress() only return mu, even if KL is used
         self.only_return_mu = False
+        # Generic head placeholder; subclasses should either use
+        # ``build_head`` or override it completely.
+        self.head: nn.Module | None = None
 
-    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Subclasses should override this instead of forward().
+    # ------------------------------------------------------------------
+    # Head utility
+    # ------------------------------------------------------------------
+    def build_head(self, in_dim: int, hidden_head: int | None = None) -> nn.Sequential:
+        """Utility to build a standard 2-layer MLP head.
 
-        Must return a tensor of shape:
-          * [B, latent_dim]          if ``use_kl=False`` or if only ``mu``
-            is predicted.
-          * [B, 2 * latent_dim]      if ``use_kl=True`` and the network
-            explicitly predicts both (mu, logvar).
+        All subclasses should prefer this helper so we keep the same
+        pattern everywhere.
+        """
+        if self.model_output_dim is None:
+            raise ValueError("model_output_dim is None; KidsInferenceEncoder must have latent_dim set before building head.")
+        if hidden_head is None:
+            hidden_head = max(self.model_output_dim, in_dim // 2)
+        return nn.Sequential(
+            nn.Linear(in_dim, hidden_head),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Linear(hidden_head, self.model_output_dim),
+        )
+
+    # ------------------------------------------------------------------
+    # Representation interface
+    # ------------------------------------------------------------------
+    def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Return a feature representation before the final head.
+
+        Subclasses are expected to override this method and use
+        ``self.head`` to map the representation to the final latent
+        space in ``_forward_base``.
         """
         raise NotImplementedError
+
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Default implementation using get_representation + head.
+
+        Subclasses that override ``get_representation`` and use a
+        standard head do not need to override this.
+        """
+        if self.head is None:
+            raise RuntimeError("head is not defined; subclasses must create self.head using build_head or override _forward_base.")
+        feats = self.get_representation(data)
+        return self.head(feats)
 
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         if not self.use_kl:
@@ -168,11 +202,7 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
             head_in_dim = 2 * cnn_out_dim
 
         hidden_head = max(self.model_output_dim, head_in_dim // 2)
-        self.head = nn.Sequential(
-            nn.Linear(head_in_dim, hidden_head),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(hidden_head, self.model_output_dim),
-        )
+        self.head = self.build_head(head_in_dim, hidden_head=hidden_head)
 
     @staticmethod
     def _pad_to_size(x: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:
@@ -186,8 +216,7 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         # Pad format: (left, right, top, bottom)
         return F.pad(x, (0, pad_w, 0, pad_h))
 
-    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-
+    def _forward_stack(self, data):
         south_stack = stack_hemi(data, "south")
         north_stack = stack_hemi(data, "north")
 
@@ -208,10 +237,10 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         else:
             # Backward-compatible behaviour: concatenate features
             feats = torch.cat([south_feat, north_feat], dim=1)
-
-        z = self.head(feats)
-        return z
-
+        return feats
+    
+    def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        return self._forward_stack(data)
 
 class KidsCombinedCNNTransformer(KidsInferenceEncoder):
     def __init__(
@@ -336,11 +365,7 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
 
         self.final_ln = nn.LayerNorm(d_model)
 
-        self.head = nn.Sequential(
-            nn.Linear(d_model, max(self.model_output_dim, d_model // 2)),
-            nn.GELU(),
-            nn.Linear(max(self.model_output_dim, d_model // 2), self.model_output_dim),
-        )
+        self.head = self.build_head(d_model)
 
     @staticmethod
     def _pad_to_match(a: torch.Tensor, b: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -390,7 +415,7 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
 
         return x
 
-    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         e_south = data["E_south"]; b_south = data["B_south"]
         e_north = data["E_north"]; b_north = data["B_north"]
 
@@ -443,9 +468,7 @@ class KidsCombinedCNNTransformer(KidsInferenceEncoder):
         else:
             pooled = q.mean(dim=1)
 
-        z = self.head(pooled)
-        return z
-
+        return pooled
 
 
 # New simple models for bandpowers inputs
@@ -471,11 +494,11 @@ class KidsBandpowersMLP(KidsInferenceEncoder):
         layers = [nn.Linear(in_features, width), nn.GELU(), nn.Dropout(dropout)]
         for _ in range(max(0, num_layers - 1)):
             layers += [nn.Linear(width, width), nn.GELU(), nn.Dropout(dropout)]
-        layers += [nn.Linear(width, self.model_output_dim)]
         self.net = nn.Sequential(*layers)
+        self.head = self.build_head(width)
         self.redundancy_dim = redundancy_dim
 
-    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         x = data["mixed_bandpowers"]  # [B, 21, 20]
         x = x.view(x.shape[0], -1)
         if self.redundancy_dim != 0:
@@ -513,17 +536,15 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
                 nn.Dropout(dropout),
             ]
             curr_in = c
+        conv_layers += [nn.Flatten()]
         self.conv = nn.Sequential(*conv_layers)
         # Keep length dimension; project flattened [B, C_out * L] -> latent_dim
         in_features = curr_in * seq_len
-        self.head = nn.Sequential(
-            nn.Flatten(),
-            nn.Dropout(dropout),
-            nn.Linear(in_features, self.model_output_dim),
-        )
+        self.head = self.build_head(in_features)
         self.redundancy_dim = redundancy_dim
 
     def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        # Preserve the original behaviour that also handles redundancy_dim
         x = data["mixed_bandpowers"]  # [B, 21, 20]
         if x.dim() != 3:
             raise ValueError(f"Expected bandpowers tensor with 3 dims [B, C, L], got shape {tuple(x.shape)}")
@@ -533,6 +554,13 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
             zeros = torch.zeros(z.shape[0], self.redundancy_dim, device=z.device, dtype=z.dtype)
             z = torch.cat([z, zeros], dim=1)
         return z
+    
+    def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        x = data["mixed_bandpowers"]  # [B, 21, 20]
+        if x.dim() != 3:
+            raise ValueError(f"Expected bandpowers tensor with 3 dims [B, C, L], got shape {tuple(x.shape)}")
+        x = self.conv(x)
+        return x
 
 
 class KidsHybridBandpowersMaps(KidsInferenceEncoder):
@@ -573,7 +601,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             dim_band = self.latent_dim // 2
         else:
             dim_band = bandpower_latent_dim
-        dim_patch = self.latent_dim - dim_band
+        dim_patch = 128 # HACK FOR NOW
 
         bp_builders = {
             'mlp': KidsBandpowersMLP,
@@ -596,7 +624,9 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         # Head maps concatenated mu (and optionally logvar) to final output.
         # When self.use_kl is True, self.model_output_dim == 2 * latent_dim.
         in_features = self.latent_dim if not self.use_kl else 2 * self.latent_dim
+        in_features = 192
         self.hybrid_head = nn.Linear(in_features, self.model_output_dim)
+        self.freeze_band = False
 
     def _normalise_child_output(self, out: torch.Tensor | tuple[torch.Tensor, torch.Tensor], expected_mu_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (mu, logvar) for a child encoder output.
@@ -621,39 +651,6 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             )
         return mu, logvar
 
-    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Return raw concatenated representation for the hybrid encoder.
-
-        If self.use_kl is False, this is [B, latent_dim] (mu only).
-        If self.use_kl is True, this is [B, 2 * latent_dim] formed by
-        concatenating [mu_band, mu_patch, logvar_band, logvar_patch].
-        """
-        # Band branch
-        band_out = self.band_encoder.compress(data)
-        dim_band = self.band_encoder.latent_dim
-        band_mu, band_logvar = self._normalise_child_output(band_out, dim_band)
-
-        # Patch branch
-        patch_out = self.patch_encoder.compress(data)
-        dim_patch = self.patch_encoder.latent_dim
-        patch_mu, patch_logvar = self._normalise_child_output(patch_out, dim_patch)
-
-        mu_concat = torch.cat([band_mu, patch_mu], dim=-1)  # [B, latent_dim]
-
-        if not self.use_kl:
-            # No KL at the hybrid level: ignore child logvars and just
-            # return mu through the head.
-            return self.hybrid_head(mu_concat)
-
-        logvar_concat = torch.cat([band_logvar, patch_logvar], dim=-1)  # [B, latent_dim]
-        z_cat = torch.cat([mu_concat, logvar_concat], dim=-1)           # [B, 2 * latent_dim]
-
-        # Keep latent_dim/model_output_dim consistent with constructed shapes.
-        self.latent_dim = mu_concat.shape[-1]
-        self.model_output_dim = z_cat.shape[-1]
-
-        return self.hybrid_head(z_cat)
-
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         """KL‑aware forward for the hybrid encoder.
 
@@ -674,6 +671,56 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         if self.only_return_mu:
             return mu
         return mu, logvar
+    
+    def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+            """Computes the concatenated features before the hybrid head.
+            
+            This implements the forward pass logic up to the hybrid head input,
+            handling band freezing, patch encoding, and optional KL concatenation.
+            """
+            # --- band branch ---
+            # if not self.freeze_band:
+            #     band_out = self.band_encoder.compress(data)
+            #     dim_band = self.band_encoder.latent_dim
+            #     band_mu, band_logvar = self._normalise_child_output(band_out, dim_band)
+            # else:
+            #     # purely a representation when frozen
+            band_repr = self.band_encoder.get_representation(data)
+            # no mu/logvar here
+            band_mu = band_repr
+            band_logvar = None  # unused
+
+            # --- patch branch (still true latent) ---
+            patch_out = self.patch_encoder.compress(data)
+            dim_patch = self.patch_encoder.latent_dim
+            patch_mu, patch_logvar = self._normalise_child_output(patch_out, dim_patch)
+
+            # concatenate along feature dim
+            mu_concat = torch.cat([band_mu, patch_mu], dim=-1)
+
+            if not self.use_kl:
+                # If no KL, the head expects just the concatenated mus
+                return mu_concat
+
+            # If band is frozen we don't want it in KL, just use patch logvar
+            if band_logvar is None:
+                logvar_concat = patch_logvar
+            else:
+                logvar_concat = torch.cat([band_logvar, patch_logvar], dim=-1)
+
+            z_cat = torch.cat([mu_concat, logvar_concat], dim=-1)
+
+            # Optionally: keep latent_dim/model_output_dim consistent
+            # (Preserving side effects from original _forward_base logic)
+            self.latent_dim = mu_concat.shape[-1]
+            self.model_output_dim = z_cat.shape[-1]
+
+            return z_cat
+
+    def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        # Reuses the logic from get_representation to avoid duplication
+        head_input = self.get_representation(data)
+        return self.hybrid_head(head_input)
 
 
 # Simple registry to integrate with the existing model selection flow

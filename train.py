@@ -2,7 +2,12 @@ import sys
 from config.default import get_default_config
 from config.experiments import experiments
 from src.ml.models.utils import train_model
+# import os
+# os.environ["MASTER_ADDR"] = "127.0.0.1"
+# os.environ["MASTER_PORT"] = "29500"  # or any free port
+import os
 
+# ... rest of your code ...
 def retrieve_first_list_from_experiments(experiments):
     list_key = None
     list_values = None
@@ -40,6 +45,8 @@ if __name__ == "__main__":
         for n_cosmo in max_tv:
             print(f"Running experiment '{experiment_name}' with max_trainval_cosmos={n_cosmo}")
             config.max_trainval_cosmos = int(n_cosmo)
+            config.pretrained_band_match_string = f"ncosmo{n_cosmo}"
+            print(f"Set pretrained_band_match_string to: {config.pretrained_band_match_string}")
             train_model(config)
     else:
         if max_tv is not None:
