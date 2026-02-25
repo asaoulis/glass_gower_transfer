@@ -103,7 +103,7 @@ def split_by_cosmology(
         by_cosmo[k].sort()
 
     cosmologies = list(by_cosmo.keys())
-    rng = random.Random(seed)
+    rng = random.Random(42)
     rng.shuffle(cosmologies)
 
     n_total = len(cosmologies)
@@ -118,7 +118,10 @@ def split_by_cosmology(
 
     test_cosmos = set(cosmologies[-n_test:]) if n_test > 0 else set()
     remaining_cosmos = cosmologies[:-n_test] if n_test > 0 else cosmologies
-
+    if seed != 42:
+        # If a different seed is provided, reshuffle the remaining cosmologies
+        rng.seed(seed)
+        rng.shuffle(remaining_cosmos)
     n_remaining = len(remaining_cosmos)
 
     # Optionally limit the total number of training+validation cosmologies

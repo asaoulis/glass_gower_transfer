@@ -94,6 +94,10 @@ class BaseLightningModule(pl.LightningModule):
         self.pretrained_backbone_lrs = getattr(self, "pretrained_backbone_lrs", None)
         # Will hold per-param-group "base" LRs used by schedulers
         self._optimizer_group_base_lrs = None
+        # Flag to indicate if we are running in a distributed setting.
+        # This is read from the config via utils.build_model and used to
+        # control sync_dist in self.log calls.
+        self.is_distributed = getattr(self.hparams, "is_distributed", False)
 
     def forward(self, x, cond):
         return self.model(x)
@@ -106,14 +110,14 @@ class BaseLightningModule(pl.LightningModule):
         x, y = batch
         preds = self.forward(x, cond=y)
         loss = self.compute_loss(preds, y)
-        self.log(f"train_{self.loss_name}", loss, prog_bar=True)
+        self.log(f"train_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
         return loss
 
     def validation_step(self, batch, batch_idx):
         x, y = batch
         preds = self.forward(x, cond=y)
         loss = self.compute_loss(preds, y)
-        self.log(f"val_{self.loss_name}", loss, prog_bar=True)
+        self.log(f"val_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
         self.log_custom_evals(preds, y)
         return loss
     
@@ -272,7 +276,6 @@ class BaseLightningModule(pl.LightningModule):
             main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
             interval = "step"
             milestone = warmup_steps
-# ...existing code...
 
         # 4. Chain them
         scheduler = SequentialLR(
@@ -303,7 +306,7 @@ class RegressionLightningModule(BaseLightningModule):
         y_np = y.detach().cpu().numpy()
         for i, element in enumerate(self.element_names):
             r2 = r2_score(y_np[:, i], preds_np[:, i])
-            self.log(f"R²_{element}", r2, prog_bar=False)
+            self.log(f"R²_{element}", r2, prog_bar=False, sync_dist=self.is_distributed)
     def log_custom_evals(self, preds, y):
         self.log_r2_eval(preds, y)
 
@@ -324,7 +327,7 @@ class GaussianLightningModule(BaseLightningModule):
         y_np = y.detach().cpu().numpy()
         for i, element in enumerate(self.element_names):
             r2 = r2_score(y_np[:, i], preds_np[:, i])
-            self.log(f"R²_{element}", r2, prog_bar=False)
+            self.log(f"R²_{element}", r2, prog_bar=False, sync_dist=self.is_distributed)
     def log_custom_evals(self, preds, y):
         self.log_r2_eval(preds, y)
 
@@ -567,7 +570,7 @@ class NDELightningModule(BaseLightningModule):
 
     def load_from_checkpoint(self, checkpoint_path):
         """Loads model weights from a given checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location=torch.device('cuda'))  # Adjust device as needed
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"))  # Adjust device as needed
         print("Overwriting model weights from checkpoint:", checkpoint_path)
         self.load_state_dict(checkpoint['state_dict'])  # Ensure the key matches the saved checkpoint format
     
@@ -575,7 +578,7 @@ class NDELightningModule(BaseLightningModule):
         # we need to set use_KL and return_ml correctly
         self.model.eval()
         self.model.embedding_net.only_return_mu = True
-        prior = utils.BoxUniform(low=0 * torch.ones(self.inference_dim), high=1. * torch.ones(self.inference_dim), device="cuda")
+        prior = utils.BoxUniform(low=0 * torch.ones(self.inference_dim), high=1. * torch.ones(self.inference_dim), device=("cuda" if torch.cuda.is_available() else "cpu"))
         density_estimator = PatchedConditionalDensityEstimator(self.model, prior)
         return density_estimator
 
@@ -586,9 +589,9 @@ class NDELightningModule(BaseLightningModule):
         num_tarp_samples = len(self.test_dataloader.dataset)
         for test_data, test_cosmo in tqdm(self.test_dataloader, desc="Generating samples"):
             if isinstance(test_data, dict):
-                ycond = {key: test_data[key].to("cuda") for key in test_data.keys()}
+                ycond = {key: test_data[key].to("cuda" if torch.cuda.is_available() else "cpu") for key in test_data.keys()}
             else:
-                ycond = test_data.to("cuda")    
+                ycond = test_data.to("cuda" if torch.cuda.is_available() else "cpu")   
             samples_i = posterior.gen_samples(num_samples=num_samples, x=ycond)
             theta0s.append(test_cosmo)
             samples.append(samples_i.cpu())  # [num_samples, batch , dim]
@@ -636,14 +639,14 @@ class NDELightningModule(BaseLightningModule):
         data_dict, theta = batch  # dataset yields (data, cosmo)
         preds = self.forward(theta, cond=data_dict)
         loss = self.compute_loss(preds, theta)
-        self.log(f"train_{self.loss_name}", loss, prog_bar=True)
+        self.log(f"train_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
         return loss
 
     def validation_step(self, batch, batch_idx):
         data_dict, theta = batch
         preds = self.forward(theta, cond=data_dict)
         loss = self.compute_loss(preds, theta)
-        self.log(f"val_{self.loss_name}", loss, prog_bar=True)
+        self.log(f"val_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
         self.log_custom_evals(preds, theta)
         return loss
 
@@ -671,7 +674,7 @@ class NDELightningModule(BaseLightningModule):
 
     def log_custom_evals(self, preds, y):
         if len(self.test_loss_values) > 0:
-            self.log("test_log_prob", self.test_loss_values.pop())
+            self.log("test_log_prob", self.test_loss_values.pop(), sync_dist=self.is_distributed)
 
     def _load_pretrained_band_encoder(self, ckpt_path: str, freeze: bool, band_prefix: str = 'band_encoder.') -> str | None:
         """Load weights for a bandpower encoder inside the embedding_net.
@@ -848,7 +851,7 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
         }
         for name, value in metrics.items():
             on_step = stage == "train"
-            self.log(name, value, prog_bar=(name.endswith(self.loss_name)), on_step=on_step, on_epoch=True)
+            self.log(name, value, prog_bar=(name.endswith(self.loss_name)), on_step=on_step, on_epoch=True, sync_dist=self.is_distributed)
 
         return total, log_prob, theta
 
@@ -873,6 +876,10 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
         all_log_probs = torch.cat(predictions, dim=0)  # Collect predictions
         avg_log_prob = -all_log_probs.mean().item()
         return avg_log_prob
+
+    def log_custom_evals(self, preds, y):
+        if len(self.test_loss_values) > 0:
+            self.log("test_log_prob", self.test_loss_values.pop(), sync_dist=self.is_distributed)
 
 
 class EnsembleNDELightningModule(NDELightningModule):

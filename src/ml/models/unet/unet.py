@@ -63,6 +63,8 @@ class UNetStyleEncoder(nn.Module):
         cascade_conditioning (bool): If True, expect a `cond` tensor that is
             progressively downsampled and concatenated at each downsampling
             stage, similar to UNetModel.cascade_downscalers.
+        enable_patch_conditioning (bool): If True, enable patch-based conditioning.
+        side_conditioning (bool): If True, enable side/location-based conditioning.
     """
 
     def __init__(
@@ -80,6 +82,8 @@ class UNetStyleEncoder(nn.Module):
         use_scale_shift_norm: bool = True,
         cascade_conditioning: bool = False,
         cond_channels: int | None = None,
+        enable_patch_conditioning: bool = False,
+        side_conditioning: bool = False,
         **kwargs,
     ):
         super().__init__()
@@ -95,6 +99,32 @@ class UNetStyleEncoder(nn.Module):
         self.use_scale_shift_norm = use_scale_shift_norm
         self.dims = dims
         self.cascade_conditioning = cascade_conditioning
+        self.enable_patch_conditioning = enable_patch_conditioning
+        self.side_conditioning = side_conditioning
+        time_embed_dim = model_channels * 4
+
+        # Optional patch embedding path, mirroring UNetModel
+        if self.enable_patch_conditioning:
+            self.patch_embed = nn.Embedding(2, model_channels)
+            self.patch_embed_proj = nn.Sequential(
+                linear(model_channels, time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim, time_embed_dim),
+            )
+        # Optional side/location embedding (kept symmetric with UNetModel)
+        if self.side_conditioning:
+            self.location_embedding = LocationFourierProjection(
+                embedding_size=model_channels, scale=1
+            )
+            temb_input_dim = 2 * model_channels
+            self.loc_embed = nn.Sequential(
+                linear(temb_input_dim, time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim, time_embed_dim),
+            )
+        else:
+            self.location_embedding = None
+            self.loc_embed = None
 
         ch = int(channel_mult[0] * model_channels)
         self.input_conv = conv_nd(dims, in_channels, ch, 3, padding=1)
@@ -124,8 +154,13 @@ class UNetStyleEncoder(nn.Module):
                 out_ch = int(mult * model_channels)
                 blocks.append(
                     ResBlock(
-                        in_ch + (self.cond_out_channels if (self.cascade_conditioning and res_idx == 0 and level > 0) else 0),
-                        emb_channels=0,
+                        in_ch
+                        + (
+                            self.cond_out_channels
+                            if (self.cascade_conditioning and res_idx == 0 and level > 0)
+                            else 0
+                        ),
+                        emb_channels=(time_embed_dim if self.enable_patch_conditioning else 0),
                         dropout=dropout,
                         num_embeddings=0,
                         out_channels=out_ch,
@@ -135,18 +170,6 @@ class UNetStyleEncoder(nn.Module):
                     )
                 )
                 ch = out_ch
-                # if ds in self.attention_resolutions:
-                #     blocks.append(
-                #         AttentionBlock(
-                #             ch,
-                #             attention_type="legacy",
-                #             use_checkpoint=use_checkpoint,
-                #             num_heads=1,
-                #             num_head_channels=-1,
-                #             use_new_attention_order=False,
-                #             image_size=train_size,
-                #         )
-                #     )
             if level != len(channel_mult) - 1:
                 blocks.append(
                     Downsample(
@@ -163,17 +186,38 @@ class UNetStyleEncoder(nn.Module):
         self.blocks = nn.ModuleList(blocks)
         self.out_channels = ch
 
-    def forward(self, x: th.Tensor, cond: th.Tensor | None = None) -> th.Tensor:
+    def forward(
+        self,
+        x: th.Tensor,
+        cond: th.Tensor | None = None,
+        patch_id: th.Tensor | None = None,
+        coords: th.Tensor | None = None,
+    ) -> th.Tensor:
         """Encode input tensor into a lower-resolution feature map.
 
-        Shape:
-            x: (N, C_in, H, W) -> (N, C_out, H_out, W_out)
+        If enable_patch_conditioning is True, `patch_id` (B,) with values {0,1}
+        is embedded via the same pathway as in UNetModel and used as FiLM
+        conditioning for ResBlocks. Optional `coords` may be used for
+        side/location conditioning when side_conditioning=True.
         """
+        # Build conditioning embedding if enabled
+        if self.enable_patch_conditioning:
+            if patch_id is None:
+                raise AssertionError("patch_id required when enable_patch_conditioning=True in UNetStyleEncoder")
+            time_embed_dim = self.model_channels * 4
+            emb = self.patch_embed_proj(self.patch_embed(patch_id))  # (B, D)
+            if self.side_conditioning and coords is not None and self.location_embedding is not None:
+                loc_emb = self.loc_embed(self.location_embedding(coords))
+                emb = emb + loc_emb
+            emb = emb.unsqueeze(1)  # (B, 1, D)
+        else:
+            emb = None
+
         h = self.input_conv(x)
         if not self.cascade_conditioning:
             for m in self.blocks:
                 if isinstance(m, ResBlock):
-                    h = m(h, None)
+                    h = m(h, emb)
                 else:
                     h = m(h)
             return h
@@ -186,14 +230,12 @@ class UNetStyleEncoder(nn.Module):
         res_idx = 0
         for m in self.blocks:
             if isinstance(m, ResBlock):
-                # Decide whether to concat conditional feature maps (first res block of each level after level 0)
                 if res_idx == 0 and level_idx > 0:
                     h_cond, conv_cond = self.cascade_downscalers[level_idx - 1](h_cond)
                     h = th.cat([h, conv_cond], dim=1)
-                h = m(h, None)
+                h = m(h, emb)
                 res_idx += 1
             else:
-                # Downsample op marks end of a level
                 h = m(h)
                 level_idx += 1
                 res_idx = 0
@@ -233,8 +275,10 @@ class UNetO3StyleEncoder(nn.Module):
         cascade_conditioning: bool = False,
         cond_channels: int | None = None,
         head_hidden_mult: float = 1.0,
-        pool_types = ("avg", "max", "gem"),
-        **kwargs
+        pool_types=("avg", "max", "gem"),
+        enable_patch_conditioning: bool = False,
+        side_conditioning: bool = False,
+        **kwargs,
     ):
         super().__init__()
         self.backbone = UNetStyleEncoder(
@@ -251,6 +295,8 @@ class UNetO3StyleEncoder(nn.Module):
             use_scale_shift_norm=use_scale_shift_norm,
             cascade_conditioning=cascade_conditioning,
             cond_channels=cond_channels,
+            enable_patch_conditioning=enable_patch_conditioning,
+            side_conditioning=side_conditioning,
         )
         self.num_outputs = num_outputs
         ch = self.backbone.out_channels
@@ -278,10 +324,17 @@ class UNetO3StyleEncoder(nn.Module):
         self.FC2 = linear(hidden_dim, num_outputs)
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, x: th.Tensor, cond: th.Tensor | None = None) -> th.Tensor:
-        h = self.backbone(x, cond)              # (B, C, H, W)
+    def forward(
+        self,
+        x: th.Tensor,
+        cond: th.Tensor | None = None,
+        patch_id: th.Tensor | None = None,
+        coords: th.Tensor | None = None,
+    ) -> th.Tensor:
+        # Forward optional patch_id to backbone for future conditioning extensions.
+        h = self.backbone(x, cond=cond, patch_id=patch_id, coords=coords)  # (B, C, H, W)
         h = self.act(self.tail_bn(self.tail_conv(h)))  # (B, tail_out, H, W)
-        h = self.poolproj(h)                    # (B, feature_dim)
+        h = self.poolproj(h)  # (B, feature_dim)
         h = self.dropout(h)
         h = self.dropout(self.act(self.FC1(h)))
         return self.FC2(h)
@@ -289,7 +342,7 @@ class UNetO3StyleEncoder(nn.Module):
 
 class UNetModel(nn.Module):
     """
-    The full UNet model with attention and timestep embedding.
+    The full UNet model with attention and optional patch embedding.
 
     :param in_channels: channels in the input Tensor.
     :param model_channels: base channel count for the model.
@@ -344,6 +397,7 @@ class UNetModel(nn.Module):
         resblock_updown=False,
         use_new_attention_order=False,
         diffusion=True,
+        enable_patch_conditioning: bool = False,
     ):
         super().__init__()
 
@@ -354,6 +408,7 @@ class UNetModel(nn.Module):
         self.in_channels = in_channels
         self.cascade_conditioning = cascade_conditioning
         self.side_conditioning = side_conditioning
+        self.enable_patch_conditioning = enable_patch_conditioning
         if self.side_conditioning:
             num_embeddings = 2
         else:
@@ -368,32 +423,39 @@ class UNetModel(nn.Module):
         self.channel_mult = channel_mult
         self.conv_resample = conv_resample
         self.use_checkpoint = use_checkpoint
-        # self.dtype = th.float16 if use_fp16 else th.float32
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
-        self.embedding_type = embedding_type
+        # Replace timestep embedding with patch embedding of two classes: south(0), north(1)
         time_embed_dim = model_channels * 4
-
-        if embedding_type == "fourier":
-            self.timestep_embedding = GaussianFourierProjection(
-                embedding_size=model_channels, scale=1
+        if self.enable_patch_conditioning:
+            # Patch embedding path (replaces timestep semantics when enabled)
+            self.patch_embed = nn.Embedding(num_embeddings=2, embedding_dim=model_channels)
+            self.patch_embed_proj = nn.Sequential(
+                linear(model_channels, time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim, time_embed_dim),
             )
-            temb_input_dim = 2 * model_channels
-        elif embedding_type == "positional":
-            self.timestep_embedding = partial(timestep_embedding, dim=model_channels)
-            temb_input_dim = model_channels
-        elif embedding_type == "identity":
-            self.timestep_embedding = nn.Identity()
-            temb_input_dim = model_channels
         else:
-            raise ValueError(f"embedding type {embedding_type} unknown.")
-
-        self.time_embed = nn.Sequential(
-            linear(temb_input_dim, time_embed_dim),
-            nn.SiLU(),
-            linear(time_embed_dim, time_embed_dim),
-        )
+            # Original timestep embedding path for backward compatibility
+            if embedding_type == "fourier":
+                self.timestep_embedding = GaussianFourierProjection(
+                    embedding_size=model_channels, scale=1
+                )
+                temb_input_dim = 2 * model_channels
+            elif embedding_type == "positional":
+                self.timestep_embedding = partial(timestep_embedding, dim=model_channels)
+                temb_input_dim = model_channels
+            elif embedding_type == "identity":
+                self.timestep_embedding = nn.Identity()
+                temb_input_dim = model_channels
+            else:
+                raise ValueError(f"embedding type {embedding_type} unknown.")
+            self.time_embed = nn.Sequential(
+                linear(temb_input_dim, time_embed_dim),
+                nn.SiLU(),
+                linear(time_embed_dim, time_embed_dim),
+            )
 
         if self.side_conditioning:
             self.location_embedding = LocationFourierProjection(
@@ -409,13 +471,14 @@ class UNetModel(nn.Module):
         conditional_channels = self.in_channels - (
             self.out_channels if diffusion else 0
         )
+        self.conv_cond_channels = 32 if cascade_conditioning else 0
         if cascade_conditioning:
             self.cascade_downscalers = nn.ModuleList(
                 [
                     SplitConvDownsample(
-                        conditional_channels, dims=dims, out_channels=32
+                        conditional_channels, dims=dims, out_channels=self.conv_cond_channels
                     )
-                    for i, _ in enumerate(channel_mult)
+                    for _ in channel_mult
                 ]
             )
 
@@ -578,13 +641,14 @@ class UNetModel(nn.Module):
         )
 
     @th.compile()
-    def forward(self, x, cond=None, timesteps=None):
+    def forward(self, x, cond=None, timesteps=None, patch_id: th.Tensor | None = None):
         """
         Apply the model to an input batch.
 
         :param x: an [N x C x ...] Tensor of inputs.
-        :param timesteps: a 1-D batch of timesteps.
-        :param y: an [N] Tensor of labels, if class-conditional.
+        :param patch_id: Optional [N] LongTensor with values {0,1} indicating hemisphere
+                         identity (0=south, 1=north) when side-information conditioning
+                         is used instead of timesteps.
         :return: an [N x C x ...] Tensor of outputs.
         """
         if self.side_conditioning:
@@ -594,15 +658,21 @@ class UNetModel(nn.Module):
         if cond is not None:
             x = th.cat([x, cond], dim=1)
         hs = []
-        if self.embedding_type == "fourier":
-            timesteps = th.log(timesteps)
-
-        emb = self.time_embed(self.timestep_embedding(timesteps))
+        # Construct patch embedding instead of timestep embedding
+        if self.enable_patch_conditioning:
+            if patch_id is None:
+                raise AssertionError("patch_id required when enable_patch_conditioning=True")
+            emb = self.patch_embed_proj(self.patch_embed(patch_id))
+        else:
+            # Original timestep-based embedding path
+            if self.embedding_type == "fourier":
+                timesteps = th.log(timesteps)
+            emb = self.time_embed(self.timestep_embedding(timesteps))
 
         if self.side_conditioning:
-            emb = th.stack(
-                [emb, self.loc_embed(self.location_embedding(coords))], dim=1
-            )
+            emb_loc = self.loc_embed(self.location_embedding(coords))
+            emb = emb + emb_loc
+            emb = emb.unsqueeze(1)
         else:
             emb = emb.unsqueeze(dim=1)
         h = x.type(x.dtype)

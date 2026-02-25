@@ -138,6 +138,17 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
     stack them as (B, C, 2) and aggregate across the hemisphere dimension
     (the last spatial dim) using a PoolProj module. This is controlled by the
     ``aggregate_north_south`` flag for backward compatibility.
+
+    Optional `patch_conditioning` allows the shared CNN to know which hemisphere
+    it is encoding via either an extra input channel ("channel") and/or a
+    side-information embedding passed through the UNet FiLM pathway ("side_info").
+    Supported values:
+        None (default): no conditioning, fully backward compatible.
+        ("channel",)
+        ("side_info",)
+        ("channel", "side_info")
+    For `flex_o3` encoders only "channel" is used; "side_info" is ignored.
+    For `unet_o3` encoders both mechanisms are supported.
     """
 
     def __init__(
@@ -149,31 +160,46 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         encoder_type: str = "flex_o3",
         aggregate_north_south: bool = False,
         hemi_pool_types: Sequence[str] = ("avg", "max", "gem"),
+        patch_conditioning: None | Tuple[str, ...] = None,
         **kwargs,
     ):
         super().__init__(latent_dim=latent_dim, **kwargs)
         self.cnn_out_dim = cnn_out_dim
         self.encoder_type = encoder_type
         self.aggregate_north_south = aggregate_north_south
+        self.patch_conditioning = patch_conditioning
+        # Normalize patch_conditioning to a tuple or None
+        if self.patch_conditioning is not None:
+            if isinstance(self.patch_conditioning, str):
+                self.patch_conditioning = (self.patch_conditioning,)
+            self.patch_conditioning = tuple(self.patch_conditioning)
 
-        in_channels = input_channels  # E + B stacked per hemisphere (6 + 6 = 12)
+        # Determine input channels (add +1 if channel conditioning is used)
+        in_channels = input_channels
+        if self.patch_conditioning is not None and "channel" in self.patch_conditioning:
+            in_channels += 1
+        print("Using per-patch conditioning:", self.patch_conditioning, flush=True)
+        # E + B stacked per hemisphere (6 + 6 = 12 normally)
         if encoder_type == "flex_o3":
             from .compressors import flexible_o3_model
             print("Using FlexibleO3 model as shared CNN", flush=True)
-            # Shared CNN used for both north and south
             self.shared_cnn = flexible_o3_model(
                 num_outputs=cnn_out_dim,
                 hidden=hidden,
                 channels=in_channels,
                 max_hw=MAX_INPUT_HW,
                 predict_sigmas=False,
-                **kwargs
+                **kwargs,
             )
         elif encoder_type == "unet_o3":
             from .unet.unet import UNetO3StyleEncoder
-            # Use UNet-style encoder with O3-inspired head
             print("Using UNetO3StyleEncoder as shared CNN", flush=True)
-            channel_mult = (1, 1, 2, 2,4,8)
+            channel_mult = (1, 1, 2, 2, 4, 8)
+            # Enable patch conditioning inside UNet-style backbone when requested
+            enable_patch = (
+                self.patch_conditioning is not None
+                and "side_info" in self.patch_conditioning
+            )
             self.shared_cnn = UNetO3StyleEncoder(
                 image_size=MAX_INPUT_HW[0],  # assume roughly square-ish height scale
                 in_channels=in_channels,
@@ -183,21 +209,23 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
                 attention_resolutions=(3,),
                 channel_mult=channel_mult,
                 cascade_conditioning=False,
-                **kwargs
+                enable_patch_conditioning=enable_patch,
+                side_conditioning=False,
+                **kwargs,
             )
         else:
-            raise ValueError(f"Unknown encoder_type '{encoder_type}', expected 'flex_o3' or 'unet_o3'")
+            raise ValueError(
+                f"Unknown encoder_type '{encoder_type}', expected 'flex_o3' or 'unet_o3'"
+            )
 
         # Shallow head after concatenation of north/south embeddings
         if self.aggregate_north_south:
-            # Pool (B, C, 2) -> (B, C) with PoolProj, preserving channel dim
-            # Last two dims are treated as spatial by PoolProj, so we use H=1, W=2.
             self.hemi_pool = PoolProj(
                 pool_types=hemi_pool_types,
                 in_channels=cnn_out_dim,
-                proj_dim=2*cnn_out_dim,
+                proj_dim=2 * cnn_out_dim,
             )
-            head_in_dim = 2*cnn_out_dim
+            head_in_dim = 2 * cnn_out_dim
         else:
             head_in_dim = 2 * cnn_out_dim
 
@@ -213,29 +241,67 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         pad_w = max(tw - w, 0)
         if pad_h == 0 and pad_w == 0:
             return x
-        # Pad format: (left, right, top, bottom)
         return F.pad(x, (0, pad_w, 0, pad_h))
+
+    def _maybe_append_hemi_channel(self, x: torch.Tensor, value: float) -> torch.Tensor:
+        """Append a constant-valued hemisphere indicator channel if enabled."""
+        if self.patch_conditioning is None or "channel" not in self.patch_conditioning:
+            return x
+        B, _, H, W = x.shape
+        hemi_chan = x.new_full((B, 1, H, W), float(value))
+        return torch.cat([x, hemi_chan], dim=1)
 
     def _forward_stack(self, data):
         south_stack = stack_hemi(data, "south")
         north_stack = stack_hemi(data, "north")
 
-        # Ensure south matches target spatial size by zero-padding (bottom/right)
-        south_stack = self._pad_to_size(south_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1]))
-        north_stack = self._pad_to_size(north_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1]))
+        # Input-channel conditioning: append hemisphere channel before padding
+        south_stack = self._maybe_append_hemi_channel(south_stack, value=-1.0)
+        north_stack = self._maybe_append_hemi_channel(north_stack, value=+1.0)
+
+        # Ensure stacks match target spatial size by zero-padding (bottom/right)
+        south_stack = self._pad_to_size(
+            south_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1])
+        )
+        north_stack = self._pad_to_size(
+            north_stack, (MAX_INPUT_HW[0], MAX_INPUT_HW[1])
+        )
+
+        # Side-information conditioning via patch_id for UNet-based encoders
+        use_side_info = (
+            self.patch_conditioning is not None
+            and "side_info" in self.patch_conditioning
+            and self.encoder_type == "unet_o3"
+        )
+        B = south_stack.shape[0]
+        south_ids = north_ids = None
+        if use_side_info:
+            device = south_stack.device
+            south_ids = torch.zeros(B, dtype=torch.long, device=device)
+            north_ids = torch.ones(B, dtype=torch.long, device=device)
 
         # Shared encoder processes both stacks
-        south_feat = self.shared_cnn(south_stack)
-        north_feat = self.shared_cnn(north_stack)
+        if use_side_info:
+            south_feat = self.shared_cnn(
+                south_stack,
+                cond=None,
+                patch_id=south_ids,
+            )
+            north_feat = self.shared_cnn(
+                north_stack,
+                cond=None,
+                patch_id=north_ids,
+            )
+        else:
+            south_feat = self.shared_cnn(south_stack)
+            north_feat = self.shared_cnn(north_stack)
 
         if self.aggregate_north_south:
-            # stack along a pseudo-width dim so PoolProj pools over hemispheres
             x = torch.stack([south_feat, north_feat], dim=-1)  # (B, C, 2)
             x = x.unsqueeze(-2)  # (B, C, 1, 2): H=1, W=2 -> hemispheres as spatial dim
             pooled = self.hemi_pool(x)  # (B, C)
             feats = pooled
         else:
-            # Backward-compatible behaviour: concatenate features
             feats = torch.cat([south_feat, north_feat], dim=1)
         return feats
     

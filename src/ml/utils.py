@@ -264,6 +264,8 @@ def build_model(config, test_dataloader=None):
 
     redundancy_dim = getattr(config, 'redundancy_dim', 0)
     use_KL_loss = getattr(config, 'use_KL_loss', False)
+    # Flag indicating distributed training (set in train_model/fit_model)
+    is_distributed = getattr(config, 'is_distributed', False)
 
     # latent_dim is always the dimension of mu; encoder may output 2*latent_dim when use_kl
     latent_dim = getattr(config, 'latent_dim', None)
@@ -285,7 +287,7 @@ def build_model(config, test_dataloader=None):
         model_kwargs = {**model_kwargs, 'use_kl': use_KL_loss}
 
     # num_outputs passed to builders is the latent_dim (mu dimension)
-    embedding_model = MODEL_BUILDERS[config.model_type](latent_dim, **model_kwargs).to(device='cuda')
+    embedding_model = MODEL_BUILDERS[config.model_type](latent_dim, **model_kwargs).to("cuda" if torch.cuda.is_available() else "cpu")
 
     # Effective conditioning dimension seen by the flow is latent_dim (+ optional redundancy)
     conditioning_dim = latent_dim + redundancy_dim
@@ -321,6 +323,7 @@ def build_model(config, test_dataloader=None):
         freeze_CNN=config.freeze_cnn,
         scheduler_kwargs=base_sched_kwargs,
         flow_kwargs=config.flow_kwargs,
+        is_distributed=is_distributed,
         **lm_extra_kwargs,
     )
 
@@ -394,6 +397,6 @@ def load_best_checkpoint_model(config, run_folder, test_loader=None):
 
     config.checkpoint_path = best_checkpoint
     model= build_model(config, test_dataloader=test_loader)
-    model.to("cuda")
+    model.to("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     return model, best_checkpoint, best_val_loss
