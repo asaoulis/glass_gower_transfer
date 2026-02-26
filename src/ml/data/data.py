@@ -378,7 +378,7 @@ def build_dataloaders(
     val_batch_size: Optional[int] = None,
     test_batch_size: Optional[int] = None,
     shuffle_train: bool = True,
-    num_workers: int = 0,
+    num_workers: Optional[int] = None,
     pin_memory: bool = False,
     persistent_workers: Optional[bool] = None,
     train_frac: float = 0.8,
@@ -398,7 +398,18 @@ def build_dataloaders(
 
     ``test_shape_noise_idx`` can be used to further filter the test-set files to
     specific shape-noise repeats, while leaving train/val untouched.
+
+    ``num_workers``: if None (default), choose a heuristic based on available
+    CPU cores, capped to 8 to avoid oversubscribing small machines.
     """
+    # Decide number of workers if not explicitly given
+    if num_workers is None:
+        try:
+            cpu_count = os.cpu_count() or 1
+        except Exception:
+            cpu_count = 1
+        num_workers = max(0, min(8, max(1, cpu_count - 1)))
+
     transform = RandomEBPatchAugment() if augment_eb_patches else None
 
     train_ds, val_ds, test_ds = build_datasets(
