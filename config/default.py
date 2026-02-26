@@ -45,7 +45,7 @@ def get_default_config():
     config.test_frac = 0.1
     config.split_seed = 42
     config.shuffle_train = True
-    config.num_workers = 8
+    config.num_workers = None
     config.pin_memory = False
     config.stack_groups = False
     config.augment_eb_patches = True
