@@ -409,9 +409,6 @@ class MultipleFlow(nn.Module):
         ``_CondEmbeddingFlow`` and the Lightning modules) see the same
         shape as for a single flow.
         """
-        # Each flow.log_prob returns something like [1, batch] (or
-        # [1, batch, ...]); we stack along a new ensemble dim=0 and
-        # average over that, then squeeze the ensemble dim back out.
         log_probs = [flow.log_prob(x, y, **kwargs) for flow in self.flows]
         stacked = torch.stack(log_probs, dim=0)  # [n_flows, 1, batch, ...]
         mean_lp = stacked.mean(dim=0)            # [1, batch, ...]
@@ -439,6 +436,7 @@ class MultipleFlow(nn.Module):
 from sbi.neural_nets.estimators import ConditionalDensityEstimator
 from sbi.samplers.rejection import rejection
 from sbi.utils.sbiutils import within_support
+from sbi.inference.posteriors import MCMCPosterior
 
 from collections.abc import Mapping
 
@@ -466,6 +464,7 @@ class ConditionDict(dict):
     def copy(self):
         # Ensure copies keep the subclass (some libs call .copy())
         return ConditionDict(self)
+
 
 class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
     def __init__(self, model, prior, input_shape=(1,), condition_shape=(1,)):
@@ -503,6 +502,83 @@ class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
         return samples
 
 
+class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
+    """ConditionalDensityEstimator wrapper for neural likelihood estimation.
+
+    This mirrors PatchedConditionalDensityEstimator but exposes a
+    log_likelihood-style API and a ``gen_samples`` method that uses
+    ``MCMCPosterior.sample_batched`` under the hood.
+    """
+
+    def __init__(self, model, prior, input_shape=(1,), condition_shape=(1,)):
+        # ``model`` is expected to implement .log_prob(x, y)
+        super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
+        self.prior = prior
+        self.max_sampling_batch_size = 10_000
+
+    def _check_condition_shape(self, condition):
+        # Handled by underlying model / ConditionDict, no-op here.
+        pass
+
+    def _check_input_shape(self, input):
+        # Handled externally, keep behaviour minimal.
+        pass
+
+    def log_prob(self, x, y):
+        # Neural likelihood p(x | theta=y) following sbi convention.
+        return self.net.log_prob(x, y)
+
+    def loss(self, x, y):
+        # Negative log-likelihood.
+        return -self.log_prob(x, y).mean()
+
+    def log_likelihood(self, x, theta):
+        """Alias with explicit (x, theta) semantics used by MCMC potential fns."""
+        return self.log_prob(x, theta)
+
+    @torch.no_grad()
+    def gen_samples(self, num_samples: int, x, **mcmc_kwargs):
+        """Generate posterior samples p(theta | x) via MCMCPosterior.
+
+        This mirrors the NPE API used in ``generate_samples``:
+
+            samples = estimator.gen_samples(num_samples=num_samples, x=ycond)
+
+        Under the hood we construct an ``MCMCPosterior`` with potential
+        log p(theta | x) = log p(x | theta) + log p(theta), and call
+        ``sample_batched``.
+        """
+        device = next(self.net.parameters()).device
+
+        # Prepare conditioning in the same way as for NPE (ConditionDict aware)
+        if isinstance(x, dict):
+            x_cond = ConditionDict({k: v.to(device) for k, v in x.items()})
+        else:
+            x_cond = x.to(device)
+
+        def potential(theta):
+            theta = theta.to(device)
+            ll = self.log_likelihood(x_cond, theta)
+            log_p = self.prior.log_prob(theta)
+            return ll + log_p
+
+        posterior = MCMCPosterior(
+            potential_fn=potential,
+            proposal=self.prior,
+            method=mcmc_kwargs.pop("method", "slice_np_vectorized"),
+            device=device,
+        )
+
+        sample_shape = (num_samples,)
+        samples = posterior.sample_batched(
+            sample_shape=sample_shape,
+            x=x_cond,
+            show_progress_bars=mcmc_kwargs.pop("show_progress_bars", False),
+            **mcmc_kwargs,
+        )
+        return samples
+
+
 class NDELightningModule(BaseLightningModule):
     flow_type_map = {"nsf": build_nsf, "maf": build_maf, 'zuko_nsf': build_zuko_nsf}
 
@@ -521,7 +597,6 @@ class NDELightningModule(BaseLightningModule):
         **kwargs,
     ):
         super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
-        # Keep embedding net separate from the flow; expected to implement compress().
         self.embedding_net = model if model is not None else nn.Identity()
         self.conditioning_dim = conditioning_dim
         self.inference_dim = inference_dim
@@ -574,12 +649,31 @@ class NDELightningModule(BaseLightningModule):
         print("Overwriting model weights from checkpoint:", checkpoint_path)
         self.load_state_dict(checkpoint['state_dict'])  # Ensure the key matches the saved checkpoint format
     
-    def build_posterior_object(self):
-        # we need to set use_KL and return_ml correctly
+    def build_posterior_object(self, prior=None):
+        """Build a neural posterior object (NPE-style).
+
+        By default this uses a BoxUniform prior on [0, 1] for each
+        inference dimension, matching the previous behaviour. A custom
+        prior can be passed in via the ``prior`` argument.
+        """
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.eval()
-        self.model.embedding_net.only_return_mu = True
-        prior = utils.BoxUniform(low=0 * torch.ones(self.inference_dim), high=1. * torch.ones(self.inference_dim), device=("cuda" if torch.cuda.is_available() else "cpu"))
-        density_estimator = PatchedConditionalDensityEstimator(self.model, prior)
+        if hasattr(self.model, "embedding_net") and hasattr(self.model.embedding_net, "only_return_mu"):
+            self.model.embedding_net.only_return_mu = True
+
+        if prior is None:
+            prior = utils.BoxUniform(
+                low=0 * torch.ones(self.inference_dim, device=device),
+                high=1.0 * torch.ones(self.inference_dim, device=device),
+                device=device,
+            )
+
+        density_estimator = PatchedConditionalDensityEstimator(
+            self.model,
+            prior,
+            input_shape=(self.inference_dim,),
+            condition_shape=(self.conditioning_dim,),
+        )
         return density_estimator
 
     def generate_samples(self, dummy_loader, num_samples=10000):
@@ -880,6 +974,63 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
     def log_custom_evals(self, preds, y):
         if len(self.test_loss_values) > 0:
             self.log("test_log_prob", self.test_loss_values.pop(), sync_dist=self.is_distributed)
+
+
+class LikelihoodNDELightningModule(NDELightningModule):
+    """Minimal subclass of NDELightningModule for neural likelihood training.
+
+    Interprets the flow output as a likelihood p(x | theta) instead of a
+    posterior p(theta | x). Posterior sampling is delegated to
+    ``PatchedLikelihoodEstimator.gen_samples`` so that the API matches
+    NDELightningModule.generate_samples (i.e. exposing ``gen_samples``).
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x, cond=None):
+        """Evaluate log p(x | theta).
+
+        In NLE, ``x`` corresponds to data and ``cond`` to parameters theta.
+        """
+        return self.model.log_prob(x, cond)
+
+    def training_step(self, batch, batch_idx):
+        x, theta = batch
+        preds = self.forward(x, cond=theta)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"train_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x, theta = batch
+        preds = self.forward(x, cond=theta)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"val_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
+        self.log_custom_evals(preds, theta)
+        return loss
+
+    def build_posterior_object(self, prior=None):
+        """Build and return a PatchedLikelihoodEstimator with gen_samples()."""
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model.eval()
+        if hasattr(self.model, "embedding_net") and hasattr(self.model.embedding_net, "only_return_mu"):
+            self.model.embedding_net.only_return_mu = True
+
+        if prior is None:
+            prior = utils.BoxUniform(
+                low=0 * torch.ones(self.inference_dim, device=device),
+                high=1.0 * torch.ones(self.inference_dim, device=device),
+                device=device,
+            )
+
+        likelihood_estimator = PatchedLikelihoodEstimator(
+            model=self.model,
+            prior=prior,
+            input_shape=(self.inference_dim,),
+            condition_shape=(self.conditioning_dim,),
+        )
+        return likelihood_estimator
 
 
 class EnsembleNDELightningModule(NDELightningModule):
