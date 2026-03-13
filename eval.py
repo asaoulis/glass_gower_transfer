@@ -31,7 +31,8 @@ experiments_to_evaluate = [
     # "hybrid_frozen_representation_varying_sizes",
     # "finetune_hybrid_representation_E_mode",
     # "hybrid_frozen_representation"
-    "hybrid_frozen_representation_cyclic_varying_sizes"
+    # "hybrid_frozen_representation_cyclic_varying_sizes"
+    "finetune_hybrid_representation_annealbackbone_fullcosmo"
 ]
 
 for experiment_name in experiments_to_evaluate:
@@ -58,11 +59,11 @@ for experiment_name in experiments_to_evaluate:
 
             cfg.max_trainval_cosmos = int(n_cosmo)
             # This string is what you said you want for matching paths
-            cfg.match_string = f"ncosmo{n_cosmo}"
+            cfg.match_string = f"ncosmo{n_cosmo}_"
             print(f"Evaluating '{experiment_name}' with max_trainval_cosmos={n_cosmo}, match_string={cfg.match_string}", flush=True)
             data_parameters = prepare_data_parameters(cfg)
 
-            evaluate_best_checkpoint(cfg, data_parameters[0]["cosmo"], data_parameters[3])
+            evaluate_best_checkpoint(cfg, data_parameters[3], data_parameters[0]["cosmo"])
     else:
         # Single or no max_trainval_cosmos
         config.test_shape_noise_idx = [0]
@@ -75,4 +76,4 @@ for experiment_name in experiments_to_evaluate:
             config.match_string = ""
 
         print(f"Evaluating '{experiment_name}' with max_trainval_cosmos={getattr(config, 'max_trainval_cosmos', None)}, match_string={config.match_string}")
-        evaluate_best_checkpoint(cfg, data_parameters[0]["cosmo"], data_parameters[3])
+        evaluate_best_checkpoint(cfg, data_parameters[3], data_parameters[0]["cosmo"])

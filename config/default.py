@@ -3,6 +3,7 @@ import ml_collections
 def get_default_config():
     config = ml_collections.ConfigDict()
     # Training
+    config.training_mode = "nde"
     config.lr = 0.0004
     config.epochs = 80
     config.batch_size = 32
@@ -10,6 +11,7 @@ def get_default_config():
     config.test_batch_size = None # defaults to val_batch_size if None
     config.latent_dim = 256
     config.extra_blocks = 0
+    config.match_num_cosmo = True
     config.checkpoint_path = None
     config.pretrained_band_ckpt_path = None
     config.freeze_band = False
@@ -60,6 +62,10 @@ def get_default_config():
         'data': {'type': 'standard', 'keys': None},
         'cosmo': {'type': 'minmax'},
     }
+    # config.scaler_options = {
+    #         'data': {'type': 'standard', 'keys': None},
+    #         'cosmo': {'type': 'preset'},
+    # }
     config.project = "kids-transfer-tests"
 
     # Misc/legacy fields kept for compatibility with older code paths

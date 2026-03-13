@@ -19,6 +19,13 @@ from tqdm import tqdm
 from types import MethodType
 from functools import partial
 from typing import Dict
+from joblib import Parallel, delayed
+from tqdm import tqdm
+import torch
+
+from typing import Dict
+import torch
+import torch.nn as nn
 
 
 def load_partial_weights(
@@ -27,52 +34,126 @@ def load_partial_weights(
     prefix: str = "",
     freeze: bool = False,
     verbose: bool = True,
+    error_on_mismatch: bool = False,
 ):
-    """Safely load a subset of weights into target_module.
+    """
+    Safely load a subset of weights into target_module.
 
     - Optionally strips a prefix from keys in `source_state_dict`.
     - Only loads keys that exist in `target_module.state_dict()` and
       whose shapes match.
-    - Optionally freezes the loaded module's parameters.
+    - Reports unused / missing / mismatched keys.
+    - Can raise if weights are not fully consumed.
     """
+
     target_state = target_module.state_dict()
+
     loaded_weights = {}
+    used_source_keys = set()
+    skipped_shape = []
+    skipped_missing = []
 
+    # ------------------------
+    # Match keys
+    # ------------------------
     for k, v in source_state_dict.items():
+
         # Strip prefix if requested
-        if prefix and k.startswith(prefix):
-            local_key = k[len(prefix) :]
-        elif not prefix:
-            local_key = k
+        if prefix:
+            if not k.startswith(prefix):
+                continue
+            local_key = k[len(prefix):]
         else:
-            continue  # key does not belong to this submodule
+            local_key = k
 
-        # Match key and shape
-        if local_key in target_state:
-            if v.shape == target_state[local_key].shape:
-                loaded_weights[local_key] = v
-            elif verbose:
-                print(
-                    f"[load_partial_weights] Skipping {local_key}: shape mismatch "
-                    f"{tuple(v.shape)} vs {tuple(target_state[local_key].shape)}"
-                )
+        # Check key exists
+        if local_key not in target_state:
+            skipped_missing.append(local_key)
+            continue
 
-    missing, unexpected = target_module.load_state_dict(loaded_weights, strict=False)
+        # Check shape
+        if v.shape != target_state[local_key].shape:
+            skipped_shape.append(
+                (local_key, tuple(v.shape), tuple(target_state[local_key].shape))
+            )
+            continue
 
-    if verbose and loaded_weights:
+        loaded_weights[local_key] = v
+        used_source_keys.add(k)
+
+    # ------------------------
+    # Load
+    # ------------------------
+    missing, unexpected = target_module.load_state_dict(
+        loaded_weights, strict=False
+    )
+
+    # ------------------------
+    # Unused source keys
+    # ------------------------
+    unused_source = set(source_state_dict.keys()) - used_source_keys
+
+    # ------------------------
+    # Reporting
+    # ------------------------
+    if verbose:
+
         print(
-            f"[load_partial_weights] Loaded {len(loaded_weights)} keys into {target_module.__class__.__name__}. "
-            f"Missing: {len(missing)}, unexpected (ignored): {len(unexpected)}"
+            f"[load_partial_weights] {target_module.__class__.__name__}"
+        )
+        print(f"  Loaded keys: {len(loaded_weights)}")
+        print(f"  Missing in target after load: {len(missing)}")
+        print(f"  Unexpected during load: {len(unexpected)}")
+        print(f"  Unused source keys: {len(unused_source)}")
+        print(f"  Shape mismatches: {len(skipped_shape)}")
+        print(f"  Missing target keys: {len(skipped_missing)}")
+
+        if len(loaded_weights) == 0:
+            print("⚠️  WARNING: No weights were loaded!")
+
+        if skipped_shape:
+            print("⚠️  Shape mismatches:")
+            for k, s1, s2 in skipped_shape[:10]:
+                print(f"   {k}: {s1} vs {s2}")
+
+        if unused_source and prefix:
+            print(
+                "⚠️  Some source keys not used — prefix may be wrong."
+            )
+
+    # ------------------------
+    # Error mode
+    # ------------------------
+    if error_on_mismatch:
+
+        problems = (
+            len(unused_source)
+            + len(skipped_shape)
+            + len(skipped_missing)
+            + len(missing)
         )
 
+        if problems > 0:
+            raise RuntimeError(
+                f"load_partial_weights mismatch detected: "
+                f"{len(loaded_weights)} loaded, "
+                f"{len(unused_source)} unused, "
+                f"{len(skipped_shape)} shape mismatch, "
+                f"{len(missing)} missing"
+            )
+
+    # ------------------------
+    # Freeze
+    # ------------------------
     if freeze:
         for p in target_module.parameters():
             p.requires_grad = False
-        # target_module.eval()
-     # if we are loading and the model has .only_return_mu, we need to set it to True
+
+    # ------------------------
+    # Special flag
+    # ------------------------
     if hasattr(target_module, "only_return_mu"):
         target_module.only_return_mu = True
-
 
 class BaseLightningModule(pl.LightningModule):
     def __init__(self, model, loss_fn, lr=0.0001, scheduler_type='cosine', element_names=None, optimizer_kwargs = {}, scheduler_kwargs= {}, freeze_CNN=False, **kwargs):
@@ -291,486 +372,7 @@ class BaseLightningModule(pl.LightningModule):
                 "interval": interval,
             },
         }
-
-
-class RegressionLightningModule(BaseLightningModule):
-    def __init__(self, model, lr=0.0001, scheduler_type='cosine', batch_size=32, element_names=None, **kwargs):
-        super().__init__(model, loss_fn=torch.nn.MSELoss(), lr=lr, scheduler_type=scheduler_type, batch_size=batch_size, element_names=element_names)
-        self.loss_name = "loss"
-    def log_r2_eval(self, preds, y):
-        """Logs R² scores for each output element if applicable."""
-        if not self.element_names:
-            return
-        
-        preds_np = preds.detach().cpu().numpy()
-        y_np = y.detach().cpu().numpy()
-        for i, element in enumerate(self.element_names):
-            r2 = r2_score(y_np[:, i], preds_np[:, i])
-            self.log(f"R²_{element}", r2, prog_bar=False, sync_dist=self.is_distributed)
-    def log_custom_evals(self, preds, y):
-        self.log_r2_eval(preds, y)
-
-    def compute_loss(self, preds, y):
-        return torch.log(self.loss_fn(preds, y))  # Log-transformed MSE loss
-
-class GaussianLightningModule(BaseLightningModule):
-    def __init__(self, model, lr=0.0001, scheduler_type='cosine', batch_size=32, element_names=None, num_outputs=2, **kwargs):
-        super().__init__(model, loss_fn=torch.nn.MSELoss(), lr=lr, scheduler_type=scheduler_type, batch_size=batch_size, element_names=element_names)
-        self.loss_name = "loss"
-        self.num_outputs = num_outputs
-    def log_r2_eval(self, preds, y):
-        """Logs R² scores for each output element if applicable."""
-        if not self.element_names:
-            return
-        
-        preds_np = preds.detach().cpu().numpy()
-        y_np = y.detach().cpu().numpy()
-        for i, element in enumerate(self.element_names):
-            r2 = r2_score(y_np[:, i], preds_np[:, i])
-            self.log(f"R²_{element}", r2, prog_bar=False, sync_dist=self.is_distributed)
-    def log_custom_evals(self, preds, y):
-        self.log_r2_eval(preds, y)
-
-    def compute_loss(self, preds, y):
-        y_NN = preds[:, :self.num_outputs]
-        e_NN = preds[:, self.num_outputs:]
-        loss1 = torch.mean((y_NN - y)**2,                axis=0)
-        loss2 = torch.mean(((y_NN - y)**2 - e_NN**2)**2, axis=0)
-        loss  = torch.mean(torch.log(loss1) + torch.log(loss2))
-        return loss
-
-
-from sbi.neural_nets.net_builders import build_maf, build_zuko_nsf
-from src.ml.models.custom_sbi import build_nsf
-from torch.optim import Adam, AdamW
-from sbi import utils as utils
-
-import torch.nn as nn
-
-class _CondEmbeddingFlow(nn.Module):
-    """Minimal original wrapper linking an embedding network and a flow.
-
-    The embedding_net takes the conditioning data and returns a fixed-size
-    representation used as context for the flow. All dtype handling is left
-    to the caller / Trainer (no bf16-specific casting here).
-    """
-
-    def __init__(self, embedding_net: nn.Module, flow: nn.Module):
-        super().__init__()
-        self.embedding_net = embedding_net if embedding_net is not None else nn.Identity()
-        self.flow = flow
-
-    def encode(self, y):
-        return self.embedding_net(y)
-    
-    def get_representation(self, y):
-        return self.embedding_net.get_representation(y)
-
-    def log_prob(self, x, y):
-        y_emb = self.embedding_net(y)
-        x = x.unsqueeze(0)
-        return self.flow.log_prob(x, y_emb)
-
-    def latent_log_prob(self, x, y_emb):
-        x = x.unsqueeze(0)
-        return self.flow.log_prob(x, y_emb)
-
-    def sample(self, shape, y, **kwargs):
-        y_emb = self.embedding_net(y)
-        return self.flow.sample(shape, y_emb, **kwargs)
-
-    def sample_batched(self, shape, y, **kwargs):
-        y_emb = self.embedding_net(y)
-        return self.flow.sample_batched(shape, y_emb, **kwargs)
-
-class MultipleFlow(nn.Module):
-    """Container for an ensemble of flow models with a single-flow-like API.
-
-    Assumes each flow implements ``log_prob(x, y)`` and ``sample`` / ``sample_batched``
-    with the same semantics as used in ``_CondEmbeddingFlow``. In particular,
-    ``log_prob`` expects x to already have the leading nflows dimension
-    (typically added via ``unsqueeze(0)`` in ``_CondEmbeddingFlow``) and
-    returns a tensor whose leading dimension corresponds to that.
-    """
-
-    def __init__(self, flows: list[nn.Module]):
-        super().__init__()
-        if len(flows) == 0:
-            raise ValueError("MultipleFlow requires at least one flow.")
-        self.flows = nn.ModuleList(flows)
-
-    def log_prob(self, x, y, **kwargs):
-        """Return ensemble-averaged log_prob over flows for a batch.
-
-        x: tensor with leading nflows dim, e.g. [1, batch, dim_x]. Each
-        underlying flow is called with the same x, and we average the
-        resulting log-probabilities across the ensemble dimension while
-        preserving all original dimensions so that callers (e.g.
-        ``_CondEmbeddingFlow`` and the Lightning modules) see the same
-        shape as for a single flow.
-        """
-        log_probs = [flow.log_prob(x, y, **kwargs) for flow in self.flows]
-        stacked = torch.stack(log_probs, dim=0)  # [n_flows, 1, batch, ...]
-        mean_lp = stacked.mean(dim=0)            # [1, batch, ...]
-        return mean_lp
-
-    def sample(self, shape, y, **kwargs):
-        samples = [flow.sample(shape, y, **kwargs) for flow in self.flows]
-        samples = torch.stack(samples, dim=0)  # [n_flows, *shape, dim_x]
-        return samples.mean(dim=0)
-
-    def sample_batched(self, shape, y, **kwargs):
-        """Batched sampling if underlying flows expose ``sample_batched``.
-
-        Falls back to ``sample`` for flows without ``sample_batched``.
-        """
-        samples = []
-        for flow in self.flows:
-            if hasattr(flow, "sample_batched"):
-                samples.append(flow.sample_batched(shape, y, **kwargs))
-            else:
-                samples.append(flow.sample(shape, y, **kwargs))
-        samples = torch.stack(samples, dim=0)
-        return samples.mean(dim=0)
-
-from sbi.neural_nets.estimators import ConditionalDensityEstimator
-from sbi.samplers.rejection import rejection
-from sbi.utils.sbiutils import within_support
-from sbi.inference.posteriors import MCMCPosterior
-
-from collections.abc import Mapping
-
-class ConditionDict(dict):
-    """
-    Dict-like that additionally exposes a .shape so that .shape[0]
-    returns the batch dimension of the first value.
-    """
-    def __init__(self, data: Mapping):
-        if not isinstance(data, Mapping):
-            raise TypeError("ConditionDict expects a mapping.")
-        super().__init__(data)
-
-    @property
-    def shape(self):
-        try:
-            first_val = next(iter(self.values()))
-        except StopIteration:
-            raise ValueError("ConditionDict is empty; cannot infer .shape[0].")
-        if not hasattr(first_val, "shape"):
-            raise AttributeError("First value has no .shape attribute.")
-        # Return a 1-tuple so code using .shape[0] works.
-        return first_val.shape
-
-    def copy(self):
-        # Ensure copies keep the subclass (some libs call .copy())
-        return ConditionDict(self)
-
-
-class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
-    def __init__(self, model, prior, input_shape=(1,), condition_shape=(1,)):
-        super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
-        self.prior = prior
-        self.max_sampling_batch_size = 10_000
-    def _check_condition_shape(self, condition):
-        pass
-
-    def _check_input_shape(self, input):
-        pass
-
-    def log_prob(self, x, y):
-        return self.net.log_prob(x, y)
-    def loss(self, x, y):
-        return -self.net.log_prob(x, y).mean()
-    def sample(self, num_samples, condition):
-        return self.net.sample(num_samples, condition)
-
-    def gen_samples(self, num_samples, x):
-        if isinstance(x, dict):
-            cond = ConditionDict(x)
-        else:
-            cond = x
-        samples = rejection.accept_reject_sample(
-            proposal=self.sample,
-            accept_reject_fn=lambda theta: within_support(self.prior, theta),
-            num_samples=num_samples,
-            show_progress_bars=False,
-            max_sampling_batch_size=self.max_sampling_batch_size,
-            proposal_sampling_kwargs={"condition": cond},
-            alternative_method="build_posterior(..., sample_with='mcmc')",
-            num_xos=cond.shape[0]
-        )[0]
-        return samples
-
-
-class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
-    """ConditionalDensityEstimator wrapper for neural likelihood estimation.
-
-    This mirrors PatchedConditionalDensityEstimator but exposes a
-    log_likelihood-style API and a ``gen_samples`` method that uses
-    ``MCMCPosterior.sample_batched`` under the hood.
-    """
-
-    def __init__(self, model, prior, input_shape=(1,), condition_shape=(1,)):
-        # ``model`` is expected to implement .log_prob(x, y)
-        super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
-        self.prior = prior
-        self.max_sampling_batch_size = 10_000
-
-    def _check_condition_shape(self, condition):
-        # Handled by underlying model / ConditionDict, no-op here.
-        pass
-
-    def _check_input_shape(self, input):
-        # Handled externally, keep behaviour minimal.
-        pass
-
-    def log_prob(self, x, y):
-        # Neural likelihood p(x | theta=y) following sbi convention.
-        return self.net.log_prob(x, y)
-
-    def loss(self, x, y):
-        # Negative log-likelihood.
-        return -self.log_prob(x, y).mean()
-
-    def log_likelihood(self, x, theta):
-        """Alias with explicit (x, theta) semantics used by MCMC potential fns."""
-        return self.log_prob(x, theta)
-
-    @torch.no_grad()
-    def gen_samples(self, num_samples: int, x, **mcmc_kwargs):
-        """Generate posterior samples p(theta | x) via MCMCPosterior.
-
-        This mirrors the NPE API used in ``generate_samples``:
-
-            samples = estimator.gen_samples(num_samples=num_samples, x=ycond)
-
-        Under the hood we construct an ``MCMCPosterior`` with potential
-        log p(theta | x) = log p(x | theta) + log p(theta), and call
-        ``sample_batched``.
-        """
-        device = next(self.net.parameters()).device
-
-        # Prepare conditioning in the same way as for NPE (ConditionDict aware)
-        if isinstance(x, dict):
-            x_cond = ConditionDict({k: v.to(device) for k, v in x.items()})
-        else:
-            x_cond = x.to(device)
-
-        def potential(theta):
-            theta = theta.to(device)
-            ll = self.log_likelihood(x_cond, theta)
-            log_p = self.prior.log_prob(theta)
-            return ll + log_p
-
-        posterior = MCMCPosterior(
-            potential_fn=potential,
-            proposal=self.prior,
-            method=mcmc_kwargs.pop("method", "slice_np_vectorized"),
-            device=device,
-        )
-
-        sample_shape = (num_samples,)
-        samples = posterior.sample_batched(
-            sample_shape=sample_shape,
-            x=x_cond,
-            show_progress_bars=mcmc_kwargs.pop("show_progress_bars", False),
-            **mcmc_kwargs,
-        )
-        return samples
-
-
-class NDELightningModule(BaseLightningModule):
-    flow_type_map = {"nsf": build_nsf, "maf": build_maf, 'zuko_nsf': build_zuko_nsf}
-
-    def __init__(
-        self,
-        model,
-        conditioning_dim,
-        inference_dim,
-        redundancy_dim = 0,
-        lr=0.0001,
-        scheduler_type='cosine',
-        test_dataloader=None,
-        flow_type='nsf',
-        num_extra_blocks=None,
-        flow_kwargs= {},
-        **kwargs,
-    ):
-        super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
-        self.embedding_net = model if model is not None else nn.Identity()
-        self.conditioning_dim = conditioning_dim
-        self.inference_dim = inference_dim
-        self.redundancy_dim = redundancy_dim
-        self.build_flow = self.flow_type_map[flow_type]
-        if 'zuko' in flow_type:
-            self.flow_kwargs = flow_kwargs
-        else:
-            self.flow_kwargs = {"conditional_dim": self.conditioning_dim, "use_batch_norm": False, **flow_kwargs}
-        self.test_dataloader = test_dataloader
-        self.loss_name = "log_prob"
-        self.set_up_model()
-        self.test_loss_values = []
-
-    def set_up_model(self):
-        """Builds the flow model and wraps it together with the embedding encoder.
-
-        The flow itself works on latent representations; the encoder is
-        responsible for compressing the high-dimensional data_dict into a
-        fixed-size vector of dimension `conditioning_dim`.
-        """
-        y_dataset = torch.randn(10, self.conditioning_dim)
-        x_dataset = torch.randn(10, self.inference_dim)
-        hidden_features = self.flow_kwargs.pop("hidden_features", self.conditioning_dim)
-        flow = self.build_flow(
-            x_dataset,
-            y_dataset,
-            num_transforms=5,
-            z_score_x=None,
-            z_score_y=None,
-            embedding_net=nn.Identity(),
-            hidden_features=hidden_features,
-            **self.flow_kwargs,
-        )
-        self.flow = flow
-        self.model = _CondEmbeddingFlow(self.embedding_net, self.flow)
-
-    def compress(self, data_dict):
-        """Return the latent representation used as condition for the flow.
-
-        Delegates to the wrapper's encode(), which mirrors the internal
-        behaviour of _CondEmbeddingFlow and keeps a single source of truth
-        for how embeddings are computed from data_dict.
-        """
-        return self.model.encode(data_dict)
-
-    def load_from_checkpoint(self, checkpoint_path):
-        """Loads model weights from a given checkpoint."""
-        checkpoint = torch.load(checkpoint_path, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"))  # Adjust device as needed
-        print("Overwriting model weights from checkpoint:", checkpoint_path)
-        self.load_state_dict(checkpoint['state_dict'])  # Ensure the key matches the saved checkpoint format
-    
-    def build_posterior_object(self, prior=None):
-        """Build a neural posterior object (NPE-style).
-
-        By default this uses a BoxUniform prior on [0, 1] for each
-        inference dimension, matching the previous behaviour. A custom
-        prior can be passed in via the ``prior`` argument.
-        """
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.model.eval()
-        if hasattr(self.model, "embedding_net") and hasattr(self.model.embedding_net, "only_return_mu"):
-            self.model.embedding_net.only_return_mu = True
-
-        if prior is None:
-            prior = utils.BoxUniform(
-                low=0 * torch.ones(self.inference_dim, device=device),
-                high=1.0 * torch.ones(self.inference_dim, device=device),
-                device=device,
-            )
-
-        density_estimator = PatchedConditionalDensityEstimator(
-            self.model,
-            prior,
-            input_shape=(self.inference_dim,),
-            condition_shape=(self.conditioning_dim,),
-        )
-        return density_estimator
-
-    def generate_samples(self, dummy_loader, num_samples=10000):
-        posterior = self.build_posterior_object()
-        theta0s = []
-        samples = []
-        num_tarp_samples = len(self.test_dataloader.dataset)
-        for test_data, test_cosmo in tqdm(self.test_dataloader, desc="Generating samples"):
-            if isinstance(test_data, dict):
-                ycond = {key: test_data[key].to("cuda" if torch.cuda.is_available() else "cpu") for key in test_data.keys()}
-            else:
-                ycond = test_data.to("cuda" if torch.cuda.is_available() else "cpu")   
-            samples_i = posterior.gen_samples(num_samples=num_samples, x=ycond)
-            theta0s.append(test_cosmo)
-            samples.append(samples_i.cpu())  # [num_samples, batch , dim]
-        theta0s = torch.cat(theta0s, dim=0)
-        samples = torch.cat(samples, dim=1)#.permute(1, 0, 2)
-        return theta0s, samples
-    
-
-    def generate_samples_batched(self, test_dataloader, num_samples=10000):
-        """
-        Generates samples from the model using the test dataloader. Doesn't work!
-        
-        Args:
-            test_dataloader (DataLoader): The test dataloader.
-            num_samples (int): Number of samples to generate.
-        
-        Returns:
-            torch.Tensor: Generated samples.
-        """
-        posterior = self.build_posterior_object()
-        all_samples = []
-        for batch in tqdm(test_dataloader, desc="Sampling"):
-            y, x = batch
-            x_samples = posterior.sample_batched((num_samples,), x=y, show_progress_bars=False)
-            all_samples.append(x_samples)
-        all_samples = torch.cat(all_samples, dim=0)
-        return all_samples
-
-
-    def compute_loss(self, preds, y):   
-        """Uses log probability as the loss for density estimation."""
-        return -preds.mean()  # Negative log-likelihood loss
-
-    def forward(self, x, cond=None):
-        """Evaluate log p(x | cond).
-
-        cond is a high-dimensional data dict that will be compressed by
-        the encoder via its compress()/forward method before feeding
-        into the normalising flow.
-        """
-        return self.model.log_prob(x, cond)
-
-    # Override steps to pass (theta|data) ordering correctly
-    def training_step(self, batch, batch_idx):
-        data_dict, theta = batch  # dataset yields (data, cosmo)
-        preds = self.forward(theta, cond=data_dict)
-        loss = self.compute_loss(preds, theta)
-        self.log(f"train_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        data_dict, theta = batch
-        preds = self.forward(theta, cond=data_dict)
-        loss = self.compute_loss(preds, theta)
-        self.log(f"val_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
-        self.log_custom_evals(preds, theta)
-        return loss
-
-    def on_validation_epoch_end(self):
-        """Logs custom evaluation metrics at the end of each validation epoch."""
-        if self.test_dataloader is None:
-            return  # Skip if no test dataloader is provided
-
-        self.model.eval()  # Ensure model is in eval mode
-        with torch.no_grad():
-            avg_log_prob = self.compute_avg_log_prob()
-        if avg_log_prob is not None:
-            self.test_loss_values.append(avg_log_prob)
-
-    def compute_avg_log_prob(self):
-        """Computes the average log probability over the test dataset."""
-        predictions = []
-        for batch in self.test_dataloader:
-            batch = self.transfer_batch_to_device(batch, self.device, 0)
-            data_dict, theta = batch
-            predictions.append(self.forward(theta, data_dict).reshape(-1))
-        all_log_probs = torch.cat(predictions, dim=0)  # Collect predictions
-        avg_log_prob = -all_log_probs.mean().item()
-        return avg_log_prob
-
-    def log_custom_evals(self, preds, y):
-        if len(self.test_loss_values) > 0:
-            self.log("test_log_prob", self.test_loss_values.pop(), sync_dist=self.is_distributed)
-
-    def _load_pretrained_band_encoder(self, ckpt_path: str, freeze: bool, band_prefix: str = 'band_encoder.') -> str | None:
+    def _load_pretrained_band_encoder(self, ckpt_path: str, freeze: bool, band_prefix: str = 'model.embedding_net.') -> str | None:
         """Load weights for a bandpower encoder inside the embedding_net.
 
         Returns the dotted submodule path (relative to ``self.model``)
@@ -871,6 +473,677 @@ class NDELightningModule(BaseLightningModule):
 
         return cnn_module_name
 
+
+
+class RegressionLightningModule(BaseLightningModule):
+    """Simple MSE regression on cosmological parameters.
+
+    Follows the same data conventions as NDELightningModule:
+    - Batches are (data_dict, theta) tuples.
+    - The embedding network compresses data_dict into a latent vector.
+    - A linear head maps the latent vector to cosmological parameter predictions.
+    """
+
+    def __init__(
+        self,
+        model,
+        conditioning_dim,
+        inference_dim,
+        lr=0.0001,
+        scheduler_type='exp',
+        test_dataloader=None,
+        **kwargs,
+    ):
+        # Pop NDE-specific kwargs that don't apply to regression
+        kwargs.pop('flow_type', None)
+        kwargs.pop('flow_kwargs', None)
+        kwargs.pop('num_extra_blocks', None)
+        kwargs.pop('redundancy_dim', None)
+        kwargs.pop('num_flows', None)
+        super().__init__(model, loss_fn=torch.nn.MSELoss(), lr=lr, scheduler_type=scheduler_type, **kwargs)
+        self.loss_name = "loss"
+        self.embedding_net = model if model is not None else nn.Identity()
+        self.conditioning_dim = conditioning_dim
+        self.inference_dim = inference_dim
+        self.test_dataloader = test_dataloader
+        self.test_loss_values = []
+
+        # Linear regression head: latent -> cosmo params
+        self.regression_head = nn.Linear(conditioning_dim, inference_dim)
+
+    def forward(self, data_dict, cond=None):
+        """Compress data_dict and predict cosmological parameters."""
+        z = self.embedding_net(data_dict)
+        # If encoder returns (mu, logvar) tuple, take only mu
+        if isinstance(z, tuple):
+            z = z[0]
+        return self.regression_head(z)
+
+    def compute_loss(self, preds, y):
+        return self.loss_fn(preds, y)
+
+    def training_step(self, batch, batch_idx):
+        data_dict, theta = batch
+        preds = self.forward(data_dict)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"train_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        data_dict, theta = batch
+        preds = self.forward(data_dict)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"val_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
+        self.log_custom_evals(preds, theta)
+        return loss
+
+    def on_validation_epoch_end(self):
+        if self.test_dataloader is None:
+            return
+        self.eval()
+        with torch.no_grad():
+            avg_loss = self._compute_avg_test_loss()
+        if avg_loss is not None:
+            self.test_loss_values.append(avg_loss)
+
+    def _compute_avg_test_loss(self):
+        losses = []
+        for batch in self.test_dataloader:
+            batch = self.transfer_batch_to_device(batch, self.device, 0)
+            data_dict, theta = batch
+            preds = self.forward(data_dict)
+            loss = self.compute_loss(preds, theta)
+            losses.append(loss.item())
+        if not losses:
+            return None
+        return np.mean(losses)
+
+    def log_custom_evals(self, preds, y):
+        # Log test loss from previous epoch end
+        if len(self.test_loss_values) > 0:
+            self.log("test_loss", self.test_loss_values.pop(), sync_dist=self.is_distributed)
+        # Log per-element R² scores and MSEs
+        if self.element_names:
+            # convert to f32 for numpy detach
+            preds = preds.float()
+            preds_np = preds.detach().cpu().numpy()
+            y_np = y.detach().cpu().numpy()
+            for i, element in enumerate(self.element_names):
+                if i < preds_np.shape[-1] and i < y_np.shape[-1]:
+                    r2 = r2_score(y_np[:, i], preds_np[:, i])
+                    self.log(f"R2_{element}", r2, prog_bar=False, sync_dist=self.is_distributed)
+                    self.log(f"MSE_{element}", np.mean((y_np[:, i] - preds_np[:, i])**2), prog_bar=False, sync_dist=self.is_distributed)
+
+    def load_from_checkpoint(self, checkpoint_path):
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+        )
+        print("Overwriting model weights from checkpoint:", checkpoint_path)
+        self.load_state_dict(checkpoint['state_dict'])
+
+class GaussianLightningModule(BaseLightningModule):
+    def __init__(self, model, lr=0.0001, scheduler_type='cosine', batch_size=32, element_names=None, num_outputs=2, **kwargs):
+        super().__init__(model, loss_fn=torch.nn.MSELoss(), lr=lr, scheduler_type=scheduler_type, batch_size=batch_size, element_names=element_names)
+        self.loss_name = "loss"
+        self.num_outputs = num_outputs
+    def log_r2_eval(self, preds, y):
+        """Logs R² scores for each output element if applicable."""
+        if not self.element_names:
+            return
+        
+        preds_np = preds.detach().cpu().numpy()
+        y_np = y.detach().cpu().numpy()
+        for i, element in enumerate(self.element_names):
+            r2 = r2_score(y_np[:, i], preds_np[:, i])
+            self.log(f"R²_{element}", r2, prog_bar=False, sync_dist=self.is_distributed)
+    def log_custom_evals(self, preds, y):
+        self.log_r2_eval(preds, y)
+
+    def compute_loss(self, preds, y):
+        y_NN = preds[:, :self.num_outputs]
+        e_NN = preds[:, self.num_outputs:]
+        loss1 = torch.mean((y_NN - y)**2,                axis=0)
+        loss2 = torch.mean(((y_NN - y)**2 - e_NN**2)**2, axis=0)
+        loss  = torch.mean(torch.log(loss1) + torch.log(loss2))
+        return loss
+
+
+from sbi.neural_nets.net_builders import build_maf, build_zuko_nsf
+from src.ml.models.custom_sbi import build_nsf, build_maf_rqs
+from torch.optim import Adam, AdamW
+from sbi import utils as utils
+
+import torch.nn as nn
+
+class _CondEmbeddingFlow(nn.Module):
+    """Minimal original wrapper linking an embedding network and a flow.
+
+    The embedding_net takes the conditioning data and returns a fixed-size
+    representation used as context for the flow. All dtype handling is left
+    to the caller / Trainer (no bf16-specific casting here).
+    """
+
+    def __init__(self, embedding_net: nn.Module, flow: nn.Module):
+        super().__init__()
+        self.embedding_net = embedding_net if embedding_net is not None else nn.Identity()
+        self.flow = flow
+
+    def encode(self, y):
+        return self.embedding_net(y)
+    
+    def get_representation(self, y):
+        return self.embedding_net.get_representation(y)
+
+    def log_prob(self, x, y):
+        y_emb = self.embedding_net(y)
+        x = x.unsqueeze(0)
+        return self.flow.log_prob(x, y_emb)
+
+    def latent_log_prob(self, x, y_emb):
+        x = x.unsqueeze(0)
+        return self.flow.log_prob(x, y_emb)
+
+    def sample(self, shape, y, **kwargs):
+        y_emb = self.embedding_net(y)
+        return self.flow.sample(shape, y_emb, **kwargs)
+
+    def sample_batched(self, shape, y, **kwargs):
+        y_emb = self.embedding_net(y)
+        return self.flow.sample_batched(shape, y_emb, **kwargs)
+
+class MultipleFlow(nn.Module):
+    """Container for an ensemble of flow models with a single-flow-like API.
+
+    Assumes each flow implements ``log_prob(x, y)`` and ``sample`` / ``sample_batched``
+    with the same semantics as used in ``_CondEmbeddingFlow``. In particular,
+    ``log_prob`` expects x to already have the leading nflows dimension
+    (typically added via ``unsqueeze(0)`` in ``_CondEmbeddingFlow``) and
+    returns a tensor whose leading dimension corresponds to that.
+    """
+
+    def __init__(self, flows: list[nn.Module]):
+        super().__init__()
+        if len(flows) == 0:
+            raise ValueError("MultipleFlow requires at least one flow.")
+        self.flows = nn.ModuleList(flows)
+
+    def log_prob(self, x, y, **kwargs):
+        """Return ensemble-averaged log_prob over flows for a batch.
+
+        x: tensor with leading nflows dim, e.g. [1, batch, dim_x]. Each
+        underlying flow is called with the same x, and we average the
+        resulting log-probabilities across the ensemble dimension while
+        preserving all original dimensions so that callers (e.g.
+        ``_CondEmbeddingFlow`` and the Lightning modules) see the same
+        shape as for a single flow.
+        """
+        log_probs = [flow.log_prob(x, y, **kwargs) for flow in self.flows]
+        stacked = torch.stack(log_probs, dim=0)  # [n_flows, 1, batch, ...]
+        mean_lp = stacked.mean(dim=0)            # [1, batch, ...]
+        return mean_lp
+
+    def sample(self, shape, y, **kwargs):
+        samples = [flow.sample(shape, y, **kwargs) for flow in self.flows]
+        samples = torch.stack(samples, dim=0)  # [n_flows, *shape, dim_x]
+        return samples.mean(dim=0)
+
+    def sample_batched(self, shape, y, **kwargs):
+        """Batched sampling if underlying flows expose ``sample_batched``.
+
+        Falls back to ``sample`` for flows without ``sample_batched``.
+        """
+        samples = []
+        for flow in self.flows:
+            if hasattr(flow, "sample_batched"):
+                samples.append(flow.sample_batched(shape, y, **kwargs))
+            else:
+                samples.append(flow.sample(shape, y, **kwargs))
+        samples = torch.stack(samples, dim=0)
+        return samples.mean(dim=0)
+
+from sbi.neural_nets.estimators import ConditionalDensityEstimator
+from sbi.samplers.rejection import rejection
+from sbi.utils.sbiutils import within_support
+from sbi.inference.posteriors import MCMCPosterior
+from sbi.inference.potentials.likelihood_based_potential import likelihood_estimator_based_potential
+
+from collections.abc import Mapping
+
+class ConditionDict(dict):
+    """
+    Dict-like that additionally exposes a .shape so that .shape[0]
+    returns the batch dimension of the first value.
+    """
+    def __init__(self, data: Mapping):
+        if not isinstance(data, Mapping):
+            raise TypeError("ConditionDict expects a mapping.")
+        super().__init__(data)
+
+    @property
+    def shape(self):
+        try:
+            first_val = next(iter(self.values()))
+        except StopIteration:
+            raise ValueError("ConditionDict is empty; cannot infer .shape[0].")
+        if not hasattr(first_val, "shape"):
+            raise AttributeError("First value has no .shape attribute.")
+        # Return a 1-tuple so code using .shape[0] works.
+        return first_val.shape
+
+    def copy(self):
+        # Ensure copies keep the subclass (some libs call .copy())
+        return ConditionDict(self)
+
+
+class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
+    def __init__(self, model, prior, input_shape=(1,), condition_shape=(1,)):
+        super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
+        self.prior = prior
+        self.max_sampling_batch_size = 10_000
+
+    def _check_condition_shape(self, condition):
+        pass
+
+    def _check_input_shape(self, input):
+        pass
+
+    def log_prob(self, x, y):
+        return self.net.log_prob(x, y)
+
+    def loss(self, x, y):
+        return -self.net.log_prob(x, y).mean()
+
+    def sample(self, num_samples, condition):
+        return self.net.sample(num_samples, condition)
+    
+    def latent_sample(self, num_samples, condition):
+        return self.net.flow.sample(num_samples, condition)
+
+    # --- helpers to access encoder / latent flow ---
+    def compress(self, data_dict):
+        """Return latent representation used as condition for the flow.
+
+        Delegates to the wrapped _CondEmbeddingFlow, which in turn calls
+        the underlying embedding network. Keeps a single source of truth
+        for how the conditioning representation is computed.
+        """
+        if hasattr(self.net, "encode"):
+            return self.net.encode(data_dict)
+        # Fallback: assume standard forward behaviour.
+        return self.net.embedding_net(data_dict)
+
+    def latent_log_prob(self, x, y_emb):
+        """Log prob when conditions are already embedded (no re-encoding)."""
+        if hasattr(self.net, "latent_log_prob"):
+            return self.net.latent_log_prob(x, y_emb)
+        # Fallback: flow expects (x, y_emb) directly.
+        return self.net.flow.log_prob(x.unsqueeze(0), y_emb)
+
+    @torch.no_grad()
+    def gen_samples(self, num_samples, x, use_latent=True, **kwargs):
+        if isinstance(x, dict):
+            cond = ConditionDict(x)
+        else:
+            cond = x
+        sampling_func = self.latent_sample if use_latent else self.sample
+        samples = rejection.accept_reject_sample(
+            proposal=sampling_func,
+            accept_reject_fn=lambda theta: within_support(self.prior, theta),
+            num_samples=num_samples,
+            show_progress_bars=False,
+            max_sampling_batch_size=self.max_sampling_batch_size,
+            proposal_sampling_kwargs={"condition": cond},
+            alternative_method="build_posterior(..., sample_with='mcmc')",
+            num_xos=cond.shape[0]
+        )[0]
+        return samples
+
+
+class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
+    """ConditionalDensityEstimator wrapper for neural likelihood estimation.
+
+    This mirrors PatchedConditionalDensityEstimator but exposes a
+    log_likelihood-style API and a ``gen_samples`` method that uses
+    ``MCMCPosterior.sample_batched`` under the hood.
+    """
+
+    def __init__(self, model, prior, input_shape=(1,), condition_shape=(1,), fixed_parameters=None):
+        # ``model`` is expected to implement .log_prob(x, y)
+        super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
+        self.prior = prior
+        self.max_sampling_batch_size = 10_000
+        self.fixed_parameters = fixed_parameters
+
+    def _check_condition_shape(self, condition):
+        # Handled by underlying model / ConditionDict, no-op here.
+        pass
+
+    def _check_input_shape(self, input):
+        # Handled externally, keep behaviour minimal.
+        pass
+
+    def log_prob(self, x, condition):
+        # remove leading nflows dim if present, as the underlying model expects [batch, dim_x]
+        if x.ndim > 2 and x.shape[0] == 1:
+            x = x.squeeze(0)
+        return self.net.log_prob(x, condition)
+    
+    def sample(self, num_samples, condition):
+        return self.net.sample(num_samples, condition)
+
+    def loss(self, x, y):
+        # Negative log-likelihood.
+        return -self.log_prob(x, y).mean()
+
+    def log_likelihood(self, x, theta):
+        """Alias with explicit (x, theta) semantics used by MCMC potential fns."""
+        return self.log_prob(x, theta)
+    def sample_single_batch(
+        self,
+        num_samples,
+        test_data,
+        test_cosmo,
+        mcmc_kwargs,
+    ):
+        x = test_data
+
+        samples = self.gen_samples(
+            num_samples=num_samples,
+            x_batch=x,
+            **mcmc_kwargs,
+        )
+
+        return test_cosmo, samples
+
+    def gen_samples(self, num_samples, x, use_latent=True, num_jobs=10, **mcmc_kwargs):
+        """Generate samples from the posterior p(theta | x) using MCMC.
+
+        This uses sbi's MCMCPosterior with a likelihood_estimator_based_potential
+        that wraps this likelihood estimator. The ``use_latent`` flag is
+        currently unused but could be used in the future to switch between
+        sampling in latent space vs. original parameter space if desired.
+        """
+        # use Parallel to wrap _gen_samples if num_jobs > 1, otherwise call directly
+        # move everything to cpu
+        self.to("cpu")
+        self.prior.to("cpu")
+        if num_jobs > 1:
+            from joblib import Parallel, delayed
+            results = Parallel(n_jobs=num_jobs, backend="loky")(
+                delayed(self._gen_samples)(
+                    num_samples=num_samples,
+                    x=x_single.unsqueeze(0).to("cpu"),  # Each job gets a single data point
+                    use_latent=use_latent,
+                    **mcmc_kwargs,
+                )
+                for x_single in x
+            )
+            samples = torch.stack(results, dim=1)  
+        else:
+            samples = self._gen_samples(
+                num_samples=num_samples,
+                x=x,
+                use_latent=use_latent,
+                **mcmc_kwargs,
+            )
+        return samples
+    @torch.no_grad()
+    def _gen_samples(
+        self,
+        num_samples: int,
+        x,
+        use_latent,
+        **mcmc_kwargs,
+    ):
+        device = next(self.net.parameters()).device
+        x_batch = x.to(device)
+
+        method = mcmc_kwargs.pop("method", "slice_np_vectorized")
+        num_chains = mcmc_kwargs.pop("num_chains", 30)
+        thin = mcmc_kwargs.pop("thin", 1)
+        warmup_steps = mcmc_kwargs.pop("warmup_steps", 1000)
+        show_progress_bars = mcmc_kwargs.pop("show_progress_bars", False)
+
+        sample_shape = (num_samples,)
+
+        potential, tf = likelihood_estimator_based_potential(
+            self,
+            self.prior,
+            x_o=None,
+        )
+
+        posterior = MCMCPosterior(
+            potential_fn=potential,
+            proposal=self.prior,
+            theta_transform=tf,
+            method=method,
+            num_chains=num_chains,
+            num_workers=1,          # <- IMPORTANT
+            thin=thin,
+            warmup_steps=warmup_steps,
+            device=device,
+            **mcmc_kwargs,
+        )
+
+        samples = posterior.sample_batched(
+            sample_shape=sample_shape,
+            x=x_batch,
+            show_progress_bars=show_progress_bars,
+        )
+
+        return samples.cpu()
+
+class NDELightningModule(BaseLightningModule):
+    flow_type_map = {"nsf": build_nsf, "maf": build_maf, "rqs":build_maf_rqs, 'zuko_nsf': build_zuko_nsf}
+
+    def __init__(
+        self,
+        model,
+        conditioning_dim,
+        inference_dim,
+        redundancy_dim = 0,
+        lr=0.0001,
+        scheduler_type='cosine',
+        test_dataloader=None,
+        flow_type='nsf',
+        num_extra_blocks=None,
+        flow_kwargs= {},
+        **kwargs,
+    ):
+        super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
+        self.embedding_net = model if model is not None else nn.Identity()
+        self.conditioning_dim = conditioning_dim
+        self.inference_dim = inference_dim
+        self.redundancy_dim = redundancy_dim
+        self.build_flow = self.flow_type_map[flow_type]
+        if 'zuko' in flow_type:
+            self.flow_kwargs = flow_kwargs
+        else:
+            self.flow_kwargs = {"conditional_dim": self.conditioning_dim, "use_batch_norm": False, **flow_kwargs}
+        self.test_dataloader = test_dataloader
+        self.loss_name = "log_prob"
+        self.set_up_model()
+        self.test_loss_values = []
+
+    def set_up_model(self):
+        """Builds the flow model and wraps it together with the embedding encoder.
+
+        The flow itself works on latent representations; the encoder is
+        responsible for compressing the high-dimensional data_dict into a
+        fixed-size vector of dimension `conditioning_dim`.
+        """
+        y_dataset = torch.randn(10, self.conditioning_dim)
+        x_dataset = torch.randn(10, self.inference_dim)
+        hidden_features = self.flow_kwargs.pop("hidden_features", self.conditioning_dim)
+        flow = self.build_flow(
+            x_dataset,
+            y_dataset,
+            num_transforms=5,
+            z_score_x=None,
+            z_score_y=None,
+            embedding_net=nn.Identity(),
+            hidden_features=hidden_features,
+            **self.flow_kwargs,
+        )
+        self.flow = flow
+        self.model = _CondEmbeddingFlow(self.embedding_net, self.flow)
+
+    def compress(self, data_dict):
+        """Return the latent representation used as condition for the flow.
+
+        Delegates to the wrapper's encode(), which mirrors the internal
+        behaviour of _CondEmbeddingFlow and keeps a single source of truth
+        for how embeddings are computed from data_dict.
+        """
+        return self.model.encode(data_dict)
+
+    def load_from_checkpoint(self, checkpoint_path):
+        """Loads model weights from a given checkpoint."""
+        checkpoint = torch.load(checkpoint_path, map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"))  # Adjust device as needed
+        print("Overwriting model weights from checkpoint:", checkpoint_path)
+        self.load_state_dict(checkpoint['state_dict'])  # Ensure the key matches the saved checkpoint format
+    
+    def build_posterior_object(self, prior=None):
+        """Build a neural posterior object (NPE-style).
+
+        By default this uses a BoxUniform prior on [0, 1] for each
+        inference dimension, matching the previous behaviour. A custom
+        prior can be passed in via the ``prior`` argument.
+        """
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model.eval()
+        if hasattr(self.model, "embedding_net") and hasattr(self.model.embedding_net, "only_return_mu"):
+            self.model.embedding_net.only_return_mu = True
+
+        if prior is None:
+            prior = utils.BoxUniform(
+                low=0 * torch.ones(self.inference_dim, device=device),
+                high=1.0 * torch.ones(self.inference_dim, device=device),
+                device=device,
+            )
+
+        density_estimator = PatchedConditionalDensityEstimator(
+            self.model,
+            prior,
+            input_shape=(self.inference_dim,),
+            condition_shape=(self.conditioning_dim,),
+        )
+        return density_estimator
+
+    @torch.no_grad()
+    def generate_samples(self, dummy_loader, num_samples=10000):
+        """Generate posterior samples in two stages:
+
+        1) Compress the full test set once with the encoder.
+        2) Run sampling only on the latent representations using the flow.
+        """
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        posterior = self.build_posterior_object()
+
+        theta0s, z_conds = [], []
+        for data_dict, theta in tqdm(self.test_dataloader, desc="Encoding test set"):
+            if isinstance(data_dict, dict):
+                data_dict = {k: v.to(device) for k, v in data_dict.items()}
+            else:
+                data_dict = data_dict.to(device)
+            z = posterior.compress(data_dict)
+            theta0s.append(theta)
+            z_conds.append(z.cpu())
+
+        theta0s = torch.cat(theta0s, dim=0)
+        z_conds = torch.cat(z_conds, dim=0)
+
+        # Now sample using only the latent representations.
+        batch_size = 128
+        samples = []
+        for i in tqdm(range(0, len(z_conds), batch_size),
+                    desc="Generating samples"):
+            z_batch = z_conds[i:i + batch_size].to(device)   # [B, z_dim]
+
+            samples_i = posterior.gen_samples(
+                num_samples=num_samples,
+                x=z_batch
+            )                                                 # [num_samples, B, dim]
+            samples.append(samples_i.cpu())
+        samples = torch.cat(samples, dim=1)  # concat over datapoints
+        return theta0s, samples
+
+    def generate_samples_batched(self, test_dataloader, num_samples=10000):
+        """
+        Generates samples from the model using the test dataloader. Doesn't work!
+        
+        Args:
+            test_dataloader (DataLoader): The test dataloader.
+            num_samples (int): Number of samples to generate.
+        
+        Returns:
+            torch.Tensor: Generated samples.
+        """
+        posterior = self.build_posterior_object()
+        all_samples = []
+        for batch in tqdm(test_dataloader, desc="Sampling"):
+            y, x = batch
+            x_samples = posterior.sample_batched((num_samples,), x=y, show_progress_bars=False)
+            all_samples.append(x_samples)
+        all_samples = torch.cat(all_samples, dim=0)
+        return all_samples
+
+
+    def compute_loss(self, preds, y):   
+        """Uses log probability as the loss for density estimation."""
+        return -preds.mean()  # Negative log-likelihood loss
+
+    def forward(self, x, cond=None):
+        """Evaluate log p(x | cond).
+
+        cond is a high-dimensional data dict that will be compressed by
+        the encoder via its compress()/forward method before feeding
+        into the normalising flow.
+        """
+        return self.model.log_prob(x, cond)
+
+    # Override steps to pass (theta|data) ordering correctly
+    def training_step(self, batch, batch_idx):
+        data_dict, theta = batch  # dataset yields (data, cosmo)
+        preds = self.forward(theta, cond=data_dict)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"train_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        data_dict, theta = batch
+        preds = self.forward(theta, cond=data_dict)
+        loss = self.compute_loss(preds, theta)
+        self.log(f"val_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
+        self.log_custom_evals(preds, theta)
+        return loss
+
+    def on_validation_epoch_end(self):
+        """Logs custom evaluation metrics at the end of each validation epoch."""
+        if self.test_dataloader is None:
+            return  # Skip if no test dataloader is provided
+
+        self.model.eval()  # Ensure model is in eval mode
+        with torch.no_grad():
+            avg_log_prob = self.compute_avg_log_prob()
+        if avg_log_prob is not None:
+            self.test_loss_values.append(avg_log_prob)
+
+    def compute_avg_log_prob(self):
+        """Computes the average log probability over the test dataset."""
+        predictions = []
+        for batch in self.test_dataloader:
+            batch = self.transfer_batch_to_device(batch, self.device, 0)
+            data_dict, theta = batch
+            predictions.append(self.forward(theta, data_dict).reshape(-1))
+        all_log_probs = torch.cat(predictions, dim=0)  # Collect predictions
+        avg_log_prob = -all_log_probs.mean().item()
+        return avg_log_prob
+
+    def log_custom_evals(self, preds, y):
+        if len(self.test_loss_values) > 0:
+            self.log("test_log_prob", self.test_loss_values.pop(), sync_dist=self.is_distributed)
 
 import torch
 import torch.nn as nn
@@ -1009,8 +1282,55 @@ class LikelihoodNDELightningModule(NDELightningModule):
         self.log(f"val_{self.loss_name}", loss, prog_bar=True, sync_dist=self.is_distributed)
         self.log_custom_evals(preds, theta)
         return loss
+    def compute_avg_log_prob(self):
+        """Computes the average log probability over the test dataset."""
+        predictions = []
+        for batch in self.test_dataloader:
+            batch = self.transfer_batch_to_device(batch, self.device, 0)
+            data_dict, theta = batch
+            predictions.append(self.forward(data_dict, theta).reshape(-1))
+        all_log_probs = torch.cat(predictions, dim=0)  # Collect predictions
+        avg_log_prob = -all_log_probs.mean().item()
+        return avg_log_prob
 
-    def build_posterior_object(self, prior=None):
+
+    def generate_samples(
+        self,
+        num_samples=2_000,
+        num_jobs=20,
+        backend="loky",
+        prior=None,
+        **mcmc_kwargs,
+    ):
+        """
+        Parallelize over batches using joblib, while each batch uses
+        fast single-worker vectorized MCMC.
+        """
+        posterior = self.build_posterior_object(prior=prior)
+        results = Parallel(
+            n_jobs=num_jobs,
+            backend=backend,
+            verbose=10,
+        )(
+            delayed(posterior.sample_single_batch)(
+                num_samples,
+                test_data,
+                test_cosmo,
+                mcmc_kwargs,
+            )
+            for test_data, test_cosmo in tqdm(
+                self.test_dataloader,
+                desc="Dispatching batches",
+            )
+        )
+        theta0s, samples = zip(*results)
+
+        theta0s = torch.cat(theta0s, dim=0)
+        samples = torch.cat(samples, dim=1)  # [num_samples, total_batch, dim]
+
+        return theta0s, samples
+
+    def build_posterior_object(self, prior=None, fixed_parameters=None):
         """Build and return a PatchedLikelihoodEstimator with gen_samples()."""
         device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model.eval()
@@ -1019,8 +1339,8 @@ class LikelihoodNDELightningModule(NDELightningModule):
 
         if prior is None:
             prior = utils.BoxUniform(
-                low=0 * torch.ones(self.inference_dim, device=device),
-                high=1.0 * torch.ones(self.inference_dim, device=device),
+                low=0 * torch.ones(self.conditioning_dim, device=device),
+                high=1.0 * torch.ones(self.conditioning_dim, device=device),
                 device=device,
             )
 
@@ -1029,6 +1349,7 @@ class LikelihoodNDELightningModule(NDELightningModule):
             prior=prior,
             input_shape=(self.inference_dim,),
             condition_shape=(self.conditioning_dim,),
+            fixed_parameters=fixed_parameters,  # <-- Pass fixed parameters to init
         )
         return likelihood_estimator
 

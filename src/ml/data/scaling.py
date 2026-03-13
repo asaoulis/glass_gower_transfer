@@ -38,7 +38,6 @@ ArrayLike = Union[np.ndarray, torch.Tensor]
 def _to_backend(x: ArrayLike, arr: ArrayLike):
     if torch.is_tensor(x):
         return torch.as_tensor(arr, dtype=x.dtype, device=x.device)
-    # numpy path
     return np.asarray(arr)
 
 
@@ -88,6 +87,11 @@ class MinMaxScaler(BaseScaler):
 
 
 class StandardScaler(BaseScaler):
+    """Scalar standard scaler: stores a single mean/std for the whole array.
+
+    This preserves the original behaviour used for data scalers.
+    """
+
     def __init__(self):
         self.mean: Optional[float] = None
         self.std: Optional[float] = None
@@ -103,14 +107,54 @@ class StandardScaler(BaseScaler):
     def transform(self, X: ArrayLike) -> ArrayLike:
         if self.mean is None or self.std is None:
             return X
-        mean_v = float(self.mean)
-        std_v = float(self.std) if self.std != 0 else 1.0
-        return (X - mean_v) / std_v
+        return (X - float(self.mean)) / float(self.std)
 
     def inverse_transform(self, X: ArrayLike) -> ArrayLike:
         if self.mean is None or self.std is None:
             return X
         return X * float(self.std) + float(self.mean)
+
+
+class PerDimStandardScaler(BaseScaler):
+    """Per-feature standard scaler (mean/std) for embeddings.
+
+    For 1D inputs it behaves as a scalar standardiser; for 2D or higher,
+    statistics are computed along axis=0.
+    """
+
+    def __init__(self):
+        self.mean: Optional[np.ndarray] = None
+        self.std: Optional[np.ndarray] = None
+
+    def fit(self, X: ArrayLike):
+        Xn = X.detach().cpu().numpy() if torch.is_tensor(X) else np.asarray(X)
+        if Xn.ndim <= 1:
+            mean = Xn.mean()
+            std = Xn.std()
+        else:
+            mean = Xn.mean(axis=0)
+            std = Xn.std(axis=0)
+        std = np.where((std == 0) | ~np.isfinite(std), 1.0, std)
+        self.mean = np.asarray(mean, dtype=np.float32)
+        self.std = np.asarray(std, dtype=np.float32)
+
+    def transform(self, X: ArrayLike) -> ArrayLike:
+        if self.mean is None or self.std is None:
+            return X
+        mean_v = _to_backend(X, self.mean)
+        std_v = _to_backend(X, self.std)
+        if torch.is_tensor(std_v):
+            std_v = torch.clamp(std_v, min=1e-12)
+        else:
+            std_v = np.clip(std_v, 1e-12, None)
+        return (X - mean_v) / std_v
+
+    def inverse_transform(self, X: ArrayLike) -> ArrayLike:
+        if self.mean is None or self.std is None:
+            return X
+        mean_v = _to_backend(X, self.mean)
+        std_v = _to_backend(X, self.std)
+        return X * std_v + mean_v
 
 
 class LogNormalScaler(BaseScaler):

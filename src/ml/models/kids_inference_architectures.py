@@ -655,6 +655,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         super().__init__(latent_dim=latent_dim, use_kl=use_kl, **kwargs)
 
         bandpower_kwargs = bandpower_kwargs or {}
+        print("Bandpower kwargs", bandpower_kwargs, flush=True)
         if map_kwargs is None and transformer_kwargs is not None:
             map_kwargs = transformer_kwargs
         
@@ -667,8 +668,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             dim_band = self.latent_dim // 2
         else:
             dim_band = bandpower_latent_dim
-        dim_patch = 128 # HACK FOR NOW
-
+        dim_patch = self.latent_dim - dim_band
         bp_builders = {
             'mlp': KidsBandpowersMLP,
             'cnn': KidsBandpowersCNN1D,
@@ -690,7 +690,6 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         # Head maps concatenated mu (and optionally logvar) to final output.
         # When self.use_kl is True, self.model_output_dim == 2 * latent_dim.
         in_features = self.latent_dim if not self.use_kl else 2 * self.latent_dim
-        in_features = 192
         self.hybrid_head = nn.Linear(in_features, self.model_output_dim)
         self.freeze_band = False
 
@@ -751,7 +750,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             #     band_mu, band_logvar = self._normalise_child_output(band_out, dim_band)
             # else:
             #     # purely a representation when frozen
-            band_repr = self.band_encoder.get_representation(data)
+            band_repr = self.band_encoder.compress(data)
             # no mu/logvar here
             band_mu = band_repr
             band_logvar = None  # unused

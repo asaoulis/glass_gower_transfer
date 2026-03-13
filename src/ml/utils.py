@@ -4,7 +4,7 @@ from typing import Dict, List, Sequence, Tuple, Union, Optional
 import torch
 
 from .models.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, RegressionLightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
@@ -267,6 +267,9 @@ def build_model(config, test_dataloader=None):
     # Flag indicating distributed training (set in train_model/fit_model)
     is_distributed = getattr(config, 'is_distributed', False)
 
+    # Training mode: 'nde' (default) or 'regression'
+    training_mode = getattr(config, 'training_mode', 'nde')
+
     # latent_dim is always the dimension of mu; encoder may output 2*latent_dim when use_kl
     latent_dim = getattr(config, 'latent_dim', None)
     if latent_dim is None:
@@ -300,15 +303,17 @@ def build_model(config, test_dataloader=None):
 
     num_flow_heads = getattr(config, 'num_flow_heads', 1)
 
-    # Choose correct LightningModule: ensemble vs single-flow, with optional KL
-    if num_flow_heads > 1:
+    # Choose correct LightningModule based on training mode
+    lm_extra_kwargs = {}
+    if training_mode == 'regression':
+        LightningModule = RegressionLightningModule
+    elif num_flow_heads > 1:
         LightningModule = EnsembleNDELightningModule
         lm_extra_kwargs = {"num_flows": num_flow_heads}
     else:
         LightningModule = KLDRegularisedNDELightningModule if use_KL_loss else NDELightningModule
-        lm_extra_kwargs = {}
 
-    # Construct LightningModule without any pretrained-loading kwargs
+    # Construct LightningModule — regression will discard NDE-specific kwargs
     model = LightningModule(
         embedding_model,
         conditioning_dim=conditioning_dim,
@@ -316,7 +321,7 @@ def build_model(config, test_dataloader=None):
         lr=config.lr,
         flow_type=config.flow_type,
         scheduler_type=config.scheduler_type,
-        element_names=["Omega", "sigma8"],
+        element_names=config.cosmo_param_names,
         test_dataloader=test_dataloader,
         optimizer_kwargs=config.optimizer_kwargs,
         num_extra_blocks=config.extra_blocks,
@@ -342,12 +347,12 @@ def build_model(config, test_dataloader=None):
         if pretrained_band_ckpt_folder is not None:
             pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
             freeze_band = getattr(config, 'freeze_band', False)
-            band_prefix = getattr(config, 'band_prefix', 'band_encoder.')
+            # band_prefix = getattr(config, 'band_prefix', 'model.embedding_net.')
             pretrained_band_ckpt = pretrained_band_ckpts[0]  # TODO: fix this
             band_module_name = model._load_pretrained_band_encoder(
                 pretrained_band_ckpt,
                 freeze=freeze_band,
-                band_prefix=band_prefix,
+                band_prefix="model.embedding_net.",
             )
 
             if getattr(config, 'load_pretrained_flow', False):

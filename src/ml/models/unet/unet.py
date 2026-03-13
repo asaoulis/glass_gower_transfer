@@ -270,6 +270,8 @@ class UNetO3StyleEncoder(nn.Module):
         channel_mult=(1, 2, 4, 8, 16, 32),
         conv_resample: bool = True,
         dims: int = 2,
+        num_head_layers = None,
+        tail_out = None,
         use_checkpoint: bool = False,
         use_scale_shift_norm: bool = True,
         cascade_conditioning: bool = False,
@@ -302,7 +304,8 @@ class UNetO3StyleEncoder(nn.Module):
         ch = self.backbone.out_channels
 
         # Tail conv analogous to FlexibleO3.tail_conv; keep channels moderate.
-        tail_out = 32 * (model_channels // 64 if model_channels >= 64 else 1)
+        if tail_out is None:
+            tail_out = 64 * (model_channels // 64 if model_channels >= 64 else 1)
         self.tail_conv = conv_nd(dims, ch, tail_out, 1)
         self.tail_bn = normalization(tail_out)
         self.act = nn.SiLU()
@@ -318,11 +321,20 @@ class UNetO3StyleEncoder(nn.Module):
             attn_hidden=128,
         )
         self.feature_dim = self.poolproj.proj_dim
+        self.dropout = nn.Dropout(p=dropout)
 
         hidden_dim = max(num_outputs, int(head_hidden_mult * tail_out))
-        self.FC1 = linear(self.feature_dim, hidden_dim)
-        self.FC2 = linear(hidden_dim, num_outputs)
-        self.dropout = nn.Dropout(p=dropout)
+        if num_head_layers is not None and num_head_layers > 1:
+            layers = []
+            for i in range(num_head_layers - 1):
+                layers.append(linear(self.feature_dim if i == 0 else hidden_dim, hidden_dim))
+                layers.append(nn.SiLU())
+                layers.append(nn.Dropout(p=dropout))
+            layers.append(linear(hidden_dim, num_outputs))
+            self.head_layers = nn.Sequential(*layers)
+        else:
+            self.FC1 = linear(self.feature_dim, hidden_dim)
+            self.FC2 = linear(hidden_dim, num_outputs)
 
     def forward(
         self,
@@ -335,9 +347,12 @@ class UNetO3StyleEncoder(nn.Module):
         h = self.backbone(x, cond=cond, patch_id=patch_id, coords=coords)  # (B, C, H, W)
         h = self.act(self.tail_bn(self.tail_conv(h)))  # (B, tail_out, H, W)
         h = self.poolproj(h)  # (B, feature_dim)
-        h = self.dropout(h)
-        h = self.dropout(self.act(self.FC1(h)))
-        return self.FC2(h)
+        if hasattr(self, "head_layers"):
+            return self.head_layers(h)
+        else:
+            h = self.dropout(h)
+            h = self.dropout(self.act(self.FC1(h)))
+            return self.FC2(h)
 
 
 class UNetModel(nn.Module):

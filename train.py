@@ -45,8 +45,6 @@ if __name__ == "__main__":
         for n_cosmo in max_tv:
             print(f"Running experiment '{experiment_name}' with max_trainval_cosmos={n_cosmo}")
             config.max_trainval_cosmos = int(n_cosmo)
-            config.pretrained_band_match_string = f"ncosmo{n_cosmo}"
-            print(f"Set pretrained_band_match_string to: {config.pretrained_band_match_string}")
             train_model(config)
     else:
         if max_tv is not None:

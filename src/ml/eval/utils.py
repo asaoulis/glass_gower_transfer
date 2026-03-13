@@ -61,10 +61,11 @@ def rescale_parameters(tensor, scaler):
     Returns:
     torch.Tensor: The rescaled tensor with the original shape.
     """
+    device = ("cuda" if torch.cuda.is_available() else "cpu")
     original_shape = tensor.shape
     reshaped_tensor = tensor.reshape(-1, original_shape[-1])  # Flatten to (N, d) for scaling
     scaled_array = scaler.inverse_transform(reshaped_tensor.cpu().numpy())  # Apply inverse scaling
-    scaled_tensor = torch.tensor(scaled_array, device='cuda', dtype=torch.float32)  # Convert back to tensor
+    scaled_tensor = torch.tensor(scaled_array, device=(device), dtype=torch.float32)  # Convert back to tensor
     return scaled_tensor.reshape(original_shape)  # Restore original shape
 
 def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, compute_calibration=True):
@@ -170,7 +171,7 @@ def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_sample
     """
     print("Running evaluation for experiment:", config.experiment_name, flush=True)
 
-    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/run_{config.experiment_name}"
+    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/{config.experiment_name}"
     if not os.path.exists(experiment_path):
         print("Experiment path does not exist:", experiment_path, flush=True)
         return
@@ -268,7 +269,7 @@ from pathlib import Path
 
 
 def parse_results(experiment_name, base_path="/share/gpu0/asaoulis/cmd/checkpoints"):
-    experiment_path = os.path.join(base_path, f"{experiment_name}/run_{experiment_name}")
+    experiment_path = os.path.join(base_path, f"{experiment_name}/{experiment_name}")
     # check if experiment path exists
     run_folders = [
         os.path.join(experiment_path, d)
@@ -353,9 +354,12 @@ def load_best_model_and_build_posterior(config, ds_string_match="", data_paramet
       2. Select the *global* best checkpoint across all these runs.
     """
     patterns = [ f"{config.base_path}/checkpoints/{config.experiment_name}/run_{config.experiment_name}",
+                f"{config.base_path}/checkpoints/{config.experiment_name}/{config.experiment_name}",
                  f"{config.base_path}/checkpoints/{config.experiment_name}" ]
     run_folders = []
     for experiment_path in patterns:
+        if not os.path.exists(experiment_path):
+            continue
         run_folders += [
             os.path.join(experiment_path, d)
             for d in os.listdir(experiment_path)
