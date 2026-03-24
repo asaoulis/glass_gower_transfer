@@ -417,7 +417,7 @@ class BaseLightningModule(pl.LightningModule):
         src_state = checkpoint.get("state_dict", checkpoint)
 
         load_partial_weights(
-            target_module=self.flow,
+            target_module=self.model.flow,
             source_state_dict=src_state,
             prefix=flow_prefix,
             freeze=freeze,
@@ -473,6 +473,39 @@ class BaseLightningModule(pl.LightningModule):
 
         return cnn_module_name
 
+    def _load_pretrained_embedding_net(
+        self,
+        ckpt_path: str,
+        freeze: bool,
+        patch_prefix: str = 'model.embedding_net.',
+    ) -> str | None:
+        """Load weights for the patch encoder used inside the embedding network.
+
+        Returns the dotted submodule path (relative to ``self.model``)
+        of the patch encoder module that received the weights, or ``None``
+        if no suitable module was found.
+        """
+        print(f"[NDELightningModule] Loading pretrained patch encoder from {ckpt_path}...")
+        checkpoint = torch.load(ckpt_path, map_location="cpu")
+        src_state = checkpoint.get("state_dict", checkpoint)
+
+        # Locate the patch encoder module.
+        patch_module = self.embedding_net
+        patch_module_name = "embedding_net"
+
+        if patch_module is None:
+            print("[NDELightningModule] Warning: embedding_net has no patch_encoder submodule; skipping patch encoder loading.")
+            return None
+
+        load_partial_weights(
+            target_module=patch_module,
+            source_state_dict=src_state,
+            prefix=patch_prefix,
+            freeze=freeze,
+            verbose=True,
+        )
+
+        return patch_module_name
 
 
 class RegressionLightningModule(BaseLightningModule):
@@ -848,9 +881,10 @@ class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
     ):
         x = test_data
 
-        samples = self.gen_samples(
+        samples = self._gen_samples(
             num_samples=num_samples,
-            x_batch=x,
+            x=x,
+            use_latent=False,
             **mcmc_kwargs,
         )
 
@@ -900,22 +934,48 @@ class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
         x_batch = x.to(device)
 
         method = mcmc_kwargs.pop("method", "slice_np_vectorized")
-        num_chains = mcmc_kwargs.pop("num_chains", 30)
+        num_chains = mcmc_kwargs.pop("num_chains", 4)
         thin = mcmc_kwargs.pop("thin", 1)
-        warmup_steps = mcmc_kwargs.pop("warmup_steps", 1000)
+        warmup_steps = mcmc_kwargs.pop("warmup_steps", 500)
         show_progress_bars = mcmc_kwargs.pop("show_progress_bars", False)
 
         sample_shape = (num_samples,)
 
+        # 1. Get the base potential and transform
         potential, tf = likelihood_estimator_based_potential(
             self,
             self.prior,
             x_o=None,
         )
 
+        prior_to_use = self.prior
+
+        # 2. If fixed_parameters were provided, apply the conditioning
+        if self.fixed_parameters:
+            # Assuming self.condition_shape[0] holds the total number of parameters
+            total_dim = self.condition_shape[0]
+            
+            condition = torch.zeros(total_dim, device=device)
+            fixed_indices = [idx for idx, _ in self.fixed_parameters]
+            dims_to_sample = [i for i in range(total_dim) if i not in fixed_indices]
+            
+            # Populate the condition tensor with the fixed values
+            for idx, val in self.fixed_parameters:
+                condition[idx] = val
+                
+            # Overwrite potential, tf, and prior with the conditioned versions
+            potential, tf, prior_to_use = conditional_potential(
+                potential_fn=potential,
+                theta_transform=tf,
+                prior=self.prior,
+                condition=condition,
+                dims_to_sample=dims_to_sample,
+            )
+
+        # 3. Create the posterior with the (potentially restricted) variables
         posterior = MCMCPosterior(
             potential_fn=potential,
-            proposal=self.prior,
+            proposal=prior_to_use, 
             theta_transform=tf,
             method=method,
             num_chains=num_chains,
@@ -926,13 +986,16 @@ class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
             **mcmc_kwargs,
         )
 
+        # 4. Sample
         samples = posterior.sample_batched(
             sample_shape=sample_shape,
             x=x_batch,
             show_progress_bars=show_progress_bars,
         )
+        
+        samples_cpu = samples.cpu()
 
-        return samples.cpu()
+        return samples_cpu
 
 class NDELightningModule(BaseLightningModule):
     flow_type_map = {"nsf": build_nsf, "maf": build_maf, "rqs":build_maf_rqs, 'zuko_nsf': build_zuko_nsf}
@@ -1032,7 +1095,7 @@ class NDELightningModule(BaseLightningModule):
         return density_estimator
 
     @torch.no_grad()
-    def generate_samples(self, dummy_loader, num_samples=10000):
+    def generate_samples(self, num_samples=10000, **kwargs):
         """Generate posterior samples in two stages:
 
         1) Compress the full test set once with the encoder.
@@ -1054,8 +1117,11 @@ class NDELightningModule(BaseLightningModule):
         theta0s = torch.cat(theta0s, dim=0)
         z_conds = torch.cat(z_conds, dim=0)
 
-        # Now sample using only the latent representations.
-        batch_size = 128
+        # now move everything to cpu
+        device = "cpu"
+        posterior.prior.to(device)
+        posterior.to(device)
+        batch_size = 8
         samples = []
         for i in tqdm(range(0, len(z_conds), batch_size),
                     desc="Generating samples"):
@@ -1266,7 +1332,9 @@ class LikelihoodNDELightningModule(NDELightningModule):
 
         In NLE, ``x`` corresponds to data and ``cond`` to parameters theta.
         """
-        return self.model.log_prob(x, cond)
+        x_emb = self.model.embedding_net(x)
+        x_emb = x_emb.unsqueeze(0)
+        return self.model.flow.log_prob(x_emb, cond)
 
     def training_step(self, batch, batch_idx):
         x, theta = batch
@@ -1297,7 +1365,7 @@ class LikelihoodNDELightningModule(NDELightningModule):
     def generate_samples(
         self,
         num_samples=2_000,
-        num_jobs=20,
+        num_jobs=36,
         backend="loky",
         prior=None,
         **mcmc_kwargs,
@@ -1307,10 +1375,14 @@ class LikelihoodNDELightningModule(NDELightningModule):
         fast single-worker vectorized MCMC.
         """
         posterior = self.build_posterior_object(prior=prior)
-        results = Parallel(
+        # move everything to cpu for joblib
+        posterior.to("cpu")
+        posterior.prior.to("cpu")
+
+        jobs = Parallel(
             n_jobs=num_jobs,
             backend=backend,
-            verbose=10,
+            return_as="generator",
         )(
             delayed(posterior.sample_single_batch)(
                 num_samples,
@@ -1318,11 +1390,15 @@ class LikelihoodNDELightningModule(NDELightningModule):
                 test_cosmo,
                 mcmc_kwargs,
             )
-            for test_data, test_cosmo in tqdm(
-                self.test_dataloader,
-                desc="Dispatching batches",
-            )
+            for test_data, test_cosmo in self.test_dataloader
         )
+        
+        results = list(tqdm(
+            jobs, 
+            total=len(self.test_dataloader), 
+            desc="Sampling batches"
+        ))
+
         theta0s, samples = zip(*results)
 
         theta0s = torch.cat(theta0s, dim=0)
@@ -1353,48 +1429,110 @@ class LikelihoodNDELightningModule(NDELightningModule):
         )
         return likelihood_estimator
 
+class EnsembleNDELightningModule(pl.LightningModule):
+    """Evaluation-time ensemble of separately-trained NDELightningModules.
 
-class EnsembleNDELightningModule(NDELightningModule):
-    """NDELightningModule that uses an ensemble of N independent flows.
+    Key constraints:
+      - Each ensemble member is a full LightningModule (typically NDELightningModule)
+        loaded independently (so embedding nets may differ).
+      - We expose the subset of the NDELightningModule interface relied upon by
+        evaluation utilities:
+          * compute_avg_log_prob()
+          * generate_samples(num_samples=..., **kwargs) -> (theta0s, samples)
+      - Log prob is averaged over members.
+      - Sampling is distributed approximately equally across members, then the
+        resulting samples are concatenated and shuffled along the sample axis.
 
-    The encoder / embedding network is shared; only the flow is replicated N
-    times. During training and evaluation, the negative log-likelihood (NLL)
-    is computed from the ensemble-averaged log-probability, implemented via
-    ``MultipleFlow``.
+    This module is NOT meant for training.
     """
 
-    def __init__(
-        self,
-        *args,
-        num_flows: int = 4,
-        **kwargs,
-    ):
-        self.num_flows = num_flows
-        super().__init__(*args, **kwargs)
+    def __init__(self, members: list[pl.LightningModule]):
+        super().__init__()
+        if not members:
+            raise ValueError("EnsembleNDELightningModule requires at least one member.")
+        self.members = nn.ModuleList(members)
 
-    def set_up_model(self):
-        """Build ``num_flows`` separate flows and wrap them in MultipleFlow.
+        # IMPORTANT: do not overwrite member.test_dataloader; each member must
+        # keep the loader/scalers from its own split.
+        self.test_dataloader = getattr(members[0], "test_dataloader", None)
+        self.loss_name = getattr(members[0], "loss_name", "log_prob")
 
-        The API matches ``NDELightningModule.set_up_model`` but uses a
-        ``MultipleFlow`` container so that the rest of the code can treat the
-        ensemble as a single flow object.
-        """
-        y_dataset = torch.randn(10, self.conditioning_dim)
-        x_dataset = torch.randn(10, self.inference_dim)
+    def _resolve_device(self):
+        # Prefer Lightning's device if set; otherwise fall back to cuda if available.
+        try:
+            return self.device
+        except Exception:
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        flows = []
-        for _ in range(self.num_flows):
-            flow = self.build_flow(
-                x_dataset,
-                y_dataset,
-                num_transforms=5,
-                z_score_x=None,
-                z_score_y=None,
-                embedding_net=nn.Identity(),
-                hidden_features=self.conditioning_dim,
-                **self.flow_kwargs,
-            )
-            flows.append(flow)
+    @torch.no_grad()
+    def _get_theta0s_from_loader(self):
+        """Collect theta0s without invoking member.generate_samples() (avoids side-effects)."""
+        if self.test_dataloader is None:
+            raise ValueError("EnsembleNDELightningModule.test_dataloader is None")
+        theta0s = []
+        for _, theta in self.test_dataloader:
+            theta0s.append(theta)
+        return torch.cat(theta0s, dim=0)
 
-        self.flow = nn.ModuleList(flows)
-        # Reuse the same embedding network and wrapper API as the base class.
+    def to(self, *args, **kwargs):  # type: ignore[override]
+        super().to(*args, **kwargs)
+        for m in self.members:
+            m.to(*args, **kwargs)
+        return self
+
+    def eval(self):  # type: ignore[override]
+        super().eval()
+        for m in self.members:
+            m.eval()
+        return self
+
+    @torch.no_grad()
+    def compute_avg_log_prob(self):
+        vals = []
+        for m in self.members:
+            if hasattr(m, "compute_avg_log_prob"):
+                vals.append(float(m.compute_avg_log_prob()))
+            else:
+                raise AttributeError("Ensemble member lacks compute_avg_log_prob")
+        return float(np.mean(vals))
+
+    @torch.no_grad()
+    def generate_samples(self, num_samples=10000, **kwargs):
+        # Collect theta0s once. We use member[0]'s test loader as the canonical
+        # ordering. Other members must be built with the same underlying test set
+        # (only scaling differs), so theta0s should match.
+        theta0s = self._get_theta0s_from_loader()
+
+        # Do NOT force all members to use the same loader: each member's
+        # test_dataloader contains its own scaling based on its split_seed.
+        # We only sanity-check that loaders exist and have consistent lengths.
+        for idx, m in enumerate(self.members):
+            if getattr(m, "test_dataloader", None) is None:
+                raise ValueError(f"Ensemble member {idx} has no test_dataloader")
+            if len(m.test_dataloader.dataset) != len(self.test_dataloader.dataset):
+                raise ValueError(
+                    "Ensemble members have different test dataset lengths; "
+                    "cannot safely ensemble their posteriors."
+                )
+
+        n = len(self.members)
+        base = num_samples // n
+        rem = num_samples % n
+        counts = [base + (1 if i < rem else 0) for i in range(n)]
+
+        target_device = self._resolve_device()
+
+        parts = []
+        for m, k in zip(self.members, counts):
+            if k <= 0:
+                continue
+            m.to(target_device)
+            m.eval()
+            _, samp = m.generate_samples(num_samples=k, **kwargs)
+            parts.append(samp)
+
+        samples = torch.cat(parts, dim=0)  # [num_samples, N, dim]
+        perm = torch.randperm(samples.shape[0])
+        samples = samples[perm]
+        return theta0s, samples
+

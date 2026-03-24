@@ -235,7 +235,7 @@ if __name__ == "__main__":
     USE_KIDS_MASK = args.use_kids_mask
     csv_path = args.csv_path
     gower_data_dir = args.gower_data_dir
-    gower_prior = GowerStPrior.from_csv(csv_path)
+    gower_prior = GowerStPrior.from_csv(csv_path, drop_first=192)
     if NO_ROTATIONS:
         rotation_specs =  [{"rot": 0, "flip": False, "backend": "pixel"}]
     else:
@@ -297,9 +297,9 @@ if __name__ == "__main__":
         for num_sim_this_batch in range(len(recvbuf)):
             path_glob_pattern = f"output_{sims[num_sim_this_batch]}*.h5"
             existing_files = list(OUTPUT_DIR.glob(path_glob_pattern))
-            # if (not OVERWRITE) and len(existing_files) > 0:
-            #     print(f"[rank {rank}] Skipping sim {sims[num_sim_this_batch]} as output files already exist.")
-            #     continue
+            if (not OVERWRITE) and len(existing_files) > 0:
+                print(f"[rank {rank}] Skipping sim {sims[num_sim_this_batch]} as output files already exist.")
+                continue
             for outer_idx in range(outer_num_shape_noise_realisations):
                 for rot_idx, rotation_spec in enumerate(rotation_specs):
                     sim_num = sims[num_sim_this_batch]

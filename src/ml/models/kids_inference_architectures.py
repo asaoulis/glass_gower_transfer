@@ -208,7 +208,6 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
                 num_res_blocks=2,
                 attention_resolutions=(3,),
                 channel_mult=channel_mult,
-                cascade_conditioning=False,
                 enable_patch_conditioning=enable_patch,
                 side_conditioning=False,
                 **kwargs,
@@ -648,6 +647,11 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         transformer_kwargs: Dict = None,
         bandpower_latent_dim: int = None,
         use_kl: bool = False,
+        # Fusion controls
+        fusion_type: str = "concat",  # {'concat','film','gated'}
+        fusion_hidden: int | None = None,
+        patch_scale_init: float = 0.1,
+        patch_scale_learnable: bool = True,
         **kwargs,
     ):
         # For the *hybrid* encoder, latent_dim is the dim of mu after
@@ -663,12 +667,21 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         map_kwargs["input_channels"] = kwargs.get("input_channels", 12)  # default to 12 if not specified
         print("Map kwargs", map_kwargs, flush=True)
 
+        self.fusion_type = fusion_type
+
         # Split requested mu-dimension between band and patch branches.
         if bandpower_latent_dim is None:
             dim_band = self.latent_dim // 2
         else:
             dim_band = bandpower_latent_dim
-        dim_patch = self.latent_dim - dim_band
+        if fusion_type == "concat":
+            dim_patch = self.latent_dim - dim_band
+        else:
+            # For film/gated fusion we need dim_band == dim_patch to keep the math simple.
+            dim_patch = dim_band
+        self.dim_band = dim_band
+        self.dim_patch = dim_patch
+
         bp_builders = {
             'mlp': KidsBandpowersMLP,
             'cnn': KidsBandpowersCNN1D,
@@ -686,6 +699,56 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         if map_encoder_type not in patch_builders:
             raise ValueError(f"Unknown map_encoder_type '{map_encoder_type}', expected one of {list(patch_builders.keys())}")
         self.patch_encoder = patch_builders[map_encoder_type](latent_dim=dim_patch, **map_kwargs)
+
+        # -----------------
+        # Fusion modules
+        # -----------------
+        # In all cases we produce mu_concat with dimension == self.latent_dim.
+        if self.fusion_type not in {"concat", "film", "gated"}:
+            raise ValueError("fusion_type must be one of {'concat','film','gated'}")
+
+        # Scale controlling how much the PATCH branch can influence the fused mu early on.
+        # When learnable, we optimize log_scale for positivity.
+        if self.fusion_type != "concat":
+            if patch_scale_learnable:
+                self._patch_log_scale = nn.Parameter(torch.log(torch.tensor(float(patch_scale_init))))
+            else:
+                self.register_buffer("_patch_log_scale", torch.log(torch.tensor(float(patch_scale_init))), persistent=False)
+
+        def _default_hidden() -> int:
+            return max(32, 2 * self.dim_band)
+
+        if fusion_hidden is None:
+            fusion_hidden = _default_hidden()
+
+        if self.fusion_type == "film":
+            if self.dim_patch <= 0:
+                raise ValueError("FiLM fusion requires dim_patch > 0")
+            if self.dim_band <= 0:
+                raise ValueError("FiLM fusion requires dim_band > 0")
+            # patch_mu -> (gamma, beta) each of size dim_band
+            self.film_mlp = nn.Sequential(
+                nn.Linear(self.dim_patch, fusion_hidden),
+                nn.GELU(),
+                nn.Linear(fusion_hidden, 2 * self.dim_band),
+            )
+        elif self.fusion_type == "gated":
+            if self.dim_band != self.dim_patch:
+                raise ValueError(
+                    "Gated fusion currently requires dim_band == dim_patch so the convex combination is well-defined. "
+                    "Set bandpower_latent_dim to match the patch branch, or use fusion_type='concat'/'film'."
+                )
+            # gate and candidate are conditioned on patch_mu (keeps z1 dominant).
+            self.gate_mlp = nn.Sequential(
+                nn.Linear(self.dim_patch, fusion_hidden),
+                nn.GELU(),
+                nn.Linear(fusion_hidden, self.dim_band),
+            )
+            self.cand_mlp = nn.Sequential(
+                nn.Linear(self.dim_patch, fusion_hidden),
+                nn.GELU(),
+                nn.Linear(fusion_hidden, self.dim_band),
+            )
 
         # Head maps concatenated mu (and optionally logvar) to final output.
         # When self.use_kl is True, self.model_output_dim == 2 * latent_dim.
@@ -716,6 +779,37 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             )
         return mu, logvar
 
+    def _patch_scale(self) -> torch.Tensor:
+        # positive scalar
+        return torch.exp(self._patch_log_scale)
+
+    def _fuse_mu(self, band_mu: torch.Tensor, patch_mu: torch.Tensor) -> torch.Tensor:
+        """Fuse band and patch mus into a single vector of size latent_dim.
+
+        - concat:    [band_mu, patch_mu]
+        - film:      band_mu + s * (gamma(band,patch)*band_mu + beta)
+        - gated:     band_mu + s * (g*band_mu + (1-g)*cand(patch))  (requires equal dims)
+
+        The scale s is initialized small (patch_scale_init) to keep patch contribution small at start.
+        """
+        if self.fusion_type == "concat":
+            return torch.cat([band_mu, patch_mu], dim=-1)
+
+        s = self._patch_scale()
+
+        if self.fusion_type == "film":
+            gb = self.film_mlp(patch_mu)  # [B, 2*dim_band]
+            gamma, beta = torch.split(gb, [self.dim_band, self.dim_band], dim=-1)
+            # Stable FiLM-like residual correction anchored at band_mu
+            return band_mu + s * (gamma * band_mu + beta)
+
+        # gated
+        gate_logits = self.gate_mlp(patch_mu)
+        g = torch.sigmoid(gate_logits)
+        cand = self.cand_mlp(patch_mu)
+        correction = g * band_mu + (1.0 - g) * cand
+        return band_mu + s * correction
+
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         """KL‑aware forward for the hybrid encoder.
 
@@ -744,14 +838,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             handling band freezing, patch encoding, and optional KL concatenation.
             """
             # --- band branch ---
-            # if not self.freeze_band:
-            #     band_out = self.band_encoder.compress(data)
-            #     dim_band = self.band_encoder.latent_dim
-            #     band_mu, band_logvar = self._normalise_child_output(band_out, dim_band)
-            # else:
-            #     # purely a representation when frozen
             band_repr = self.band_encoder.compress(data)
-            # no mu/logvar here
             band_mu = band_repr
             band_logvar = None  # unused
 
@@ -760,11 +847,11 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             dim_patch = self.patch_encoder.latent_dim
             patch_mu, patch_logvar = self._normalise_child_output(patch_out, dim_patch)
 
-            # concatenate along feature dim
-            mu_concat = torch.cat([band_mu, patch_mu], dim=-1)
+            # fuse along feature dim
+            mu_concat = self._fuse_mu(band_mu, patch_mu)
 
             if not self.use_kl:
-                # If no KL, the head expects just the concatenated mus
+                # If no KL, the head expects just the fused mus
                 return mu_concat
 
             # If band is frozen we don't want it in KL, just use patch logvar

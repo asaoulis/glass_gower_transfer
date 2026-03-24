@@ -149,7 +149,7 @@ class SplitConvDownsample(nn.Module):
                  downsampling occurs in the inner-two dimensions.
     """
 
-    def __init__(self, channels, dims=2, out_channels=None):
+    def __init__(self, channels, use_conv=True, dims=2, out_channels=None):
         super().__init__()
         self.channels = channels
         self.out_channels = out_channels or channels
@@ -160,12 +160,16 @@ class SplitConvDownsample(nn.Module):
             dims, self.channels, self.out_channels, 3, stride=1, padding=1
         )
 
-        self.downscale = avg_pool_nd(dims, kernel_size=stride, stride=stride)
+        if use_conv:
+            self.downscale = conv_nd(
+                dims, self.channels, self.channels, 3, stride=stride, padding=1
+            )
+        else:
+            self.downscale = avg_pool_nd(dims, kernel_size=stride, stride=stride)
 
     def forward(self, x):
         downsample = self.downscale(x)
         return downsample, self.conv(downsample)
-
 
 class ResBlock(TimestepBlock):
     """

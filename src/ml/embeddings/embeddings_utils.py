@@ -1,6 +1,6 @@
 import os
 import sys
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import pytorch_lightning as pl
@@ -110,30 +110,101 @@ def _build_config_for_experiment(name: str):
     return cfg
 
 
-def load_pretrained_models(exp_names: List[str]):
+def _as_ncosmo_list(v) -> List[Optional[int]]:
+    """Normalize max_trainval_cosmos-like values to a list.
+
+    Accepts None, scalar, list/tuple.
+    """
+    if v is None:
+        return [None]
+    if isinstance(v, (list, tuple)):
+        return [int(x) if x is not None else None for x in v]
+    return [int(v)]
+
+
+def get_max_trainval_cosmos_grid(target_exp_name: str, source_exp_names: List[str]) -> List[Optional[int]]:
+    """Return the list of max_trainval_cosmos values to iterate over.
+
+    Mode is controlled by target experiment's `split_on_source_experiments` flag.
+
+    - If split_on_source_experiments=False (default): iterate over the target experiment's
+      max_trainval_cosmos (or [None] if unset).
+    - If split_on_source_experiments=True: iterate over the *intersection* of the source
+      experiments' max_trainval_cosmos values (or [None] if none of the sources specify it).
+
+    This keeps behavior consistent and avoids silently training embeddings on sources with
+    different numbers of cosmologies.
+    """
+    if target_exp_name not in experiments:
+        raise ValueError(f"Experiment '{target_exp_name}' not found in config.experiments.experiments.")
+
+    target_cfg = experiments[target_exp_name]
+    split_on_source = bool(target_cfg.get("split_on_source_experiments", False))
+
+    if not split_on_source:
+        return _as_ncosmo_list(target_cfg.get("max_trainval_cosmos", None))
+
+    # Source-based mode
+    sets = []
+    for s in source_exp_names:
+        if s not in experiments:
+            raise ValueError(f"Source experiment '{s}' not found in config.experiments.experiments.")
+        v = experiments[s].get("max_trainval_cosmos", None)
+        if v is None:
+            continue
+        sets.append(set(x for x in _as_ncosmo_list(v) if x is not None))
+
+    if not sets:
+        return [None]
+
+    common = set.intersection(*sets)
+    if not common:
+        raise ValueError(
+            "split_on_source_experiments=True but no common max_trainval_cosmos values were found across source experiments. "
+            "Set compatible 'max_trainval_cosmos' lists in config.experiments for all sources."
+        )
+    return sorted(common)
+
+
+def load_pretrained_models(exp_names: List[str], cfg_overrides: Optional[Dict[str, object]] = None):
     """Build models for a list of experiment names using their best checkpoints.
 
     Uses `load_best_model_and_build_posterior`, which encapsulates the
     checkpoint directory layout and filename logic.
 
+    Args:
+        exp_names: list of experiment names.
+        cfg_overrides: optional mapping {experiment_name: cfg}. When provided,
+            the cfg is used instead of building one from config.experiments.
+            This is used to support split_on_source_experiments, where we want
+            to set max_trainval_cosmos on the *source* experiments.
+
     Returns:
         models: list of trained NDE models
-        cfgs:   list of per-model configs
+        dataset_quantities: merged dataset quantities across experiments
+        checkpoint_paths: list of checkpoint paths
     """
     models = []
     dataset_quantities = set()
-    # need to return dataset_quantities as a list
+    checkpoint_paths = []
+
     for name in exp_names:
-        cfg = _build_config_for_experiment(name)
+        if cfg_overrides is not None and name in cfg_overrides:
+            cfg = cfg_overrides[name]
+        else:
+            cfg = _build_config_for_experiment(name)
+
         result = load_best_model_and_build_posterior(cfg)
         if result is None:
             raise RuntimeError(f"Failed to load best model for experiment '{name}'.")
-        model, _ = result
+        model, _, checkpoint_path = result
         model.eval()
         models.append(model)
         dataset_quantities.update(getattr(cfg, "dataset_quantities", []))
+        checkpoint_paths.append(checkpoint_path)
+
     dataset_quantities = list(dataset_quantities)
-    return models, dataset_quantities
+    return models, dataset_quantities, checkpoint_paths
 
 
 @torch.no_grad()
@@ -183,7 +254,7 @@ def compute_embeddings(models: List[torch.nn.Module], loader: torch.utils.data.D
 
 def _get_embedding_cache_paths(base_cfg, wandb_run_name: str) -> Tuple[str, str, str]:
     """Return file paths for cached embedding datasets under checkpoint dir."""
-    base_dir = f"{base_cfg.base_path}/checkpoints/{base_cfg.experiment_name}/{base_cfg.experiment_name}/{wandb_run_name}"
+    base_dir = f"{base_cfg.base_path}/checkpoints/{wandb_run_name}/datasets"
     train_path = f"{base_dir}/emb_train.pt"
     val_path = f"{base_dir}/emb_val.pt"
     test_path = f"{base_dir}/emb_test.pt"
@@ -248,6 +319,7 @@ def build_embedding_dataloaders(
     models: List[torch.nn.Module],
     base_cfg=None,
     wandb_run_name: Optional[str] = None,
+    use_cache_if_exists=False,
 ):
     """Construct *scaled* embedding dataloaders from existing loaders and models.
 
@@ -273,14 +345,15 @@ def build_embedding_dataloaders(
 
     if base_cfg is not None and wandb_run_name is not None:
         train_path, val_path, test_path = _get_embedding_cache_paths(base_cfg, wandb_run_name)
-        if os.path.exists(train_path) and os.path.exists(val_path) and os.path.exists(test_path):
-            train_z, train_theta, emb_scaler, cached_cosmo_scaler = _load_embedding_cache(train_path)
-            val_z, val_theta, _, _ = _load_embedding_cache(val_path)
-            test_z, test_theta, _, _ = _load_embedding_cache(test_path)
-            # Prefer scaler from cache if present; otherwise use freshly built preset
-            if cached_cosmo_scaler is not None:
-                cosmo_scaler = cached_cosmo_scaler
-            cache_used = True
+        if use_cache_if_exists:
+            if os.path.exists(train_path) and os.path.exists(val_path) and os.path.exists(test_path):
+                train_z, train_theta, emb_scaler, cached_cosmo_scaler = _load_embedding_cache(train_path)
+                val_z, val_theta, _, _ = _load_embedding_cache(val_path)
+                test_z, test_theta, _, _ = _load_embedding_cache(test_path)
+                # Prefer scaler from cache if present; otherwise use freshly built preset
+                if cached_cosmo_scaler is not None:
+                    cosmo_scaler = cached_cosmo_scaler
+                cache_used = True
 
     if not cache_used:
         # Compute embeddings from scratch
@@ -318,31 +391,44 @@ def build_embedding_dataloaders(
     return train_emb_loader, val_emb_loader, test_emb_loader
 
 
-def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, base_cfg):
-    """Build and train an NDE Lightning module on precomputed embeddings.
+def build_nde_on_embeddings(
+    *,
+    emb_dim: int,
+    base_cfg,
+    test_loader=None,
+    device: Optional[torch.device] = None,
+):
+    """Construct an (untrained) NDE Lightning module that operates on embeddings.
 
-    Uses an IdentityEmbedding as the encoder and otherwise reuses the
-    flow configuration from `base_cfg`.
+    This is the shared model-construction logic used by both training code and
+    notebooks that want to load a checkpoint without re-implementing the setup.
 
-    A config flag ``inference_mode`` controls whether we run in
-    NPE (posterior) or NLE (likelihood) mode. Allowed values:
-      * 'npe' (default): NDELightningModule, modelling p(theta | z).
-      * 'nle'         : LikelihoodNDELightningModule, modelling p(z | theta).
+    Args:
+        emb_dim: Dimension of the (concatenated) embedding vector.
+        base_cfg: Experiment config (expects the usual NDE/flow fields).
+        test_loader: Optional dataloader assigned to the Lightning module.
+        device: Optional torch.device. Defaults to cuda if available.
+
+    Returns:
+        model: An instance of NDELightningModule or LikelihoodNDELightningModule.
     """
+
+    if device is None:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     conditioning_dim = emb_dim
     inference_dim = len(base_cfg.cosmo_param_names)
 
-    embedding_net = IdentityEmbedding(emb_dim).to("cuda" if torch.cuda.is_available() else "cpu")
+    embedding_net = IdentityEmbedding(emb_dim).to(device)
 
-    # Decide which LightningModule to use based on config.
     inference_mode = getattr(base_cfg, "inference_mode", "npe").lower()
     if inference_mode not in {"npe", "nle"}:
         raise ValueError(f"Unknown inference_mode '{inference_mode}', expected 'npe' or 'nle'.")
 
     LightningCls = NDELightningModule if inference_mode == "npe" else LikelihoodNDELightningModule
     if inference_mode == "nle":
-        # switch conditioning and inference dims for likelihood mode, since the "data" is now the embedding and the "parameters" are the cosmology
         conditioning_dim, inference_dim = inference_dim, conditioning_dim
+
     model = LightningCls(
         embedding_net,
         conditioning_dim=conditioning_dim,
@@ -359,6 +445,31 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
         flow_kwargs=base_cfg.flow_kwargs,
     )
 
+    model.to(device)
+    model.eval()
+    return model
+
+
+def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, base_cfg, run_name):
+    """Build and train an NDE Lightning module on precomputed embeddings.
+
+    Uses an IdentityEmbedding as the encoder and otherwise reuses the
+    flow configuration from `base_cfg`.
+
+    A config flag ``inference_mode`` controls whether we run in
+    NPE (posterior) or NLE (likelihood) mode. Allowed values:
+      * 'npe' (default): NDELightningModule, modelling p(theta | z).
+      * 'nle'         : LikelihoodNDELightningModule, modelling p(z | theta).
+    """
+
+    model = build_nde_on_embeddings(emb_dim=emb_dim, base_cfg=base_cfg, test_loader=test_loader)
+
+    if getattr(base_cfg, 'load_pretrained_flow', False):
+        pretrained_band_ckpt = getattr(base_cfg, 'pretrained_band_ckpt_path', None)
+        if pretrained_band_ckpt is None:
+            raise ValueError("Config flag 'load_pretrained_flow' is True but 'pretrained_band_ckpt_path' is not set.")
+        model._load_pretrained_flow(pretrained_band_ckpt, freeze=False)
+
     # Standard Lightning trainer setup (similar to fit_model)
     num_gpus = torch.cuda.device_count()
     accelerator = "gpu" if num_gpus > 0 else "cpu"
@@ -370,21 +481,18 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
     match_string_logger = base_cfg.match_string if base_cfg.match_string else ""
 
     # Include inference_mode in run name for clarity
+    inference_mode = getattr(base_cfg, "inference_mode", "npe").lower()
     wandb_logger = wandb.init(
         project=getattr(base_cfg, "project", "emb-nde"),
         group=f"embeddings_nde_{inference_mode}",
-        name=(
-            f"{base_cfg.experiment_name}/"
-            f"{base_cfg.model_type}_{match_string_logger}_"
-            f"ncosmo{num_trainval_cosmos}_{inference_mode}"
-        ),
+        name=(run_name),
         reinit=True,
     )
 
     wandb_logger_name = wandb_logger.name if wandb_logger else "no_logger"
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=f"{monitor_string}",
-        dirpath=f"{base_cfg.base_path}/checkpoints/{base_cfg.experiment_name}/{wandb_logger_name}",
+        dirpath=f"{base_cfg.base_path}/checkpoints/{wandb_logger_name}",
         filename=f"checkpoint-{{epoch:02d}}-{{{monitor_string}:.4f}}",
         save_top_k=3,
         mode="min",

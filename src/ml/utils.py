@@ -2,9 +2,10 @@ import numpy as np
 from typing import Dict, List, Sequence, Tuple, Union, Optional
 
 import torch
+import os
 
 from .models.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, RegressionLightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
@@ -13,6 +14,25 @@ from .data.data import build_dataloaders, build_nested_keys_from_quantities
 from .data.data_loading import unpack_data, load_cosmo_params
 # Use new abstracted scalers
 from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler
+def set_seed_for_repeat_and_ensemble(config, repeat_idx: int, ensemble_idx: int = 0):
+    """Set config.split_seed for a given (repeat, ensemble) pair.
+
+    This is the single source of truth used by both training and evaluation.
+
+    Behaviour:
+      - repeat seed follows apply_repeat_config: base_seed + repeat_idx
+      - ensemble members offset from the repeat seed by + ensemble_idx * ensemble_seed_stride
+
+    Notes:
+      - This does NOT modify match strings; callers should still use
+        apply_repeat_config() to bind repeat match_string behaviour.
+    """
+    base_seed = int(getattr(config, "split_seed", 42))
+    stride = int(getattr(config, "ensemble_seed_stride", 100))
+
+    repeat_seed = base_seed + int(repeat_idx)
+    config.split_seed = repeat_seed + int(ensemble_idx) * stride
+    return config.split_seed
 
 # Merge model registries (compressors + kids-specific architectures)
 MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
@@ -288,12 +308,17 @@ def build_model(config, test_dataloader=None):
     # Kids encoders honour use_kl; legacy compressors just ignore it via **model_kwargs
     if config.model_type in KIDS_MODEL_BUILDERS:
         model_kwargs = {**model_kwargs, 'use_kl': use_KL_loss}
+    conditioning_dim = latent_dim + redundancy_dim
+    inference_dim = len(config.cosmo_param_names)
+    inference_mode = getattr(config, 'inference_mode', 'npe')
+
+    if inference_mode == 'nle':
+        conditioning_dim, inference_dim = inference_dim, conditioning_dim
 
     # num_outputs passed to builders is the latent_dim (mu dimension)
     embedding_model = MODEL_BUILDERS[config.model_type](latent_dim, **model_kwargs).to("cuda" if torch.cuda.is_available() else "cpu")
 
     # Effective conditioning dimension seen by the flow is latent_dim (+ optional redundancy)
-    conditioning_dim = latent_dim + redundancy_dim
 
     # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})
@@ -310,14 +335,18 @@ def build_model(config, test_dataloader=None):
     elif num_flow_heads > 1:
         LightningModule = EnsembleNDELightningModule
         lm_extra_kwargs = {"num_flows": num_flow_heads}
+    elif use_KL_loss:
+        LightningModule = KLDRegularisedNDELightningModule
+    elif inference_mode == 'nle':
+        LightningModule = LikelihoodNDELightningModule  # NLE is just a special case of NDE with swapped conditioning/inference
     else:
-        LightningModule = KLDRegularisedNDELightningModule if use_KL_loss else NDELightningModule
+        LightningModule = NDELightningModule
 
     # Construct LightningModule — regression will discard NDE-specific kwargs
     model = LightningModule(
         embedding_model,
         conditioning_dim=conditioning_dim,
-        inference_dim=len(config.cosmo_param_names),
+        inference_dim=inference_dim,
         lr=config.lr,
         flow_type=config.flow_type,
         scheduler_type=config.scheduler_type,
@@ -339,11 +368,12 @@ def build_model(config, test_dataloader=None):
     backbone_module_name = None
 
     checkpoint_path = getattr(config, 'checkpoint_path', None)
+    pretrained_band_ckpt_folder = getattr(config, 'pretrained_band_ckpt_path', None)
+
     if checkpoint_path:
         model.load_from_checkpoint(checkpoint_path)
         print("Loaded full model state from checkpoint:", checkpoint_path)
     else:
-        pretrained_band_ckpt_folder = getattr(config, 'pretrained_band_ckpt_path', None)
         if pretrained_band_ckpt_folder is not None:
             pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
             freeze_band = getattr(config, 'freeze_band', False)
@@ -354,22 +384,36 @@ def build_model(config, test_dataloader=None):
                 freeze=freeze_band,
                 band_prefix="model.embedding_net.",
             )
+        
+    if getattr(config, 'load_pretrained_flow', False):
+        pretrained_flow_ckpt_folder = getattr(config, 'pretrained_flow_ckpt_path', pretrained_band_ckpt_folder)
+        pretrained_flow_ckpts, _ = get_best_checkpoint(pretrained_flow_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
+        pretrained_flow_ckpt = pretrained_flow_ckpts[0]  # TODO: fix this
 
-            if getattr(config, 'load_pretrained_flow', False):
-                flow_prefix = getattr(config, 'flow_prefix', 'model.flow.')
-                model._load_pretrained_flow(pretrained_band_ckpt, freeze=False, flow_prefix=flow_prefix)
+        flow_prefix = getattr(config, 'flow_prefix', 'model.flow.')
+        model._load_pretrained_flow(pretrained_flow_ckpt, freeze=False, flow_prefix=flow_prefix)
 
-        pretrained_backbone_ckpt = getattr(config, 'pretrained_backbone_ckpt_path', None)
-        if pretrained_backbone_ckpt is not None:
-            freeze_backbone = getattr(config, 'freeze_backbone', False)
-            backbone_prefix = getattr(config, 'backbone_prefix', 'shared_cnn.backbone.')
-            target_prefix = getattr(config, 'target_backbone_prefix', '')
-            backbone_module_name = model._load_pretrained_cnn_backbone(
-                pretrained_backbone_ckpt,
-                freeze=freeze_backbone,
-                backbone_prefix=backbone_prefix,
-                target_prefix=target_prefix,
-            )
+    pretrained_backbone_ckpt = getattr(config, 'pretrained_backbone_ckpt_path', None)
+    if pretrained_backbone_ckpt is not None:
+        freeze_backbone = getattr(config, 'freeze_backbone', False)
+        backbone_prefix = getattr(config, 'backbone_prefix', 'shared_cnn.backbone.')
+        target_prefix = getattr(config, 'target_backbone_prefix', '')
+        pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
+        backbone_module_name = model._load_pretrained_cnn_backbone(
+            pretrained_backbone_ckpt,
+            freeze=freeze_backbone,
+            backbone_prefix=backbone_prefix,
+            target_prefix=target_prefix,
+        )
+    pretrained_embedding_ckpt_folder = getattr(config, 'pretrained_embedding_ckpt_path', None)
+    if pretrained_embedding_ckpt_folder is not None:
+        pretrained_embedding_ckpts, _ = get_best_checkpoint(pretrained_embedding_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
+        pretrained_embedding_ckpt = pretrained_embedding_ckpts[0]  # TODO: fix this
+        freeze_embedding_net = getattr(config, 'freeze_embedding_net', False)
+        patch_module_name = model._load_pretrained_embedding_net(
+            pretrained_embedding_ckpt,
+            freeze=freeze_embedding_net,
+        )
 
     # After we know which submodules were actually used for pretrained
     # loading, configure optional per-module learning rates, if present
@@ -405,3 +449,85 @@ def load_best_checkpoint_model(config, run_folder, test_loader=None):
     model.to("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     return model, best_checkpoint, best_val_loss
+
+def is_ensemble_eval_active(cfg) -> bool:
+    """True when config requests an evaluation-time flow ensemble."""
+    return int(getattr(cfg, "ensemble_repeats", 1) or 1) > 1
+
+
+def build_ensemble_model_from_checkpoints(
+    cfg,
+    test_loader,
+    *,
+    match_string: str,
+):
+    """Build an EnsembleNDELightningModule from multiple separately-trained members.
+
+    Each member may have a different train/val split (and thus different scalers)
+    because split_seed changes across ensemble members. Therefore we MUST rebuild
+    the scalers and test loader per member using the same seed logic as training.
+
+    Parameters
+    ----------
+    test_loader:
+        Ignored for ensemble members; kept for backward compatibility.
+    match_string:
+        Repeat-bound match string (e.g. 'ncosmo30_0').
+    """
+    from copy import copy
+
+    n_ens = int(getattr(cfg, "ensemble_repeats", 1) or 1)
+    if n_ens <= 1:
+        return None
+
+    experiment_path = f"{cfg.base_path}/checkpoints/{cfg.experiment_name}/"
+    if not os.path.exists(experiment_path):
+        print("Experiment path does not exist:", experiment_path, flush=True)
+        return None
+
+    # Determine repeat idx from match_string suffix
+    try:
+        repeat_idx = int(str(match_string).split("_")[-1])
+    except Exception:
+        # Fallback: try regex via helper
+        from .models.utils import parse_repeat_and_ensemble_from_match
+        repeat_idx, _ = parse_repeat_and_ensemble_from_match(match_string)
+
+    base_seed = int(getattr(cfg, "split_seed", 42))
+
+    members = []
+    member_test_loaders = []
+
+    for j in range(n_ens):
+        member_match = f"{match_string}_ens{j}"
+        best_ckpts, _ = get_best_checkpoint(experiment_path, member_match)
+        best_ckpt = best_ckpts[0] if best_ckpts else None
+        if best_ckpt is None:
+            print(
+                f"[build_ensemble_model_from_checkpoints] No checkpoint found for member '{member_match}'",
+                flush=True,
+            )
+            return None
+
+        cfg_j = copy(cfg)
+        cfg_j.checkpoint_path = best_ckpt
+
+        # Recreate scalers + loaders exactly as in training for this member
+        # IMPORTANT: apply repeat seed from the eval base cfg seed, not a mutated seed.
+        cfg_j.split_seed = base_seed
+        set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat_idx, ensemble_idx=j)
+
+        scalers_j, _, _, test_loader_j = prepare_data_parameters(cfg_j)
+        member_test_loaders.append(test_loader_j)
+
+        member = build_model(cfg_j, test_dataloader=test_loader_j)
+        member.to("cuda" if torch.cuda.is_available() else "cpu")
+        member.eval()
+        members.append(member)
+
+    model = EnsembleNDELightningModule(members)
+    # use the first member loader for theta0s extraction; others are used internally
+    model.test_dataloader = member_test_loaders[0]
+    model.to("cuda" if torch.cuda.is_available() else "cpu")
+    model.eval()
+    return model

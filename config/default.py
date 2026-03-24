@@ -42,6 +42,7 @@ def get_default_config():
     ]
     config.test_shape_noise_idx = None
     config.max_trainval_cosmos = None  # scalar / None, not a list
+    config.split_on_source_experiments = False
     config.train_frac = 0.8
     config.val_frac = 0.1
     config.test_frac = 0.1
@@ -58,14 +59,14 @@ def get_default_config():
     # Scaling options
     # - data: per-key standard scaling (keys=None => scale all keys in dataset_nested_keys)
     # - cosmo: min/max scaling for cosmological parameter vectors
-    config.scaler_options = {
-        'data': {'type': 'standard', 'keys': None},
-        'cosmo': {'type': 'minmax'},
-    }
     # config.scaler_options = {
-    #         'data': {'type': 'standard', 'keys': None},
-    #         'cosmo': {'type': 'preset'},
+    #     'data': {'type': 'standard', 'keys': None},
+    #     'cosmo': {'type': 'minmax'},
     # }
+    config.scaler_options = {
+            'data': {'type': 'standard', 'keys': None},
+            'cosmo': {'type': 'preset'},
+    }
     config.project = "kids-transfer-tests"
 
     # Misc/legacy fields kept for compatibility with older code paths

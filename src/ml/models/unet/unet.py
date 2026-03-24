@@ -135,7 +135,7 @@ class UNetStyleEncoder(nn.Module):
                 raise ValueError("cond_channels must be provided when cascade_conditioning=True")
             self.cascade_downscalers = nn.ModuleList(
                 [
-                    SplitConvDownsample(cond_channels, dims=dims, out_channels=32)
+                    SplitConvDownsample(cond_channels, use_conv=conv_resample, dims=dims, out_channels=32)
                     for _ in channel_mult
                 ]
             )
@@ -223,9 +223,7 @@ class UNetStyleEncoder(nn.Module):
             return h
 
         # With cascade conditioning: downsample cond in lockstep with resolution levels
-        if cond is None:
-            raise ValueError("cond must be provided when cascade_conditioning=True")
-        h_cond = cond
+        h_cond = x
         level_idx = 0
         res_idx = 0
         for m in self.blocks:
@@ -283,6 +281,8 @@ class UNetO3StyleEncoder(nn.Module):
         **kwargs,
     ):
         super().__init__()
+        if cascade_conditioning and cond_channels is None:
+            cond_channels= in_channels
         self.backbone = UNetStyleEncoder(
             image_size=image_size,
             in_channels=in_channels,
@@ -491,7 +491,7 @@ class UNetModel(nn.Module):
             self.cascade_downscalers = nn.ModuleList(
                 [
                     SplitConvDownsample(
-                        conditional_channels, dims=dims, out_channels=self.conv_cond_channels
+                        conditional_channels, use_conv=conv_resample, dims=dims, out_channels=self.conv_cond_channels
                     )
                     for _ in channel_mult
                 ]

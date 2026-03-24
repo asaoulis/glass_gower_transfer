@@ -6,6 +6,7 @@ import json
 from .tarp import get_tarp_coverage
 from ..utils import load_best_checkpoint_model, build_model
 from .loading_model import find_best_checkpoint, get_best_checkpoint
+from ..utils import is_ensemble_eval_active, build_ensemble_model_from_checkpoints
 
 from .fom import compute_fom, compute_cov_matrix_per_sim
 
@@ -68,9 +69,9 @@ def rescale_parameters(tensor, scaler):
     scaled_tensor = torch.tensor(scaled_array, device=(device), dtype=torch.float32)  # Convert back to tensor
     return scaled_tensor.reshape(original_shape)  # Restore original shape
 
-def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, compute_calibration=True):
-    
-    theta0s, samples = model.generate_samples(model.test_dataloader, num_samples=10000)
+def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, compute_calibration=True, **sampling_kwargs):
+    num_samples = sampling_kwargs.pop("num_samples", 10000)
+    theta0s, samples = model.generate_samples(num_samples=num_samples, **sampling_kwargs)
     cosmological_params = param_scaler.parameter_names
     scaled_theta0s = rescale_parameters(theta0s, param_scaler)
     scaled_samples = rescale_parameters(samples, param_scaler)
@@ -152,7 +153,7 @@ def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, c
     return eval_metrics
 
 
-def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_samples=None, model_builder=None):
+def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_samples=None, model_builder=None, **sampling_kwargs):
     """Evaluate all matching run folders for an experiment.
 
     Parameters
@@ -171,7 +172,42 @@ def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_sample
     """
     print("Running evaluation for experiment:", config.experiment_name, flush=True)
 
-    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/{config.experiment_name}"
+    # If ensemble evaluation is active, run a single ensemble evaluation for the
+    # provided match_string (bound to repeat idx) and return early.
+    if is_ensemble_eval_active(config) and getattr(config, "match_string", None):
+        match_string = config.match_string
+        ensemble_model = build_ensemble_model_from_checkpoints(
+            config,
+            test_loader,
+            match_string=match_string,
+        )
+        if ensemble_model is None:
+            print("Failed to build ensemble model; falling back to single-run evaluation.")
+        else:
+            metrics = compute_log_prob(ensemble_model)
+            eval_metrics = generate_samples_and_run_eval(
+                ensemble_model,
+                param_scaler,
+                reference_samples,
+                **sampling_kwargs,
+            )
+            # Save ensemble eval next to experiment folder (not per-run)
+            experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/"
+            os.makedirs(experiment_path, exist_ok=True)
+            results_path = os.path.join(
+                experiment_path,
+                f"ensemble_evaluation_results_{match_string}.json",
+            )
+            out = {
+                "match_string": match_string,
+                "ensemble_repeats": int(getattr(config, "ensemble_repeats", 1) or 1),
+                "metrics": {**metrics, **eval_metrics},
+            }
+            with open(results_path, "w") as f:
+                json.dump(out, f, indent=4)
+            return {"ensemble": out}
+
+    experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/"
     if not os.path.exists(experiment_path):
         print("Experiment path does not exist:", experiment_path, flush=True)
         return
@@ -222,7 +258,7 @@ def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_sample
             continue
 
         metrics = compute_log_prob(model)
-        eval_metrics = generate_samples_and_run_eval(model, param_scaler, reference_samples)
+        eval_metrics = generate_samples_and_run_eval(model, param_scaler, reference_samples, **sampling_kwargs)
 
         results[run_folder] = {
             "best_checkpoint": best_checkpoint,
@@ -269,7 +305,7 @@ from pathlib import Path
 
 
 def parse_results(experiment_name, base_path="/share/gpu0/asaoulis/cmd/checkpoints"):
-    experiment_path = os.path.join(base_path, f"{experiment_name}/{experiment_name}")
+    experiment_path = os.path.join(base_path, f"{experiment_name}")
     # check if experiment path exists
     run_folders = [
         os.path.join(experiment_path, d)
@@ -399,7 +435,7 @@ def load_best_model_and_build_posterior(config, ds_string_match="", data_paramet
             f"Loaded best model from {best_model_path} with val loss {global_best_val_loss}"
         )
         scalers = None  # keep previous behaviour (scalers not used/returned yet)
-        return model, scalers
+        return model, scalers, best_model_path
 
     print("Failed to load model for the best checkpoint.")
     return None
