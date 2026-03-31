@@ -27,6 +27,7 @@ from src.ml.models.utils import apply_repeat_config
 
 # Base config used only for data_parameters
 experiments_to_evaluate = [
+    "finetune_hybrid_16_9param",
     "finetune_hybrid_16_9param_ensemble",
     # "bandpower_mlp_lat8_9param",
     # "hybrid_patches_16_9param",

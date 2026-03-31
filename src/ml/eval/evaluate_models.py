@@ -178,9 +178,25 @@ def run_evaluation_on_samples(theta0s, samples, param_scaler, reference_samples=
             - torch.quantile(s8_samples, 0.025, dim=0)
         ).mean().item()
 
-    cov_matrices = compute_cov_matrix_per_sim(scaled_samples)
+    n_sims = theta0s.shape[0]
+    if bias.shape[0] != n_sims:
+        raise ValueError(
+            f"Unexpected bias shape {tuple(bias.shape)}; expected first dim n_sims={n_sims}."
+        )
+
+    if scaled_samples.shape[0] == n_sims:
+        samples_for_cov = scaled_samples
+    elif scaled_samples.shape[1] == n_sims:
+        samples_for_cov = scaled_samples.permute(1, 0, 2)
+    else:
+        raise ValueError(
+            f"scaled_samples has shape {tuple(scaled_samples.shape)} which cannot be aligned to n_sims={n_sims}"
+        )
+
+    cov_matrices = compute_cov_matrix_per_sim(samples_for_cov)  # (n_sims, d, d)
     inv_covariances = torch.linalg.inv(cov_matrices)
-    mahalanobis_distances = torch.sqrt(torch.einsum('bi,bij,bj->b', bias, inv_covariances, bias))
+
+    mahalanobis_distances = torch.sqrt(torch.einsum("bi,bij,bj->b", bias, inv_covariances, bias))
     eval_metrics['mahalanobis_distance_mean'] = mahalanobis_distances.mean().item()
     eval_metrics['mahalanobis_distance_std'] = mahalanobis_distances.std().item()
 
