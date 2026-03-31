@@ -74,6 +74,7 @@ def split_by_cosmology(
     seed: int = 42,
     max_trainval_cosmos: Optional[int] = None,
     test_shape_noise_idx: Optional[Sequence[int]] = None,
+    ensemble_seed: Optional[int] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """
     Glob files, group by cosmology index, shuffle cosmologies, and split without leakage.
@@ -88,7 +89,17 @@ def split_by_cosmology(
     Optionally, ``test_shape_noise_idx`` can be used to further restrict which
     samples (e.g. shape-noise repeats) are kept in the *test* split only, based on
     an index parsed from the filename.
+
+    ensemble_seed:
+        If provided, reshuffles the *order* of the selected train+val cosmology
+        subset after it has been selected (i.e. after applying max_trainval_cosmos).
+        This does NOT change which cosmologies are included, only which ones fall
+        into train vs val when splitting.
     """
+    print(
+        f"[split_by_cosmology] seed={seed} ensemble_seed={ensemble_seed} max_trainval_cosmos={max_trainval_cosmos}",
+        flush=True,
+    )
     if not np.isclose(train_frac + val_frac + test_frac, 1.0):
         raise ValueError("train_frac + val_frac + test_frac must sum to 1.0")
 
@@ -137,6 +148,12 @@ def split_by_cosmology(
         trainval_cosmos = remaining_cosmos[:max_trainval_cosmos]
     else:
         trainval_cosmos = remaining_cosmos
+
+    # Optional ensemble reshuffle AFTER selection
+    if ensemble_seed is not None:
+        rng_ens = random.Random(int(ensemble_seed))
+        trainval_cosmos = list(trainval_cosmos)
+        rng_ens.shuffle(trainval_cosmos)
 
     n_trainval = len(trainval_cosmos)
     if n_trainval == 0:
@@ -341,10 +358,8 @@ def build_datasets(
     transform: Optional[object] = None,
     max_trainval_cosmos: Optional[int] = None,
     test_shape_noise_idx: Optional[Sequence[int]] = None,
+    ensemble_seed: Optional[int] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
-    """
-    Convenience: split by cosmology and return three datasets.
-    """
     train_paths, val_paths, test_paths = split_by_cosmology(
         patterns,
         train_frac=train_frac,
@@ -353,6 +368,7 @@ def build_datasets(
         seed=seed,
         max_trainval_cosmos=max_trainval_cosmos,
         test_shape_noise_idx=test_shape_noise_idx,
+        ensemble_seed=ensemble_seed,
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
@@ -391,6 +407,7 @@ def build_dataloaders(
     augment_eb_patches: bool = False,
     max_trainval_cosmos: Optional[int] = None,
     test_shape_noise_idx: Optional[Sequence[int]] = None,
+    ensemble_seed: Optional[int] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Return DataLoaders for train/val/test ensuring no cosmology leakage.
@@ -426,6 +443,7 @@ def build_dataloaders(
         transform=transform,
         max_trainval_cosmos=max_trainval_cosmos,
         test_shape_noise_idx=test_shape_noise_idx,
+        ensemble_seed=ensemble_seed,
     )
 
     if val_batch_size is None:

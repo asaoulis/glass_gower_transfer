@@ -1,7 +1,7 @@
 import sys
 
 from src.ml.embeddings.train import EmbeddingTrainArgs, train_embeddings_experiment
-
+from src.ml.models.custom_sbi import NeuralSplineFlow
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:

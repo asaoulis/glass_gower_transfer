@@ -5,7 +5,7 @@ import torch
 import os
 
 from .models.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
@@ -14,25 +14,6 @@ from .data.data import build_dataloaders, build_nested_keys_from_quantities
 from .data.data_loading import unpack_data, load_cosmo_params
 # Use new abstracted scalers
 from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler
-def set_seed_for_repeat_and_ensemble(config, repeat_idx: int, ensemble_idx: int = 0):
-    """Set config.split_seed for a given (repeat, ensemble) pair.
-
-    This is the single source of truth used by both training and evaluation.
-
-    Behaviour:
-      - repeat seed follows apply_repeat_config: base_seed + repeat_idx
-      - ensemble members offset from the repeat seed by + ensemble_idx * ensemble_seed_stride
-
-    Notes:
-      - This does NOT modify match strings; callers should still use
-        apply_repeat_config() to bind repeat match_string behaviour.
-    """
-    base_seed = int(getattr(config, "split_seed", 42))
-    stride = int(getattr(config, "ensemble_seed_stride", 100))
-
-    repeat_seed = base_seed + int(repeat_idx)
-    config.split_seed = repeat_seed + int(ensemble_idx) * stride
-    return config.split_seed
 
 # Merge model registries (compressors + kids-specific architectures)
 MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
@@ -226,6 +207,7 @@ def prepare_data_parameters(config):
         augment_eb_patches=getattr(config, 'augment_eb_patches', True),
         max_trainval_cosmos=max_trainval_cosmos,
         test_shape_noise_idx=test_shape_noise_idx,
+        ensemble_seed=getattr(config, 'ensemble_seed', None),
     )
 
     # Print dataset lengths for visibility
@@ -312,6 +294,9 @@ def build_model(config, test_dataloader=None):
     inference_dim = len(config.cosmo_param_names)
     inference_mode = getattr(config, 'inference_mode', 'npe')
 
+    # Joint mode trains both NPE and NLE heads simultaneously.
+    is_joint = str(inference_mode).lower() in {"joint", "npe+nle", "nle+npe"}
+
     if inference_mode == 'nle':
         conditioning_dim, inference_dim = inference_dim, conditioning_dim
 
@@ -332,6 +317,11 @@ def build_model(config, test_dataloader=None):
     lm_extra_kwargs = {}
     if training_mode == 'regression':
         LightningModule = RegressionLightningModule
+    elif is_joint:
+        LightningModule = JointVMIMNLELightningModule
+        lm_extra_kwargs = {
+            "nle_weighting": float(getattr(config, "nle_weighting", 1.0)),
+        }
     elif num_flow_heads > 1:
         LightningModule = EnsembleNDELightningModule
         lm_extra_kwargs = {"num_flows": num_flow_heads}
@@ -386,12 +376,39 @@ def build_model(config, test_dataloader=None):
             )
         
     if getattr(config, 'load_pretrained_flow', False):
-        pretrained_flow_ckpt_folder = getattr(config, 'pretrained_flow_ckpt_path', pretrained_band_ckpt_folder)
-        pretrained_flow_ckpts, _ = get_best_checkpoint(pretrained_flow_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
-        pretrained_flow_ckpt = pretrained_flow_ckpts[0]  # TODO: fix this
+        # Joint module has two flows (NPE and NLE heads) that may be pretrained separately.
+        if is_joint:
+            npe_folder = getattr(config, 'pretrained_npe_flow_ckpt_path', None) or getattr(config, 'pretrained_flow_ckpt_path', None) or pretrained_band_ckpt_folder
+            nle_folder = getattr(config, 'pretrained_nle_flow_ckpt_path', None) or getattr(config, 'pretrained_flow_ckpt_path', None) or pretrained_band_ckpt_folder
 
-        flow_prefix = getattr(config, 'flow_prefix', 'model.flow.')
-        model._load_pretrained_flow(pretrained_flow_ckpt, freeze=False, flow_prefix=flow_prefix)
+            if npe_folder is not None:
+                npe_ckpts, _ = get_best_checkpoint(npe_folder, config.pretrained_band_match_string)
+                if npe_ckpts:
+                    npe_ckpt = npe_ckpts[0]
+                    npe_prefix = getattr(config, 'npe_flow_prefix', getattr(config, 'flow_prefix', 'model.flow.'))
+                    freeze_npe = getattr(config, 'freeze_npe_flow', getattr(config, 'freeze_flow', False))
+                    if hasattr(model, '_load_pretrained_npe_head'):
+                        model._load_pretrained_npe_head(npe_ckpt, freeze=freeze_npe, flow_prefix=npe_prefix)
+                    else:
+                        raise AttributeError("Joint model missing _load_pretrained_npe_head")
+
+            if nle_folder is not None:
+                nle_ckpts, _ = get_best_checkpoint(nle_folder, config.pretrained_band_match_string)
+                if nle_ckpts:
+                    nle_ckpt = nle_ckpts[0]
+                    nle_prefix = getattr(config, 'nle_flow_prefix', getattr(config, 'flow_prefix', 'model.flow.'))
+                    freeze_nle = getattr(config, 'freeze_nle_flow', getattr(config, 'freeze_flow', False))
+                    if hasattr(model, '_load_pretrained_nle_head'):
+                        model._load_pretrained_nle_head(nle_ckpt, freeze=freeze_nle, flow_prefix=nle_prefix)
+                    else:
+                        raise AttributeError("Joint model missing _load_pretrained_nle_head")
+        else:
+            pretrained_flow_ckpt_folder = getattr(config, 'pretrained_flow_ckpt_path', pretrained_band_ckpt_folder)
+            pretrained_flow_ckpts, _ = get_best_checkpoint(pretrained_flow_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
+            pretrained_flow_ckpt = pretrained_flow_ckpts[0]  # TODO: fix this
+
+            flow_prefix = getattr(config, 'flow_prefix', 'model.flow.')
+            model._load_pretrained_flow(pretrained_flow_ckpt, freeze=False, flow_prefix=flow_prefix)
 
     pretrained_backbone_ckpt = getattr(config, 'pretrained_backbone_ckpt_path', None)
     if pretrained_backbone_ckpt is not None:
@@ -493,7 +510,7 @@ def build_ensemble_model_from_checkpoints(
         from .models.utils import parse_repeat_and_ensemble_from_match
         repeat_idx, _ = parse_repeat_and_ensemble_from_match(match_string)
 
-    base_seed = int(getattr(cfg, "split_seed", 42))
+    base_seed = 42 #int(getattr(cfg, "split_seed", 42))
 
     members = []
     member_test_loaders = []
@@ -507,13 +524,13 @@ def build_ensemble_model_from_checkpoints(
                 f"[build_ensemble_model_from_checkpoints] No checkpoint found for member '{member_match}'",
                 flush=True,
             )
-            return None
+            continue  # Skip this member but keep going for others
+            # return None
 
         cfg_j = copy(cfg)
         cfg_j.checkpoint_path = best_ckpt
 
-        # Recreate scalers + loaders exactly as in training for this member
-        # IMPORTANT: apply repeat seed from the eval base cfg seed, not a mutated seed.
+        # Reset to base, then apply repeat for split_seed and member for ensemble_seed.
         cfg_j.split_seed = base_seed
         set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat_idx, ensemble_idx=j)
 
@@ -524,10 +541,34 @@ def build_ensemble_model_from_checkpoints(
         member.to("cuda" if torch.cuda.is_available() else "cpu")
         member.eval()
         members.append(member)
-
+    if len(members) == 0:
+        print("No ensemble members were successfully loaded. Returning None.", flush=True)
+        return None
     model = EnsembleNDELightningModule(members)
     # use the first member loader for theta0s extraction; others are used internally
     model.test_dataloader = member_test_loaders[0]
     model.to("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     return model
+
+def set_seed_for_repeat_and_ensemble(config, repeat_idx: int, ensemble_idx: int = 0):
+    """Set repeat-bound split_seed and optional ensemble_seed on config.
+
+    - split_seed controls the *set* of cosmologies selected and the overall split
+      between train/val/test. This must depend only on repeat_idx.
+
+    - ensemble_seed is used only to reshuffle the order of the already-selected
+      trainval_cosmos subset (after max_trainval_cosmos selection), which can
+      change which cosmologies land in train vs val *without changing membership*.
+
+    Expected downstream usage:
+      - prepare_data_parameters(...) passes config.split_seed as `seed` and
+        config.ensemble_seed as `ensemble_seed` into split_by_cosmology(...).
+    """
+    base_seed = int(getattr(config, "split_seed", 42))
+    config.split_seed = base_seed + int(repeat_idx)
+
+    n_ens = int(getattr(config, "ensemble_repeats", 1) or 1)
+    config.ensemble_seed = int(ensemble_idx) if n_ens > 1 else None
+
+    return config.split_seed, config.ensemble_seed

@@ -46,9 +46,8 @@ class IdentityEmbedding(torch.nn.Module):
 class EmbeddingDataset(torch.utils.data.Dataset):
     """Dataset of precomputed embeddings and corresponding cosmological params.
 
-    Embeddings are scaled per-feature using PerDimStandardScaler.
-    Cosmological parameters are scaled with a preset MinMax scaler
-    constructed via _build_cosmo_preset_scaler and COSMO_PARAM_PRESET_MINMAX.
+    Embeddings are optionally scaled per-feature using PerDimStandardScaler.
+    Cosmological parameters are optionally scaled with a preset MinMax scaler.
     """
 
     def __init__(
@@ -57,15 +56,21 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         cosmo: torch.Tensor,
         emb_scaler: Optional[BaseScaler] = None,
         cosmo_scaler: Optional[BaseScaler] = None,
+        *,
+        scale_embeddings: bool = True,
     ):
         assert embeddings.shape[0] == cosmo.shape[0]
         self.embeddings = embeddings
         self.cosmo = cosmo
+        self.scale_embeddings = bool(scale_embeddings)
 
         # Fit or store embedding scaler (per-variable standard scaling)
-        if emb_scaler is None:
-            emb_scaler = PerDimStandardScaler()
-            emb_scaler.fit(self.embeddings)
+        if self.scale_embeddings:
+            if emb_scaler is None:
+                emb_scaler = PerDimStandardScaler()
+                emb_scaler.fit(self.embeddings)
+        else:
+            emb_scaler = None
         self.emb_scaler = emb_scaler
 
         # Store cosmology scaler (preset MinMax)
@@ -78,7 +83,7 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         z = self.embeddings[idx]
         theta = self.cosmo[idx]
 
-        z_scaled = self.emb_scaler.transform(z)
+        z_scaled = self.emb_scaler.transform(z) if self.emb_scaler is not None else z
         theta_scaled = self.cosmo_scaler.transform(theta) if self.cosmo_scaler is not None else theta
         return z_scaled, theta_scaled
 
@@ -166,7 +171,7 @@ def get_max_trainval_cosmos_grid(target_exp_name: str, source_exp_names: List[st
     return sorted(common)
 
 
-def load_pretrained_models(exp_names: List[str], cfg_overrides: Optional[Dict[str, object]] = None):
+def load_pretrained_models(exp_names: List[str], cfg_overrides: Optional[Dict[str, object]] = None, repeat_idx: Optional[int] = None) -> Tuple[List[torch.nn.Module], List[str], List[str]]:
     """Build models for a list of experiment names using their best checkpoints.
 
     Uses `load_best_model_and_build_posterior`, which encapsulates the
@@ -187,14 +192,14 @@ def load_pretrained_models(exp_names: List[str], cfg_overrides: Optional[Dict[st
     models = []
     dataset_quantities = set()
     checkpoint_paths = []
-
+    repeat_match_string = f"_{repeat_idx}" if repeat_idx is not None else ""
     for name in exp_names:
         if cfg_overrides is not None and name in cfg_overrides:
             cfg = cfg_overrides[name]
         else:
             cfg = _build_config_for_experiment(name)
 
-        result = load_best_model_and_build_posterior(cfg)
+        result = load_best_model_and_build_posterior(cfg,ds_string_match=repeat_match_string)
         if result is None:
             raise RuntimeError(f"Failed to load best model for experiment '{name}'.")
         model, _, checkpoint_path = result
@@ -252,8 +257,25 @@ def compute_embeddings(models: List[torch.nn.Module], loader: torch.utils.data.D
     return z_cat, theta_cat
 
 
+def format_run_match(match_string: str, ensemble_idx: int = 0, ensemble_repeats: int = 1) -> str:
+    """Return the run-name match tag used for logging/checkpoints.
+
+    Baseline behaviour: returns match_string.
+    Ensemble behaviour: appends '_ens{ensemble_idx}' when ensemble_repeats>1.
+
+    Note: this must NOT change match_string semantics (repeat-bound).
+    """
+    ensemble_repeats = int(ensemble_repeats or 1)
+    if ensemble_repeats > 1:
+        return f"{match_string}_ens{int(ensemble_idx)}"
+    return match_string
+
+
 def _get_embedding_cache_paths(base_cfg, wandb_run_name: str) -> Tuple[str, str, str]:
-    """Return file paths for cached embedding datasets under checkpoint dir."""
+    """Return file paths for cached embedding datasets under checkpoint dir.
+
+    wandb_run_name should already include any ensemble suffix if applicable.
+    """
     base_dir = f"{base_cfg.base_path}/checkpoints/{wandb_run_name}/datasets"
     train_path = f"{base_dir}/emb_train.pt"
     val_path = f"{base_dir}/emb_val.pt"
@@ -321,14 +343,12 @@ def build_embedding_dataloaders(
     wandb_run_name: Optional[str] = None,
     use_cache_if_exists=False,
 ):
-    """Construct *scaled* embedding dataloaders from existing loaders and models.
+    """Construct *scaled* (or optionally unscaled) embedding dataloaders from existing loaders and models.
 
-    1) Embeddings are scaled per variable using PerDimStandardScaler (shared implementation).
-    2) Cosmological parameters are scaled using preset MinMax bounds
-       from COSMO_PARAM_PRESET_MINMAX via the shared _build_cosmo_preset_scaler.
-    3) Raw embeddings + scaler parameters are cached under the checkpoint path,
-       and reused if present.
+    Embeddings scaling is controlled by config flag `scale_embeddings` (default True).
     """
+
+    scale_embeddings = bool(getattr(base_cfg, "scale_embeddings", True))
 
     # Build cosmology preset scaler from config if available
     cosmo_scaler: Optional[BaseScaler] = None
@@ -361,9 +381,12 @@ def build_embedding_dataloaders(
         val_z, val_theta = compute_embeddings(models, val_loader)
         test_z, test_theta = compute_embeddings(models, test_loader)
 
-        # Global per-variable standard scaler on training embeddings
-        emb_scaler = PerDimStandardScaler()
-        emb_scaler.fit(train_z)
+        # Global per-variable standard scaler on training embeddings (optional)
+        if scale_embeddings:
+            emb_scaler = PerDimStandardScaler()
+            emb_scaler.fit(train_z)
+        else:
+            emb_scaler = None
 
         # Save caches if possible
         if base_cfg is not None and wandb_run_name is not None:
@@ -377,9 +400,27 @@ def build_embedding_dataloaders(
             _save_embedding_cache(test_path, test_z, test_theta, emb_scaler, cosmo_scaler)
 
     # Build datasets using tensors and scalers
-    train_ds = EmbeddingDataset(train_z, train_theta, emb_scaler=emb_scaler, cosmo_scaler=cosmo_scaler)
-    val_ds = EmbeddingDataset(val_z, val_theta, emb_scaler=train_ds.emb_scaler, cosmo_scaler=cosmo_scaler)
-    test_ds = EmbeddingDataset(test_z, test_theta, emb_scaler=train_ds.emb_scaler, cosmo_scaler=cosmo_scaler)
+    train_ds = EmbeddingDataset(
+        train_z,
+        train_theta,
+        emb_scaler=emb_scaler,
+        cosmo_scaler=cosmo_scaler,
+        scale_embeddings=scale_embeddings,
+    )
+    val_ds = EmbeddingDataset(
+        val_z,
+        val_theta,
+        emb_scaler=train_ds.emb_scaler,
+        cosmo_scaler=cosmo_scaler,
+        scale_embeddings=scale_embeddings,
+    )
+    test_ds = EmbeddingDataset(
+        test_z,
+        test_theta,
+        emb_scaler=train_ds.emb_scaler,
+        cosmo_scaler=cosmo_scaler,
+        scale_embeddings=scale_embeddings,
+    )
 
     batch_size = getattr(train_loader, "batch_size", 128)
     num_workers = getattr(train_loader, "num_workers", 0)

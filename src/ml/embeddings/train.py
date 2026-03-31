@@ -26,6 +26,7 @@ from .embeddings_utils import (
 from ..models.utils import create_run_name
 from ..utils import prepare_data_parameters
 from ..eval.loading_model import find_best_checkpoint, get_best_checkpoint
+from ..utils import set_seed_for_repeat_and_ensemble
 
 
 
@@ -82,6 +83,7 @@ def train_embedding_run(
     source_experiments: Sequence[str],
     source_cfg_overrides: Optional[Dict[str, object]],
     run_name: str,
+    repeat_idx: int,
 ):
     """One end-to-end run: load sources, build embedding loaders, train flow on embeddings."""
 
@@ -94,7 +96,7 @@ def train_embedding_run(
     source_run_name = f"{run_name}_{source_experiments_strings}"
 
     models, dataset_quantities, checkpoint_paths = load_pretrained_models(
-        list(source_experiments), cfg_overrides=source_cfg_overrides
+        list(source_experiments), cfg_overrides=source_cfg_overrides, 
     )
 
     # Ensure downstream code has the dataset quantities from sources.
@@ -151,8 +153,8 @@ def train_embedding_run(
         reference_samples=None,
         model_builder=emb_model_builder,
         num_chains=1,
-        num_samples=1000,
-        warmup_steps=200
+        num_samples=4000,
+        warmup_steps=300
     )
 
 
@@ -163,10 +165,15 @@ def train_embeddings_experiment(
 ):
     """Train embeddings NDE(s) for a (target, sources) set.
 
-    Iteration over `max_trainval_cosmos` is controlled by the target experiment's
-    `split_on_source_experiments` flag (see `get_max_trainval_cosmos_grid`).
+    Now supports optional evaluation-time ensembles created by training multiple
+    independently-seeded members per repeat (config.ensemble_repeats).
 
-    The per-repeat seed logic is handled here.
+    Match string behaviour remains *bound to the repeat idx* (and n_cosmo when
+    applicable): the ensemble member index only affects run naming and split_seed.
+
+    Repeat selection:
+      - if `target_cfg.repeat_indices` is set (list/tuple of ints), iterate those indices
+      - else iterate `range(repeats)` where repeats is either the function arg or config.repeats
     """
 
     target_experiment = args.target_experiment
@@ -191,23 +198,50 @@ def train_embeddings_experiment(
         # Overrides are only needed in source-split mode.
         source_cfg_overrides = build_source_cfg_overrides(source_experiments, n_cosmo=n_cosmo if split_on_source else None)
 
-        n_repeats = int(repeats) if repeats is not None else int(getattr(base_target_cfg, "repeats", 1))
+        # Determine repeat indices (repeat_indices overrides repeats)
+        repeat_indices_cfg = getattr(base_target_cfg, "repeat_indices", None)
+        if repeat_indices_cfg is not None:
+            if not isinstance(repeat_indices_cfg, (list, tuple)):
+                raise TypeError(
+                    f"repeat_indices must be a list/tuple of ints or None, got {type(repeat_indices_cfg)}"
+                )
+            repeat_indices = [int(x) for x in repeat_indices_cfg]
+        else:
+            repeats_cfg = repeats if repeats is not None else getattr(base_target_cfg, "repeats", 1)
+            n_repeats = int(repeats_cfg or 1)
+            repeat_indices = list(range(n_repeats))
+
+        if any(i < 0 for i in repeat_indices):
+            raise ValueError(f"Repeat indices must be non-negative, got {repeat_indices}")
+
         base_seed = int(getattr(base_target_cfg, "split_seed", 42))
+        ensemble_repeats = int(getattr(base_target_cfg, "ensemble_repeats", 1) or 1)
 
-        for i in range(n_repeats):
-            # Per-repeat cfg copy
-            cfg = build_cfg_from_experiment_dict(target_experiment, target_exp_dict, n_cosmo=target_n_cosmo)
-            cfg.split_seed = base_seed + i
+        for i in repeat_indices:
+            # Base per-repeat cfg copy
+            cfg_repeat = build_cfg_from_experiment_dict(target_experiment, target_exp_dict, n_cosmo=target_n_cosmo)
+            cfg_repeat.split_seed = base_seed
 
-            # Run naming
+            # Run matching (repeat-bound)
             match_string = f"{n_cosmo_tag}_{i}"
-            cfg.match_string = match_string
-            run_name = create_run_name(cfg, match_string)
+            cfg_repeat.match_string = match_string
 
-            train_embedding_run(
-                target_cfg=cfg,
-                source_experiments=source_experiments,
-                source_cfg_overrides=source_cfg_overrides,
-                run_name=run_name,
-            )
+            for j in range(ensemble_repeats):
+                # Per-member cfg (seed differs; match_string stays repeat-bound)
+                cfg = build_cfg_from_experiment_dict(target_experiment, target_exp_dict, n_cosmo=target_n_cosmo)
+                cfg.match_string = match_string
+                cfg.split_seed = base_seed
+                set_seed_for_repeat_and_ensemble(cfg, repeat_idx=i, ensemble_idx=j)
+
+                # Run naming: include ensemble suffix only if >1
+                run_match = match_string if ensemble_repeats <= 1 else f"{match_string}_ens{j}"
+                run_name = create_run_name(cfg, run_match)
+
+                train_embedding_run(
+                    target_cfg=cfg,
+                    source_experiments=source_experiments,
+                    source_cfg_overrides=source_cfg_overrides,
+                    run_name=run_name,
+                    repeat_idx=i,
+                )
 

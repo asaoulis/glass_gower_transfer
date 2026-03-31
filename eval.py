@@ -4,6 +4,7 @@ from src.ml.eval.utils import evaluate_best_checkpoint
 from pathlib import Path
 import numpy as np
 import torch
+from copy import copy
 
 def load_config(experiment_name: str):
     """Load config in a way consistent with train.py."""
@@ -26,10 +27,10 @@ from src.ml.models.utils import apply_repeat_config
 
 # Base config used only for data_parameters
 experiments_to_evaluate = [
-    # "finetune_hybrid_16_8param"
-    # "bandpower_mlp_representation_lat8_8param"
-    # "hybrid_patches_16_8param",
-    "finetune_hybrid_16_8param_ensemble"
+    "finetune_hybrid_16_9param_ensemble",
+    # "bandpower_mlp_lat8_9param",
+    # "hybrid_patches_16_9param",
+    # "finetune_hybrid_16_9param",
 ]
 
 for experiment_name in experiments_to_evaluate:
@@ -60,17 +61,18 @@ for experiment_name in experiments_to_evaluate:
             cfg.max_trainval_cosmos = int(n_cosmo)
             cfg.match_num_cosmo = True  # Ensure match_string includes n_cosmo
             for i in range(repeats):
+                cfg_copy = copy(cfg)  # Avoid mutating cfg across repeats
                 # Apply the exact repeat match_string logic used by train_model
-                repeat_match, _ = apply_repeat_config(cfg, i)
-                cfg.match_string = repeat_match
+                repeat_match, _ = apply_repeat_config(cfg_copy, i)
+                cfg_copy.match_string = repeat_match
 
                 print(
-                    f"Evaluating '{experiment_name}' ncosmo={n_cosmo} repeat={i} match_string={cfg.match_string}",
+                    f"Evaluating '{experiment_name}' ncosmo={n_cosmo} repeat={i} match_string={cfg_copy.match_string}",
                     flush=True,
                 )
 
-                scalers, _, _, test_loader = prepare_data_parameters(cfg)
-                evaluate_best_checkpoint(cfg, test_loader, scalers["cosmo"])
+                scalers, _, _, test_loader = prepare_data_parameters(cfg_copy)
+                evaluate_best_checkpoint(cfg_copy, test_loader, scalers["cosmo"])
     else:
         # Single or no max_trainval_cosmos
         config.test_shape_noise_idx = [0]

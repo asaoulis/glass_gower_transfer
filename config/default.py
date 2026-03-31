@@ -73,7 +73,10 @@ def get_default_config():
     config.dataset_name = "illustris"
     config.dataset_suite = "LH"
     config.scaling_dataset = None
+    # Number of train repeats (int). Use `repeat_indices` to run a subset.
     config.repeats = 1
+    # Optional explicit repeat indices (tuple/list of ints). If set, overrides `repeats`.
+    config.repeat_indices = None
     config.experiment_name = None
     config.data_seed = None
     config.log_normal_dataset_path = None
@@ -82,5 +85,11 @@ def get_default_config():
     config.pretrained_band_match_string = ""
     config.num_flow_heads = 1
     config.load_pretrained_flow = False
+
+    # Embeddings pipeline options
+    # If False, do not normalise/standardise the precomputed embedding vectors
+    # before training the NDE on embeddings.
+    config.scale_embeddings = True
+    config.accumulate_grad_batches = 1
 
     return config

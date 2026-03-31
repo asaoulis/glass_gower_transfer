@@ -66,6 +66,7 @@ def fit_model(
     experiment_name,
     run_name,
     base_path,
+    accumulate_grad_batches=1
 ):
     # Accelerator / strategy
     num_gpus = torch.cuda.device_count()
@@ -103,6 +104,7 @@ def fit_model(
         check_val_every_n_epoch=1,
         gradient_clip_val=0.5,
         precision="bf16-mixed",
+        accumulate_grad_batches=accumulate_grad_batches,
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -110,92 +112,104 @@ def fit_model(
 def train_model(config):
     """Train a model, optionally over multiple repeats and/or an ensemble.
 
-    Outer loop (`repeats`) preserves the existing behavior:
-      - split_seed = base_seed + i
-      - repeat_match / pretrained_band_match_string are bound to repeat idx `i`
-      - checkpoint resolution uses ONLY the repeat match string
+    Repeat behaviour:
+      - match strings (repeat_match) are bound ONLY to repeat idx (and ncosmo if enabled)
+      - split_seed is set ONLY by repeat idx
 
-    If `config.ensemble_repeats` is set (>1), we train that many ensemble members
-    *per outer repeat*. Ensemble members:
-      - do NOT change repeat_match behavior
-      - DO get a distinct seed so data splits differ between ensemble members
-      - DO get a distinct run_string/run_name for logging + checkpoint directories
+    Ensemble behaviour:
+      - ensemble members share split_seed (repeat-bound)
+      - ensemble_seed is set per member, and only reshuffles train/val ordering
+        within the selected trainval_cosmos subset.
+
+    Notes
+    -----
+    Repeat selection:
+      - if `config.repeat_indices` is set (list/tuple of ints), iterate those indices
+      - else iterate `range(config.repeats)`
     """
-    # Determine whether this is a fresh training run or a fine-tune-from-checkpoint
+    from copy import copy
+
     original_checkpoint_path = getattr(config, "checkpoint_path", None)
 
-    # Number of GPUs controls distributed flag on the config (used downstream)
     num_gpus = torch.cuda.device_count()
     config.is_distributed = num_gpus > 1
 
-    # Number of repeats (default 1 if missing)
-    repeats = getattr(config, "repeats", 1)
+    repeat_indices_cfg = getattr(config, "repeat_indices", None)
+    if repeat_indices_cfg is not None:
+        if not isinstance(repeat_indices_cfg, (list, tuple)):
+            raise TypeError(
+                f"config.repeat_indices must be a list/tuple of ints or None, got {type(repeat_indices_cfg)}"
+            )
+        repeat_indices = [int(x) for x in repeat_indices_cfg]
+    else:
+        n_repeats = int(getattr(config, "repeats", 1) or 1)
+        repeat_indices = list(range(n_repeats))
 
-    # Ensemble size per repeat (default 1)
+    if any(i < 0 for i in repeat_indices):
+        raise ValueError(f"Repeat indices must be non-negative, got {repeat_indices}")
+
     ensemble_repeats = int(getattr(config, "ensemble_repeats", 1) or 1)
 
-    # Cache values we mutate so we can restore afterwards
-    original_split_seed = getattr(config, "split_seed", 42)
-    original_pretrained_band_match = getattr(config, "pretrained_band_match_string", None)
+    base_seed = int(getattr(config, "split_seed", 42))
 
-    for i in range(repeats):
-        # Apply the original per-repeat logic (also sets split_seed)
-        repeat_match, repeat_run_string = apply_repeat_config(config, i)
-        repeat_base_seed = config.split_seed
+    for i in repeat_indices:
+        # Work on a per-repeat copy so we don't accumulate mutations.
+        cfg_repeat = copy(config)
+        cfg_repeat.split_seed = base_seed
+        cfg_repeat.ensemble_seed = None
 
-        # Resolve checkpoint ONCE per repeat (bound to repeat idx)
-        maybe_resolve_repeat_checkpoint(config, original_checkpoint_path, repeat_match)
+        # Apply repeat match behaviour (also sets cfg_repeat.split_seed = base_seed + i)
+        repeat_match, repeat_run_string = apply_repeat_config(cfg_repeat, i)
+
+        # Resolve checkpoint ONCE per repeat, bound to repeat_match
+        maybe_resolve_repeat_checkpoint(cfg_repeat, original_checkpoint_path, repeat_match)
 
         for j in range(ensemble_repeats):
-            config.split_seed = set_seed_for_repeat_and_ensemble(config, repeat_idx=i, ensemble_idx=j)
-            # Distinguish run names/checkpoint dirs by ensemble member
-            if ensemble_repeats > 1:
-                run_string = f"{repeat_run_string}_ens{j}"
-            else:
-                run_string = repeat_run_string
+            cfg = copy(cfg_repeat)
+            # Ensure repeat seed is the only thing affecting split_seed
+            cfg.split_seed = base_seed
+            set_seed_for_repeat_and_ensemble(cfg, repeat_idx=i, ensemble_idx=j)
+
+            # Run naming: include _ens{j} only for logging/checkpoint dirs
+            run_string = (
+                f"{repeat_run_string}_ens{j}" if ensemble_repeats > 1 else repeat_run_string
+            )
 
             print(
-                f"[Repeat {i} | Ensemble {j}] split_seed={config.split_seed}",
+                f"[Repeat {i} | Ensemble {j}] split_seed={cfg.split_seed} ensemble_seed={getattr(cfg, 'ensemble_seed', None)}",
                 flush=True,
             )
-            print("Will try to use checkpoint:", config.checkpoint_path, flush=True)
+            print("Will try to use checkpoint:", cfg.checkpoint_path, flush=True)
 
-            # Prepare data and model with the updated config (including split_seed)
-            loaders, model, _ = prepare_data_and_model(config)
+            loaders, model, _ = prepare_data_and_model(cfg)
             train_loader, val_loader, _ = loaders
 
-            match_string_logger = run_string
-            run_name = create_run_name(config, match_string_logger)
+            run_name = create_run_name(cfg, run_string)
 
-            # WandB: rank-0 only, Lightning-managed
             wandb_logger = None
             if is_rank_zero():
                 wandb.finish()
                 wandb_logger = pl.loggers.WandbLogger(
-                    project=config.project,
-                    group=config.experiment_name,
+                    project=cfg.project,
+                    group=cfg.experiment_name,
                     name=run_name,
                     log_model=False,
-                    reinit=True,   # ← IMPORTANT
+                    reinit=True,
                 )
-
+            accumulate_grad_batches = getattr(cfg, "accumulate_grad_batches", 1)
             fit_model(
                 model=model,
-                epochs=config.epochs,
+                epochs=cfg.epochs,
                 wandb_logger=wandb_logger,
                 train_loader=train_loader,
                 val_loader=val_loader,
-                experiment_name=config.experiment_name,
+                experiment_name=cfg.experiment_name,
                 run_name=run_name,
-                base_path=config.base_path,
+                base_path=cfg.base_path,
+                accumulate_grad_batches=accumulate_grad_batches,
             )
             if wandb_logger is not None:
                 wandb.finish()
-
-        # restore
-            config.split_seed = original_split_seed
-        config.checkpoint_path = original_checkpoint_path
-        config.pretrained_band_match_string = original_pretrained_band_match
 
 def parse_repeat_and_ensemble_from_match(match_string: str):
     """Parse repeat/ensemble indices from a match/run string.

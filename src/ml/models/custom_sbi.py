@@ -31,6 +31,91 @@ from sbi.utils.user_input_checks import check_data_device
 
 nflow_specific_kwargs = ["num_bins", "num_components", "tail_bound"]
 
+import os
+import pickle
+import torch
+import numpy as np
+
+from nflows.flows.autoregressive import MaskedAutoregressiveFlow
+import torch
+from torch import nn
+import torch.nn.functional as F
+from pyknos.nflows import distributions as distributions_
+from pyknos.nflows import flows, transforms
+from pyknos.nflows.nn import nets
+from pyknos.nflows.transforms.splines import (
+    rational_quadratic,  # pyright: ignore[reportAttributeAccessIssue]
+)
+from nflows.flows.base import Flow
+from nflows.distributions.normal import StandardNormal
+from nflows.transforms.base import CompositeTransform
+from nflows.transforms.coupling import PiecewiseRationalQuadraticCouplingTransform
+from nflows.utils import create_alternating_binary_mask
+from nflows.nn import nets
+
+class NeuralSplineFlow(Flow):
+    def __init__(
+        self,
+        features: int,
+        hidden_features: int = 64,
+        num_layers: int = 5,
+        num_blocks_per_layer: int = 2,
+        num_bins: int = 10,
+        tail_bound: float = 3.0,
+        dropout_probability: float = 0.0,
+        use_batch_norm: bool = False,
+    ):
+        """Builds an Unconditional Neural Spline Flow."""
+        super().__init__(transform=None, distribution=None) # Initialize later below
+        
+        # 1. Base distribution: Unconditional Standard Normal
+        distribution = StandardNormal(shape=[features])
+
+        # 2. Build the transforms
+        transform_list = []
+        for i in range(num_layers):
+            # Alternate which variables are transformed vs conditioned on
+            mask = create_alternating_binary_mask(
+                features=features, even=(i % 2 == 0)
+            )
+
+            # Conditioner: Predicts the spline parameters. 
+            # Note: context_features=None makes this completely unconditional.
+            def create_resnet(in_features, out_features):
+                return nets.ResidualNet(
+                    in_features=in_features,
+                    out_features=out_features,
+                    hidden_features=hidden_features,
+                    context_features=None, 
+                    num_blocks=num_blocks_per_layer,
+                    activation=F.relu,
+                    dropout_probability=dropout_probability,
+                    use_batch_norm=use_batch_norm,
+                )
+
+            # Add the Spline Coupling transform
+            # (Note: If you have a custom patched version from sbi, replace this class name)
+            coupling_transform = transforms.PiecewiseRationalQuadraticCouplingTransform(
+                mask=mask,
+                transform_net_create_fn=create_resnet,
+                num_bins=num_bins,
+                tails="linear",
+                tail_bound=tail_bound,
+                apply_unconditional_transform=False,
+            )
+            transform_list.append(coupling_transform)
+
+            # Mix the dimensions using LU linear transform (only useful if dim > 1)
+            if features > 1:
+                transform_list.append(
+                    transforms.LULinear(features, identity_init=True)
+                )
+
+        # Combine all layers into one composite transform
+        transform = CompositeTransform(transform_list)
+
+        # 3. Initialize the base Flow class
+        super().__init__(transform=transform, distribution=distribution)
 
 def build_made(
     batch_x: Tensor,
