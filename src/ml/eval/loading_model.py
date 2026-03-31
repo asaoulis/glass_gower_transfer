@@ -1,9 +1,7 @@
 import os
-import torch
 import glob
 import re
-import json
-from .tarp import get_tarp_coverage
+
 
 def find_best_checkpoint(checkpoint_dir):
     checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "checkpoint-epoch=*-val_log_prob=*.ckpt"))

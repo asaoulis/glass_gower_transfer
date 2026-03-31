@@ -5,8 +5,7 @@ import re
 import json
 
 import torch
-from torch.distributions import Distribution, Uniform
-from sbi.utils import MultipleIndependent
+from torch.distributions import Uniform
 
 from src.ml.utils import _build_cosmo_preset_scaler
 from src.ml.data.constants import COSMO_PARAM_PRESET_MINMAX
@@ -20,8 +19,6 @@ def compute_log_prob(model):
     with torch.no_grad():
         test_log_prob = model.compute_avg_log_prob()
     return {"test_log_prob": test_log_prob}
-import torch
-
 
 def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv"):
     extra_priors = {

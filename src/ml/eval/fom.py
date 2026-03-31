@@ -1,41 +1,48 @@
 import torch
-def compute_cov_matrix_per_sim(X):
-    """
-    Computes the covariance matrix per simulation.
 
-    Args:
-        X (torch.Tensor): Input tensor of shape (num_samples, num_sims, dim)
+
+def compute_cov_matrix_per_sim(X: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    """
+    Computes a covariance matrix per posterior inference (per observation/simulation).
+
+    Expected input shape (consistent with evaluate_models.py):
+        X: (n_sims, n_samples, n_dims)
 
     Returns:
-        torch.Tensor: Covariance matrices of shape (num_sims, dim, dim)
+        cov_matrices: (n_sims, n_dims, n_dims)
     """
-    num_samples, num_sims, dim = X.shape
-    
-    # Compute mean along the sample dimension
-    mean = X.mean(dim=0, keepdim=True)  # Shape: (1, num_sims, dim)
-    
-    # Center the data
-    X_centered = X - mean  # Shape: (num_samples, num_sims, dim)
-    
-    # Compute covariance matrix per simulation
-    # cov = (X^T @ X) / (num_samples - 1) for each simulation
-    cov_matrices = torch.einsum('nsd, nse -> sde', X_centered, X_centered) / (num_samples - 1)
-    
-    return cov_matrices  # Shape: (num_sims, dim, dim)
+    if X.ndim != 3:
+        raise ValueError(f"Expected X with shape (n_sims, n_samples, n_dims), got {tuple(X.shape)}")
 
-def compute_fom(samples):
+    n_sims, n_samples, n_dims = X.shape
+
+    # Mean over samples for each sim
+    mean = X.mean(dim=1, keepdim=True)  # (n_sims, 1, n_dims)
+    X_centered = X - mean               # (n_sims, n_samples, n_dims)
+
+    # Cov per sim: (X^T X)/(n_samples-1)
+    cov_matrices = torch.einsum("snd,sne->sde", X_centered, X_centered) / max(n_samples - 1, 1)
+
+    # Numerical stabilizer (helps near-singular covariance)
+    cov_matrices = cov_matrices + eps * torch.eye(n_dims, device=X.device, dtype=X.dtype).unsqueeze(0)
+    return cov_matrices
+
+
+def compute_fom(samples: torch.Tensor, eps: float = 1e-8) -> float:
     """
-    Compute the Figure of Merit (FoM) given posterior samples.
+    Compute FoM for EACH posterior inference, then average over all observations.
 
-    Parameters:
-    samples (numpy.ndarray): An (N, d) array where N is the number of samples
-                             and d is the number of parameters.
+    Expected input shape:
+        samples: (n_sims, n_samples, n_dims)
 
-    Returns:
-    float: The computed Figure of Merit (FoM).
+    FoM per sim:
+        FoM_s = 1 / sqrt(det(C_s))
     """
-    cov_matrix = compute_cov_matrix_per_sim(samples) # Compute covariance matrix
-    det_cov = torch.linalg.det(cov_matrix)  # Determinant of covariance matrix
+    cov = compute_cov_matrix_per_sim(samples, eps=eps)  # (n_sims, d, d)
+    det_cov = torch.linalg.det(cov)                     # (n_sims,)
 
-    fom = 1.0 / (det_cov)**(samples.shape[1])  # Compute Figure of Merit 
-    return fom.mean().item()
+    # Guard against tiny/negative det from numerical issues
+    det_cov = torch.clamp(det_cov, min=eps)
+
+    fom_per_sim = det_cov.pow(-0.5)  # 1/sqrt(det)
+    return float(fom_per_sim.mean().item())
