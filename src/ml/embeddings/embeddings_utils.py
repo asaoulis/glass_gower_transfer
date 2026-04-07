@@ -171,7 +171,12 @@ def get_max_trainval_cosmos_grid(target_exp_name: str, source_exp_names: List[st
     return sorted(common)
 
 
-def load_pretrained_models(exp_names: List[str], cfg_overrides: Optional[Dict[str, object]] = None, repeat_idx: Optional[int] = None) -> Tuple[List[torch.nn.Module], List[str], List[str]]:
+def load_pretrained_models(
+    exp_names: List[str],
+    cfg_overrides: Optional[Dict[str, object]] = None,
+    repeat_idx: Optional[int] = None,
+    match_string: Optional[str] = None,
+) -> Tuple[List[torch.nn.Module], List[str], List[str]]:
     """Build models for a list of experiment names using their best checkpoints.
 
     Uses `load_best_model_and_build_posterior`, which encapsulates the
@@ -192,14 +197,21 @@ def load_pretrained_models(exp_names: List[str], cfg_overrides: Optional[Dict[st
     models = []
     dataset_quantities = set()
     checkpoint_paths = []
-    repeat_match_string = f"_{repeat_idx}" if repeat_idx is not None else ""
+
+    # Prefer explicit repeat-bound match string (e.g. 'ncosmo30_0').
+    # Fallback to legacy suffix matching by repeat index.
+    if match_string is not None and str(match_string):
+        ds_string_match = str(match_string)
+    else:
+        ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
+
     for name in exp_names:
         if cfg_overrides is not None and name in cfg_overrides:
             cfg = cfg_overrides[name]
         else:
             cfg = _build_config_for_experiment(name)
 
-        result = load_best_model_and_build_posterior(cfg,ds_string_match=repeat_match_string)
+        result = load_best_model_and_build_posterior(cfg, ds_string_match=ds_string_match)
         if result is None:
             raise RuntimeError(f"Failed to load best model for experiment '{name}'.")
         model, _, checkpoint_path = result

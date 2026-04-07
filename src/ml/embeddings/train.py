@@ -96,7 +96,10 @@ def train_embedding_run(
     source_run_name = f"{run_name}_{source_experiments_strings}"
 
     models, dataset_quantities, checkpoint_paths = load_pretrained_models(
-        list(source_experiments), cfg_overrides=source_cfg_overrides, 
+        list(source_experiments),
+        cfg_overrides=source_cfg_overrides,
+        repeat_idx=repeat_idx,
+        match_string=getattr(target_cfg, "match_string", None),
     )
 
     # Ensure downstream code has the dataset quantities from sources.
