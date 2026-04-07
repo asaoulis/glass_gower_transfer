@@ -201,6 +201,9 @@ def run_evaluation_on_samples(theta0s, samples, param_scaler, reference_samples=
     eval_metrics['mahalanobis_distance_std'] = mahalanobis_distances.std().item()
 
     if compute_calibration:
+        # must permute to match tarp excpectation
+        samples = samples.permute(1, 0, 2) 
+        theta0s = theta0s  # (n_sims, d)
         tarp = TARPDiagnostics(
             cosmological_params=cosmological_params,
             bootstrap=True,

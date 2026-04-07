@@ -30,19 +30,16 @@ def compute_cov_matrix_per_sim(X: torch.Tensor, eps: float = 1e-8) -> torch.Tens
 
 def compute_fom(samples: torch.Tensor, eps: float = 1e-8) -> float:
     """
-    Compute FoM for EACH posterior inference, then average over all observations.
-
-    Expected input shape:
-        samples: (n_sims, n_samples, n_dims)
-
-    FoM per sim:
-        FoM_s = 1 / sqrt(det(C_s))
+    Dimension-normalized FoM:
+        FoM_d = det(C)^(-1 / (2d))
+    which is comparable across dimensions.
     """
     cov = compute_cov_matrix_per_sim(samples, eps=eps)  # (n_sims, d, d)
-    det_cov = torch.linalg.det(cov)                     # (n_sims,)
+    d = cov.shape[-1]
 
-    # Guard against tiny/negative det from numerical issues
-    det_cov = torch.clamp(det_cov, min=eps)
+    sign, logabsdet = torch.linalg.slogdet(cov)
+    # Guard against numerical issues / non-PD estimates
+    logabsdet = torch.where(sign > 0, logabsdet, torch.log(torch.full_like(logabsdet, eps)))
 
-    fom_per_sim = det_cov.pow(-0.5)  # 1/sqrt(det)
+    fom_per_sim = torch.exp(-0.5 * logabsdet / d)
     return float(fom_per_sim.mean().item())

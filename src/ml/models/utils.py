@@ -2,7 +2,7 @@ import os
 import torch
 import wandb
 import pytorch_lightning as pl
-from ..eval.utils import get_best_checkpoint
+from ..eval.loading_model import get_best_checkpoint
 from ..utils import prepare_data_and_model, set_seed_for_repeat_and_ensemble
 
 def create_run_name(config, match_string_logger):
