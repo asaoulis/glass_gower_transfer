@@ -51,6 +51,17 @@ class TARPDiagnostics:
         expected = np.ones(len(rank_hist))
         return float(np.mean((rank_hist - expected) ** 2))
 
+    def _summarize_coverage(self, coverage):
+        summary = {
+            "calibration_error": self._calibration_error_from_coverage(coverage),
+            "credible_intervals": coverage[1],
+        }
+        if self.bootstrap:
+            summary["ecp_bootstrap"] = coverage[0]
+        else:
+            summary["ecp"] = coverage[0]
+        return summary
+
     def _run_tarp(self, samples_t: torch.Tensor, theta_t: torch.Tensor):
         samples_np, theta_np = self._to_tarp_shapes(samples_t, theta_t)
         coverage = get_tarp_coverage(
@@ -60,24 +71,25 @@ class TARPDiagnostics:
             num_bootstrap=self.num_bootstrap,
             seed=self.seed,
         )
-        return self._calibration_error_from_coverage(coverage)
+        return self._summarize_coverage(coverage)
 
     def compute_all(self, samples_t: torch.Tensor, theta_t: torch.Tensor):
         out = {"tarp": {"full": {}, "per_param": {}, "subsets": {}}}
 
-        out["tarp"]["full"]["calibration_error"] = self._run_tarp(samples_t, theta_t)
+        out["tarp"]["full"] = self._run_tarp(samples_t, theta_t)
 
         for dim, name in enumerate(self.cosmological_params):
-            ce = self._run_tarp(samples_t[:, :, [dim]], theta_t[:, [dim]])
-            out["tarp"]["per_param"][name] = {"calibration_error": ce}
+            out["tarp"]["per_param"][name] = self._run_tarp(
+                samples_t[:, :, [dim]], theta_t[:, [dim]]
+            )
 
         subset = ["sigma_8", "omega_m", "w0"]
         idx = _subset_indices(self.cosmological_params, subset)
         if idx is not None:
             key = "__".join(subset)
-            out["tarp"]["subsets"][key] = {
-                "calibration_error": self._run_tarp(samples_t[:, :, idx], theta_t[:, idx])
-            }
+            out["tarp"]["subsets"][key] = self._run_tarp(
+                samples_t[:, :, idx], theta_t[:, idx]
+            )
 
         return out
 

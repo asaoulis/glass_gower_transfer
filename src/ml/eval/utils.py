@@ -3,8 +3,8 @@ import torch
 import glob
 import re
 import json
+import numpy as np
 
-import torch
 from torch.distributions import Uniform
 
 from src.ml.utils import _build_cosmo_preset_scaler
@@ -14,6 +14,39 @@ from .loading_model import find_best_checkpoint
 from ..utils import is_ensemble_eval_active, build_ensemble_model_from_checkpoints
 from ..data.priors import train_or_load_gower_prior,build_flow_with_extras_prior
 from .evaluate_models import run_evaluation_on_samples
+
+
+def _to_json_compatible(value):
+    if isinstance(value, dict):
+        return {k: _to_json_compatible(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_json_compatible(v) for v in value]
+    if torch.is_tensor(value):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _pop_credible_intervals(node):
+    if not isinstance(node, dict):
+        return None
+
+    interval_like_keys = {"credible_intervals", "ecp_bootstrap", "ecp"}
+    extracted = {}
+    for key in list(node.keys()):
+        value = node[key]
+        if key in interval_like_keys:
+            extracted[key] = node.pop(key)
+            continue
+
+        child = _pop_credible_intervals(value)
+        if child:
+            extracted[key] = child
+
+    return extracted
 
 def compute_log_prob(model):
     with torch.no_grad():
@@ -89,6 +122,9 @@ def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_sample
                 reference_samples,
                 **sampling_kwargs,
             )
+            metrics_payload = {**metrics, **eval_metrics}
+            tarp_intervals = _pop_credible_intervals(metrics_payload)
+
             # Save ensemble eval next to experiment folder (not per-run)
             experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/"
             os.makedirs(experiment_path, exist_ok=True)
@@ -99,10 +135,18 @@ def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_sample
             out = {
                 "match_string": match_string,
                 "ensemble_repeats": int(getattr(config, "ensemble_repeats", 1) or 1),
-                "metrics": {**metrics, **eval_metrics},
+                "metrics": metrics_payload,
             }
             with open(results_path, "w") as f:
-                json.dump(out, f, indent=4)
+                json.dump(_to_json_compatible(out), f, indent=4)
+
+            if tarp_intervals:
+                intervals_path = os.path.join(
+                    experiment_path,
+                    f"ensemble_tarp_credible_intervals_{match_string}.json",
+                )
+                with open(intervals_path, "w") as f:
+                    json.dump(_to_json_compatible(tarp_intervals), f, indent=4)
             return {"ensemble": out}
 
     experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/"
@@ -161,15 +205,23 @@ def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_sample
             sampling_kwargs["prior"] = our_prior
         eval_metrics = generate_samples_and_run_eval(model, param_scaler, reference_samples, **sampling_kwargs)
 
+        metrics_payload = {**metrics, **eval_metrics}
+        tarp_intervals = _pop_credible_intervals(metrics_payload)
+
         results[run_folder] = {
             "best_checkpoint": best_checkpoint,
             "best_val_loss": best_val_loss,
-            "metrics": {**metrics, **eval_metrics},
+            "metrics": metrics_payload,
         }
 
         results_path = os.path.join(run_folder, "evaluation_results.json")
         with open(results_path, "w") as f:
-            json.dump(results[run_folder], f, indent=4)
+            json.dump(_to_json_compatible(results[run_folder]), f, indent=4)
+
+        if tarp_intervals:
+            intervals_path = os.path.join(run_folder, "tarp_credible_intervals.json")
+            with open(intervals_path, "w") as f:
+                json.dump(_to_json_compatible(tarp_intervals), f, indent=4)
 
     return results
 
