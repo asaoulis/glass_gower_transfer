@@ -200,10 +200,10 @@ def load_pretrained_models(
 
     # Prefer explicit repeat-bound match string (e.g. 'ncosmo30_0').
     # Fallback to legacy suffix matching by repeat index.
-    if match_string is not None and str(match_string):
-        ds_string_match = str(match_string)
-    else:
-        ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
+    # if match_string is not None and str(match_string):
+    #     ds_string_match = str(match_string)
+    # else:
+    ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
 
     for name in exp_names:
         if cfg_overrides is not None and name in cfg_overrides:

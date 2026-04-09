@@ -111,8 +111,8 @@ def train_embedding_run(
         target_cfg.pretrained_band_ckpt_path = checkpoint_paths[0]
     else:
         # get best checkpoint for this repeat based on match_string logic
-        # repeat_match = f"{n_cosmo_tag}_{i}" if n_cosmo_tag else f"_{i}"
-        best_checkpoint, _ = get_best_checkpoint(target_cfg.pretrained_band_ckpt_path, "")
+        repeat_match = f"_{repeat_idx}"
+        best_checkpoint, _ = get_best_checkpoint(target_cfg.pretrained_band_ckpt_path, repeat_match)
         target_cfg.pretrained_band_ckpt_path = best_checkpoint[0] if best_checkpoint else None
 
     scalers, train_loader, val_loader, test_loader = prepare_data_parameters(target_cfg)

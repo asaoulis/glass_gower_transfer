@@ -24,16 +24,30 @@ def find_best_checkpoint(checkpoint_dir):
     
     return best_checkpoint, best_val_loss
 
+import os
+
 def get_best_checkpoint(experiment_path, match_string):
-    run_folders = [os.path.join(experiment_path, d) for d in os.listdir(experiment_path) if os.path.isdir(os.path.join(experiment_path, d))]
-    print("Searching for best checkpoints in:", run_folders)
+    print(f"Searching recursively for best checkpoints in: {experiment_path}")
     best_checkpoints = []
     val_losses = []
-    for run_folder in run_folders:
-        if match_string not in run_folder:
+    
+    # os.walk explores the experiment_path and all of its subdirectories
+    for root, dirs, files in os.walk(experiment_path):
+        # 'root' is the current directory being evaluated 
+        # (e.g., '/this/is/a/path_0')
+        run_folder_name = os.path.basename(os.path.normpath(root))
+        
+        # Check if the match_string is in this specific folder's name
+        if match_string not in run_folder_name:
             continue
-        best_checkpoint, best_val_loss = find_best_checkpoint(run_folder)
-        best_checkpoints.append(best_checkpoint)
-        val_losses.append(best_val_loss)
+            
+        # If it matches, pass the full path (root) to your helper function
+        best_checkpoint, best_val_loss = find_best_checkpoint(root)
+        
+        # Protect against appending None if find_best_checkpoint comes up empty
+        if best_checkpoint is not None:
+            best_checkpoints.append(best_checkpoint)
+            val_losses.append(best_val_loss)
+            
+    print("Best checkpoints found:", best_checkpoints)
     return best_checkpoints, val_losses
-

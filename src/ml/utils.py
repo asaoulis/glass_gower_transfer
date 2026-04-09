@@ -5,7 +5,7 @@ import torch
 import os
 
 from .models.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, EnsembleLikelihoodNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
@@ -478,7 +478,7 @@ def build_ensemble_model_from_checkpoints(
     *,
     match_string: str,
 ):
-    """Build an EnsembleNDELightningModule from multiple separately-trained members.
+    """Build an evaluation-time ensemble model from multiple trained members.
 
     Each member may have a different train/val split (and thus different scalers)
     because split_seed changes across ensemble members. Therefore we MUST rebuild
@@ -544,7 +544,9 @@ def build_ensemble_model_from_checkpoints(
     if len(members) == 0:
         print("No ensemble members were successfully loaded. Returning None.", flush=True)
         return None
-    model = EnsembleNDELightningModule(members)
+    inference_mode = str(getattr(cfg, "inference_mode", "npe")).lower()
+    EnsembleCls = EnsembleLikelihoodNDELightningModule if inference_mode == "nle" else EnsembleNDELightningModule
+    model = EnsembleCls(members)
     # use the first member loader for theta0s extraction; others are used internally
     model.test_dataloader = member_test_loaders[0]
     model.to("cuda" if torch.cuda.is_available() else "cpu")
