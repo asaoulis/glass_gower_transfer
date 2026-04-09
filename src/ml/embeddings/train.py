@@ -244,6 +244,7 @@ def train_embeddings_experiment(
             cfg_repeat.match_string = match_string
 
             deferred_eval_context = None
+            ensemble_member_test_loaders = []
 
             for j in range(ensemble_repeats):
                 # Per-member cfg (seed differs; match_string stays repeat-bound)
@@ -265,6 +266,9 @@ def train_embeddings_experiment(
                     run_evaluation=(ensemble_repeats <= 1),
                 )
 
+                if deferred_eval_context is not None:
+                    ensemble_member_test_loaders.append(deferred_eval_context.get("test_loader"))
+
             if ensemble_repeats > 1:
                 if deferred_eval_context is None:
                     raise RuntimeError(
@@ -281,6 +285,7 @@ def train_embeddings_experiment(
                     deferred_eval_context["param_scaler"],
                     reference_samples=None,
                     model_builder=deferred_eval_context["model_builder"],
+                    ensemble_member_test_loaders=ensemble_member_test_loaders,
                     num_chains=1,
                     num_samples=4000,
                     warmup_steps=300,

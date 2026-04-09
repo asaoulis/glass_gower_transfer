@@ -477,6 +477,7 @@ def build_ensemble_model_from_checkpoints(
     test_loader,
     *,
     match_string: str,
+    member_test_loaders: Optional[Sequence[torch.utils.data.DataLoader]] = None,
 ):
     """Build an evaluation-time ensemble model from multiple trained members.
 
@@ -490,6 +491,10 @@ def build_ensemble_model_from_checkpoints(
         Ignored for ensemble members; kept for backward compatibility.
     match_string:
         Repeat-bound match string (e.g. 'ncosmo30_0').
+    member_test_loaders:
+        Optional sequence of per-member test loaders (indexed by ensemble member).
+        If provided, these are used directly to avoid rebuilding data/scalers.
+        Missing entries fall back to ``prepare_data_parameters``.
     """
     from copy import copy
 
@@ -513,7 +518,7 @@ def build_ensemble_model_from_checkpoints(
     base_seed = 42 #int(getattr(cfg, "split_seed", 42))
 
     members = []
-    member_test_loaders = []
+    resolved_member_test_loaders = []
 
     for j in range(n_ens):
         member_match = f"{match_string}_ens{j}"
@@ -534,8 +539,14 @@ def build_ensemble_model_from_checkpoints(
         cfg_j.split_seed = base_seed
         set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat_idx, ensemble_idx=j)
 
-        scalers_j, _, _, test_loader_j = prepare_data_parameters(cfg_j)
-        member_test_loaders.append(test_loader_j)
+        test_loader_j = None
+        if member_test_loaders is not None and j < len(member_test_loaders):
+            test_loader_j = member_test_loaders[j]
+
+        if test_loader_j is None:
+            _, _, _, test_loader_j = prepare_data_parameters(cfg_j)
+
+        resolved_member_test_loaders.append(test_loader_j)
 
         member = build_model(cfg_j, test_dataloader=test_loader_j)
         member.to("cuda" if torch.cuda.is_available() else "cpu")
@@ -548,7 +559,7 @@ def build_ensemble_model_from_checkpoints(
     EnsembleCls = EnsembleLikelihoodNDELightningModule if inference_mode == "nle" else EnsembleNDELightningModule
     model = EnsembleCls(members)
     # use the first member loader for theta0s extraction; others are used internally
-    model.test_dataloader = member_test_loaders[0]
+    model.test_dataloader = resolved_member_test_loaders[0]
     model.to("cuda" if torch.cuda.is_available() else "cpu")
     model.eval()
     return model

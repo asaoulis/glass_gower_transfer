@@ -84,7 +84,15 @@ def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, c
     return eval_metrics
 
 
-def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_samples=None, model_builder=None, **sampling_kwargs):
+def evaluate_best_checkpoint(
+    config,
+    test_loader,
+    param_scaler,
+    reference_samples=None,
+    model_builder=None,
+    ensemble_member_test_loaders=None,
+    **sampling_kwargs,
+):
     """Evaluate all matching run folders for an experiment.
 
     Parameters
@@ -111,6 +119,7 @@ def evaluate_best_checkpoint(config, test_loader, param_scaler, reference_sample
             config,
             test_loader,
             match_string=match_string,
+            member_test_loaders=ensemble_member_test_loaders,
         )
         if ensemble_model is None:
             print("Failed to build ensemble model; falling back to single-run evaluation.")
