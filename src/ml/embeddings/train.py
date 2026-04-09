@@ -84,8 +84,13 @@ def train_embedding_run(
     source_cfg_overrides: Optional[Dict[str, object]],
     run_name: str,
     repeat_idx: int,
+    run_evaluation: bool = True,
 ):
-    """One end-to-end run: load sources, build embedding loaders, train flow on embeddings."""
+    """One end-to-end run: load sources, build embedding loaders, train flow on embeddings.
+
+    Returns an evaluation context dict that can be reused by the caller to run
+    deferred evaluation (e.g. once after all ensemble members have finished).
+    """
 
     from .embeddings_utils import fit_nde_on_embeddings  # local import to keep module light
 
@@ -148,17 +153,26 @@ def train_embedding_run(
         model.to(device)
         model.eval()
         return model
-    
-    evaluate_best_checkpoint(
-        target_cfg,
-        test_emb_loader,
-        scalers["cosmo"],
-        reference_samples=None,
-        model_builder=emb_model_builder,
-        num_chains=1,
-        num_samples=4000,
-        warmup_steps=300
-    )
+
+    eval_context = {
+        "test_loader": test_emb_loader,
+        "param_scaler": scalers["cosmo"],
+        "model_builder": emb_model_builder,
+    }
+
+    if run_evaluation:
+        evaluate_best_checkpoint(
+            target_cfg,
+            test_emb_loader,
+            scalers["cosmo"],
+            reference_samples=None,
+            model_builder=emb_model_builder,
+            num_chains=1,
+            num_samples=4000,
+            warmup_steps=300,
+        )
+
+    return eval_context
 
 
 def train_embeddings_experiment(
@@ -229,6 +243,8 @@ def train_embeddings_experiment(
             match_string = f"{n_cosmo_tag}_{i}"
             cfg_repeat.match_string = match_string
 
+            deferred_eval_context = None
+
             for j in range(ensemble_repeats):
                 # Per-member cfg (seed differs; match_string stays repeat-bound)
                 cfg = build_cfg_from_experiment_dict(target_experiment, target_exp_dict, n_cosmo=target_n_cosmo)
@@ -240,11 +256,33 @@ def train_embeddings_experiment(
                 run_match = match_string if ensemble_repeats <= 1 else f"{match_string}_ens{j}"
                 run_name = create_run_name(cfg, run_match)
 
-                train_embedding_run(
+                deferred_eval_context = train_embedding_run(
                     target_cfg=cfg,
                     source_experiments=source_experiments,
                     source_cfg_overrides=source_cfg_overrides,
                     run_name=run_name,
                     repeat_idx=i,
+                    run_evaluation=(ensemble_repeats <= 1),
+                )
+
+            if ensemble_repeats > 1:
+                if deferred_eval_context is None:
+                    raise RuntimeError(
+                        f"Missing deferred evaluation context for repeat {i} of experiment '{target_experiment}'."
+                    )
+
+                # Evaluate once, after all ensemble members for this repeat have
+                # completed training and checkpoints are available.
+                from ..eval.utils import evaluate_best_checkpoint
+
+                evaluate_best_checkpoint(
+                    cfg_repeat,
+                    deferred_eval_context["test_loader"],
+                    deferred_eval_context["param_scaler"],
+                    reference_samples=None,
+                    model_builder=deferred_eval_context["model_builder"],
+                    num_chains=1,
+                    num_samples=4000,
+                    warmup_steps=300,
                 )
 
