@@ -186,10 +186,14 @@ def prepare_data_parameters(config):
     test_shape_noise_idx = getattr(config, 'test_shape_noise_idx', None)
 
     # Build base dataloaders via the central entrypoint
+    cosmo_param_names = list(getattr(config, 'cosmo_param_names', []))
+    selection_cosmo_params = getattr(config, 'train_val_selection_cosmo_params', None)
+    if selection_cosmo_params is None:
+        selection_cosmo_params = cosmo_param_names if len(cosmo_param_names) > 0 else None
     train_loader, val_loader, test_loader = build_dataloaders(
         config.data_patterns,
         nested_keys,
-        list(getattr(config, 'cosmo_param_names', [])),
+        cosmo_param_names,
         batch_size=getattr(config, 'batch_size', 4),
         val_batch_size=getattr(config, 'val_batch_size', None),
         test_batch_size=getattr(config, 'test_batch_size', None),
@@ -206,6 +210,9 @@ def prepare_data_parameters(config):
         stack_groups=getattr(config, 'stack_groups', False),
         augment_eb_patches=getattr(config, 'augment_eb_patches', True),
         max_trainval_cosmos=max_trainval_cosmos,
+        selection_strategy=getattr(config, 'train_val_selection_strategy', 'random'),
+        selection_cosmo_params=selection_cosmo_params,
+        stratified_bins=getattr(config, 'train_val_stratified_bins', 'auto'),
         test_shape_noise_idx=test_shape_noise_idx,
         ensemble_seed=getattr(config, 'ensemble_seed', None),
     )
@@ -217,26 +224,33 @@ def prepare_data_parameters(config):
     # Fit scalers from the training split
     scaler_options = getattr(config, 'scaler_options', None) or {}
     train_ds = train_loader.dataset
+    val_ds = val_loader.dataset
     train_paths = list(getattr(train_ds, 'paths', []))
+    val_paths = list(getattr(val_ds, 'paths', []))
     # Use explicit nested_keys resolved above (safer than introspection)
-    cosmo_params = list(getattr(config, 'cosmo_param_names', []))
+    cosmo_params = cosmo_param_names
+    is_ensemble_run = int(getattr(config, 'ensemble_repeats', 1) or 1) > 1
+    scaler_fit_paths = train_paths if not is_ensemble_run else (train_paths + val_paths)
 
     data_keys_to_scale = None
     if 'data' in scaler_options and isinstance(scaler_options['data'], dict):
         data_keys_to_scale = scaler_options['data'].get('keys')
-    key_scalers = _fit_data_key_scalers_from_paths(train_paths, nested_keys, keys_to_scale=data_keys_to_scale)
+    key_scalers = _fit_data_key_scalers_from_paths(
+        scaler_fit_paths,
+        nested_keys,
+        keys_to_scale=data_keys_to_scale,
+    )
 
     cosmo_scaler = None
     if 'cosmo' in scaler_options:
         scaling_type = scaler_options['cosmo']['type']
         if scaling_type == 'minmax':
-            cosmo_scaler = _fit_cosmo_minmax_scaler_from_paths(train_paths, cosmo_params)
+            cosmo_scaler = _fit_cosmo_minmax_scaler_from_paths(scaler_fit_paths, cosmo_params)
         elif scaling_type == "preset":
             from .data.constants import COSMO_PARAM_PRESET_MINMAX
             cosmo_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, cosmo_params)
         else:
             raise ValueError(f"Unsupported cosmo scaler type '{scaling_type}' specified in config.scaler_options['cosmo']['type']")
-
     # Build transforms and wrap loaders
     data_transform = DataDictScalerTransform(key_scalers)
     train_loader = _wrap_loader_with_transforms(train_loader, data_transform, cosmo_scaler)
@@ -478,6 +492,7 @@ def build_ensemble_model_from_checkpoints(
     *,
     match_string: str,
     member_test_loaders: Optional[Sequence[torch.utils.data.DataLoader]] = None,
+    model_builder=None,
 ):
     """Build an evaluation-time ensemble model from multiple trained members.
 
@@ -497,6 +512,8 @@ def build_ensemble_model_from_checkpoints(
         Missing entries fall back to ``prepare_data_parameters``.
     """
     from copy import copy
+    if model_builder is None:
+        model_builder = build_model
 
     n_ens = int(getattr(cfg, "ensemble_repeats", 1) or 1)
     if n_ens <= 1:
@@ -548,7 +565,7 @@ def build_ensemble_model_from_checkpoints(
 
         resolved_member_test_loaders.append(test_loader_j)
 
-        member = build_model(cfg_j, test_dataloader=test_loader_j)
+        member = model_builder(cfg_j, test_dataloader=test_loader_j)
         member.to("cuda" if torch.cuda.is_available() else "cpu")
         member.eval()
         members.append(member)

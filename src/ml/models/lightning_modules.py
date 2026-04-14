@@ -769,27 +769,6 @@ class ConditionDict(dict):
         return ConditionDict(self)
 
 
-class ConditionList(list):
-    """List-like condition container with a tensor-like ``.shape`` attribute.
-
-    This is used when each ensemble member requires its own conditioned input
-    (e.g. member-specific scaled observations for NLE ensembles), while SBI
-    utilities still expect ``x.shape[0]`` to return the batch dimension.
-    """
-
-    @property
-    def shape(self):
-        if len(self) == 0:
-            raise ValueError("ConditionList is empty; cannot infer .shape[0].")
-        first_val = self[0]
-        if not hasattr(first_val, "shape"):
-            raise AttributeError("First element has no .shape attribute.")
-        return first_val.shape
-
-    def copy(self):
-        return ConditionList(self)
-
-
 def _move_nested_to_device(x, device):
     """Move nested tensors/structures to ``device`` while preserving container type."""
     if hasattr(x, "to"):
@@ -1582,18 +1561,8 @@ class _EnsembleLikelihoodModel(nn.Module):
         self.reduction = reduction
 
     def log_prob(self, x, theta):
-        # x can be a single batch tensor (shared for all members) or a
-        # ConditionList containing one batch per member.
-        if isinstance(x, ConditionList):
-            if len(x) != len(self.members):
-                raise ValueError(
-                    f"ConditionList length ({len(x)}) does not match number of members ({len(self.members)})."
-                )
-            xs = x
-        else:
-            xs = [x] * len(self.members)
-
-        log_probs = [m.forward(x_i, cond=theta) for m, x_i in zip(self.members, xs)]
+        # All members evaluate the same condition x.
+        log_probs = [m.forward(x, cond=theta) for m in self.members]
         stacked = torch.stack(log_probs, dim=0)
 
         if self.reduction == "logmeanexp":
@@ -1643,10 +1612,6 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
                     "cannot safely ensemble their likelihoods."
                 )
 
-    def _iter_member_batches(self):
-        self._validate_member_loaders()
-        return zip(*(m.test_dataloader for m in self.members))
-
     def to(self, *args, **kwargs):  # type: ignore[override]
         super().to(*args, **kwargs)
         for m in self.members:
@@ -1665,15 +1630,15 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
         target_device = self._resolve_device()
 
         all_log_probs = []
-        for member_batches in self._iter_member_batches():
+        for batch in self.test_dataloader:
+            x, theta = batch
+            x = _move_nested_to_device(x, target_device)
+            theta = _move_nested_to_device(theta, target_device)
             batch_lps = []
-            for m, batch in zip(self.members, member_batches):
-                x_i, theta_i = batch
-                x_i = _move_nested_to_device(x_i, target_device)
-                theta_i = _move_nested_to_device(theta_i, target_device)
+            for m in self.members:
                 m.to(target_device)
                 m.eval()
-                batch_lps.append(m.forward(x_i, cond=theta_i))
+                batch_lps.append(m.forward(x, cond=theta))
             all_log_probs.append(torch.stack(batch_lps, dim=0).mean(dim=0).reshape(-1))
 
         return float(-torch.cat(all_log_probs, dim=0).mean().item())
@@ -1713,41 +1678,46 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
     def generate_samples(
         self,
         num_samples=2_000,
+        num_jobs=36,
+        backend="loky",
         prior=None,
         reduction: str = "logmeanexp",
         **mcmc_kwargs,
     ):
+        """Parallelize over batches using joblib with ensemble likelihood per batch."""
         posterior = self.build_posterior_object(
             prior=prior,
             reduction=reduction,
             fixed_parameters=mcmc_kwargs.pop("fixed_parameters", None),
         )
 
-        target_device = self._resolve_device()
-        posterior.to(target_device)
-        posterior.prior.to(target_device)
+        # Move everything to CPU for process-based parallelism.
+        posterior.to("cpu")
+        posterior.prior.to("cpu")
 
-        theta0s, samples = [], []
-        total_batches = len(self.test_dataloader)
-        for member_batches in tqdm(self._iter_member_batches(), total=total_batches, desc="Sampling ensemble batches"):
-            x_per_member = []
-            theta_ref = None
-            for idx, (m, batch) in enumerate(zip(self.members, member_batches)):
-                x_i, theta_i = batch
-                x_per_member.append(_move_nested_to_device(x_i, target_device))
-                if idx == 0:
-                    theta_ref = theta_i
-
-            theta0s.append(theta_ref)
-            x_condition = ConditionList(x_per_member)
-            samples_i = posterior._gen_samples(
-                num_samples=num_samples,
-                x=x_condition,
-                use_latent=False,
-                **mcmc_kwargs,
+        jobs = Parallel(
+            n_jobs=num_jobs,
+            backend=backend,
+            return_as="generator",
+        )(
+            delayed(posterior.sample_single_batch)(
+                num_samples,
+                test_data,
+                test_cosmo,
+                dict(mcmc_kwargs),
             )
-            samples.append(samples_i.cpu())
+            for test_data, test_cosmo in self.test_dataloader
+        )
 
+        results = list(
+            tqdm(
+                jobs,
+                total=len(self.test_dataloader),
+                desc="Sampling ensemble batches",
+            )
+        )
+
+        theta0s, samples = zip(*results)
         theta0s = torch.cat(theta0s, dim=0)
         samples = torch.cat(samples, dim=1)
         return theta0s, samples

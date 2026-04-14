@@ -286,8 +286,10 @@ def plot_tarp_calibration_curves(
 
         alpha = np.asarray(run_curves[alpha_key], dtype=float)
         mean_ecp, std_ecp = _aggregate_curve(run_curves[ecp_path], use_bootstrap=use_bootstrap)
-
-        label = f"Repeat {run_name.split('_')[2]}"  # default label is first token of run name
+        try:
+            label = f"Repeat {run_name.split('_')[2]}"  # default label is first token of run name
+        except:
+            label = run_name
         if x_from_run_name:
             ncosmo = _derive_x_from_run_name(run_name)
             if ncosmo is not None:

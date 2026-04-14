@@ -110,7 +110,7 @@ def evaluate_best_checkpoint(
         Defaults to src.ml.utils.build_model.
     """
     print("Running evaluation for experiment:", config.experiment_name, flush=True)
-
+    is_nle_inference_mode = config.inference_mode == "nle"
     # If ensemble evaluation is active, run a single ensemble evaluation for the
     # provided match_string (bound to repeat idx) and return early.
     if is_ensemble_eval_active(config) and getattr(config, "match_string", None):
@@ -120,11 +120,15 @@ def evaluate_best_checkpoint(
             test_loader,
             match_string=match_string,
             member_test_loaders=ensemble_member_test_loaders,
+            model_builder=model_builder,
         )
         if ensemble_model is None:
             print("Failed to build ensemble model; falling back to single-run evaluation.")
         else:
             metrics = compute_log_prob(ensemble_model)
+            if is_nle_inference_mode:
+                our_prior = build_gower_prior(config.cosmo_param_names)
+                sampling_kwargs["prior"] = our_prior
             eval_metrics = generate_samples_and_run_eval(
                 ensemble_model,
                 param_scaler,
@@ -185,7 +189,6 @@ def evaluate_best_checkpoint(
             return model
 
     results = {}
-    is_nle_inference_mode = config.inference_mode == "nle"
     for run_folder in run_folders:
         print(run_folder, flush=True)
 

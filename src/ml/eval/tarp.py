@@ -15,6 +15,25 @@ import deprecation
 __all__ = ("get_tarp_coverage", "get_drp_coverage")
 
 
+def _compute_bin_membership(values: np.ndarray, alpha_edges: np.ndarray) -> dict:
+    """Return per-simulation bin assignments for credibility values."""
+    num_bins = len(alpha_edges) - 1
+    bin_indices = np.digitize(values, alpha_edges, right=False) - 1
+    bin_indices = np.clip(bin_indices, 0, num_bins - 1)
+
+    # Keep arrays for direct downstream indexing into theta/samples.
+    bin_members = [np.where(bin_indices == i)[0] for i in range(num_bins)]
+    bin_counts = np.bincount(bin_indices, minlength=num_bins)
+
+    return {
+        "credibility_values": values,
+        "bin_indices": bin_indices,
+        "bin_edges": alpha_edges,
+        "bin_members": bin_members,
+        "bin_counts": bin_counts,
+    }
+
+
 @deprecation.deprecated(
     deprecated_in="0.1.0",
     removed_in="0.2.0",
@@ -44,8 +63,9 @@ def _get_tarp_coverage_single(
     metric: str = "euclidean",
     num_alpha_bins: Union[int, None] = None,
     norm: bool = True,
-    seed: Union[int, None] = None
-) -> Tuple[np.ndarray, np.ndarray]:
+    seed: Union[int, None] = None,
+    return_bin_membership: bool = False,
+) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, dict]]:
     """
     Estimates coverage with the TARP method a single time.
 
@@ -66,7 +86,9 @@ def _get_tarp_coverage_single(
         seed: the seed to use for the random number generator. If ``None``, then no seed
 
     Returns:
-        Expected coverage probability (``ecp``) and credibility values (``alpha``) 
+        Expected coverage probability (``ecp``) and credibility values (``alpha``).
+        If ``return_bin_membership`` is True, also returns a dict with per-simulation
+        credibility values and bin assignments.
     """
     np.random.seed(seed)
 
@@ -135,7 +157,13 @@ def _get_tarp_coverage_single(
     h, alpha = np.histogram(f, density=True, bins=num_alpha_bins, range=(0,1))
     dx = alpha[1] - alpha[0]
     ecp = np.cumsum(h) * dx
-    return np.concatenate([[0], ecp]), alpha
+    ecp = np.concatenate([[0], ecp])
+
+    if return_bin_membership:
+        membership = _compute_bin_membership(f, alpha)
+        return ecp, alpha, membership
+
+    return ecp, alpha
 
 
 def _get_tarp_coverage_bootstrap(samples: np.ndarray,
@@ -206,8 +234,9 @@ def get_tarp_coverage(
     num_bootstrap: int = 100,
     norm: bool = False,
     bootstrap: bool = False,
-    seed: Union[int, None] = None
-) -> Tuple[np.ndarray, np.ndarray]:
+    seed: Union[int, None] = None,
+    return_bin_membership: bool = False,
+) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, dict]]:
     """
     Estimates coverage with the TARP method.
 
@@ -231,11 +260,41 @@ def get_tarp_coverage(
 
     Returns:
         Expected coverage probability (``ecp``) and credibility values (``alpha``).
-        If bootstrap is True, the ecp array has an extra dimension corresponding to the number of bootstrap iterations
+        If bootstrap is True, the ecp array has an extra dimension corresponding
+        to the number of bootstrap iterations.
+        If ``return_bin_membership`` is True, also returns a dict containing
+        per-simulation bin assignments from a non-bootstrap pass over the full
+        input set. This is intended for selecting simulations in specific
+        credibility bins for posterior inspection.
     """
     if bootstrap:
         ecp, alpha = _get_tarp_coverage_bootstrap(samples, theta, references, metric, num_alpha_bins, num_bootstrap,
                                                   norm, seed)
+        if return_bin_membership:
+            _, _, membership = _get_tarp_coverage_single(
+                samples,
+                theta,
+                references=references,
+                metric=metric,
+                num_alpha_bins=num_alpha_bins,
+                norm=norm,
+                seed=seed,
+                return_bin_membership=True,
+            )
+            return ecp, alpha, membership
     else:
+        if return_bin_membership:
+            ecp, alpha, membership = _get_tarp_coverage_single(
+                samples,
+                theta,
+                references,
+                metric,
+                num_alpha_bins,
+                norm,
+                seed,
+                return_bin_membership=True,
+            )
+            return ecp, alpha, membership
+
         ecp, alpha = _get_tarp_coverage_single(samples, theta, references, metric, num_alpha_bins, norm, seed)
     return ecp, alpha

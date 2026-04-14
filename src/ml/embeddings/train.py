@@ -111,6 +111,8 @@ def train_embedding_run(
     target_cfg.dataset_quantities = dataset_quantities
     target_cfg.test_shape_noise_idx = [0]
 
+    do_run_training = getattr(target_cfg, "run_training", True)
+
     # Default pretrained flow checkpoint path to the first source checkpoint.
     if target_cfg.pretrained_band_ckpt_path is None:
         target_cfg.pretrained_band_ckpt_path = checkpoint_paths[0]
@@ -119,7 +121,6 @@ def train_embedding_run(
         repeat_match = f"_{repeat_idx}"
         best_checkpoint, _ = get_best_checkpoint(target_cfg.pretrained_band_ckpt_path, repeat_match)
         target_cfg.pretrained_band_ckpt_path = best_checkpoint[0] if best_checkpoint else None
-
     scalers, train_loader, val_loader, test_loader = prepare_data_parameters(target_cfg)
 
     train_emb_loader, val_emb_loader, test_emb_loader = build_embedding_dataloaders(
@@ -129,21 +130,24 @@ def train_embedding_run(
         models,
         base_cfg=target_cfg,
         wandb_run_name=source_run_name,
+        use_cache_if_exists= (not do_run_training),  # Only skip if we're not training (i.e. if we're just evaluating with existing embeddings
     )
 
+
     emb_dim = next(iter(train_emb_loader))[0].shape[-1]
-    fit_nde_on_embeddings(emb_dim, train_emb_loader, val_emb_loader, test_emb_loader, target_cfg, source_run_name)
+    if do_run_training:
+        fit_nde_on_embeddings(emb_dim, train_emb_loader, val_emb_loader, test_emb_loader, target_cfg, source_run_name)
 
     # Keeping the ad-hoc evaluation hook (commented) as in the original script.
     # If you want to enable it, ensure `target_cfg.checkpoint_path` points to the trained
     # embeddings flow checkpoint before calling.
     #
-    def emb_model_builder(cfg, loader):
+    def emb_model_builder(cfg, test_dataloader = None):
         from .embeddings_utils import build_nde_on_embeddings
         import torch
     
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = build_nde_on_embeddings(emb_dim=emb_dim, base_cfg=cfg, test_loader=loader, device=device)
+        model = build_nde_on_embeddings(emb_dim=emb_dim, base_cfg=cfg, test_loader=test_dataloader, device=device)
     
         checkpoint_path = getattr(cfg, "checkpoint_path", None)
         if checkpoint_path:
