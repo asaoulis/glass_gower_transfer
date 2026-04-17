@@ -1,6 +1,12 @@
 import torch
 
 
+def _safe_logdet(cov: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
+    sign, logabsdet = torch.linalg.slogdet(cov)
+    fallback = torch.log(torch.full_like(logabsdet, eps))
+    return torch.where(sign > 0, logabsdet, fallback)
+
+
 def compute_cov_matrix_per_sim(X: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
     """
     Computes a covariance matrix per posterior inference (per observation/simulation).
@@ -28,7 +34,7 @@ def compute_cov_matrix_per_sim(X: torch.Tensor, eps: float = 1e-8) -> torch.Tens
     return cov_matrices
 
 
-def compute_fom(samples: torch.Tensor, eps: float = 1e-8) -> float:
+def compute_dim_normalized_fom(samples: torch.Tensor, eps: float = 1e-8) -> float:
     """
     Dimension-normalized FoM:
         FoM_d = det(C)^(-1 / (2d))
@@ -37,9 +43,57 @@ def compute_fom(samples: torch.Tensor, eps: float = 1e-8) -> float:
     cov = compute_cov_matrix_per_sim(samples, eps=eps)  # (n_sims, d, d)
     d = cov.shape[-1]
 
-    sign, logabsdet = torch.linalg.slogdet(cov)
-    # Guard against numerical issues / non-PD estimates
-    logabsdet = torch.where(sign > 0, logabsdet, torch.log(torch.full_like(logabsdet, eps)))
+    logabsdet = _safe_logdet(cov, eps=eps)
 
     fom_per_sim = torch.exp(-0.5 * logabsdet / d)
+    return float(fom_per_sim.mean().item())
+
+
+def compute_dim_normalized_fom_against_prior(
+    samples: torch.Tensor,
+    prior_cov: torch.Tensor,
+    eps: float = 1e-8,
+) -> float:
+    """
+    Prior-referenced dimension-normalized FoM:
+        FoM_d = (det(C_prior) / det(C_post))^(1 / (2d))
+    """
+    cov = compute_cov_matrix_per_sim(samples, eps=eps)  # (n_sims, d, d)
+    d = cov.shape[-1]
+
+    logdet_post = _safe_logdet(cov, eps=eps)
+    logdet_prior = _safe_logdet(prior_cov, eps=eps)
+
+    fom_per_sim = torch.exp(-0.5 * (logdet_post - logdet_prior) / d)
+    return float(fom_per_sim.mean().item())
+
+
+def compute_standard_fom(samples: torch.Tensor, eps: float = 1e-8) -> float:
+    """
+    Standard FoM:
+        FoM = det(C)^(-1/2)
+    """
+    cov = compute_cov_matrix_per_sim(samples, eps=eps)  # (n_sims, d, d)
+
+    logabsdet = _safe_logdet(cov, eps=eps)
+
+    fom_per_sim = torch.exp(-0.5 * logabsdet)
+    return float(fom_per_sim.mean().item())
+
+
+def compute_standard_fom_against_prior(
+    samples: torch.Tensor,
+    prior_cov: torch.Tensor,
+    eps: float = 1e-8,
+) -> float:
+    """
+    Prior-referenced standard FoM:
+        FoM = (det(C_prior) / det(C_post))^(1/2)
+    """
+    cov = compute_cov_matrix_per_sim(samples, eps=eps)  # (n_sims, d, d)
+
+    logdet_post = _safe_logdet(cov, eps=eps)
+    logdet_prior = _safe_logdet(prior_cov, eps=eps)
+
+    fom_per_sim = torch.exp(-0.5 * (logdet_post - logdet_prior))
     return float(fom_per_sim.mean().item())

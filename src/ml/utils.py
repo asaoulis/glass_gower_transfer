@@ -229,6 +229,10 @@ def prepare_data_parameters(config):
     val_paths = list(getattr(val_ds, 'paths', []))
     # Use explicit nested_keys resolved above (safer than introspection)
     cosmo_params = cosmo_param_names
+
+    # Backward compatibility: single-model runs keep train-only scaler fitting.
+    # Ensemble runs fit on train+val so all members sharing a trainval split
+    # use identical input scaling, regardless of train/val partitioning.
     is_ensemble_run = int(getattr(config, 'ensemble_repeats', 1) or 1) > 1
     scaler_fit_paths = train_paths if not is_ensemble_run else (train_paths + val_paths)
 
@@ -251,6 +255,7 @@ def prepare_data_parameters(config):
             cosmo_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, cosmo_params)
         else:
             raise ValueError(f"Unsupported cosmo scaler type '{scaling_type}' specified in config.scaler_options['cosmo']['type']")
+
     # Build transforms and wrap loaders
     data_transform = DataDictScalerTransform(key_scalers)
     train_loader = _wrap_loader_with_transforms(train_loader, data_transform, cosmo_scaler)

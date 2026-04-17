@@ -28,7 +28,8 @@ from ..utils import prepare_data_parameters
 from ..eval.loading_model import find_best_checkpoint, get_best_checkpoint
 from ..utils import set_seed_for_repeat_and_ensemble
 
-
+NUM_SAMPLES = 12000
+NUM_WARMUP = 500
 
 @dataclass(frozen=True)
 class EmbeddingTrainArgs:
@@ -172,8 +173,8 @@ def train_embedding_run(
             reference_samples=None,
             model_builder=emb_model_builder,
             num_chains=1,
-            num_samples=4000,
-            warmup_steps=300,
+            num_samples=NUM_SAMPLES,
+            warmup_steps=NUM_WARMUP,
         )
 
     return eval_context
@@ -291,7 +292,7 @@ def train_embeddings_experiment(
                     model_builder=deferred_eval_context["model_builder"],
                     ensemble_member_test_loaders=ensemble_member_test_loaders,
                     num_chains=1,
-                    num_samples=4000,
-                    warmup_steps=300,
+                    num_samples=NUM_SAMPLES,
+                    warmup_steps=NUM_WARMUP,
                 )
 

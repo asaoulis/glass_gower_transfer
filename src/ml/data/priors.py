@@ -3,18 +3,133 @@ import numpy as np
 import pandas as pd
 from scipy.stats import gaussian_kde
 from sbi.utils import process_prior
-import torch
-import numpy as np
-from scipy.stats import gaussian_kde
 from torch.distributions import Distribution, constraints
-import torch
-import numpy as np
-from scipy.stats import gaussian_kde
-from torch.distributions import Distribution, constraints
+from torch.distributions import Normal, Uniform, TransformedDistribution
+from torch.distributions.transforms import ExpTransform
+import math
 import os
 import pickle
 import torch
 import numpy as np
+
+
+class TruncatedNormal1D(Distribution):
+    """1D truncated normal distribution.
+
+    This is a minimal Distribution implementation used for analytic priors.
+    It uses rejection sampling for `.sample()` and an exact normalization
+    constant for `.log_prob()`.
+    """
+
+    arg_constraints = {}
+    has_rsample = False
+
+    def __init__(self, loc, scale, low, high, max_tries: int = 10_000):
+        super().__init__(validate_args=False)
+
+        self.loc = torch.as_tensor(loc, dtype=torch.float32).reshape(1)
+        self.scale = torch.as_tensor(scale, dtype=torch.float32).reshape(1)
+        self.low = torch.as_tensor(low, dtype=torch.float32).reshape(1)
+        self.high = torch.as_tensor(high, dtype=torch.float32).reshape(1)
+        self.max_tries = int(max_tries)
+
+        self.base = Normal(self.loc, self.scale)
+
+        self._event_shape = torch.Size([1])
+        self._batch_shape = torch.Size([])
+
+    @property
+    def event_shape(self):
+        return self._event_shape
+
+    @property
+    def batch_shape(self):
+        return self._batch_shape
+
+    def sample(self, sample_shape=torch.Size()):
+        n = int(torch.tensor(sample_shape).prod()) if len(sample_shape) else 1
+        out = torch.empty((n,), dtype=torch.float32)
+        filled = 0
+        tries = 0
+
+        # Oversample in chunks to keep it reasonably fast.
+        while filled < n and tries < self.max_tries:
+            tries += 1
+            k = max(256, 2 * (n - filled))
+            x = self.base.sample((k,))  # [k, 1]
+            x = x[..., 0]
+            mask = (x >= self.low.item()) & (x <= self.high.item())
+            accepted = x[mask]
+            if accepted.numel() == 0:
+                continue
+            take = min(accepted.numel(), n - filled)
+            out[filled:filled + take] = accepted[:take]
+            filled += take
+
+        if filled < n:
+            raise RuntimeError(
+                "TruncatedNormal1D.sample: rejection sampler exhausted; "
+                "check bounds/scale." 
+            )
+
+        return out.reshape(sample_shape + self.event_shape)
+
+    def log_prob(self, value):
+        # value expected shape [..., 1]
+        x = value[..., 0]
+
+        # Outside support -> -inf
+        valid = (x >= self.low.to(x.device)[0]) & (x <= self.high.to(x.device)[0])
+        logp = torch.full_like(x, float("-inf"))
+
+        # Normalization constant Z = Phi((b-m)/s) - Phi((a-m)/s)
+        a = (self.low.to(x.device)[0] - self.loc.to(x.device)[0]) / self.scale.to(x.device)[0]
+        b = (self.high.to(x.device)[0] - self.loc.to(x.device)[0]) / self.scale.to(x.device)[0]
+
+        # torch Normal.cdf exists; fall back to erf if needed.
+        try:
+            Z = (Normal(0.0, 1.0).cdf(b) - Normal(0.0, 1.0).cdf(a)).clamp_min(1e-12)
+        except Exception:
+            def _phi(z):
+                return 0.5 * (1.0 + torch.erf(z / math.sqrt(2.0)))
+            Z = (_phi(b) - _phi(a)).clamp_min(1e-12)
+
+        lp_valid = self.base.log_prob(x.unsqueeze(-1))[..., 0] - torch.log(Z)
+        logp[valid] = lp_valid[valid]
+        return logp
+
+    def to(self, device):
+        self.loc = self.loc.to(device)
+        self.scale = self.scale.to(device)
+        self.low = self.low.to(device)
+        self.high = self.high.to(device)
+        self.base = Normal(self.loc, self.scale)
+        return self
+
+
+def build_log_uniform(low: float, high: float) -> TransformedDistribution:
+    """Return a distribution with log(x) ~ Uniform(log(low), log(high))."""
+    low_t = torch.tensor([float(low)], dtype=torch.float32)
+    high_t = torch.tensor([float(high)], dtype=torch.float32)
+    base = Uniform(torch.log(low_t), torch.log(high_t))
+    return TransformedDistribution(base, [ExpTransform()])
+
+
+def build_gower_paper_known_priors():
+    """Analytic priors from the paper, in *physical* parameter units."""
+    return {
+        # w ~ N(-1, 1/3) truncated to [-1, -1/3]
+        "w0": TruncatedNormal1D(loc=-1.0, scale=1.0 / 3.0, low=-1.0, high=-1. / 3.0),
+        # log(mnu) ~ U[log(0.06), log(0.14)] after dropping the first 192 runs
+        "mnu": build_log_uniform(0.06, 0.14),
+        # Gaussian priors
+        "h": Normal(torch.tensor([0.7022]), torch.tensor([0.0245])),
+        "ns": Normal(torch.tensor([0.9649]), torch.tensor([0.0063])),
+        "ombh2": Normal(torch.tensor([0.02237]), torch.tensor([0.00015])),
+        # IA priors
+        "a_ia": Uniform(torch.tensor([4.48]), torch.tensor([7.0])),
+        "b_ia": Uniform(torch.tensor([0.28]), torch.tensor([0.6])),
+    }
 class TorchKDE1D(Distribution):
     arg_constraints = {}
     support = constraints.unit_interval
@@ -259,15 +374,21 @@ def train_or_load_gower_prior(
     batch_size=128,
     val_fraction=0.2,
     patience=50,
-    retrain=False
+    retrain=False,
+    save_path=None,
 ):
 
     # -------------------------
     # load if exists
     # -------------------------
     
-    if os.path.exists(SAVE_PATH) and not retrain:
-        with open(SAVE_PATH, "rb") as f:
+    if save_path is None:
+        # Avoid collisions when training flows for different variable subsets.
+        safe_name = "_".join([str(v) for v in variables])
+        save_path = f"./data/gower_prior_{safe_name}.pkl"
+
+    if os.path.exists(save_path) and not retrain:
+        with open(save_path, "rb") as f:
             flow = pickle.load(f)
         flow.to(device)
         return flow
@@ -288,8 +409,10 @@ def train_or_load_gower_prior(
     # -------------------------
     # scale
     # -------------------------
-
-    scaler.fit(theta_np)
+    # Keep existing scaling if provided (e.g. preset min/max). Only fit if
+    # min/max are missing.
+    if getattr(scaler, "min", None) is None or getattr(scaler, "max", None) is None:
+        scaler.fit(theta_np)
 
     theta_scaled = scaler.transform(theta_np)
 
@@ -417,7 +540,7 @@ def train_or_load_gower_prior(
 
     os.makedirs("./data", exist_ok=True)
 
-    with open(SAVE_PATH, "wb") as f:
+    with open(save_path, "wb") as f:
         pickle.dump(flow, f)
 
     return flow

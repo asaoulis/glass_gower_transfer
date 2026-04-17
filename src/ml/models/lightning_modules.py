@@ -954,12 +954,18 @@ class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
 
         sample_shape = (num_samples,)
 
-        # 1. Get the base potential and transform
-        potential, tf = likelihood_estimator_based_potential(
-            self,
-            self.prior,
-            x_o=None,
-        )
+        # sbi's check_transform seems to randomly fail; do a bad thing here now
+        while True:
+            try:
+                potential, tf = likelihood_estimator_based_potential(
+                    self,
+                    self.prior,
+                    x_o=None,
+                    enable_transform=True
+                )
+                break
+            except Exception as e:
+                print("Error in check_transform, retrying...", e)
 
         prior_to_use = self.prior
 
@@ -1092,12 +1098,12 @@ class NDELightningModule(BaseLightningModule):
         if hasattr(self.model, "embedding_net") and hasattr(self.model.embedding_net, "only_return_mu"):
             self.model.embedding_net.only_return_mu = True
 
-        if prior is None:
-            prior = utils.BoxUniform(
-                low=0 * torch.ones(self.inference_dim, device=device),
-                high=1.0 * torch.ones(self.inference_dim, device=device),
-                device=device,
-            )
+        # if prior is None:
+        prior = utils.BoxUniform(
+            low=0 * torch.ones(self.inference_dim, device=device),
+            high=1.0 * torch.ones(self.inference_dim, device=device),
+            device=device,
+        )
 
         density_estimator = PatchedConditionalDensityEstimator(
             self.model,
@@ -1500,14 +1506,52 @@ class EnsembleNDELightningModule(pl.LightningModule):
         return self
 
     @torch.no_grad()
-    def compute_avg_log_prob(self):
-        vals = []
-        for m in self.members:
-            if hasattr(m, "compute_avg_log_prob"):
-                vals.append(float(m.compute_avg_log_prob()))
+    def compute_avg_log_prob(self, reduction: str = "logmeanexp", return_log_probs: bool = False):
+        """Compute ensemble average negative log-probability on the test set.
+
+        Aggregation is done per simulation (datapoint) across members first,
+        then averaged over simulations.
+
+        Args:
+            reduction: "logmeanexp" for mixture-consistent aggregation,
+                or "mean_log_prob" for arithmetic mean in log-space.
+            return_log_probs: If True, return the per-simulation aggregated
+                log-prob vector instead of the scalar negative mean.
+        """
+        if reduction not in {"logmeanexp", "mean_log_prob"}:
+            raise ValueError("reduction must be one of {'mean_log_prob', 'logmeanexp'}")
+
+        if self.test_dataloader is None:
+            raise ValueError("EnsembleNDELightningModule.test_dataloader is None")
+
+        target_device = self._resolve_device()
+        all_log_probs = []
+
+        for batch in self.test_dataloader:
+            data_dict, theta = batch
+            data_dict = _move_nested_to_device(data_dict, target_device)
+            theta = _move_nested_to_device(theta, target_device)
+
+            batch_lps = []
+            for m in self.members:
+                m.to(target_device)
+                m.eval()
+                batch_lps.append(m.forward(theta, cond=data_dict).reshape(-1))
+
+            stacked = torch.stack(batch_lps, dim=0)
+            if reduction == "logmeanexp":
+                batch_lp = torch.logsumexp(stacked, dim=0) - np.log(len(self.members))
             else:
-                raise AttributeError("Ensemble member lacks compute_avg_log_prob")
-        return float(np.mean(vals))
+                batch_lp = stacked.mean(dim=0)
+            all_log_probs.append(batch_lp)
+
+        if len(all_log_probs) == 0:
+            raise ValueError("Test dataloader produced no batches.")
+
+        all_log_probs = torch.cat(all_log_probs, dim=0)
+        if return_log_probs:
+            return all_log_probs.detach().cpu()
+        return float(-all_log_probs.mean().item())
 
     @torch.no_grad()
     def generate_samples(self, num_samples=10000, **kwargs):

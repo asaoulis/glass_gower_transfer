@@ -5,14 +5,16 @@ import re
 import json
 import numpy as np
 
-from torch.distributions import Uniform
-
 from src.ml.utils import _build_cosmo_preset_scaler
 from src.ml.data.constants import COSMO_PARAM_PRESET_MINMAX
 from ..utils import load_best_checkpoint_model, build_model
 from .loading_model import find_best_checkpoint
 from ..utils import is_ensemble_eval_active, build_ensemble_model_from_checkpoints
-from ..data.priors import train_or_load_gower_prior,build_flow_with_extras_prior
+from ..data.priors import (
+    train_or_load_gower_prior,
+    build_flow_with_extras_prior,
+    build_gower_paper_known_priors,
+)
 from .evaluate_models import run_evaluation_on_samples
 
 
@@ -54,33 +56,58 @@ def compute_log_prob(model):
     return {"test_log_prob": test_log_prob}
 
 def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv"):
-    extra_priors = {
-        "a_ia": Uniform(
-            torch.tensor([4.48]),
-            torch.tensor([7.0]),
-        ),
-        "b_ia": Uniform(
-            torch.tensor([0.28]),
-            torch.tensor([0.6]),
-        ),
-    }
+    """Build the Gower Street prior in *scaled* space ([0,1]^D).
 
-    scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, params)
+    - Empirical (flow) prior is trained/loaded for the subset of params not
+      covered by the paper's analytic priors.
+    - Known (analytic) priors from the paper are appended in the same order as
+      they appear in `params`.
+    """
+
+    params = list(params)
+    known_priors = build_gower_paper_known_priors()
+
+    # Preserve the caller's parameter ordering.
+    extra_priors = {p: known_priors[p] for p in params if p in known_priors}
+    flow_params = [p for p in params if p not in extra_priors]
+
+    if len(flow_params) == 0:
+        raise ValueError("build_gower_prior: no parameters left to model with a flow")
+
+    # Full scaler used to scale analytic priors into [0,1]
+    full_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, params)
+    # Flow scaler only needs the flow parameter subset
+    flow_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, flow_params)
+
     flow = train_or_load_gower_prior(
         csv_path=csv_path,
-        variables=params,
-        scaler=scaler,
+        variables=flow_params,
+        scaler=flow_scaler,
         drop_first=192,
     )
-    # remove extra_priors from params to get flow params
-    flow_params = [ p for p in params if p not in extra_priors ]
-    prior = build_flow_with_extras_prior(flow, flow_params, scaler, extra_priors=extra_priors)
+
+    prior = build_flow_with_extras_prior(
+        flow,
+        flow_params,
+        full_scaler,
+        extra_priors=extra_priors,
+    )
     return prior
 
 def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, compute_calibration=True, **sampling_kwargs):
     num_samples = sampling_kwargs.pop("num_samples", 10000)
+    prior = sampling_kwargs.get("prior", None)
+    prior_num_samples = sampling_kwargs.pop("prior_num_samples", 20_000)
     theta0s, samples = model.generate_samples(num_samples=num_samples, **sampling_kwargs)
-    eval_metrics = run_evaluation_on_samples(theta0s, samples, param_scaler, reference_samples=reference_samples, compute_calibration=compute_calibration)
+    eval_metrics = run_evaluation_on_samples(
+        theta0s,
+        samples,
+        param_scaler,
+        reference_samples=reference_samples,
+        compute_calibration=compute_calibration,
+        prior=prior,
+        prior_num_samples=prior_num_samples,
+    )
     return eval_metrics
 
 
@@ -110,7 +137,8 @@ def evaluate_best_checkpoint(
         Defaults to src.ml.utils.build_model.
     """
     print("Running evaluation for experiment:", config.experiment_name, flush=True)
-    is_nle_inference_mode = config.inference_mode == "nle"
+    our_prior = build_gower_prior(config.cosmo_param_names)
+    sampling_kwargs["prior"] = our_prior
     # If ensemble evaluation is active, run a single ensemble evaluation for the
     # provided match_string (bound to repeat idx) and return early.
     if is_ensemble_eval_active(config) and getattr(config, "match_string", None):
@@ -126,9 +154,6 @@ def evaluate_best_checkpoint(
             print("Failed to build ensemble model; falling back to single-run evaluation.")
         else:
             metrics = compute_log_prob(ensemble_model)
-            if is_nle_inference_mode:
-                our_prior = build_gower_prior(config.cosmo_param_names)
-                sampling_kwargs["prior"] = our_prior
             eval_metrics = generate_samples_and_run_eval(
                 ensemble_model,
                 param_scaler,
@@ -212,9 +237,6 @@ def evaluate_best_checkpoint(
             continue
 
         metrics = compute_log_prob(model)
-        if is_nle_inference_mode:
-            our_prior = build_gower_prior(cfg_for_run.cosmo_param_names)
-            sampling_kwargs["prior"] = our_prior
         eval_metrics = generate_samples_and_run_eval(model, param_scaler, reference_samples, **sampling_kwargs)
 
         metrics_payload = {**metrics, **eval_metrics}
