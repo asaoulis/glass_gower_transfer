@@ -47,6 +47,7 @@ def get_default_config():
     config.val_frac = 0.1
     config.test_frac = 0.1
     config.split_seed = 42
+    config.N_extra_test_cosmologies = None  # int or None
     config.shuffle_train = True
     config.num_workers = None
     config.pin_memory = False
@@ -68,6 +69,9 @@ def get_default_config():
             'cosmo': {'type': 'preset'},
     }
     config.project = "kids-transfer-tests"
+    config.train_val_selection_strategy = "random"
+    config.train_val_selection_cosmo_params = None
+    config.train_val_stratified_bins = "auto"
 
     # Misc/legacy fields kept for compatibility with older code paths
     config.dataset_name = "illustris"
@@ -85,11 +89,13 @@ def get_default_config():
     config.pretrained_band_match_string = ""
     config.num_flow_heads = 1
     config.load_pretrained_flow = False
+    config.run_training = True # for embedding eval pattern
 
     # Embeddings pipeline options
     # If False, do not normalise/standardise the precomputed embedding vectors
     # before training the NDE on embeddings.
     config.scale_embeddings = True
     config.accumulate_grad_batches = 1
+    config.inference_mode = "npe"
 
     return config

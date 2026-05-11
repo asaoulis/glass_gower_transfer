@@ -12,20 +12,19 @@ Design goals:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
+import re
+
+import torch
 
 from config.default import get_default_config
 from config.experiments import experiments
 
-from .embeddings_utils import (
-    build_embedding_dataloaders,
-    get_max_trainval_cosmos_grid,
-    load_pretrained_models,
-)
-
 from ..models.utils import create_run_name
+from ..models.utils import parse_repeat_and_ensemble_from_match
 from ..utils import prepare_data_parameters
-from ..eval.loading_model import find_best_checkpoint, get_best_checkpoint
+from ..utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_active
+from ..eval.loading_model import get_best_checkpoint
 from ..utils import set_seed_for_repeat_and_ensemble
 
 NUM_SAMPLES = 12000
@@ -37,6 +36,21 @@ class EmbeddingTrainArgs:
 
     target_experiment: str
     source_experiments: Sequence[str]
+
+
+@dataclass(frozen=True)
+class LoadedEmbeddingArtifacts:
+    """Container returned by `load_embedding_model_with_dataloader`.
+
+    This keeps the call site simple while still exposing everything downstream
+    code usually needs for sampling/evaluation.
+    """
+
+    model: object
+    scalers: Dict[str, object]
+    test_loader: object
+    config: object
+    checkpoint_path: Optional[str]
 
 
 def build_cfg_from_experiment_dict(exp_name: str, exp_dict: dict, *, n_cosmo: Optional[int] = None):
@@ -62,6 +76,188 @@ def build_cfg_from_experiment_dict(exp_name: str, exp_dict: dict, *, n_cosmo: Op
 
 def format_ncosmo_tag(n_cosmo: Optional[int]) -> str:
     return "ncosmoNone" if n_cosmo is None else f"ncosmo{int(n_cosmo)}"
+
+
+def _extract_ncosmo_from_match(match_string: str) -> Optional[int]:
+    """Extract ncosmo value from a match string.
+
+    Accepts both `ncosmo123` and the common typo `ncosm123`.
+    """
+
+    m = re.search(r"ncosmo?(\d+)", str(match_string))
+    if m is None:
+        return None
+    return int(m.group(1))
+
+
+def _select_best_checkpoint_for_match(cfg, match_string: str) -> Optional[str]:
+    """Return the best checkpoint path under the experiment folder for `match_string`."""
+
+    experiment_path = f"{cfg.base_path}/checkpoints/{cfg.experiment_name}"
+    best_ckpts, val_losses = get_best_checkpoint(experiment_path, match_string)
+    if not best_ckpts:
+        return None
+    best_idx = min(range(len(best_ckpts)), key=lambda i: val_losses[i]) if val_losses else 0
+    return best_ckpts[best_idx]
+
+
+def _try_parse_repeat_idx(match_string: str) -> Optional[int]:
+    """Best-effort extraction of repeat index from match string suffix."""
+
+    try:
+        repeat_idx, _ = parse_repeat_and_ensemble_from_match(match_string)
+        return int(repeat_idx)
+    except Exception:
+        return None
+
+
+def _build_embedding_test_loader_for_cfg(cfg, source_models):
+    """Build scaled embedding test loader (and scalers) for one config instance."""
+
+    from .embeddings_utils import build_embedding_dataloaders
+
+    scalers, train_loader, val_loader, test_loader = prepare_data_parameters(cfg)
+    _, _, test_emb_loader = build_embedding_dataloaders(
+        train_loader,
+        val_loader,
+        test_loader,
+        source_models,
+        base_cfg=cfg,
+        wandb_run_name=None,
+        use_cache_if_exists=True,
+    )
+    return scalers, test_emb_loader
+
+
+def _build_embeddings_model_from_cfg_checkpoint(cfg, test_dataloader=None):
+    """Build NDE-on-embeddings model and load cfg.checkpoint_path when provided."""
+
+    from .embeddings_utils import build_nde_on_embeddings
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if test_dataloader is None:
+        raise ValueError("Embeddings model builder requires a test_dataloader.")
+
+    emb_dim = next(iter(test_dataloader))[0].shape[-1]
+    model = build_nde_on_embeddings(emb_dim=emb_dim, base_cfg=cfg, test_loader=test_dataloader, device=device)
+
+    checkpoint_path = getattr(cfg, "checkpoint_path", None)
+    if checkpoint_path:
+        ckpt = torch.load(checkpoint_path, map_location=device)
+        model.load_state_dict(ckpt["state_dict"], strict=False)
+
+    model.to(device)
+    model.eval()
+    model.test_dataloader = test_dataloader
+    return model
+
+
+def load_embedding_model_with_dataloader(
+    experiment_name: str,
+    match_string: str,
+    *,
+    source_experiments: Sequence[str],
+    config_overrides: Optional[Dict[str, object]] = None,
+) -> LoadedEmbeddingArtifacts:
+    """Load one trained embeddings model and its matching embedding test loader.
+
+    This function is embeddings-only and reuses existing helpers for:
+    - source model loading,
+    - embedding dataloader construction,
+    - NDE-on-embeddings model construction,
+    - best-checkpoint selection for the provided match string.
+    """
+
+    if experiment_name not in experiments:
+        raise ValueError(f"Experiment '{experiment_name}' not found in config.experiments.experiments.")
+    if not source_experiments:
+        raise ValueError("source_experiments must be a non-empty sequence for embeddings model loading.")
+
+    exp_dict = experiments[experiment_name]
+    n_cosmo = _extract_ncosmo_from_match(match_string)
+
+    cfg = build_cfg_from_experiment_dict(experiment_name, exp_dict, n_cosmo=n_cosmo)
+    cfg.match_string = str(match_string)
+    cfg.test_shape_noise_idx = [0]
+    if config_overrides:
+        for key, value in config_overrides.items():
+            setattr(cfg, key, value)
+
+    repeat_idx = _try_parse_repeat_idx(match_string)
+    source_cfg_overrides = build_source_cfg_overrides(source_experiments, n_cosmo=n_cosmo)
+
+    from .embeddings_utils import load_pretrained_models
+    match_num_cosmo = getattr(cfg, "match_num_cosmo", False)
+    if not match_num_cosmo:
+        pretrained_models_match_string = "_" + match_string.split("_")[1]  # e.g. "ncosmo30_0" -> "_0"
+    else:
+        pretrained_models_match_string = match_string  # use full match_string for loading sources if match_num_cosmo is True
+    source_models, dataset_quantities, _ = load_pretrained_models(
+        list(source_experiments),
+        cfg_overrides=source_cfg_overrides,
+        repeat_idx=repeat_idx,
+        match_string=pretrained_models_match_string,
+    )
+    cfg.dataset_quantities = dataset_quantities
+
+    if is_ensemble_eval_active(cfg):
+        if repeat_idx is None:
+            raise ValueError(
+                f"Ensemble loading requires repeat-bound match_string (e.g. ncosmo30_0), got '{match_string}'."
+            )
+
+        n_ens = int(getattr(cfg, "ensemble_repeats", 1) or 1)
+        member_test_loaders = []
+        scalers = None
+
+        for j in range(n_ens):
+            cfg_j = build_cfg_from_experiment_dict(experiment_name, exp_dict, n_cosmo=n_cosmo)
+            cfg_j.match_string = str(match_string)
+            cfg_j.test_shape_noise_idx = [0]
+            if config_overrides:
+                for key, value in config_overrides.items():
+                    setattr(cfg_j, key, value)
+            cfg_j.dataset_quantities = dataset_quantities
+
+            cfg_j.split_seed = 42
+            set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat_idx, ensemble_idx=j)
+
+            scalers_j, test_emb_loader_j = _build_embedding_test_loader_for_cfg(cfg_j, source_models)
+            if scalers is None:
+                scalers = scalers_j
+            member_test_loaders.append(test_emb_loader_j)
+
+        model = build_ensemble_model_from_checkpoints(
+            cfg,
+            test_loader=None,
+            match_string=match_string,
+            member_test_loaders=member_test_loaders,
+            model_builder=_build_embeddings_model_from_cfg_checkpoint,
+        )
+        if model is None:
+            raise RuntimeError(
+                f"Failed to build embeddings ensemble for experiment '{experiment_name}' and match '{match_string}'."
+            )
+
+        checkpoint_path = None
+        test_emb_loader = member_test_loaders[0]
+    else:
+        scalers, test_emb_loader = _build_embedding_test_loader_for_cfg(cfg, source_models)
+        checkpoint_path = _select_best_checkpoint_for_match(cfg, match_string)
+        if checkpoint_path is None:
+            raise RuntimeError(
+                f"No checkpoint found for embeddings experiment '{experiment_name}' and match '{match_string}'."
+            )
+        cfg.checkpoint_path = checkpoint_path
+        model = _build_embeddings_model_from_cfg_checkpoint(cfg, test_dataloader=test_emb_loader)
+
+    return LoadedEmbeddingArtifacts(
+        model=model,
+        scalers=scalers,
+        test_loader=test_emb_loader,
+        config=cfg,
+        checkpoint_path=checkpoint_path,
+    )
 
 
 def build_source_cfg_overrides(source_experiments: Sequence[str], *, n_cosmo: Optional[int]) -> Optional[Dict[str, object]]:
@@ -97,6 +293,7 @@ def train_embedding_run(
 
     # Optional evaluation helpers (kept here to mirror prior script behavior).
     from ..eval.utils import evaluate_best_checkpoint
+    from .embeddings_utils import build_embedding_dataloaders, load_pretrained_models
 
     source_experiments_strings = "_".join(source_experiments)
     source_run_name = f"{run_name}_{source_experiments_strings}"
@@ -200,6 +397,8 @@ def train_embeddings_experiment(
 
     target_experiment = args.target_experiment
     source_experiments = list(args.source_experiments)
+
+    from .embeddings_utils import get_max_trainval_cosmos_grid
 
     if target_experiment not in experiments:
         raise ValueError(f"Experiment '{target_experiment}' not found in config.experiments.experiments.")

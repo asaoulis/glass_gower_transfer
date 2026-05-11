@@ -840,7 +840,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             # --- band branch ---
             band_repr = self.band_encoder.compress(data)
             band_mu = band_repr
-            band_logvar = None  # unused
+            band_logvar = torch.zeros_like(band_mu)
 
             # --- patch branch (still true latent) ---
             patch_out = self.patch_encoder.compress(data)
@@ -853,12 +853,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             if not self.use_kl:
                 # If no KL, the head expects just the fused mus
                 return mu_concat
-
-            # If band is frozen we don't want it in KL, just use patch logvar
-            if band_logvar is None:
-                logvar_concat = patch_logvar
-            else:
-                logvar_concat = torch.cat([band_logvar, patch_logvar], dim=-1)
+            logvar_concat = torch.cat([band_logvar, patch_logvar], dim=-1)
 
             z_cat = torch.cat([mu_concat, logvar_concat], dim=-1)
 
@@ -870,8 +865,12 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             return z_cat
 
     def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Reuses the logic from get_representation to avoid duplication
+        # Reuses the logic from get_representation to avoid duplication.
+        # In KL mode, get_representation already returns [mu, logvar] with the
+        # correct ordering/dimensionality, so we bypass the extra linear head.
         head_input = self.get_representation(data)
+        if self.use_kl:
+            return head_input
         return self.hybrid_head(head_input)
 
 

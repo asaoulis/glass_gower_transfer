@@ -283,7 +283,11 @@ class BaseLightningModule(pl.LightningModule):
             steps_per_epoch = total_steps // max_epochs
 
         warmup_frac = float(self.scheduler_kwargs.get("warmup_frac", 0.05))
-        warmup_steps = max(1, int(total_steps * warmup_frac))
+        warmup_steps_override = self.scheduler_kwargs.get("warmup_steps", None)
+        if warmup_steps_override is not None:
+            warmup_steps = max(0, int(warmup_steps_override))
+        else:
+            warmup_steps = max(0, int(total_steps * warmup_frac))
 
         # 3. Build Schedulers
         # --- STAGE 1: Warmup (Common to all) ---
@@ -291,8 +295,10 @@ class BaseLightningModule(pl.LightningModule):
         # LambdaLR applies this to the INITIAL LRs in the optimizer.
         warmup_start_factor = float(self.scheduler_kwargs.get("warmup_start_factor", 0.1))
         def warmup_lambda(step):
+            if warmup_steps <= 0:
+                return 1.0
             return warmup_start_factor + (1.0 - warmup_start_factor) * min(1.0, step / warmup_steps)
-        
+
         warmup_sched = LambdaLR(optimizer, lr_lambda=warmup_lambda)
 
         # --- STAGE 2: Main Schedule ---
@@ -358,12 +364,15 @@ class BaseLightningModule(pl.LightningModule):
             interval = "step"
             milestone = warmup_steps
 
-        # 4. Chain them
-        scheduler = SequentialLR(
-            optimizer,
-            schedulers=[warmup_sched, main_sched],
-            milestones=[milestone]
-        )
+        # 4. Chain warmup and main schedule (or skip warmup entirely)
+        if warmup_steps > 0:
+            scheduler = SequentialLR(
+                optimizer,
+                schedulers=[warmup_sched, main_sched],
+                milestones=[milestone]
+            )
+        else:
+            scheduler = main_sched
 
         return {
             "optimizer": optimizer,
@@ -646,6 +655,7 @@ from sbi.neural_nets.net_builders import build_maf, build_zuko_nsf
 from src.ml.models.custom_sbi import build_nsf, build_maf_rqs
 from torch.optim import Adam, AdamW
 from sbi import utils as utils
+from sbi.analysis import conditional_potential
 
 import torch.nn as nn
 
@@ -780,6 +790,47 @@ def _move_nested_to_device(x, device):
     if isinstance(x, list):
         return type(x)([_move_nested_to_device(v, device) for v in x])
     return x
+
+
+class _BatchableTransform:
+    """Adapter to make an sbi/torch transform work on leading batch dims.
+
+    Some transforms returned by sbi's `conditional_potential` implement
+    `.inv()` assuming a 2D input of shape `[batch, dim]`. However,
+    `MCMCPosterior.sample_batched()` calls `.inv()` with a 3D tensor of
+    shape `[num_chains_extended, samples_per_chain, dim]`.
+
+    This wrapper flattens all leading dims into a single batch axis,
+    delegates to the underlying transform, then reshapes back.
+    """
+
+    def __init__(self, base):
+        self._base = base
+
+    def __getattr__(self, name):
+        return getattr(self._base, name)
+
+    def _reshape_call(self, fn, x):
+        if hasattr(x, "ndim") and x.ndim > 2:
+            leading = x.shape[:-1]
+            flat = x.reshape(-1, x.shape[-1])
+            y = fn(flat)
+            return y.reshape(*leading, y.shape[-1])
+        return fn(x)
+
+    def inv(self, y):
+        return self._reshape_call(self._base.inv, y)
+
+    def forward(self, x):
+        if hasattr(self._base, "forward"):
+            return self._reshape_call(self._base.forward, x)
+        return self._reshape_call(self._base.__call__, x)
+
+    def __call__(self, x):
+        # torch Transform-style
+        if hasattr(self._base, "__call__"):
+            return self._reshape_call(self._base.__call__, x)
+        return self.forward(x)
 
 
 class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
@@ -964,7 +1015,7 @@ class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
                     enable_transform=True
                 )
                 break
-            except Exception as e:
+            except AssertionError as e:
                 print("Error in check_transform, retrying...", e)
 
         prior_to_use = self.prior
@@ -990,6 +1041,9 @@ class PatchedLikelihoodEstimator(ConditionalDensityEstimator):
                 condition=condition,
                 dims_to_sample=dims_to_sample,
             )
+            # Make sure the conditioned transform can invert batched samples
+            # of shape [num_chains_extended, samples_per_chain, dim].
+            tf = _BatchableTransform(tf)
 
         # 3. Create the posterior with the (potentially restricted) variables
         posterior = MCMCPosterior(
@@ -1237,13 +1291,16 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
     def __init__(
         self,
         *args,
-        kl_weight: float = 1e-3,  
+        kl_weight: float = 1e-2,  
         kl_min: float = 0.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.kl_weight = kl_weight
         self.kl_min = kl_min
+        self.dim_band = self._frozen_band_dim()
+        print("Frozen dim band:", self.dim_band)
+
 
     def _latent_stats(self, data_dict):
         """Return (mu, logvar) from the encoder.
@@ -1275,20 +1332,41 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
             kl = torch.clamp(kl, min=self.kl_min)
         return kl
 
+    def _frozen_band_dim(self) -> int:
+        encoder = self.embedding_net
+        if getattr(encoder, "freeze_band", False):
+            return int(getattr(encoder, "dim_band", 0) or 0)//2
+        return 0
+
     def _shared_step(self, batch, stage: str):
         data_dict, theta = batch
 
         # 1) Get stats from encoder
         mu, logvar = self._latent_stats(data_dict)
 
-        # 2) KL term
-        kl = self._kl_divergence(mu, logvar)
+        dim_band = self.dim_band
+        if dim_band > 0:
+            mu_band, mu_patch = mu[..., :dim_band], mu[..., dim_band:]
+            logvar_patch = logvar[..., dim_band:]
 
-        # 3) Reparameterize
-        if stage == "train":
-            z = self._reparameterize(mu, logvar)
+            # 2) KL term (patch only)
+            kl = self._kl_divergence(mu_patch, logvar_patch)
+
+            # 3) Reparameterize (patch only; band deterministic)
+            if stage == "train":
+                z_patch = self._reparameterize(mu_patch, logvar_patch)
+                z = torch.cat([mu_band, z_patch], dim=-1)
+            else:
+                z = mu
         else:
-            z = mu
+            # 2) KL term
+            kl = self._kl_divergence(mu, logvar)
+
+            # 3) Reparameterize
+            if stage == "train":
+                z = self._reparameterize(mu, logvar)
+            else:
+                z = mu
 
         # 4) Flow loss
         log_prob = self.model.latent_log_prob(theta, z)
@@ -1387,13 +1465,17 @@ class LikelihoodNDELightningModule(NDELightningModule):
         num_jobs=36,
         backend="loky",
         prior=None,
+        fixed_parameters=None,
         **mcmc_kwargs,
     ):
         """
         Parallelize over batches using joblib, while each batch uses
         fast single-worker vectorized MCMC.
         """
-        posterior = self.build_posterior_object(prior=prior)
+        if fixed_parameters is None:
+            fixed_parameters = mcmc_kwargs.pop("fixed_parameters", None)
+
+        posterior = self.build_posterior_object(prior=prior, fixed_parameters=fixed_parameters)
         # move everything to cpu for joblib
         posterior.to("cpu")
         posterior.prior.to("cpu")
@@ -1489,7 +1571,7 @@ class EnsembleNDELightningModule(pl.LightningModule):
         if self.test_dataloader is None:
             raise ValueError("EnsembleNDELightningModule.test_dataloader is None")
         theta0s = []
-        for _, theta in self.test_dataloader:
+        for _, theta in self.members[0].test_dataloader:
             theta0s.append(theta)
         return torch.cat(theta0s, dim=0)
 
@@ -1566,11 +1648,11 @@ class EnsembleNDELightningModule(pl.LightningModule):
         for idx, m in enumerate(self.members):
             if getattr(m, "test_dataloader", None) is None:
                 raise ValueError(f"Ensemble member {idx} has no test_dataloader")
-            if len(m.test_dataloader.dataset) != len(self.test_dataloader.dataset):
-                raise ValueError(
-                    "Ensemble members have different test dataset lengths; "
-                    "cannot safely ensemble their posteriors."
-                )
+            # if len(m.test_dataloader.dataset) != len(self.test_dataloader.dataset):
+            #     raise ValueError(
+            #         "Ensemble members have different test dataset lengths; "
+            #         "cannot safely ensemble their posteriors."
+            #     )
 
         n = len(self.members)
         base = num_samples // n
@@ -1592,7 +1674,81 @@ class EnsembleNDELightningModule(pl.LightningModule):
         perm = torch.randperm(samples.shape[0])
         samples = samples[perm]
         return theta0s, samples
+    def build_posterior_object(self, prior=None):
+        """Return an ensemble posterior wrapper exposing ``gen_samples``.
 
+        Each member is expected to implement ``build_posterior_object`` and
+        return an object with a ``gen_samples(num_samples, x, use_latent=..., **kwargs)``
+        method (e.g. :class:`PatchedConditionalDensityEstimator`).
+
+        The returned object samples from a uniform mixture over ensemble members
+        by splitting ``num_samples`` approximately equally across members,
+        concatenating results, and shuffling along the sample axis.
+        """
+
+        class _EnsemblePosterior:
+            def __init__(self, posteriors, members):
+                self._posteriors = posteriors
+                self._members = members
+                self.prior = getattr(posteriors[0], "prior", None)
+
+            @staticmethod
+            def _infer_device(x):
+                if isinstance(x, Mapping):
+                    for v in x.values():
+                        if hasattr(v, "device"):
+                            return v.device
+                if hasattr(x, "device"):
+                    return x.device
+                return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+            def to(self, *args, **kwargs):
+                for p in self._posteriors:
+                    if hasattr(p, "to"):
+                        p.to(*args, **kwargs)
+                    if hasattr(p, "prior") and hasattr(p.prior, "to"):
+                        p.prior.to(*args, **kwargs)
+                return self
+
+            def eval(self):
+                for p in self._posteriors:
+                    if hasattr(p, "eval"):
+                        p.eval()
+                return self
+
+            @torch.no_grad()
+            def gen_samples(self, num_samples, x, use_latent=True, **kwargs):
+                if num_samples <= 0:
+                    raise ValueError("num_samples must be > 0")
+
+                device = self._infer_device(x)
+                # Keep member nets aligned with conditioning tensors.
+                self.to(device)
+                self.eval()
+
+                n = len(self._posteriors)
+                base = num_samples // n
+                rem = num_samples % n
+                counts = [base + (1 if i < rem else 0) for i in range(n)]
+
+                parts = []
+                for p, k in zip(self._posteriors, counts):
+                    if k <= 0:
+                        continue
+                    out = p.gen_samples(k, x=x, use_latent=use_latent, **kwargs)
+                    if isinstance(out, tuple):
+                        out = out[0]
+                    parts.append(out)
+
+                if not parts:
+                    raise ValueError("No samples were generated (check num_samples and ensemble size).")
+
+                samples = torch.cat(parts, dim=0)
+                perm = torch.randperm(samples.shape[0], device=samples.device)
+                return samples[perm]
+
+        posteriors = [m.build_posterior_object(prior=prior) for m in self.members]
+        return _EnsemblePosterior(posteriors=posteriors, members=self.members)
 
 class _EnsembleLikelihoodModel(nn.Module):
     """Averages member log-likelihoods for use inside MCMC potentials."""

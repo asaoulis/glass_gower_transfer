@@ -1,11 +1,14 @@
 import sys
 from config.default import get_default_config
 from config.experiments import experiments
+from config.ablations import ablation_experiments
 from src.ml.models.utils import train_model
 # import os
 # os.environ["MASTER_ADDR"] = "127.0.0.1"
 # os.environ["MASTER_PORT"] = "29500"  # or any free port
 import os
+
+experiments.update(ablation_experiments)  # Merge ablation experiments into main experiments dict
 
 # ... rest of your code ...
 def retrieve_first_list_from_experiments(experiments):

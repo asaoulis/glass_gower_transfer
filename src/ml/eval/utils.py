@@ -14,8 +14,32 @@ from ..data.priors import (
     train_or_load_gower_prior,
     build_flow_with_extras_prior,
     build_gower_paper_known_priors,
+    build_analytic_prior,
 )
 from .evaluate_models import run_evaluation_on_samples
+
+
+def build_s8_analytic_prior(params, scaler=None, *, return_restricted=None):
+    """Build the S8-box analytic prior in scaled space, in `params` order.
+
+    This is intended as a drop-in replacement for `build_gower_prior` when
+    running inference that needs a non-uniform analytic prior.
+    """
+    params = list(params)
+    if scaler is None:
+        scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, params)
+    if scaler is None:
+        raise ValueError("build_s8_analytic_prior: scaler is None")
+
+    if return_restricted is None:
+        # Only needed when the prior has unbounded scaled support (e.g. MVN blocks).
+        return_restricted = ("a_ia" in params and "b_ia" in params)
+
+    return build_analytic_prior(
+        params,
+        scaler,
+        return_restricted=bool(return_restricted),
+    )
 
 
 def _to_json_compatible(value):

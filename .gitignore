@@ -26,3 +26,4 @@ sbi-logs/
 logs/
 *.png
 *.svg
+*.tch

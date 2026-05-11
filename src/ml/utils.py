@@ -215,6 +215,7 @@ def prepare_data_parameters(config):
         stratified_bins=getattr(config, 'train_val_stratified_bins', 'auto'),
         test_shape_noise_idx=test_shape_noise_idx,
         ensemble_seed=getattr(config, 'ensemble_seed', None),
+        N_extra_test_cosmologies=getattr(config, 'N_extra_test_cosmologies', None),
     )
 
     # Print dataset lengths for visibility

@@ -310,16 +310,59 @@ def collect_paths(patterns: Union[str, Sequence[str]]) -> List[str]:
 
 
 def _filter_paths_by_shape_noise_idx(paths: List[str], test_shape_noise_idx: Optional[Sequence[int]]) -> List[str]:
-    """Optionally filter file paths by shape-noise repeat index.
+    """Optionally filter test file paths by suffix indices.
 
-    Expected filename pattern (before extension) is something like
-    ..._SN<idx>.h5 or ..._<idx>.h5; we conservatively extract the final
-    integer before the extension and keep only those whose index is in
-    ``test_shape_noise_idx``.
+        Supported modes (backward compatible):
+    - ``[shape_noise_idx]`` (or any non-3-length list): legacy behaviour,
+      filter by the final integer before ``.h5``.
+        - ``[rot_idx, shape_noise_idx]``: filter filenames matching
+            ``..._out<any>_rot<rot>_<shape>.h5`` (ignores ``out`` index).
+    - ``[out_idx, rot_idx, shape_noise_idx]``: strict filtering for filenames
+      matching ``..._out<out>_rot<rot>_<shape>.h5``.
+
+    Examples
+    --------
+    - ``[0]`` selects ``..._0.h5`` (legacy shape-noise filtering).
+    - ``[0, 0]`` selects any ``out*`` with ``rot0`` and shape-noise ``0``.
+    - ``[0, 0, 0]`` selects only ``..._out0_rot0_0.h5``.
     """
     if not test_shape_noise_idx:
         return paths
 
+    # Mode: [rot_idx, shape_noise_idx] (ignore out idx)
+    if len(test_shape_noise_idx) == 2:
+        rot_idx, shape_idx = (int(v) for v in test_shape_noise_idx)
+        rot_shape_pat = re.compile(r"out(\d+)_rot(\d+)_(\d+)\.h5$")
+
+        filtered: List[str] = []
+        for p in paths:
+            base = os.path.basename(p)
+            m = rot_shape_pat.search(base)
+            if m is None:
+                continue
+            rot_v, shape_v = int(m.group(2)), int(m.group(3))
+            if rot_v == rot_idx and shape_v == shape_idx:
+                filtered.append(p)
+        return filtered
+
+    # New strict mode: [out_idx, rot_idx, shape_noise_idx]
+    if len(test_shape_noise_idx) == 3:
+        out_idx, rot_idx, shape_idx = (int(v) for v in test_shape_noise_idx)
+        strict_pat = re.compile(r"out(\d+)_rot(\d+)_(\d+)\.h5$")
+
+        filtered: List[str] = []
+        for p in paths:
+            base = os.path.basename(p)
+            m = strict_pat.search(base)
+            if m is None:
+                # In strict mode we only keep files matching the explicit pattern.
+                continue
+            out_v, rot_v, shape_v = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            if out_v == out_idx and rot_v == rot_idx and shape_v == shape_idx:
+                filtered.append(p)
+        return filtered
+
+    # Legacy mode: filter by final integer before extension.
     allowed = set(int(i) for i in test_shape_noise_idx)
     filtered: List[str] = []
     for p in paths:
@@ -348,6 +391,7 @@ def split_by_cosmology(
     selection_strategy: SelectionStrategy = "random",
     selection_cosmo_params: Optional[List[str]] = None,
     stratified_bins: StratifiedBins = 5,
+    N_extra_test_cosmologies: Optional[int] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """
     Glob files, group by cosmology index, shuffle cosmologies, and split without leakage.
@@ -471,7 +515,14 @@ def split_by_cosmology(
         val_paths.extend(by_cosmo[c])
     for c in test_cosmos:
         test_paths.extend(by_cosmo[c])
-
+    if N_extra_test_cosmologies:
+        # using sets to find cosmologies not in train/val/test, then adding them to test
+        extra_cosmos = set(cosmologies) - train_cosmos - val_cosmos - test_cosmos
+        extra_cosmos = sorted(extra_cosmos)  # sort for stability
+        extra_selected = extra_cosmos[:N_extra_test_cosmologies]
+        for c in extra_selected:
+            test_paths.extend(by_cosmo[c])
+        print(f"Added {len(extra_selected)} extra cosmologies to test set, new test count: {len(test_paths)}")
     # Optionally restrict test paths by shape-noise index
     test_paths = _filter_paths_by_shape_noise_idx(test_paths, test_shape_noise_idx)
 
@@ -644,6 +695,7 @@ def build_datasets(
     stratified_bins: int = 5,
     test_shape_noise_idx: Optional[Sequence[int]] = None,
     ensemble_seed: Optional[int] = None,
+    N_extra_test_cosmologies: Optional[int] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     train_paths, val_paths, test_paths = split_by_cosmology(
         patterns,
@@ -657,6 +709,7 @@ def build_datasets(
         stratified_bins=stratified_bins,
         test_shape_noise_idx=test_shape_noise_idx,
         ensemble_seed=ensemble_seed,
+        N_extra_test_cosmologies=N_extra_test_cosmologies,
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
@@ -699,6 +752,7 @@ def build_dataloaders(
     stratified_bins: int = 5,
     test_shape_noise_idx: Optional[Sequence[int]] = None,
     ensemble_seed: Optional[int] = None,
+    N_extra_test_cosmologies: Optional[int] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
     Return DataLoaders for train/val/test ensuring no cosmology leakage.
@@ -738,6 +792,7 @@ def build_dataloaders(
         stratified_bins=stratified_bins,
         test_shape_noise_idx=test_shape_noise_idx,
         ensemble_seed=ensemble_seed,
+        N_extra_test_cosmologies=N_extra_test_cosmologies,
     )
 
     if val_batch_size is None:

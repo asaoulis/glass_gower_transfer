@@ -103,11 +103,12 @@ class TARPDiagnostics:
     """
     Helper to compute TARP-based calibration metrics.
     """
-    def __init__(self, cosmological_params, bootstrap=True, num_bootstrap=25, seed=None):
+    def __init__(self, cosmological_params, bootstrap=True, num_bootstrap=25, num_alpha_bins=100, seed=None):
         self.cosmological_params = list(cosmological_params)
         self.bootstrap = bootstrap
         self.num_bootstrap = num_bootstrap
         self.seed = seed
+        self.num_alpha_bins =num_alpha_bins
 
     @staticmethod
     def _to_tarp_shapes(samples_t: torch.Tensor, theta_t: torch.Tensor):
@@ -143,6 +144,7 @@ class TARPDiagnostics:
             bootstrap=self.bootstrap,
             num_bootstrap=self.num_bootstrap,
             seed=self.seed,
+            num_alpha_bins = self.num_alpha_bins
         )
         return self._summarize_coverage(coverage)
 

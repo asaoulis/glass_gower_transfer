@@ -211,6 +211,11 @@ def load_pretrained_models(
         else:
             cfg = _build_config_for_experiment(name)
 
+        if match_string is not None and str(match_string) and getattr(cfg, "match_num_cosmo", False):
+            ds_string_match = str(match_string)
+        else:
+            ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
+
         result = load_best_model_and_build_posterior(cfg, ds_string_match=ds_string_match)
         if result is None:
             raise RuntimeError(f"Failed to load best model for experiment '{name}'.")

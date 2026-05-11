@@ -1,10 +1,13 @@
 from config.default import get_default_config
 from config.experiments import experiments
+from config.ablations import ablation_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
 from pathlib import Path
 import numpy as np
 import torch
 from copy import copy
+
+experiments.update(ablation_experiments)  # Combine experiments and ablations into a single dict
 
 def load_config(experiment_name: str):
     """Load config in a way consistent with train.py."""
@@ -27,11 +30,25 @@ from src.ml.models.utils import apply_repeat_config
 
 # Base config used only for data_parameters
 experiments_to_evaluate = [
-    "finetune_hybrid_16_9param",
-    "finetune_hybrid_16_9param_ensemble",
+    # "bandpower_mlp_lat8_2param",
+    # "hybrid_patches_16_2param",
+    # "finetune_hybrid_16_2param",
+    # "glass_hybrid_patches_16_9param",
+    # "finetune_hybrid_16_9param",
+    # "finetune_hybrid_16_2param_ensemble_stratify",
+    # "finetune_hybrid_16_9param_ensemble",
+    # "finetune_hybrid_16_9param_ensemble_stratify",
+    # "finetune_hybrid_16_9param_ensemble_kcenter_sampling",
     # "bandpower_mlp_lat8_9param",
     # "hybrid_patches_16_9param",
-    # "finetune_hybrid_16_9param",
+    # "embeddings_pretrained_flow_9param",
+    # "finetune_ablation_glass_hybrid_OFF",
+    # "finetune_ablation_glass_no_side",
+    # "finetune_ablation_glass_no_GEM",
+    # "finetune_ablation_glass_MAF",
+    "finetune_hybrid_16_9param",
+    "finetune_ablation_glass_no_cyclic"
+    # "finetune_ablation_glass_B_modes"
 ]
 
 for experiment_name in experiments_to_evaluate:
