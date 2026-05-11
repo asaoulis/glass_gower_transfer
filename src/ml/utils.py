@@ -10,7 +10,7 @@ from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
 # Centralized dataloader builder
-from .data.data import build_dataloaders, build_nested_keys_from_quantities
+from .data.data_loaders import build_dataloaders, build_nested_keys_from_quantities
 from .data.data_loading import unpack_data, load_cosmo_params
 # Use new abstracted scalers
 from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler
