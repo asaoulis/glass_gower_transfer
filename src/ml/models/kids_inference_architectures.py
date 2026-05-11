@@ -536,12 +536,6 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         self.hybrid_head = nn.Linear(in_features, self.model_output_dim)
         self.freeze_band = False
 
-        # In KL mode, we must not mix band and patch latents through a single head.
-        # Instead, we construct (mu, logvar) for the patch component only.
-        if self.use_kl:
-            # Condition the patch Gaussian on both band_mu (unchanged) and patch_mu_in.
-            self.patch_kl_head = nn.Linear(self.dim_band + self.dim_patch, 2 * self.dim_patch)
-
     def _normalise_child_output(self, out: torch.Tensor | tuple[torch.Tensor, torch.Tensor], expected_mu_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (mu, logvar) for a child encoder output.
 
@@ -620,49 +614,51 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
     def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         """Compute the hybrid latent representation.
 
-        Key constraint for KL mode: the bandpower latent must remain unchanged.
-        Therefore we *never* apply a shared linear head to the concatenated
-        [band, patch] vector when ``use_kl`` is active.
-
-        - Non-KL: returns fused mu (may use fusion modules).
-        - KL: returns z_cat = [mu_concat, logvar_concat] where:
-            mu_concat     = [band_mu (unchanged), patch_mu]
-            logvar_concat = [0 (band), patch_logvar]
-          and (patch_mu, patch_logvar) are produced by a patch-only head.
+        - Non-KL: returns a mu-like vector of shape [B, latent_dim].
+        - KL: returns a single vector of shape [B, 2*latent_dim] containing
+          [mu, logvar] so that the shared ``hybrid_head`` can operate on the
+          full latent statistics.
         """
 
-        # --- band branch (deterministic) ---
-        band_mu = self.band_encoder.compress(data)
+        # --- band branch ---
+        band_out = self.band_encoder.compress(data)
+        if self.use_kl:
+            band_mu, band_logvar = self._normalise_child_output(band_out, self.dim_band)
+        else:
+            band_mu = band_out
 
-        # --- patch branch (treated as representation) ---
+        # --- patch branch ---
         patch_out = self.patch_encoder.compress(data)
-        patch_mu_in, _ = self._normalise_child_output(patch_out, self.patch_encoder.latent_dim)
+        if self.use_kl:
+            patch_mu, patch_logvar = self._normalise_child_output(patch_out, self.dim_patch)
+        else:
+            patch_mu, _ = self._normalise_child_output(patch_out, self.dim_patch)
 
         if not self.use_kl:
-            return self._fuse_mu(band_mu, patch_mu_in)
+            mu = self._fuse_mu(band_mu, patch_mu)
+            if mu.shape[-1] != self.latent_dim:
+                raise ValueError(
+                    f"Hybrid mu dim mismatch: expected latent_dim={self.latent_dim}, got {mu.shape[-1]}."
+                )
+            return mu
 
-        band_logvar = torch.zeros_like(band_mu)
+        mu = torch.cat([band_mu, patch_mu], dim=-1)
+        logvar = torch.cat([band_logvar, patch_logvar], dim=-1)
 
-        patch_cond = torch.cat([band_mu, patch_mu_in], dim=-1)
-        patch_raw = self.patch_kl_head(patch_cond)
-        patch_mu, patch_logvar = torch.chunk(patch_raw, 2, dim=-1)
+        if mu.shape[-1] != self.latent_dim:
+            raise ValueError(
+                f"Hybrid KL mu dim mismatch: expected latent_dim={self.latent_dim}, got {mu.shape[-1]}. "
+                "If using fusion_type != 'concat', ensure bandpower_latent_dim is set consistently so the fused mu has size latent_dim."
+            )
+        if logvar.shape != mu.shape:
+            raise ValueError(
+                f"Hybrid KL logvar shape {tuple(logvar.shape)} does not match mu shape {tuple(mu.shape)}"
+            )
 
-        mu_concat = torch.cat([band_mu, patch_mu], dim=-1)
-        logvar_concat = torch.cat([band_logvar, patch_logvar], dim=-1)
-        z_cat = torch.cat([mu_concat, logvar_concat], dim=-1)
-
-        # Keep side-effects consistent with previous implementation.
-        self.latent_dim = mu_concat.shape[-1]
-        self.model_output_dim = z_cat.shape[-1]
-
-        return z_cat
+        return torch.cat([mu, logvar], dim=-1)
 
     def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # In KL mode, get_representation already returns [mu, logvar] with the
-        # correct ordering/dimensionality, so bypass the extra linear head.
         head_input = self.get_representation(data)
-        if self.use_kl:
-            return head_input
         return self.hybrid_head(head_input)
 
 

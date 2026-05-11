@@ -35,46 +35,17 @@ class KLDRegularisedNDELightningModule(NDELightningModule):
             kl = torch.clamp(kl, min=self.kl_min)
         return kl
 
-    def _frozen_band_dim(self) -> int:
-        encoder = self.embedding_net
-        if getattr(encoder, "freeze_band", False):
-            dim_band = getattr(encoder, "dim_band", None)
-            if dim_band is None:
-                dim_band = getattr(encoder, "bandpower_latent_dim", None)
-
-            dim_band = int(dim_band or 0)
-            if dim_band <= 0:
-                raise ValueError(
-                    "embedding_net.freeze_band=True but could not infer a valid band dimension. "
-                    "Expected embedding_net.dim_band (or embedding_net.bandpower_latent_dim) to be a positive int."
-                )
-            return dim_band
-        return 0
-
     def _shared_step(self, batch, stage: str):
         data_dict, theta = batch
 
         mu, logvar = self._latent_stats(data_dict)
 
-        dim_band = self._frozen_band_dim()
-        if dim_band > 0:
-            mu_band, mu_patch = mu[..., :dim_band], mu[..., dim_band:]
-            logvar_patch = logvar[..., dim_band:]
+        kl = self._kl_divergence(mu, logvar)
 
-            kl = self._kl_divergence(mu_patch, logvar_patch)
-
-            if stage == "train":
-                z_patch = self._reparameterize(mu_patch, logvar_patch)
-                z = torch.cat([mu_band, z_patch], dim=-1)
-            else:
-                z = mu
+        if stage == "train":
+            z = self._reparameterize(mu, logvar)
         else:
-            kl = self._kl_divergence(mu, logvar)
-
-            if stage == "train":
-                z = self._reparameterize(mu, logvar)
-            else:
-                z = mu
+            z = mu
 
         log_prob = self.model.latent_log_prob(theta, z)
         nll = -log_prob.mean()
