@@ -4,7 +4,7 @@ from typing import Dict, List, Sequence, Tuple, Union, Optional
 import torch
 import os
 
-from .models.compressors import _MODEL_BUILDERS
+from .models.deprecated.compressors import _MODEL_BUILDERS
 from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, EnsembleLikelihoodNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint

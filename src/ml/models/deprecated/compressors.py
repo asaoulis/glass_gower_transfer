@@ -2,6 +2,14 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
+from ..unet.poolproj import (
+    GeM,
+    PoolProj as _PoolProj,
+    SpatialAttentionPool,
+    SpatialPyramidPooling,
+    TransformerPool,
+)
+
 # optional torchvision import for auxiliary builders
 try:
     from torchvision import models
@@ -200,6 +208,9 @@ class PoolProj(nn.Module):
                 parts.append(self.trans(x)) # (B, C)
         desc = torch.cat(parts, dim=1)  # (B, concat_dim)
         return self.proj(desc)          # (B, proj_dim)
+
+
+    PoolProj = _PoolProj
 
 
 #####################################################################################

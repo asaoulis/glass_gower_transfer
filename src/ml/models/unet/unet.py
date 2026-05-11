@@ -30,7 +30,7 @@ from .unet_helpers import (
 )
 
 # Import PoolProj so UNetO3StyleEncoder can share the same pooling head design
-from ..compressors import PoolProj
+from .poolproj import PoolProj
 
 
 class UNetStyleEncoder(nn.Module):
