@@ -176,6 +176,7 @@ def load_pretrained_models(
     cfg_overrides: Optional[Dict[str, object]] = None,
     repeat_idx: Optional[int] = None,
     match_string: Optional[str] = None,
+    match_num_cosmo: bool = False,
 ) -> Tuple[List[torch.nn.Module], List[str], List[str]]:
     """Build models for a list of experiment names using their best checkpoints.
 
@@ -211,16 +212,19 @@ def load_pretrained_models(
         else:
             cfg = _build_config_for_experiment(name)
 
-        if match_string is not None and str(match_string) and getattr(cfg, "match_num_cosmo", False):
+        if match_string is not None and str(match_string) and match_num_cosmo:
             ds_string_match = str(match_string)
         else:
             ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
-
+        print("Searching for checkpoint with match string:", ds_string_match)
         result = load_best_model_and_build_posterior(cfg, ds_string_match=ds_string_match)
         if result is None:
             raise RuntimeError(f"Failed to load best model for experiment '{name}'.")
         model, _, checkpoint_path = result
         model.eval()
+        # set use_KL to false to avoid issues with missing encoder components when loading the full NDELightningModule
+        if hasattr(model, "use_KL"):
+            model.use_KL = False
         models.append(model)
         dataset_quantities.update(getattr(cfg, "dataset_quantities", []))
         checkpoint_paths.append(checkpoint_path)
@@ -271,6 +275,7 @@ def compute_embeddings(models: List[torch.nn.Module], loader: torch.utils.data.D
 
     z_cat = torch.cat(all_z, dim=0)
     theta_cat = torch.cat(all_theta, dim=0)
+    print(f"Computed embeddings for {z_cat.shape[0]} samples with dimension {z_cat.shape[1]}.")
     return z_cat, theta_cat
 
 

@@ -27,7 +27,7 @@ from ..utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_acti
 from ..eval.loading_model import get_best_checkpoint
 from ..utils import set_seed_for_repeat_and_ensemble
 
-NUM_SAMPLES = 12000
+NUM_SAMPLES = 8000
 NUM_WARMUP = 500
 
 @dataclass(frozen=True)
@@ -197,6 +197,7 @@ def load_embedding_model_with_dataloader(
         cfg_overrides=source_cfg_overrides,
         repeat_idx=repeat_idx,
         match_string=pretrained_models_match_string,
+        
     )
     cfg.dataset_quantities = dataset_quantities
 
@@ -303,6 +304,7 @@ def train_embedding_run(
         cfg_overrides=source_cfg_overrides,
         repeat_idx=repeat_idx,
         match_string=getattr(target_cfg, "match_string", None),
+        match_num_cosmo=getattr(target_cfg, "match_num_cosmo", False),
     )
 
     # Ensure downstream code has the dataset quantities from sources.
