@@ -387,7 +387,7 @@ class GowerStreetSimulator(BaseSimulator):
             yield i, delta
 
 
-class GlassLogNormalSimulator(BaseSimulator):
+class GlassMatterShellSimulator(BaseSimulator):
     """
     Simulator using precomputed lognormal fields.
     """
@@ -407,7 +407,7 @@ class GlassLogNormalSimulator(BaseSimulator):
 
 from tqdm import tqdm
 
-class FieldSimulator(GlassLogNormalSimulator):
+class FieldSimulator(GlassMatterShellSimulator):
 
     def run(self):
         n_shells = len(self.ws)
@@ -443,10 +443,10 @@ class FieldSimulator(GlassLogNormalSimulator):
 import numpy as np
 import healpy as hp
 import glass
-class GowerStreetMatterPower(GlassLogNormalSimulator):
+class GowerStreetMatterPower(GlassMatterShellSimulator):
     """
     Empirical 2D matter power spectrum per shell,
-    using the GlassLogNormalSimulator API.
+    using the GlassMatterShellSimulator API.
 
 
     Works for:
