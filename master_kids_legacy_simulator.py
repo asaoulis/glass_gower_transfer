@@ -363,7 +363,7 @@ if __name__ == "__main__":
                         cls_results = {cl_type:{} for cl_type in ['full', 'north', 'south']}
 
                         alm, alm_rand = make_alm_shear_convergence(
-                            catalogue, m_bias_realised, nbins, nside, lmax, nosh=False, mask=mask
+                            catalogue, m_bias, nbins, nside, lmax, nosh=False, mask=mask
                         )
                         # mask_cls = unmixing_mask_cls(catalogue, nbins, nside, lmax, lmin, mask=mask)
 

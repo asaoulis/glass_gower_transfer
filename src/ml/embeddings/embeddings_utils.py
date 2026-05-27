@@ -215,7 +215,7 @@ def load_pretrained_models(
         if match_string is not None and str(match_string) and match_num_cosmo:
             ds_string_match = str(match_string)
         else:
-            ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
+            ds_string_match = f"None_{repeat_idx}" if repeat_idx is not None else ""
         print("Searching for checkpoint with match string:", ds_string_match)
         result = load_best_model_and_build_posterior(cfg, ds_string_match=ds_string_match)
         if result is None:

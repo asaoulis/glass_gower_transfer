@@ -310,6 +310,14 @@ def build_model(config, test_dataloader=None):
     # Kids encoders honour use_kl; legacy compressors just ignore it via **model_kwargs
     if config.model_type in KIDS_MODEL_BUILDERS:
         model_kwargs = {**model_kwargs, 'use_kl': use_KL_loss}
+
+    embedding_model = MODEL_BUILDERS[config.model_type](latent_dim, **model_kwargs).to("cuda" if torch.cuda.is_available() else "cpu")
+
+    hybrid_output_dim = model_kwargs.get('hybrid_output_dim', None)
+    if hybrid_output_dim is not None:
+        print(f"Using hybrid_output_dim={hybrid_output_dim} instead of latent_dim={latent_dim} for encoder output dimension.")
+        latent_dim = hybrid_output_dim  # override latent_dim for encoder output when hybrid_output_dim is set
+
     conditioning_dim = latent_dim + redundancy_dim
     inference_dim = len(config.cosmo_param_names)
     inference_mode = getattr(config, 'inference_mode', 'npe')
@@ -319,11 +327,6 @@ def build_model(config, test_dataloader=None):
 
     if inference_mode == 'nle':
         conditioning_dim, inference_dim = inference_dim, conditioning_dim
-
-    # num_outputs passed to builders is the latent_dim (mu dimension)
-    embedding_model = MODEL_BUILDERS[config.model_type](latent_dim, **model_kwargs).to("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Effective conditioning dimension seen by the flow is latent_dim (+ optional redundancy)
 
     # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})

@@ -189,7 +189,7 @@ def load_embedding_model_with_dataloader(
     from .embeddings_utils import load_pretrained_models
     match_num_cosmo = getattr(cfg, "match_num_cosmo", False)
     if not match_num_cosmo:
-        pretrained_models_match_string = "_" + match_string.split("_")[1]  # e.g. "ncosmo30_0" -> "_0"
+        pretrained_models_match_string = "None_" + match_string.split("_")[1]  # e.g. "ncosmo30_0" -> "_0"
     else:
         pretrained_models_match_string = match_string  # use full match_string for loading sources if match_num_cosmo is True
     source_models, dataset_quantities, _ = load_pretrained_models(
@@ -213,7 +213,7 @@ def load_embedding_model_with_dataloader(
 
         for j in range(n_ens):
             cfg_j = build_cfg_from_experiment_dict(experiment_name, exp_dict, n_cosmo=n_cosmo)
-            cfg_j.match_string = str(match_string)
+            cfg_j.match_string = str(pretrained_models_match_string)
             cfg_j.test_shape_noise_idx = [0]
             if config_overrides:
                 for key, value in config_overrides.items():
@@ -231,7 +231,7 @@ def load_embedding_model_with_dataloader(
         model = build_ensemble_model_from_checkpoints(
             cfg,
             test_loader=None,
-            match_string=match_string,
+            match_string=pretrained_models_match_string,
             member_test_loaders=member_test_loaders,
             model_builder=_build_embeddings_model_from_cfg_checkpoint,
         )
@@ -244,7 +244,7 @@ def load_embedding_model_with_dataloader(
         test_emb_loader = member_test_loaders[0]
     else:
         scalers, test_emb_loader = _build_embedding_test_loader_for_cfg(cfg, source_models)
-        checkpoint_path = _select_best_checkpoint_for_match(cfg, match_string)
+        checkpoint_path = _select_best_checkpoint_for_match(cfg, pretrained_models_match_string)
         if checkpoint_path is None:
             raise RuntimeError(
                 f"No checkpoint found for embeddings experiment '{experiment_name}' and match '{match_string}'."
@@ -318,7 +318,7 @@ def train_embedding_run(
         target_cfg.pretrained_band_ckpt_path = checkpoint_paths[0]
     else:
         # get best checkpoint for this repeat based on match_string logic
-        repeat_match = f"_{repeat_idx}"
+        repeat_match = f"None_{repeat_idx}"
         best_checkpoint, _ = get_best_checkpoint(target_cfg.pretrained_band_ckpt_path, repeat_match)
         target_cfg.pretrained_band_ckpt_path = best_checkpoint[0] if best_checkpoint else None
     scalers, train_loader, val_loader, test_loader = prepare_data_parameters(target_cfg)

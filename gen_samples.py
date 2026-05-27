@@ -46,7 +46,7 @@ def _build_fixed_parameters_list(
 
     return fixed_parameters
 
-PRIOR_MODE = "LCDM_fixed_w0"  # "gower" | "kids_s8_analytic" | "LCDM_fixed_w0"
+PRIOR_MODE = "gower"  # "gower" | "kids_s8_analytic" | "LCDM_fixed_w0"
 
 def _build_prior():
     from src.ml.embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX, _build_cosmo_preset_scaler
@@ -98,12 +98,16 @@ def _run_generation(output_suffix: str):
         # ("finetune_hybrid_16_9param_ensemble_stratify", "ncosmo60_2"),
 
         # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo80_0", ["glass_hybrid_patches_16_9param"]),
-        ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_2", ["glass_hybrid_patches_16_9param"]),
-        ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_1", ["glass_hybrid_patches_16_9param"]),
-        ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_0", ["glass_hybrid_patches_16_9param"]),
+        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_2", ["glass_hybrid_patches_16_9param"]),
+        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_1", ["glass_hybrid_patches_16_9param"]),
+        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_0", ["glass_hybrid_patches_16_9param"]),
 
         # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo200_2", ["glass_hybrid_patches_16_9param"]),
         # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_2", ["glass_hybrid_patches_16_9param"]),
+        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_0", ["glass_hybrid_patches_16_9param"]),
+        ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_1", ["glass_hybrid_patches_16_9param"]),
+        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo60_0", ["glass_hybrid_patches_16_9param"]),
+
         # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo80_2", ["glass_hybrid_patches_16_9param"]),
         # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo60_1", ["glass_hybrid_patches_16_9param"]),
         # ("direct_9param_nle_anaprior_large", "ncosmo400_0", ["hybrid_patches_16_9param"]),
@@ -216,7 +220,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate posterior samples for configured experiments.")
     parser.add_argument(
         "--output-suffix",
-        default="LCDM",
+        default="longsamples",
         help="Optional suffix appended to saved sample files. Use an empty string for no suffix.",
     )
     return parser.parse_args()

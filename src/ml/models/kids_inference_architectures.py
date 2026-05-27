@@ -420,6 +420,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         map_kwargs: Dict = None,
         transformer_kwargs: Dict = None,
         bandpower_latent_dim: int = None,
+        hybrid_output_dim: int = None,
         use_kl: bool = False,
         # Fusion controls
         fusion_type: str = "concat",  # {'concat','film','gated'}
@@ -430,7 +431,13 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
     ):
         # For the *hybrid* encoder, latent_dim is the dim of mu after
         # concatenation; model_output_dim is 2*latent_dim when KL is used.
-        super().__init__(latent_dim=latent_dim, use_kl=use_kl, **kwargs)
+        # if hybrid_output_dim is set, it overrides the default model_output_dim = latent_dim or 2*latent_dim.
+        if hybrid_output_dim is not None:
+            final_output_dim = hybrid_output_dim
+        else:
+            final_output_dim = latent_dim
+
+        super().__init__(latent_dim=final_output_dim, use_kl=use_kl, **kwargs)
 
         bandpower_kwargs = bandpower_kwargs or {}
         print("Bandpower kwargs", bandpower_kwargs, flush=True)
