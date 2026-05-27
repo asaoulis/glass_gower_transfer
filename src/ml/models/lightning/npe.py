@@ -112,6 +112,103 @@ class NDELightningModule(BaseLightningModule):
         return density_estimator
 
     @torch.no_grad()
+    def get_representations_and_samples(
+        self,
+        *,
+        num_samples: int = 10_000,
+        batch_size: int = 8,
+        prior=None,
+        return_theta0s: bool = True,
+        return_z: bool = True,
+        return_representation: bool = True,
+        **posterior_kwargs,
+    ):
+        """Return intermediate representations and posterior samples on the test set.
+
+        Mirrors `generate_samples`, but additionally returns:
+          - `representation`: encoder features before the final head
+          - `z`: compressed outputs after applying the head (flow context)
+
+        Implementation details
+        ----------------------
+        We avoid running the embedding net twice by:
+          1) computing `rep = self.model.get_representation(data)`
+          2) computing `z = self.model.embedding_net.head(rep)`
+        then sampling using the posterior conditioned on `z`.
+
+        Returns
+        -------
+        dict with keys among: theta0s, representation, z, samples
+        where samples has shape [num_samples, N, D].
+        """
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+        posterior = self.build_posterior_object(prior=prior)
+
+        theta0s_items = []
+        rep_items = []
+        z_items = []
+
+        # Encode test set once.
+        for data_dict, theta in tqdm(self.test_dataloader, desc="Encoding test set"):
+            if isinstance(data_dict, dict):
+                data_dict = {k: v.to(device) for k, v in data_dict.items()}
+            else:
+                data_dict = data_dict.to(device)
+
+            if return_theta0s:
+                theta0s_items.append(theta.detach().cpu())
+
+            rep = self.model.get_representation(data_dict)
+            if return_representation:
+                rep_items.append(rep.detach().cpu())
+
+            if return_z:
+                emb = getattr(self.model, "embedding_net", None)
+                head = getattr(emb, "head", None) if emb is not None else None
+                if head is None:
+                    raise AttributeError(
+                        "get_representations_and_samples requires embedding_net.head to exist; "
+                        "either use a KidsInferenceEncoder-style compressor or extend this method."
+                    )
+                z = head(rep)
+                z_items.append(z.detach().cpu())
+            else:
+                # still need z for sampling
+                emb = getattr(self.model, "embedding_net", None)
+                head = getattr(emb, "head", None) if emb is not None else None
+                if head is None:
+                    raise AttributeError(
+                        "get_representations_and_samples requires embedding_net.head to exist for sampling."
+                    )
+                z = head(rep)
+                z_items.append(z.detach().cpu())
+
+        out: dict[str, torch.Tensor] = {}
+        if return_theta0s:
+            out["theta0s"] = torch.cat(theta0s_items, dim=0)
+        if return_representation:
+            out["representation"] = torch.cat(rep_items, dim=0) if rep_items else torch.empty(0)
+
+        z_conds = torch.cat(z_items, dim=0) if z_items else torch.empty(0)
+        if return_z:
+            out["z"] = z_conds
+
+        # Sample from posterior conditioned on z.
+        posterior.prior.to(device)
+        posterior.to(device)
+        samples = []
+        for i in tqdm(range(0, len(z_conds), batch_size), desc="Generating samples"):
+            z_batch = z_conds[i : i + batch_size].to(device)
+            s = posterior.gen_samples(num_samples=num_samples, x=z_batch, **posterior_kwargs)
+            if isinstance(s, tuple):
+                s = s[0]
+            samples.append(s.detach().cpu())
+        out["samples"] = torch.cat(samples, dim=1) if samples else torch.empty(0)
+        return out
+
+    @torch.no_grad()
     def generate_samples(self, num_samples=10000, **kwargs):
         device = "cuda" if torch.cuda.is_available() else "cpu"
         posterior = self.build_posterior_object()
