@@ -27,3 +27,5 @@ logs/
 *.png
 *.svg
 *.tch
+.claude/
+CLAUDE.md

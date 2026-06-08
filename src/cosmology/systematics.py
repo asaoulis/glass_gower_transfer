@@ -1,15 +1,34 @@
 from abc import ABC, abstractmethod
 from .nla import kappa_ia_nla_m
 import numpy as np
+import healpy as hp
+import glass.shapes
 
 class BaseSystematics(ABC):
 
     def apply_intrinsic_alignments(self, delta, kappa, z_eff, tomo):
         return kappa
 
-    def apply_shear_bias(self, tomo, shear, lat):
+    def effective_mask(self, tomo, shell_idx, base_mask, *, mask_rot_angle=0, rotator=None):
+        """Mask the galaxies are sampled from for (tomo, shell). Default: unchanged.
+
+        The shell index / rotation args are accepted for parity with the variable-depth
+        override (which multiplies in a per-(tomo, shell) depth map rotated to match the
+        footprint); the base model ignores them.
+        """
+        return base_mask
+
+    def sample_ellipticity(self, tomo, lon, lat, count, sigma_e, *, rng):
+        """Draw intrinsic galaxy ellipticities. Default: scalar per-bin dispersion.
+
+        ``lon``/``lat`` are accepted for parity with the variable-depth override (which reads a
+        per-pixel dispersion); the base model ignores them.
+        """
+        return glass.shapes.ellipticity_intnorm(count, sigma_e, rng=rng)
+
+    def apply_shear_bias(self, tomo, shear, lat, *, lon=None):
         return shear.real, shear.imag
-    
+
     def __repr__(self):
         return f"{self.__class__.__name__}()"
 
@@ -35,7 +54,7 @@ class NLASystematics(BaseSystematics):
         )
         return kappa + kappa_ia
 
-    def apply_shear_bias(self, tomo, shear, lat):
+    def apply_shear_bias(self, tomo, shear, lat, *, lon=None):
         # hemisphere split
         north = np.abs(lat) < 15
         south = ~north
@@ -45,4 +64,95 @@ class NLASystematics(BaseSystematics):
         m = self.shear_bias['m_bias'][tomo]
         E1 = (1 + m)*shear.real + c_bias.real
         E2 = (1 + m)*shear.imag + c_bias.imag
+        return E1, E2
+
+
+class VariableDepthSystematics(NLASystematics):
+    """NLA systematics + KiDS-Legacy variable depth (VD).
+
+    Adds the three VD seams on top of NLA (IA + additive c-bias N/S split are inherited
+    unchanged). Behaviour matches the reference ``sample_galaxy_catalogue_vd``:
+
+    - ``effective_mask``: galaxies are sampled from ``base_mask * var_depth_mask[tomo, shell]``
+      (the depth map rotated by the same ``lon_exact`` mask-rotation as ``base_mask``).
+    - ``sample_ellipticity``: per-pixel intrinsic dispersion via ``vd_shapes`` (not a scalar).
+    - ``apply_shear_bias``: per-galaxy multiplicative bias ``m_bias_vd_realised[tomo][vd_bin]``
+      (vd_bin from digitising the VD tracer at the galaxy pixel), the inherited additive
+      c-bias, plus the residual-PSF term ``alpha_{1,2}*psf_bias_map_{1,2}[gal_pix]``.
+
+    All per-galaxy lookups (vd_bin, vd_shapes, psf) use the SURVEY-frame ``lon``/``lat`` (the
+    galaxy positions un-rotated by the mask Z-rotation), so the VD/PSF maps are footprint-tied.
+    """
+
+    def __init__(
+        self,
+        *,
+        shear_bias,
+        nla,
+        cosmo,
+        var_depth_mask,
+        vd_shapes,
+        vd_map,
+        vd_trace_edges,
+        n_vardepth_bins,
+        nside,
+        m_bias_vd_realised,
+        alpha_1_realised,
+        alpha_2_realised,
+        psf_bias_map_1,
+        psf_bias_map_2,
+    ):
+        super().__init__(shear_bias=shear_bias, nla=nla, cosmo=cosmo)
+        self.var_depth_mask = var_depth_mask
+        self.vd_shapes = vd_shapes
+        self.vd_map = vd_map
+        self.vd_trace_edges = vd_trace_edges
+        self.n_vardepth_bins = n_vardepth_bins
+        self.nside = nside
+        self.m_bias_vd_realised = m_bias_vd_realised
+        self.alpha_1_realised = alpha_1_realised
+        self.alpha_2_realised = alpha_2_realised
+        self.psf_bias_map_1 = psf_bias_map_1
+        self.psf_bias_map_2 = psf_bias_map_2
+        # Per-shell cache of the (un-rotated) var_depth_mask[tomo, shell] full maps, so the
+        # interp-heavy __getitem__ runs once per (tomo, shell) instead of per augmentation.
+        self._cache_shell = None
+        self._vd_mask_cache = {}
+
+    def effective_mask(self, tomo, shell_idx, base_mask, *, mask_rot_angle=0, rotator=None):
+        if shell_idx != self._cache_shell:
+            self._cache_shell = shell_idx
+            self._vd_mask_cache = {}
+        if tomo not in self._vd_mask_cache:
+            self._vd_mask_cache[tomo] = np.asarray(self.var_depth_mask[tomo, shell_idx])
+        vdm = self._vd_mask_cache[tomo]
+        if mask_rot_angle != 0:
+            if rotator is None:
+                raise ValueError(
+                    "VariableDepthSystematics.effective_mask needs a rotator for a "
+                    "nonzero mask_rot_angle"
+                )
+            vdm = rotator.rotate_map_longitude_exact(vdm, [mask_rot_angle, 0, 0], False)
+        return base_mask * vdm
+
+    def sample_ellipticity(self, tomo, lon, lat, count, sigma_e, *, rng):
+        return self.vd_shapes.sample(tomo, lon, lat, rng=rng)
+
+    def apply_shear_bias(self, tomo, shear, lat, *, lon=None):
+        gal_pix = hp.ang2pix(self.nside, lon, lat, lonlat=True)
+
+        vd_bin = np.clip(
+            np.digitize(self.vd_map[tomo][gal_pix], self.vd_trace_edges) - 1,
+            0, self.n_vardepth_bins - 1,
+        )
+        gal_m_bias = self.m_bias_vd_realised[tomo][vd_bin]
+
+        north = np.abs(lat) < 15
+        south = ~north
+        c_bias = np.zeros_like(shear)
+        c_bias[north] = self.shear_bias['c1_north'][tomo] + 1j*self.shear_bias['c2_north'][tomo]
+        c_bias[south] = self.shear_bias['c1_south'][tomo] + 1j*self.shear_bias['c2_south'][tomo]
+
+        E1 = (1 + gal_m_bias)*shear.real + c_bias.real + self.alpha_1_realised[tomo]*self.psf_bias_map_1[gal_pix]
+        E2 = (1 + gal_m_bias)*shear.imag + c_bias.imag + self.alpha_2_realised[tomo]*self.psf_bias_map_2[gal_pix]
         return E1, E2

@@ -276,28 +276,38 @@ class BaseSimulator(ABC):
                     # Sample galaxies
                     for mask_idx, mask_rot_angle in enumerate(mask_rotation_angles):
                         aug_idx = (noise_idx * len(mask_rotation_angles)) + mask_idx
-                        mask = precomputed_masks[mask_idx]
+                        # Variable-depth multiplies a per-(tomo, shell) depth map into the mask
+                        # (rotated to match this footprint); default systematics return base_mask.
+                        mask = self.systematics.effective_mask(
+                            tomo, i, precomputed_masks[mask_idx],
+                            mask_rot_angle=mask_rot_angle, rotator=self.rotator,
+                        )
                         for lon, lat, count in glass.points.positions_from_delta(
                             ngal, delta, self.galaxy_bias, mask,
                             rng=self.rng
                         ):
                             gal_z = glass.galaxies.redshifts(count,self.ws[i], rng=self.rng)
-                            gal_eps = glass.shapes.ellipticity_intnorm(
-                                count, self.sigma_e[tomo], rng=self.rng
+                            # Survey-frame positions (un-rotated): footprint-tied VD/PSF/shape
+                            # lookups use these; galaxy_shear keeps the rotated lon/lat (kappa_i /
+                            # gamma_rot live in the rotated-delta frame). unrotate uses no RNG, so
+                            # moving it up is a no-op for the default path's random sequence.
+                            lon_survey, lat_survey = unrotate_longitude_points(lon, lat, mask_rot_angle)
+                            gal_eps = self.systematics.sample_ellipticity(
+                                tomo, lon_survey, lat_survey, count, self.sigma_e[tomo], rng=self.rng
                             )
                             shear = glass.galaxies.galaxy_shear(
                                 lon, lat, gal_eps,
                                 kappa_i, gamma_rot.real, gamma_rot.imag
                             )
-                            # Apply shear bias
-
-                            E1, E2 = self.systematics.apply_shear_bias(tomo, shear, lat)
-                            lon, lat = unrotate_longitude_points(lon, lat, mask_rot_angle)
+                            # Apply shear bias (VD adds per-galaxy m-bias & residual-PSF term)
+                            E1, E2 = self.systematics.apply_shear_bias(
+                                tomo, shear, lat_survey, lon=lon_survey
+                            )
 
                             rows = np.empty(count, dtype=self.row_dtype)
 
-                            rows['RA'] = lon
-                            rows['DEC'] = lat
+                            rows['RA'] = lon_survey
+                            rows['DEC'] = lat_survey
                             rows['Z_TRUE'] = gal_z
                             rows['ZBIN'] = tomo
                             rows['E1'] = E1

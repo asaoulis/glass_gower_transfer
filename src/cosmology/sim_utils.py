@@ -9,17 +9,33 @@ from src.ml.data.data_loading import load_cosmo_params
 def resolve_systematics_model(args) -> str:
 	"""Resolve the systematics model name from CLI args.
 
-	- If `--systematics-model auto`, uses `nla` iff `--kids-systematics`.
+	- `--variable-depth` -> `nla_vd` (variable depth implies the full NLA + shear-bias
+	  systematics, matching the reference VD driver's `do_systematics/do_shear_bias=True`).
+	- Else if `--systematics-model auto`, uses `nla` iff `--kids-systematics`.
 	- Otherwise returns the provided model string.
 	"""
 	model = getattr(args, "systematics_model", "auto")
 	if model == "auto":
-		return "nla" if getattr(args, "kids_systematics", False) else "none"
+		model = "nla" if getattr(args, "kids_systematics", False) else "none"
+	if getattr(args, "variable_depth", False):
+		return "nla_vd"
 	return model
 
 
-def build_systematics(model: str, *, systematics_cls, cosmo, ia_params: dict, shear_bias: dict, sigma_e_base: np.ndarray):
+def model_shift_nz(model: str) -> bool:
+	"""Whether the tomographic n(z) is dz-shifted for a given systematics model.
+
+	Mirrors the `shift_nz` returned by `build_systematics`; exposed separately so the master can
+	compute `tomo_nz` (needed to build the variable-depth objects) BEFORE `build_systematics`.
+	"""
+	return model in ("nla", "nla_vd")
+
+
+def build_systematics(model: str, *, systematics_cls, cosmo, ia_params: dict, shear_bias: dict, sigma_e_base: np.ndarray, vd: dict | None = None):
 	"""Build systematics object + derived inputs for the simulator.
+
+	`vd` (only for model `nla_vd`) bundles the pre-built variable-depth objects + per-sim realised
+	PSF / m-bias-vd inputs.
 
 	Returns:
 		(systematics_or_none, sigma_e_sim, shift_nz)
@@ -33,7 +49,142 @@ def build_systematics(model: str, *, systematics_cls, cosmo, ia_params: dict, sh
 			cosmo=cosmo,
 		)
 		return systematics, sigma_e_base.copy(), True
+	if model == "nla_vd":
+		if vd is None:
+			raise ValueError("build_systematics: model 'nla_vd' requires vd=... inputs")
+		from .systematics import VariableDepthSystematics
+		systematics = VariableDepthSystematics(
+			shear_bias=shear_bias,
+			nla=ia_params,
+			cosmo=cosmo,
+			var_depth_mask=vd["var_depth_mask"],
+			vd_shapes=vd["vd_shapes"],
+			vd_map=vd["vd_map"],
+			vd_trace_edges=vd["vd_trace_edges"],
+			n_vardepth_bins=vd["n_vardepth_bins"],
+			nside=vd["nside"],
+			m_bias_vd_realised=vd["m_bias_vd_realised"],
+			alpha_1_realised=vd["alpha_1_realised"],
+			alpha_2_realised=vd["alpha_2_realised"],
+			psf_bias_map_1=vd["psf_bias_map_1"],
+			psf_bias_map_2=vd["psf_bias_map_2"],
+		)
+		return systematics, sigma_e_base.copy(), True
 	raise ValueError(f"Unknown systematics model: {model!r}")
+
+
+def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple, nside, sigma_e, dndz_scale=1.0):
+	"""Construct the variable-depth (VD) look-up objects.
+
+	``dndz_scale`` multiplies the per-VD-bin n(z) normalisation so it shares the SAME overall
+	galaxy-density scale as the ``tomo_nz`` passed in (the LOS depth fraction is the ratio
+	``dndz_vardepth / tomo_nz``, which must be scale-consistent). It is 1.0 in production (then
+	`dndz_vd` is built exactly as the reference); the local smoke scales `tomo_nz` down by
+	`n_eff_scale`, so it must pass the same factor here.
+
+	Ports the reference VD driver (kids_legacy_sim_vd_looped.py lines ~334-458) VERBATIM, only
+	parameterised by the simulator's survey geometry:
+
+	- load per-tomo VD tracer maps (`vd_map`);
+	- build the count-contrast functions `n_contrast_vd` (mask-normalised so <contrast>_mask = 1,
+	  guaranteeing total galaxy counts match the no-VD case per tomo bin);
+	- build the per-pixel sigma_eps model `sigma_eps_var` (clipped cubic, rescaled so
+	  <sigma_eps>_mask = sigma_e[i]);
+	- build the per-VD-bin n(z) `dndz_vd` from the `comb_1` ascii;
+	- assemble `AngularLosVariableDepthMask` + `VariableDepthShapeDispersion`.
+
+	Returns:
+		(var_depth_mask, vd_shapes, vd_map)
+	"""
+	from scipy.interpolate import interp1d
+
+	from .variable_depth import (
+		AngularLosVariableDepthMask,
+		VariableDepthShapeDispersion,
+	)
+	from src.KiDS.tomo import nbins, ztomo, ztomo_label, n_arcmin2
+	from src.KiDS.variable_depth_config import (
+		a_se,
+		b_se,
+		c_se,
+		d_se,
+		load_vd_maps,
+		n_eff_table,
+		n_vardepth_bins,
+		vd_trace_eff_centre,
+	)
+
+	vd_map = load_vd_maps(data_dir, nside)  # (nbins, npix) at run nside
+
+	# n_eff interpolation -> count-contrast, mask-normalised so <contrast>_mask = 1.
+	n_eff_interp = [
+		interp1d(
+			vd_trace_eff_centre[i], n_eff_table[:, i],
+			kind="linear", bounds_error=False,
+			fill_value=(n_eff_table[0, i], n_eff_table[-1, i]),
+		)
+		for i in range(nbins)
+	]
+	_disc_corr = np.array([
+		1.0 / np.average(n_eff_interp[i](vd_map[i]), weights=mask)
+		for i in range(nbins)
+	])
+	n_contrast_vd = [
+		lambda x, i=i: _disc_corr[i] * n_eff_interp[i](x)
+		for i in range(nbins)
+	]
+
+	# sigma_eps VD model: clipped cubic in the tracer, rescaled so <sigma_eps>_mask = sigma_e[i].
+	_se_raw = [
+		lambda x, i=i: np.clip(
+			a_se[i]*x**3 + b_se[i]*x**2 + c_se[i]*x + d_se[i], 0.25, 0.34,
+		)
+		for i in range(nbins)
+	]
+	_se_corr = np.array([
+		sigma_e[i] / np.average(_se_raw[i](vd_map[i]), weights=mask)
+		for i in range(nbins)
+	])
+	sigma_eps_var = np.array([
+		lambda x, i=i: _se_corr[i] * _se_raw[i](x)
+		for i in range(nbins)
+	])
+
+	# Per-VD-bin n(z): all read the SAME comb_1 ascii, scaled by n_contrast_vd at the VD-bin centre.
+	dndz_vd = np.zeros((nbins, n_vardepth_bins, len(los_z_integration)))
+	for i in range(nbins):
+		z1a, z1b = ztomo_label[i][0].split(".")
+		z2a, z2b = ztomo_label[i][1].split(".")
+		filename = (
+			f"{data_dir}/nofzs/nz_tgweights/BLINDSHAPES_KIDS_Legacy_NS_shear_noSG_noWeiCut_newCut_blindABC_A1_rmcol_filt_PSF_RAD_calc_filt_filt_comb_1_"
+			f"ZB{z1a}p{z1b}t{z2a}p{z2b}_calib_goldwt_Nz_recalibrated.ascii"
+		)
+		hdu = np.loadtxt(filename).T
+		z = hdu[0]
+		zmid = z[:-1] + 0.5 * (z[1:] - z[:-1])
+		for j in range(n_vardepth_bins):
+			dndz_interpolated = np.interp(
+				los_z_integration,
+				zmid,
+				dndz_scale * n_arcmin2[i] * n_contrast_vd[i](vd_trace_eff_centre[i][j]) * hdu[1][:-1] / np.trapezoid(hdu[1][:-1], zmid),
+			)
+			dndz_vd[i][j] = np.clip(dndz_interpolated, 0, None)
+
+	var_depth_mask = AngularLosVariableDepthMask(
+		vd_map,
+		n_bins=nbins,
+		zbins=zb_tuple,
+		ztomo=ztomo,
+		dndz=tomo_nz,
+		z=los_z_integration,
+		dndz_vardepth=dndz_vd,
+		vardepth_values=vd_trace_eff_centre,
+		vardepth_los_tracer=None,
+		vardepth_tomo_functions=n_contrast_vd,
+	)
+	vd_shapes = VariableDepthShapeDispersion(sigma_eps_var, vd_map, nside)
+
+	return var_depth_mask, vd_shapes, vd_map
 
 
 def prepare_glass_backend(
