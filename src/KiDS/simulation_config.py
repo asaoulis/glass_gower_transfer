@@ -39,8 +39,10 @@ CAMB_LIMITS = {
 
 
 # Shape-noise augmentation counts (outer = independent realisations; inner = per-rotation augmentations).
+# NOTE: gower_street outer set to 1 for the theory-test runs (outer reloads the N-body backend,
+# ~40 min each; inner+mask augmentations are cheap). Restore to 4 for production Gower datasets.
 OUTER_NUM_SHAPE_NOISE_REALISATIONS = {
-	"gower_street": 4,
+	"gower_street": 1,
 	"glass": 4,
 }
 
