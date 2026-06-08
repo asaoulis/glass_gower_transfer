@@ -3,7 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, Tuple, Sequence
 
-from .deprecated.neural_operators import KidsFNONorthSouthEmbedding
 from .deprecated.transformers import QueryCrossAttentionBlock
 from .unet.poolproj import PoolProj
 
@@ -692,5 +691,4 @@ KIDS_MODEL_BUILDERS = {
                    **kwargs,
                )
     ),
-    "kids_fno_dual": lambda num_outputs, **kwargs: KidsFNONorthSouthEmbedding(latent_dim=num_outputs, **kwargs),
 }

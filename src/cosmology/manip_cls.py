@@ -1,6 +1,5 @@
 import numpy as np
 import healpy as hp
-import iolaus
 from heracles.result import Result
 import heracles
 
