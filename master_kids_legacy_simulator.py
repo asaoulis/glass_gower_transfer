@@ -123,11 +123,12 @@ def parse_args():
                              "outer/inner shape-noise realisations to a single one. For fast "
                              "per-cosmology theory tests (implies no rotations).")
 
-    parser.add_argument("--shear-normalization", type=str, default="counts",
+    parser.add_argument("--shear-normalization", type=str, default="mean",
                         choices=["counts", "mean", "expected"],
                         help="Shear-map normalisation in make_alm_shear_convergence "
-                             "(default 'counts' = per-pixel observed counts; 'mean' = global "
-                             "mean counts/pixel = the pre-c892fc1 behaviour, for comparison).")
+                             "(default 'mean' = global mean counts/pixel, which agrees with the "
+                             "KiDS MCM/theory to ~few %%; 'counts' = per-pixel observed counts, "
+                             "the pre-revert c892fc1 default that inflated pseudo-Cls by ~1.5x).")
 
     parser.add_argument("--use-kids-mask", action="store_true",
                         help="Use KiDS mask")
