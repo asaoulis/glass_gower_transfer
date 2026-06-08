@@ -189,24 +189,53 @@ def _source_cls_shell_projection(params, cosmo, tomo_nz, los_z, lmax, nbins):
     return _shell_projection_kappa_cls(ws, matter, tomo_nz, los_z, cosmo, lmax, nbins)
 
 
-def warm_matter_cache(cosmo_vecs: Sequence[CosmoVec], *, lmax: Optional[int] = None,
-                      nside: int = cfg.NSIDE) -> int:
-    """Serially populate the matter_cls disk cache for the given (unique) cosmologies.
+_THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                    "NUMEXPR_NUM_THREADS", "VECLIB_MAXIMUM_THREADS")
 
-    Used by the ensemble driver before the parallel ratio loop so the many heavy
-    non-Limber CAMB calls do not run concurrently (memory) and are computed once each.
-    Returns the number of unique cosmologies warmed.
+
+def warm_matter_cache(cosmo_vecs: Sequence[CosmoVec], *, lmax: Optional[int] = None,
+                      nside: int = cfg.NSIDE, n_jobs: int = 1,
+                      omp_threads: int = 8) -> int:
+    """Populate the matter_cls disk cache for the given (unique) cosmologies.
+
+    Each entry is a slow non-Limber CAMB call (~minutes); we compute each unique cosmology
+    exactly once, BEFORE the parallel ratio loop, so heavy CAMB jobs don't run concurrently
+    with that loop. With ``n_jobs > 1`` the warm-up itself runs ``n_jobs`` CAMB calls in
+    parallel, each pinned to ``omp_threads`` OpenMP/BLAS threads (set in the parent env so
+    spawned loky workers inherit it at import) — pick ``n_jobs * omp_threads <= cores`` to
+    avoid oversubscription. Returns the number of unique cosmologies warmed.
     """
     if lmax is None:
         lmax = 2 * nside
     seen = {}
     for cv in cosmo_vecs:
-        key = _params_key(params_from_cosmo_vec(cv))
-        seen.setdefault(key, params_from_cosmo_vec(cv))
-    for i, params in enumerate(seen.values()):
-        print(f"[validation] warming matter_cls cache {i + 1}/{len(seen)} ...", flush=True)
-        _cached_matter_cls(_params_key(params), lmax, cfg.ZMIN, cfg.ZMAX, cfg.DX)
-    return len(seen)
+        seen.setdefault(_params_key(params_from_cosmo_vec(cv)), params_from_cosmo_vec(cv))
+    items = list(seen.values())
+    print(f"[validation] warming matter_cls cache for {len(items)} unique cosmologies "
+          f"(n_jobs={n_jobs}, omp_threads={omp_threads}) ...", flush=True)
+
+    def _one(p):
+        return _cached_matter_cls(_params_key(p), lmax, cfg.ZMIN, cfg.ZMAX, cfg.DX)
+
+    if n_jobs and n_jobs > 1 and len(items) > 1:
+        import joblib
+        saved = {k: os.environ.get(k) for k in _THREAD_ENV_VARS}
+        for k in _THREAD_ENV_VARS:
+            os.environ[k] = str(omp_threads)
+        try:
+            joblib.Parallel(n_jobs=n_jobs, backend="loky", verbose=10)(
+                joblib.delayed(_one)(p) for p in items)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+    else:
+        for i, p in enumerate(items):
+            print(f"[validation]   cosmo {i + 1}/{len(items)}", flush=True)
+            _one(p)
+    return len(items)
 
 
 def compute_bandpower_theory_from_cosmo_vec(

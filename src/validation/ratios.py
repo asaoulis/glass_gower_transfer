@@ -181,7 +181,10 @@ def compute_ensemble_ratios(
                 cosmo_vecs.append(cv)
             except Exception as e:  # noqa: BLE001 - skip unreadable file; loop will report
                 print(f"[validation] (cache warm: skipping {f}: {e})")
-        n_cos = warm_matter_cache(cosmo_vecs, nside=nside)
+        # Run several CAMB calls concurrently, each pinned to ~8 threads (n_jobs*omp<=cores).
+        omp = 8
+        warm_jobs = max(1, n_jobs // omp)
+        n_cos = warm_matter_cache(cosmo_vecs, nside=nside, n_jobs=warm_jobs, omp_threads=omp)
         print(f"[validation] matter_cls cache warm for {n_cos} unique cosmologies")
 
     with tqdm_joblib(tqdm(total=len(files), desc="ratios")):
