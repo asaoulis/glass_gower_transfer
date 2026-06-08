@@ -118,6 +118,11 @@ def parse_args():
                         help="Cap the number of cosmologies/simulations to the first N "
                              "(default: all). Used for bounded validation/theory-test runs.")
 
+    parser.add_argument("--no-augmentation", action="store_true",
+                        help="Produce ONE mock per cosmology: collapse rotations AND the "
+                             "outer/inner shape-noise realisations to a single one. For fast "
+                             "per-cosmology theory tests (implies no rotations).")
+
     parser.add_argument("--use-kids-mask", action="store_true",
                         help="Use KiDS mask")
     # Paths
@@ -192,6 +197,7 @@ if __name__ == "__main__":
     SIMULATOR_TYPE = args.simulator_type
     SYSTEMATICS_MODEL = resolve_systematics_model(args)
     NO_ROTATIONS = args.no_rotations
+    NO_AUGMENTATION = args.no_augmentation
     USE_KIDS_MASK = args.use_kids_mask
     csv_path = args.csv_path
     gower_data_dir = args.gower_data_dir
@@ -236,6 +242,16 @@ if __name__ == "__main__":
         nside_out = 512
         outer_reps = OUTER_NUM_SHAPE_NOISE_REALISATIONS[SIMULATOR_TYPE]
         inner_reps = INNER_NUM_SHAPE_NOISE_REALISATIONS[SIMULATOR_TYPE]
+
+    if NO_AUGMENTATION and not SMOKE:
+        # One mock per cosmology: a single rotation/footprint and a single shape-noise
+        # realisation (outer & inner). For fast per-cosmology theory checks.
+        rotation_specs = rotation_specs[:1]
+        outer_reps = 1
+        inner_reps = 1
+        if rank == 0:
+            print("[rank 0] --no-augmentation: 1 mock/cosmology "
+                  "(1 rotation, outer_reps=inner_reps=1).")
 
     OUTPUT_DIR = args.output_dir
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
