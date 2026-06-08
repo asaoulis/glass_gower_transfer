@@ -474,6 +474,13 @@ if __name__ == "__main__":
                     )
                     if SYSTEMATICS_MODEL == "none":
                         m_bias_realised *= 0.0
+                        # Theory-test mode applies NO forward shear bias (NoSystematics), so the
+                        # 1/(1+m) de-bias inside make_alm_shear_convergence must ALSO be off — else
+                        # clean mocks are spuriously rescaled by 1/(1+m)^2 per tomo bin, producing a
+                        # z-tilt vs theory. See artifacts/compare/REPORT.md §2.
+                        m_bias_for_shear = np.zeros_like(m_bias)
+                    else:
+                        m_bias_for_shear = m_bias
 
                     kwargs = {
                         'cosmo': cosmo,
@@ -518,7 +525,7 @@ if __name__ == "__main__":
                         cls_results = {cl_type:{} for cl_type in ['full', 'north', 'south']}
 
                         alm, alm_rand = make_alm_shear_convergence(
-                            catalogue, m_bias, nbins, nside, lmax, nosh=False, mask=mask,
+                            catalogue, m_bias_for_shear, nbins, nside, lmax, nosh=False, mask=mask,
                             normalization=SHEAR_NORMALIZATION,
                         )
                         # mask_cls = unmixing_mask_cls(catalogue, nbins, nside, lmax, lmin, mask=mask)
