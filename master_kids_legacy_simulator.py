@@ -123,6 +123,12 @@ def parse_args():
                              "outer/inner shape-noise realisations to a single one. For fast "
                              "per-cosmology theory tests (implies no rotations).")
 
+    parser.add_argument("--shear-normalization", type=str, default="counts",
+                        choices=["counts", "mean", "expected"],
+                        help="Shear-map normalisation in make_alm_shear_convergence "
+                             "(default 'counts' = per-pixel observed counts; 'mean' = global "
+                             "mean counts/pixel = the pre-c892fc1 behaviour, for comparison).")
+
     parser.add_argument("--use-kids-mask", action="store_true",
                         help="Use KiDS mask")
     # Paths
@@ -198,6 +204,7 @@ if __name__ == "__main__":
     SYSTEMATICS_MODEL = resolve_systematics_model(args)
     NO_ROTATIONS = args.no_rotations
     NO_AUGMENTATION = args.no_augmentation
+    SHEAR_NORMALIZATION = args.shear_normalization
     USE_KIDS_MASK = args.use_kids_mask
     csv_path = args.csv_path
     gower_data_dir = args.gower_data_dir
@@ -510,7 +517,8 @@ if __name__ == "__main__":
                         cls_results = {cl_type:{} for cl_type in ['full', 'north', 'south']}
 
                         alm, alm_rand = make_alm_shear_convergence(
-                            catalogue, m_bias, nbins, nside, lmax, nosh=False, mask=mask
+                            catalogue, m_bias, nbins, nside, lmax, nosh=False, mask=mask,
+                            normalization=SHEAR_NORMALIZATION,
                         )
                         # mask_cls = unmixing_mask_cls(catalogue, nbins, nside, lmax, lmin, mask=mask)
 
