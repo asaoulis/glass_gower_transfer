@@ -113,7 +113,7 @@ def make_alm_shear_convergence(
     mask=None,
     nosh=False,
     return_shear=False,
-    normalization="counts",
+    normalization="mean",
     n_arcmin2=None,
     rng=None,
 ):
