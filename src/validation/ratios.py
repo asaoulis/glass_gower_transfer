@@ -77,6 +77,7 @@ def load_and_compute_ratios(
     nbands: int = cfg.NBANDS,
     mixing_matrix: Optional[np.ndarray] = None,
     nonlinear: str = cfg.NONLINEAR,
+    theory_mode: str = cfg.THEORY_MODE,
     data_dir: str = cfg.DATA_DIR,
     empirical_key: str = "mixed_bandpowers",
 ):
@@ -103,7 +104,7 @@ def load_and_compute_ratios(
             cosmo_vec,
             nside=nside, nbins=nbins, lmin_cut=lmin_cut, lmax_cut=lmax_cut,
             nbands=nbands, mixing_matrix=mixing_matrix, nonlinear=nonlinear,
-            data_dir=data_dir,
+            theory_mode=theory_mode, data_dir=data_dir,
         )
 
         ratios, labels = [], []
@@ -141,6 +142,7 @@ def compute_ensemble_ratios(
     exclude: Optional[Sequence[str]] = None,
     mixing_matrix: Optional[np.ndarray] = None,
     nonlinear: str = cfg.NONLINEAR,
+    theory_mode: str = cfg.THEORY_MODE,
     data_dir: str = cfg.DATA_DIR,
     empirical_key: str = "mixed_bandpowers",
     max_sims: Optional[int] = None,
@@ -166,13 +168,29 @@ def compute_ensemble_ratios(
         )
     print(f"[validation] found {len(files)} simulation files in {folder}")
 
+    # Shell-projection theory uses a slow non-Limber CAMB matter_cls per cosmology; warm the
+    # disk cache SERIALLY first so the parallel ratio loop only hits cache (avoids many heavy
+    # concurrent CAMB jobs / OOM, and computes each unique cosmology exactly once).
+    if theory_mode == "shell_projection":
+        from .theory import warm_matter_cache
+        cosmo_vecs = []
+        for f in files:
+            try:
+                _, cv = unpack_data(f, nested_keys, cosmo_params, as_torch=False,
+                                    return_names=True)
+                cosmo_vecs.append(cv)
+            except Exception as e:  # noqa: BLE001 - skip unreadable file; loop will report
+                print(f"[validation] (cache warm: skipping {f}: {e})")
+        n_cos = warm_matter_cache(cosmo_vecs, nside=nside)
+        print(f"[validation] matter_cls cache warm for {n_cos} unique cosmologies")
+
     with tqdm_joblib(tqdm(total=len(files), desc="ratios")):
         results = joblib.Parallel(n_jobs=n_jobs, backend="loky", verbose=1)(
             joblib.delayed(load_and_compute_ratios)(
                 f, nested_keys, cosmo_params,
                 nside=nside, nbins=nbins, lmin_cut=lmin_cut, lmax_cut=lmax_cut,
                 nbands=nbands, mixing_matrix=mixing_matrix, nonlinear=nonlinear,
-                data_dir=data_dir, empirical_key=empirical_key,
+                theory_mode=theory_mode, data_dir=data_dir, empirical_key=empirical_key,
             )
             for f in files
         )

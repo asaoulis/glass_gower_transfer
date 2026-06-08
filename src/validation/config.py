@@ -18,7 +18,12 @@ LMIN_CUT = 76
 LMAX_CUT = 1500
 NBANDS = 8
 
-# Theory CAMB settings (resolved decision: NonLinear_lens ON; see theory.py docstring).
+# Theory recipe (see theory.py): "shell_projection" (Theory_B, matches the sim's discrete
+# multi-plane lensing; removes the continuous-vs-discrete ℓ-tilt) or "splined" (Theory_A,
+# continuous CAMB SplinedSourceWindow).
+THEORY_MODE = "shell_projection"
+# CAMB non-linear model for the splined recipe only (shell mode inherits the sim's matter_cls
+# settings). Resolved decision: NonLinear_lens ON; see theory.py docstring.
 NONLINEAR = "NonLinear_lens"
 ZMIN, ZMAX = 0.0, 2.0
 DX = 200.0
@@ -64,6 +69,7 @@ class ValidationConfig:
     lmax_cut: int = LMAX_CUT
     nbands: int = NBANDS
     nonlinear: str = NONLINEAR
+    theory_mode: str = THEORY_MODE
     data_dir: str = DATA_DIR
     mixing_matrix_path: str | None = MIXING_MATRIX_PATH
     ok_frac: float = OK_FRAC

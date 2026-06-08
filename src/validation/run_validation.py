@@ -56,7 +56,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    choices=["mixed_bandpowers", "bandpowers"],
                    help="which saved bandpower field to use as the empirical vector")
     p.add_argument("--nonlinear", default=cfg.NONLINEAR,
-                   help="CAMB NonLinear mode (e.g. NonLinear_lens; 'none' to disable)")
+                   help="CAMB NonLinear mode for the splined theory (e.g. NonLinear_lens; "
+                        "'none' to disable). Ignored by shell_projection mode.")
+    p.add_argument("--theory-mode", default=cfg.THEORY_MODE,
+                   choices=["shell_projection", "splined"],
+                   help="theory recipe: shell_projection (Theory_B, matches the sim's "
+                        "discrete multi-plane lensing; default) or splined (Theory_A, "
+                        "continuous CAMB SplinedSourceWindow)")
     p.add_argument("--data-dir-nz", default=cfg.DATA_DIR,
                    help="data dir holding the tomographic n(z)")
     p.add_argument("--ratio-ylim", nargs=2, type=float, default=(0.7, 1.3),
@@ -79,13 +85,13 @@ def main(argv=None) -> int:
         mixing_matrix = load_mixing_matrix(mixing_path, lmax=cfg.LMAX)
 
     print(f"[validation] computing ensemble ratios (n_jobs={args.n_jobs}, "
-          f"empirical_key={args.empirical_key}, nonlinear={nonlinear or 'OFF'}, "
-          f"nz_dir={args.data_dir_nz})")
+          f"theory_mode={args.theory_mode}, empirical_key={args.empirical_key}, "
+          f"nonlinear={nonlinear or 'OFF'}, nz_dir={args.data_dir_nz})")
     try:
         ensemble = compute_ensemble_ratios(
             args.data_dir, DEFAULT_NESTED_KEYS, cosmo_params=None,
             include=args.include, exclude=args.exclude, mixing_matrix=mixing_matrix,
-            nonlinear=nonlinear, data_dir=args.data_dir_nz,
+            nonlinear=nonlinear, theory_mode=args.theory_mode, data_dir=args.data_dir_nz,
             empirical_key=args.empirical_key,
             max_sims=args.max_sims, n_jobs=args.n_jobs,
         )
@@ -105,7 +111,7 @@ def main(argv=None) -> int:
         example_empirical = np.asarray(data[args.empirical_key])
         example_theory = compute_bandpower_theory_from_cosmo_vec(
             cosmo_vec, mixing_matrix=mixing_matrix, nonlinear=nonlinear,
-            data_dir=args.data_dir_nz)
+            theory_mode=args.theory_mode, data_dir=args.data_dir_nz)
     except Exception as e:  # noqa: BLE001 - the example overlay is best-effort
         print(f"[validation] (skipping loglog example: {e})")
 
@@ -124,6 +130,7 @@ def main(argv=None) -> int:
     meta = {
         "data_dir": args.data_dir, "sim_type": args.sim_type,
         "mixing_matrix": mixing_path, "nonlinear": nonlinear,
+        "theory_mode": args.theory_mode,
         "empirical_key": args.empirical_key, "n_failed": ensemble["n_failed"],
         "include": args.include, "exclude": args.exclude, "caveat": caveat,
     }
