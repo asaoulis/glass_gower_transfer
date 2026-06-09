@@ -34,8 +34,12 @@ def get_camb_matter_cls(pars, lmax, zmin, zmax, dx):
     cosmo = Cosmology.from_camb(pars)
 
     zb = glass.shells.distance_grid(cosmo, zmin, zmax, dx=dx)
-    # ws = glass.shells.tophat_windows(zb)
-    ws = glass.shells.linear_windows(zb)
+    # Phase H7 precision experiment (user-authorised 2026-06-09): tophat shells (disjoint slabs,
+    # matching trusted kids_sbi + the Gower backend gower_street.py:61) to probe the low-z residual.
+    # Changes BOTH the GLASS sim field and the shell-projection theory consistently. Revert to
+    # linear after the glass_tophat_test_50 validation lands unless tophat wins.
+    ws = glass.shells.tophat_windows(zb)
+    # ws = glass.shells.linear_windows(zb)
     updated_pars = update_pars_config(pars)
     camb_cls = glass.ext.camb.matter_cls(updated_pars, lmax, ws, limber=False, limber_lmin=1600)
     return ws, camb_cls
