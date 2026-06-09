@@ -19,6 +19,7 @@ import os
 import re
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import h5py
 import numpy as np
 
 from src.ml.data.data_loading import unpack_data
@@ -66,6 +67,34 @@ def cosmo_id_from_path(path: str) -> str:
     return m.group(1) if m else base
 
 
+def load_numeric_cosmo_vec(path: str) -> Tuple[np.ndarray, List[str]]:
+    """Read ``cosmo_dict`` keeping ONLY float-convertible scalar entries -> ``(values, names)``.
+
+    Mirrors the cosmo vector that ``unpack_data(..., return_names=True)`` returns, but is robust
+    to non-numeric metadata: the NLA-era mocks tag ``cosmo_dict`` with a STRING ``ia_model``
+    (e.g. ``b'nla_m'``, see ``master_kids_legacy_simulator.py``), and
+    ``load_cosmo_params(cosmo_params=None)`` blindly ``float()``s every key — so it raises on
+    that string.  The theory only needs the numeric CAMB params (``params_from_cosmo_vec`` pulls
+    h/ombh2/omega_m/ns/w0/sigma_8/mnu), so anything that is not a float scalar (strings, arrays)
+    is skipped here.
+    """
+    names: List[str] = []
+    values: List[float] = []
+    with h5py.File(path, "r") as f:
+        grp = f["cosmo_dict"]
+        for k in grp.keys():
+            v = np.asarray(grp[k][()])
+            if v.shape != ():            # scalars only
+                continue
+            try:
+                fv = float(v)
+            except (ValueError, TypeError):
+                continue                  # skip non-numeric metadata (e.g. ia_model='nla_m')
+            names.append(k)
+            values.append(fv)
+    return np.asarray(values), names
+
+
 @contextlib.contextmanager
 def tqdm_joblib(tqdm_object):
     """Patch joblib so a Parallel run reports into the given tqdm progress bar."""
@@ -103,16 +132,16 @@ def _ratios_from_theory(cl_bandpowers, theory_bandpowers: Dict[str, np.ndarray],
     return ratios, labels
 
 
-def _load_empirical(path, nested_keys, cosmo_params, empirical_key):
-    """Read one mock's empirical bandpowers + ℓ-bandpowers + cosmo vector.
+def _load_empirical(path, nested_keys, empirical_key):
+    """Read one mock's empirical bandpowers + ℓ-bandpowers (NO cosmo).
 
-    Returns ``(cl_bandpowers (n_spectra, nbands), cls (nbands,), cosmo_vec)``; raises a clear
-    error if the requested empirical field is missing (the "did each sim save its results?"
-    check).
+    Passes ``cosmo_params=[]`` so unpack_data does NOT float-convert ``cosmo_dict`` — the
+    NLA-era mocks store a STRING ``ia_model`` there that would otherwise raise.  The cosmo
+    vector, when needed for theory, is read separately via :func:`load_numeric_cosmo_vec`.
+    Returns ``(cl_bandpowers (n_spectra, nbands), cls (nbands,))``; raises a clear error if the
+    requested empirical field is missing (the "did each sim save its results?" check).
     """
-    data, cosmo_vec = unpack_data(
-        path, nested_keys, cosmo_params, as_torch=False, return_names=True
-    )
+    data, _ = unpack_data(path, nested_keys, [], as_torch=False, return_names=True)
     if empirical_key not in data:
         raise KeyError(
             f"empirical bandpower field '{empirical_key}' missing from {path}; "
@@ -120,7 +149,7 @@ def _load_empirical(path, nested_keys, cosmo_params, empirical_key):
         )
     cl_bandpowers = np.asarray(data[empirical_key])      # (n_spectra, nbands)
     cls = np.asarray(data["bandpower_cls"])              # (nbands,)
-    return cl_bandpowers, cls, cosmo_vec
+    return cl_bandpowers, cls
 
 
 def load_ratios_with_theory(
@@ -145,8 +174,7 @@ def load_ratios_with_theory(
             raise RuntimeError(
                 "no theory available for this cosmology (representative file unreadable?)"
             )
-        cl_bandpowers, cls, _ = _load_empirical(
-            path, nested_keys, cosmo_params, empirical_key)
+        cl_bandpowers, cls = _load_empirical(path, nested_keys, empirical_key)
         ratios, labels = _ratios_from_theory(cl_bandpowers, theory_bandpowers, nbins)
         return {
             "path": path,
@@ -183,8 +211,8 @@ def load_and_compute_ratios(
     Returns ``{path, ratios (n_spectra, nbands), cls (nbands,), labels}``.
     """
     try:
-        cl_bandpowers, cls, cosmo_vec = _load_empirical(
-            path, nested_keys, cosmo_params, empirical_key)
+        cl_bandpowers, cls = _load_empirical(path, nested_keys, empirical_key)
+        cosmo_vec = load_numeric_cosmo_vec(path)
         theory_bandpowers = compute_bandpower_theory_from_cosmo_vec(
             cosmo_vec,
             nside=nside, nbins=nbins, lmin_cut=lmin_cut, lmax_cut=lmax_cut,
@@ -248,8 +276,7 @@ def compute_theory_by_cosmology(
     vecs: List = []
     for cid, rep in groups.items():
         try:
-            _, cv = unpack_data(rep, nested_keys, cosmo_params, as_torch=False,
-                                return_names=True)
+            cv = load_numeric_cosmo_vec(rep)
             ids.append(cid)
             vecs.append(cv)
         except Exception as e:  # noqa: BLE001 - skip; its files become counted failures

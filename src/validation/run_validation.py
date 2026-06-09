@@ -106,8 +106,12 @@ def main(argv=None) -> int:
     try:
         from src.ml.data.data_loading import unpack_data
         from .theory import compute_bandpower_theory_from_cosmo_vec
-        data, cosmo_vec = unpack_data(ensemble["files"][0], DEFAULT_NESTED_KEYS, None,
-                                      as_torch=False, return_names=True)
+        from .ratios import load_numeric_cosmo_vec
+        # cosmo_params=[] so unpack_data skips cosmo_dict (the NLA-era string ia_model would
+        # otherwise raise); read the numeric cosmo vector robustly instead.
+        data, _ = unpack_data(ensemble["files"][0], DEFAULT_NESTED_KEYS, [],
+                              as_torch=False, return_names=True)
+        cosmo_vec = load_numeric_cosmo_vec(ensemble["files"][0])
         example_empirical = np.asarray(data[args.empirical_key])
         example_theory = compute_bandpower_theory_from_cosmo_vec(
             cosmo_vec, mixing_matrix=mixing_matrix, nonlinear=nonlinear,
