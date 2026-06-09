@@ -1,5 +1,5 @@
 import torch
-from torch.distributions import MultivariateNormal, Uniform
+from torch.distributions import MultivariateNormal, Normal, Uniform
 
 try:
     from sbi.utils import MultipleIndependent, RestrictedPrior
@@ -30,6 +30,58 @@ cov = [
     [rho * sigma_AIA * sigma_beta, sigma_beta**2],
 ]
 mean = [mu_AIA, mu_beta]
+
+
+# --- NLA-family IA priors (Wright et al. 2025) ---------------------------------------------
+# These complement the NLA-M bivariate Gaussian above. The IA model is disambiguated by which
+# *companion* parameter accompanies `a_ia`: b_ia -> NLA-M, b_z -> NLA-z, b_src -> TATT/NLA-k,
+# none -> plain NLA.
+AIA_NLA_RANGE = (-6.0, 6.0)     # wide top-hat on A_IA for NLA / NLA-z / TATT
+BZ_MEAN, BZ_STD = -3.7, 4.3     # NLA-z redshift-slope B_IA Gaussian prior
+BSRC_RANGE = (-0.5, 1.5)        # TATT / NLA-k density-weighting bias prior
+
+IA_COMPANION_PARAMS = ("b_ia", "b_z", "b_src")
+IA_PARAMS = ("a_ia",) + IA_COMPANION_PARAMS
+
+
+def ia_marginal_priors(params):
+    """Per-parameter 1D IA priors for the IA params present in `params`.
+
+    The IA model is inferred from the companion parameter so a single `a_ia` name can carry the
+    right prior per model:
+      - {a_ia, b_ia}  -> NLA-M  (a_ia~U[4.48,7], b_ia~U[0.28,0.6] marginals)
+      - {a_ia, b_z}   -> NLA-z  (a_ia~U[-6,6], b_z~N(-3.7,4.3))
+      - {a_ia, b_src} -> TATT   (a_ia~U[-6,6], b_src~U[-0.5,1.5])
+      - {a_ia}        -> NLA    (a_ia~U[-6,6])
+    (For NLA-M the joint Gaussian is used as a block by `build_analytic_prior`; these are the
+    independent marginals used by the empirical `build_gower_prior` path.)
+    """
+    present = [p for p in params if p in IA_PARAMS]
+    if not present:
+        return {}
+    companions = [p for p in present if p in IA_COMPANION_PARAMS]
+    if len(companions) > 1:
+        raise ValueError(
+            f"ia_marginal_priors: at most one IA companion param allowed, got {companions}"
+        )
+    if "a_ia" not in present:
+        raise ValueError(f"ia_marginal_priors: IA companion {companions} present without a_ia")
+
+    out = {}
+    if "b_ia" in present:  # NLA-M marginals
+        out["a_ia"] = Uniform(torch.tensor([4.48]), torch.tensor([7.0]))
+        out["b_ia"] = Uniform(torch.tensor([0.28]), torch.tensor([0.6]))
+    else:  # NLA family
+        out["a_ia"] = Uniform(
+            torch.tensor([AIA_NLA_RANGE[0]]), torch.tensor([AIA_NLA_RANGE[1]])
+        )
+        if "b_z" in present:
+            out["b_z"] = Normal(torch.tensor([BZ_MEAN]), torch.tensor([BZ_STD]))
+        if "b_src" in present:
+            out["b_src"] = Uniform(
+                torch.tensor([BSRC_RANGE[0]]), torch.tensor([BSRC_RANGE[1]])
+            )
+    return out
 
 
 def build_scaled_joint_gaussian(names, mean, cov, scaler):
@@ -224,13 +276,23 @@ def build_analytic_prior(
         "mnu": phys_priors["mnu"],
     }
 
-    ia_names = [p for p in params if p in {"a_ia", "b_ia"}]
-    if len(ia_names) == 1:
+    ia_names = [p for p in params if p in IA_PARAMS]
+    ia_companions = [p for p in ia_names if p in IA_COMPANION_PARAMS]
+    if len(ia_companions) > 1:
         raise ValueError(
-            "build_analytic_prior: if using IA params, both 'a_ia' and 'b_ia' must be present. "
-            f"Got ia_names={ia_names!r} in params={params!r}"
+            "build_analytic_prior: at most one IA companion param (b_ia/b_z/b_src) allowed. "
+            f"Got {ia_companions!r} in params={params!r}"
         )
-    ia_block = tuple(ia_names) if len(ia_names) == 2 else None
+    if ia_names and "a_ia" not in ia_names:
+        raise ValueError(
+            f"build_analytic_prior: IA companion {ia_companions!r} present without 'a_ia' "
+            f"in params={params!r}"
+        )
+    # NLA-M uses the (a_ia, b_ia) joint Gaussian as a block; NLA / NLA-z / TATT use independent
+    # 1D IA marginals (a_ia ~ U[-6,6] plus b_z ~ N / b_src ~ U).
+    nla_m_block = (
+        tuple(p for p in params if p in {"a_ia", "b_ia"}) if "b_ia" in ia_names else None
+    )
 
     dists = [scaled_cosmo]
     internal_order = list(cosmo_block)
@@ -243,28 +305,36 @@ def build_analytic_prior(
         if p not in one_d_priors:
             raise ValueError(
                 f"build_analytic_prior: no analytic prior specified for parameter {p!r}. "
-                f"Handled: {sorted(list(cosmo_set | set(one_d_priors) | {'a_ia', 'b_ia'}))}"
+                f"Handled: {sorted(list(cosmo_set | set(one_d_priors) | set(IA_PARAMS)))}"
             )
         idx = name_to_idx[p]
         dists.append(ScaledDistribution(one_d_priors[p], scaler.min[idx], scaler.max[idx]))
         internal_order.append(p)
 
-    if ia_block is not None:
+    if nla_m_block is not None:
         ia_base_ab = phys_priors[("a_ia", "b_ia")]
-        if ia_block == ("a_ia", "b_ia"):
+        if nla_m_block == ("a_ia", "b_ia"):
             ia_base = ia_base_ab
-        elif ia_block == ("b_ia", "a_ia"):
+        elif nla_m_block == ("b_ia", "a_ia"):
             perm = torch.tensor([1, 0], dtype=torch.long)
             mean_perm = ia_base_ab.mean[perm]
             cov_perm = ia_base_ab.covariance_matrix[perm][:, perm]
             ia_base = MultivariateNormal(mean_perm, cov_perm)
         else:
-            raise ValueError(f"build_analytic_prior: unexpected IA ordering {ia_block!r}")
+            raise ValueError(f"build_analytic_prior: unexpected IA ordering {nla_m_block!r}")
 
-        ia_mins = [float(scaler.min[name_to_idx[p]]) for p in ia_block]
-        ia_maxs = [float(scaler.max[name_to_idx[p]]) for p in ia_block]
+        ia_mins = [float(scaler.min[name_to_idx[p]]) for p in nla_m_block]
+        ia_maxs = [float(scaler.max[name_to_idx[p]]) for p in nla_m_block]
         dists.append(ScaledMVNDistribution(ia_base, ia_mins, ia_maxs))
-        internal_order.extend(list(ia_block))
+        internal_order.extend(list(nla_m_block))
+    elif ia_names:
+        # NLA family: independent 1D IA priors (a_ia plus optional b_z / b_src), in params order.
+        ia_1d = ia_marginal_priors(params)
+        for p in params:
+            if p in ia_1d:
+                idx = name_to_idx[p]
+                dists.append(ScaledDistribution(ia_1d[p], scaler.min[idx], scaler.max[idx]))
+                internal_order.append(p)
 
     joint_prior = MultipleIndependent(dists)
     base_to_wrap = joint_prior

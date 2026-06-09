@@ -17,5 +17,6 @@ from .builders import (
     build_gower_st_prior,
     build_flow_with_extras_prior,
     build_analytic_prior,
+    ia_marginal_priors,
 )
 from .empirical import train_or_load_gower_prior

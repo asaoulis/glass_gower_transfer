@@ -270,6 +270,11 @@ class BaseSimulator(ABC):
                     tomo=tomo
                 )
                 gamma_rot, = glass.lensing.from_convergence(kappa_i, shear=True)
+                # Shear-level IA correction (default no-op; restricted-TATT/NLA-k adds its
+                # density-weighting term here since it is not a pure convergence).
+                gamma_rot = self.systematics.apply_intrinsic_alignments_shear(
+                    delta=delta, gamma=gamma_rot, z_eff=z_eff, tomo=tomo
+                )
 
 
                 for noise_idx in range(num_shape_noise_realisations):

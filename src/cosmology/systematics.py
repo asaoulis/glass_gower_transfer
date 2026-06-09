@@ -1,13 +1,28 @@
 from abc import ABC, abstractmethod
-from .nla import kappa_ia_nla_m
+from .nla import (
+    gamma_ia_density_weight,
+    kappa_ia_nla,
+    kappa_ia_nla_m,
+    nla_z_effective_amplitude,
+)
 import numpy as np
 import healpy as hp
 import glass.shapes
+import glass.lensing
 
 class BaseSystematics(ABC):
 
     def apply_intrinsic_alignments(self, delta, kappa, z_eff, tomo):
         return kappa
+
+    def apply_intrinsic_alignments_shear(self, delta, gamma, z_eff, tomo):
+        """Shear-level IA correction. Default: unchanged.
+
+        Used by IA models whose contribution is NOT a pure convergence (so it cannot be folded
+        into `apply_intrinsic_alignments`): the restricted-TATT/NLA-k density-weighting term is a
+        real-space product of the density and tidal fields and must be added to the shear directly.
+        """
+        return gamma
 
     def effective_mask(self, tomo, shell_idx, base_mask, *, mask_rot_angle=0, rotator=None):
         """Mask the galaxies are sampled from for (tomo, shell). Default: unchanged.
@@ -43,16 +58,44 @@ class NLASystematics(BaseSystematics):
         self.cosmo = cosmo
 
     def apply_intrinsic_alignments(self, delta, kappa, z_eff, tomo):
-        kappa_ia = kappa_ia_nla_m(
-            delta,
-            z_eff,
-            self.nla['f_red'][tomo],
-            self.cosmo,
-            self.nla['a_ia'],
-            self.nla['b_ia'],
-            self.nla['log10_M_eff'][tomo]
-        )
+        model = self.nla.get('model', 'nla_m')
+        if model == 'nla_m':
+            kappa_ia = kappa_ia_nla_m(
+                delta,
+                z_eff,
+                self.nla['f_red'][tomo],
+                self.cosmo,
+                self.nla['a_ia'],
+                self.nla['b_ia'],
+                self.nla['log10_M_eff'][tomo]
+            )
+        elif model == 'nla':
+            # Whole-population single-amplitude NLA (f_red=1, no mass term).
+            kappa_ia = kappa_ia_nla(delta, z_eff, self.cosmo, self.nla['a_ia'])
+        elif model == 'nla_z':
+            # NLA with per-bin redshift-dependent effective amplitude.
+            a_eff = nla_z_effective_amplitude(
+                self.nla['a_ia'], self.nla['b_z'], self.nla['avg_a'][tomo]
+            )
+            kappa_ia = kappa_ia_nla(delta, z_eff, self.cosmo, a_eff)
+        elif model == 'tatt':
+            # Restricted-TATT/NLA-k: the NLA part is convergence-additive here; the
+            # density-weighting term is added at the shear level (apply_intrinsic_alignments_shear).
+            kappa_ia = kappa_ia_nla(delta, z_eff, self.cosmo, self.nla['a_ia'])
+        else:
+            raise ValueError(f"Unknown IA model: {model!r}")
         return kappa + kappa_ia
+
+    def apply_intrinsic_alignments_shear(self, delta, gamma, z_eff, tomo):
+        if self.nla.get('model', 'nla_m') != 'tatt':
+            return gamma
+        # s = unit-amplitude NLA intrinsic shear (spin-2 tidal field of delta). The NLA part
+        # f_NLA*s is already in `gamma` (added via the convergence above); here we add the
+        # restricted-TATT density-weighting term f_NLA * b_src * (delta * s).
+        s, = glass.lensing.from_convergence(delta, shear=True)
+        return gamma + gamma_ia_density_weight(
+            delta, s, z_eff, self.cosmo, self.nla['a_ia'], self.nla['b_src']
+        )
 
     def apply_shear_bias(self, tomo, shear, lat, *, lon=None):
         # hemisphere split

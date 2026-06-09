@@ -253,7 +253,12 @@ def prepare_data_parameters(config):
             cosmo_scaler = _fit_cosmo_minmax_scaler_from_paths(scaler_fit_paths, cosmo_params)
         elif scaling_type == "preset":
             from .data.constants import COSMO_PARAM_PRESET_MINMAX
-            cosmo_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, cosmo_params)
+            # Optional per-config box overrides (e.g. NLA-family datasets use a_ia in [-6,6],
+            # vs the NLA-M default [4.48,7]). Non-breaking: empty/absent => global preset.
+            preset = dict(COSMO_PARAM_PRESET_MINMAX)
+            overrides = scaler_options['cosmo'].get('preset_overrides') or {}
+            preset.update({k: tuple(v) for k, v in overrides.items()})
+            cosmo_scaler = _build_cosmo_preset_scaler(preset, cosmo_params)
         else:
             raise ValueError(f"Unsupported cosmo scaler type '{scaling_type}' specified in config.scaler_options['cosmo']['type']")
 

@@ -15,11 +15,27 @@ from ..data.priors import (
     build_flow_with_extras_prior,
     build_gower_paper_known_priors,
     build_analytic_prior,
+    ia_marginal_priors,
 )
 from .evaluate_models import run_evaluation_on_samples
 
 
-def build_s8_analytic_prior(params, scaler=None, *, return_restricted=None):
+def _merged_preset(preset_overrides=None):
+    """Global preset min/max boxes with optional per-run overrides (e.g. NLA-family a_ia)."""
+    preset = dict(COSMO_PARAM_PRESET_MINMAX)
+    if preset_overrides:
+        preset.update({k: tuple(v) for k, v in preset_overrides.items()})
+    return preset
+
+
+def _config_preset_overrides(config):
+    """Extract scaler_options['cosmo']['preset_overrides'] from a config, if present."""
+    scaler_options = getattr(config, "scaler_options", None) or {}
+    cosmo_opts = scaler_options.get("cosmo", {}) if hasattr(scaler_options, "get") else {}
+    return cosmo_opts.get("preset_overrides") if hasattr(cosmo_opts, "get") else None
+
+
+def build_s8_analytic_prior(params, scaler=None, *, return_restricted=None, preset_overrides=None):
     """Build the S8-box analytic prior in scaled space, in `params` order.
 
     This is intended as a drop-in replacement for `build_gower_prior` when
@@ -27,13 +43,14 @@ def build_s8_analytic_prior(params, scaler=None, *, return_restricted=None):
     """
     params = list(params)
     if scaler is None:
-        scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, params)
+        scaler = _build_cosmo_preset_scaler(_merged_preset(preset_overrides), params)
     if scaler is None:
         raise ValueError("build_s8_analytic_prior: scaler is None")
 
     if return_restricted is None:
-        # Only needed when the prior has unbounded scaled support (e.g. MVN blocks).
-        return_restricted = ("a_ia" in params and "b_ia" in params)
+        # Only needed when the prior has unbounded scaled support (Gaussian blocks): NLA-M
+        # (a_ia, b_ia) and NLA-z's b_z. Bounded IA priors (NLA a_ia, TATT b_src) don't need it.
+        return_restricted = ("b_ia" in params) or ("b_z" in params)
 
     return build_analytic_prior(
         params,
@@ -79,7 +96,7 @@ def compute_log_prob(model):
         test_log_prob = model.compute_avg_log_prob()
     return {"test_log_prob": test_log_prob}
 
-def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv"):
+def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv", preset_overrides=None):
     """Build the Gower Street prior in *scaled* space ([0,1]^D).
 
     - Empirical (flow) prior is trained/loaded for the subset of params not
@@ -90,6 +107,9 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
 
     params = list(params)
     known_priors = build_gower_paper_known_priors()
+    # Model-aware IA priors override the static (NLA-M) entries: NLA / NLA-z / TATT carry
+    # different priors (and b_z / b_src), disambiguated by which companion param is present.
+    known_priors = {**known_priors, **ia_marginal_priors(params)}
 
     # Preserve the caller's parameter ordering.
     extra_priors = {p: known_priors[p] for p in params if p in known_priors}
@@ -98,10 +118,11 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
     if len(flow_params) == 0:
         raise ValueError("build_gower_prior: no parameters left to model with a flow")
 
+    preset = _merged_preset(preset_overrides)
     # Full scaler used to scale analytic priors into [0,1]
-    full_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, params)
+    full_scaler = _build_cosmo_preset_scaler(preset, params)
     # Flow scaler only needs the flow parameter subset
-    flow_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, flow_params)
+    flow_scaler = _build_cosmo_preset_scaler(preset, flow_params)
 
     flow = train_or_load_gower_prior(
         csv_path=csv_path,
@@ -161,7 +182,10 @@ def evaluate_best_checkpoint(
         Defaults to src.ml.utils.build_model.
     """
     print("Running evaluation for experiment:", config.experiment_name, flush=True)
-    our_prior = build_gower_prior(config.cosmo_param_names)
+    our_prior = build_gower_prior(
+        config.cosmo_param_names,
+        preset_overrides=_config_preset_overrides(config),
+    )
     sampling_kwargs["prior"] = our_prior
     # If ensemble evaluation is active, run a single ensemble evaluation for the
     # provided match_string (bound to repeat idx) and return early.

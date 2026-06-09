@@ -65,6 +65,61 @@ experiments = {
         "max_trainval_cosmos": [20, 30, 40, 60, 80, 100, 120, 150, 200, 300, 400, 530],
         "repeats": 3,
     },
+    # --- Alternative IA models (Wright et al. 2025), clones of bandpower_mlp_lat8_9param with the
+    #     model-appropriate IA params. NLA-family datasets use a_ia ~ U[-6,6], so the a_ia scaler
+    #     box is overridden via scaler_options.cosmo.preset_overrides. Point data_patterns at the
+    #     dataset generated with the matching `--ia-model`. ---
+    "bandpower_mlp_lat8_9param_nla": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks_nla/output_*.h5",
+        "model_type": "kids_bandpowers_mlp",
+        "dataset_quantities": ["mixed_bandpowers"],
+        "batch_size": 128,
+        "latent_dim": 8,
+        "flow_kwargs": {"hidden_features": 32, "dropout": 0.0},
+        "model_kwargs": {"hidden_multiple": 32, "dropout": 0.0},
+        "epochs": 40,
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia"],
+        "scaler_options": {
+            "data": {"type": "standard", "keys": None},
+            "cosmo": {"type": "preset", "preset_overrides": {"a_ia": (-6.0, 6.0)}},
+        },
+        "max_trainval_cosmos": [20, 30, 40, 60, 80, 100, 120, 150, 200, 300, 400, 530],
+        "repeats": 3,
+    },
+    "bandpower_mlp_lat8_9param_nla_z": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks_nla_z/output_*.h5",
+        "model_type": "kids_bandpowers_mlp",
+        "dataset_quantities": ["mixed_bandpowers"],
+        "batch_size": 128,
+        "latent_dim": 8,
+        "flow_kwargs": {"hidden_features": 32, "dropout": 0.0},
+        "model_kwargs": {"hidden_multiple": 32, "dropout": 0.0},
+        "epochs": 40,
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_z"],
+        "scaler_options": {
+            "data": {"type": "standard", "keys": None},
+            "cosmo": {"type": "preset", "preset_overrides": {"a_ia": (-6.0, 6.0)}},
+        },
+        "max_trainval_cosmos": [20, 30, 40, 60, 80, 100, 120, 150, 200, 300, 400, 530],
+        "repeats": 3,
+    },
+    "bandpower_mlp_lat8_9param_tatt": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks_tatt/output_*.h5",
+        "model_type": "kids_bandpowers_mlp",
+        "dataset_quantities": ["mixed_bandpowers"],
+        "batch_size": 128,
+        "latent_dim": 8,
+        "flow_kwargs": {"hidden_features": 32, "dropout": 0.0},
+        "model_kwargs": {"hidden_multiple": 32, "dropout": 0.0},
+        "epochs": 40,
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_src"],
+        "scaler_options": {
+            "data": {"type": "standard", "keys": None},
+            "cosmo": {"type": "preset", "preset_overrides": {"a_ia": (-6.0, 6.0)}},
+        },
+        "max_trainval_cosmos": [20, 30, 40, 60, 80, 100, 120, 150, 200, 300, 400, 530],
+        "repeats": 3,
+    },
     "bandpower_mlp_representation_varying_sizes_bs128": {
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
         "model_type": "kids_bandpowers_mlp",

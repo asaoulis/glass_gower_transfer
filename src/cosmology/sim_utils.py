@@ -6,6 +6,27 @@ import numpy as np
 from src.ml.data.data_loading import load_cosmo_params
 
 
+def sample_ia_params(prior_spec: dict, rng: np.random.Generator) -> dict:
+	"""Sample per-mock IA parameters from a per-model prior spec.
+
+	`prior_spec` maps a parameter name to a distribution spec tuple:
+	  - `("uniform", lo, hi)`  -> `rng.uniform(lo, hi)`
+	  - `("normal", mu, sigma)` -> `rng.normal(mu, sigma)`
+	This generalises the previous hard-coded uniform draws so each IA model (nla_m, nla, nla_z,
+	tatt) can carry its own parameter set + prior (e.g. NLA-z's Gaussian `b_z`).
+	"""
+	out: dict = {}
+	for name, spec in prior_spec.items():
+		kind = spec[0]
+		if kind == "uniform":
+			out[name] = float(rng.uniform(spec[1], spec[2]))
+		elif kind == "normal":
+			out[name] = float(rng.normal(spec[1], spec[2]))
+		else:
+			raise ValueError(f"sample_ia_params: unknown distribution {kind!r} for {name!r}")
+	return out
+
+
 def resolve_systematics_model(args) -> str:
 	"""Resolve the systematics model name from CLI args.
 
@@ -212,10 +233,7 @@ def prepare_glass_backend(
 		param_dict = load_root_param_dict(output_dir, sim_num, cosmo_params=None)
 		if param_dict is None:
 			sampled_cosmo_params = cosmo_prior.draw_param_dict_sample(rng=rng)
-			nuisance_params = {
-				"a_ia": float(rng.uniform(*prior_ranges["a_ia"])),
-				"b_ia": float(rng.uniform(*prior_ranges["b_ia"])),
-			}
+			nuisance_params = sample_ia_params(prior_ranges, rng)
 			param_dict = {
 				**sampled_cosmo_params,
 				**nuisance_params,
@@ -282,10 +300,7 @@ def prepare_gower_backend(
 
 	Matches legacy behavior: nuisance params are re-sampled each call.
 	"""
-	nuisance_params = {
-		"a_ia": float(rng.uniform(*prior_ranges["a_ia"])),
-		"b_ia": float(rng.uniform(*prior_ranges["b_ia"])),
-	}
+	nuisance_params = sample_ia_params(prior_ranges, rng)
 	param_dict = loader.get_params_from_sim_id(sim_num, extra_params=nuisance_params)
 	shells, matter, cosmo = loader.load_shells_matter_and_cosmology(sim_num, nside=sim_grid["nside"])
 	_, pars, _ = loader.get_simulation_cosmology(sim_num, nuisance_params)

@@ -111,6 +111,16 @@ def parse_args():
              "systematics; resolves the systematics model to 'nla_vd'). Use with --use-kids-mask.",
     )
 
+    parser.add_argument(
+        "--ia-model",
+        type=str,
+        default="nla_m",
+        choices=["nla_m", "nla", "nla_z", "tatt"],
+        help="Intrinsic-alignment model (default: nla_m). 'nla' = single-amplitude NLA; "
+             "'nla_z' = NLA with linear redshift-dependent amplitude; 'tatt' = restricted "
+             "TATT / NLA-k (NLA + density weighting). Orthogonal to --systematics-model.",
+    )
+
     parser.add_argument("--no-rotations", action="store_true",
                         help="Disable rotations")
 
@@ -149,9 +159,16 @@ def parse_args():
 
 GLASS_N_JOBS = 16000
 
-prior = {
-            'a_ia': (4.48, 7.0),
-            'b_ia': (0.28, 0.6),}
+# Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
+# ("uniform", lo, hi) or ("normal", mu, sigma); sampled per mock by sim_utils.sample_ia_params.
+# nla_m: Fortuna et al. 2025 / Wright et al. 2025 (covers their posterior at 5 sigma).
+# nla / nla_z / tatt: Wright et al. 2025 priors (A_IA ~ U[-6,6]; B_IA ~ N(-3.7,4.3); b_src ~ U[-0.5,1.5]).
+IA_PRIOR_SPECS = {
+    'nla_m': {'a_ia': ('uniform', 4.48, 7.0), 'b_ia': ('uniform', 0.28, 0.6)},
+    'nla':   {'a_ia': ('uniform', -6.0, 6.0)},
+    'nla_z': {'a_ia': ('uniform', -6.0, 6.0), 'b_z': ('normal', -3.7, 4.3)},
+    'tatt':  {'a_ia': ('uniform', -6.0, 6.0), 'b_src': ('uniform', -0.5, 1.5)},
+}
 
 
 SIM_TYPE_CONFIGS = {
@@ -203,6 +220,8 @@ if __name__ == "__main__":
     args = comm.bcast(args, root=0)
     SIMULATOR_TYPE = args.simulator_type
     SYSTEMATICS_MODEL = resolve_systematics_model(args)
+    IA_MODEL = args.ia_model
+    ia_prior_spec = IA_PRIOR_SPECS[IA_MODEL]
     NO_ROTATIONS = args.no_rotations
     NO_AUGMENTATION = args.no_augmentation
     SHEAR_NORMALIZATION = args.shear_normalization
@@ -363,14 +382,14 @@ if __name__ == "__main__":
                     print("Setting up simulator...")
 
                     if SMOKE:
-                        backend = prepare_smoke_backend(rng, SMOKE_CONFIG)
+                        backend = prepare_smoke_backend(rng, SMOKE_CONFIG, ia_prior_spec=ia_prior_spec)
                     elif SIMULATOR_TYPE == "glass":
                         backend = prepare_glass_backend(
                             sim_num,
                             rng=rng,
                             output_dir=backend_states["glass"]["output_dir"],
                             cosmo_prior=backend_states["glass"]["cosmo_prior"],
-                            prior_ranges=prior,
+                            prior_ranges=ia_prior_spec,
                             sim_grid=SIM_GRID,
                             los_grid=LOS_GRID,
                             camb_limits=CAMB_LIMITS,
@@ -381,7 +400,7 @@ if __name__ == "__main__":
                             sim_num,
                             rng=rng,
                             loader=backend_states["gower_street"]["loader"],
-                            prior_ranges=prior,
+                            prior_ranges=ia_prior_spec,
                             sim_grid=SIM_GRID,
                         )
 
@@ -390,12 +409,21 @@ if __name__ == "__main__":
                     matter = backend["matter"]
                     cosmo = backend["cosmo"]
 
+                    # Tag the saved param group with the IA model so the read side can disambiguate
+                    # which (per-model) IA parameters are present.
+                    param_dict["ia_model"] = IA_MODEL
+
+                    # IA params: the model tag + only this model's sampled parameters (a_ia plus
+                    # b_ia / b_z / b_src as appropriate). f_red / log10_M_eff are used only by
+                    # nla_m; the other models ignore them. nla_z's avg_a is added below once
+                    # tomo_nz is available.
                     ia_params = {
-                        "a_ia": param_dict["a_ia"],
-                        "b_ia": param_dict["b_ia"],
+                        "model": IA_MODEL,
                         "f_red": f_red,
                         "log10_M_eff": log10_M_eff,
                     }
+                    for _ia_key in ia_prior_spec:
+                        ia_params[_ia_key] = param_dict[_ia_key]
 
                     # n(z) shift depends only on the systematics model; compute it (and tomo_nz)
                     # BEFORE build_systematics so the variable-depth objects can be built from
@@ -407,6 +435,14 @@ if __name__ == "__main__":
                     if SMOKE:
                         # "Very low n_eff": scale the real n(z) right down to keep the smoke fast.
                         tomo_nz = tomo_nz * SMOKE_CONFIG["n_eff_scale"]
+
+                    if IA_MODEL == "nla_z":
+                        # Per-tomo-bin N(z)-weighted average scale factor <a>^(i) for the NLA-z
+                        # redshift-dependent amplitude (Wright et al. 2025, eq. 7).
+                        a_of_z = 1.0 / (1.0 + los_z_integration)
+                        ia_params["avg_a"] = np.array([
+                            np.average(a_of_z, weights=tomo_nz[i]) for i in range(nbins)
+                        ])
 
                     vd = None
                     if SYSTEMATICS_MODEL == "nla_vd":

@@ -48,18 +48,27 @@ SMOKE_CONFIG = {
 }
 
 
-def prepare_smoke_backend(rng, cfg=SMOKE_CONFIG):
+def prepare_smoke_backend(rng, cfg=SMOKE_CONFIG, ia_prior_spec=None):
     """Tiny, real CAMB->GLASS cls -> lognormal matter shells.
 
     Mirrors ``prepare_glass_backend`` (same glass calls) but at smoke scale and in-process
     (the protected subprocess wrapper hardcodes cluster paths). Returns the same contract::
 
         {"param_dict": dict, "shells": list[RadialWindow], "matter": list[np.ndarray], "cosmo"}
+
+    ``ia_prior_spec`` (when given) makes the smoke sample the per-IA-model nuisance params from the
+    same spec as production, so the smoke param_dict carries exactly that model's IA params (a_ia
+    plus b_ia / b_z / b_src) instead of the NLA-M defaults baked into ``fixed_param_dict``.
     """
     import glass
     from src.cosmology import parameters, camb_matter_power
 
     param_dict = dict(cfg["fixed_param_dict"])
+    if ia_prior_spec is not None:
+        from src.cosmology.sim_utils import sample_ia_params
+        for _k in ("a_ia", "b_ia", "b_z", "b_src"):
+            param_dict.pop(_k, None)
+        param_dict.update(sample_ia_params(ia_prior_spec, rng))
 
     # Real CAMB cosmology (tuned only via small lmax / few shells; build_cosmology is protected).
     cosmo, pars = parameters.build_cosmology(param_dict)

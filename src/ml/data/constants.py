@@ -17,5 +17,10 @@ COSMO_PARAM_PRESET_MINMAX = {
        'mnu': (0.06, 0.1398179454), 
        'Omega_b': (0.03670663082, 0.06051677202),
        'a_ia': (4.48, 7.0),
-       'b_ia': (0.28, 0.6)
+       'b_ia': (0.28, 0.6),
+       # NLA-family IA params (Wright et al. 2025). NOTE: a_ia's box above is the NLA-M range;
+       # NLA / NLA-z / TATT datasets use a_ia ~ U[-6, 6] and so need an a_ia scaler box of
+       # (-6.0, 6.0) — override per dataset/config (the global preset cannot hold two a_ia boxes).
+       'b_z': (-25.2, 17.8),    # ~5 sigma around N(-3.7, 4.3) for NLA-z
+       'b_src': (-0.5, 1.5),    # TATT / NLA-k density-weighting bias prior range
 }
