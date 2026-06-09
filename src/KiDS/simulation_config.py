@@ -47,7 +47,7 @@ OUTER_NUM_SHAPE_NOISE_REALISATIONS = {
 }
 
 INNER_NUM_SHAPE_NOISE_REALISATIONS = {
-	"gower_street": 1,  # TEMP theory-test (revert to 4 for production)
+	"gower_street": 4,
 	"glass": 1,
 }
 
