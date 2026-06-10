@@ -335,9 +335,14 @@ def compute_or_load_glass_cls(
             raise RuntimeError(f"Failed to read CAMB Cls cache {cache_path} for sim {sim_num}: {e}")
         _guard_cosmo_match(cosmo_params, data.get("cosmo_params", {}), sim_num)
         _guard_grid_match(grid, data.get("grid", {}), sim_num)
+        # Observability only (no effect on the returned spectra): mark a cache HIT so a
+        # cross-variate reuse run is greppable in the SLURM logs ("[cls-cache] HIT simN").
+        print(f"[cls-cache] HIT  sim{int(sim_num)} (cached cosmology+grid OK) <- {cache_path}",
+              flush=True)
         return data["shells"], data["glass_cls"]
 
     # Miss: only the cosmology drives CAMB; pass the guard keys as the worker param_dict.
+    print(f"[cls-cache] MISS sim{int(sim_num)} -> running CAMB -> {cache_path}", flush=True)
     worker_params = {k: cosmo_params[k] for k in COSMO_GUARD_KEYS if k in cosmo_params}
     npz_out_path = compute_camb_glass_in_child_npz_subproc(
         worker_params,
