@@ -84,9 +84,11 @@ def main(argv=None) -> int:
         print(f"[validation] loading mixing matrix {mixing_path}")
         mixing_matrix = load_mixing_matrix(mixing_path, lmax=cfg.LMAX)
 
+    eff_nl = ("NonLinear_both (shell mode)" if args.theory_mode == "shell_projection"
+              else (nonlinear or "OFF"))
     print(f"[validation] computing ensemble ratios (n_jobs={args.n_jobs}, "
           f"theory_mode={args.theory_mode}, empirical_key={args.empirical_key}, "
-          f"nonlinear={nonlinear or 'OFF'}, nz_dir={args.data_dir_nz})")
+          f"effective_nonlinear={eff_nl}, nz_dir={args.data_dir_nz})")
     try:
         ensemble = compute_ensemble_ratios(
             args.data_dir, DEFAULT_NESTED_KEYS, cosmo_params=None,
@@ -131,9 +133,18 @@ def main(argv=None) -> int:
         caveat = ("NO MIXING MATRIX APPLIED (--no-mixing): empirical mixed_bandpowers are "
                   "mask-suppressed (~f_sky), so ratios collapse toward f_sky and the "
                   "verdict is NOT a physical theory test. Use --mixing-matrix for the real run.")
+    # Record the EFFECTIVE non-linear model actually used by the active theory_mode.
+    # shell_projection inherits NonLinear_both from the sim's get_camb_matter_cls and IGNORES the
+    # --nonlinear knob (which only applies to the splined path); reporting the raw knob alone was
+    # misleading (precision-logbook H9).
+    effective_nonlinear = (
+        "NonLinear_both (via get_camb_matter_cls; shell mode ignores --nonlinear)"
+        if args.theory_mode == "shell_projection" else (nonlinear or "OFF")
+    )
     meta = {
         "data_dir": args.data_dir, "sim_type": args.sim_type,
         "mixing_matrix": mixing_path, "nonlinear": nonlinear,
+        "effective_nonlinear": effective_nonlinear,
         "theory_mode": args.theory_mode,
         "empirical_key": args.empirical_key, "n_failed": ensemble["n_failed"],
         "include": args.include, "exclude": args.exclude, "caveat": caveat,

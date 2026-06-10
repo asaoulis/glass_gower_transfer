@@ -22,9 +22,12 @@ NBANDS = 8
 # multi-plane lensing; removes the continuous-vs-discrete ℓ-tilt) or "splined" (Theory_A,
 # continuous CAMB SplinedSourceWindow).
 THEORY_MODE = "shell_projection"
-# CAMB non-linear model for the splined recipe only (shell mode inherits the sim's matter_cls
-# settings). Resolved decision: NonLinear_lens ON; see theory.py docstring.
-NONLINEAR = "NonLinear_lens"
+# CAMB non-linear model for the splined recipe ONLY (shell mode inherits the sim's matter_cls
+# settings -> effectively NonLinear_both, and IGNORES this knob). Default flipped to NonLinear_both
+# (precision-logbook H9): for source-window lensing, NonLinear_lens governs the CMB lensing potential
+# (NOT the source-window matter power), so the old _lens default fed ~linear shear Cls -> high-l
+# deficit. _both is the correct choice if the splined path is ever used.
+NONLINEAR = "NonLinear_both"
 ZMIN, ZMAX = 0.0, 2.0
 DX = 200.0
 N_LOS_CHI = 1000
@@ -45,8 +48,10 @@ GOWER_CSV_PATH = (
 # |median(ratio) - 1| <= OK_FRAC          -> OK
 #                      <= WARN_FRAC        -> WARNING
 #                      >  WARN_FRAC        -> ERROR ("!!!")
-OK_FRAC = 0.05
-WARN_FRAC = 0.10
+# Tightened to the sub-5% precision bar (precision-logbook H11): for the real KiDS-Legacy analysis
+# the best-measured bandpowers have sub-percent errors, so 5% is now the ERROR line, not OK.
+OK_FRAC = 0.02
+WARN_FRAC = 0.05
 
 STATUS_OK = "OK"
 STATUS_WARNING = "WARNING"

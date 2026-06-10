@@ -29,8 +29,11 @@ overridable via ``$GLASS_MATTER_CACHE_DIR``) and the ensemble driver warms this 
 a serial pre-pass to avoid running many heavy CAMB jobs concurrently.
 
 Resolved decision (``nonlinear`` knob, splined mode only):
-    ``theory_tests_systematics.py`` sets ``pars.NonLinear = "NonLinear_lens"``; we keep
-    that default for the splined path.  (Shell mode ignores it; see above.)
+    The default is now ``NonLinear_both`` (precision-logbook H9).  ``theory_tests_systematics.py``
+    historically used ``NonLinear_lens``, but for a source-window lensing spectrum that flag governs
+    the *CMB lensing potential* — not the source-window matter power — so it fed ~linear shear C_l
+    (high-ℓ deficit).  ``NonLinear_both`` is correct for the splined path.  (Shell mode ignores this
+    knob entirely; it inherits the sim's ``NonLinear_both`` via ``get_camb_matter_cls``.)
 
 Only read-only imports of the protected physics modules are used here.
 """

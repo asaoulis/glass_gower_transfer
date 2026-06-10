@@ -515,14 +515,23 @@ if __name__ == "__main__":
                         # clean mocks are spuriously rescaled by 1/(1+m)^2 per tomo bin, producing a
                         # z-tilt vs theory. See artifacts/compare/REPORT.md §2.
                         m_bias_for_shear = np.zeros_like(m_bias)
+                        # Source clustering is a systematics-controlled effect: galaxies trace
+                        # delta via positions_from_delta(..., galaxy_bias, ...). With systematics
+                        # OFF this is a CLEAN theory test against a smooth-n(z) analytic theory, so
+                        # disable clustering (galaxy_bias=0 -> uniform Poisson sampling). Otherwise
+                        # source-lens clustering injects a low-z/high-l excess the theory does not
+                        # model (precision-logbook H11/H12; the trusted kids_sbi samples uniformly).
+                        # Production (systematics ON) keeps the realistic config bias.
+                        galaxy_bias_sim = 0.0
                     else:
                         m_bias_for_shear = m_bias
+                        galaxy_bias_sim = bias
 
                     kwargs = {
                         'cosmo': cosmo,
                         'los_z_integration': los_z_integration,
                         'tomo_nz': tomo_nz,
-                        'galaxy_bias': bias,
+                        'galaxy_bias': galaxy_bias_sim,
                         'sigma_e': sigma_e_sim,
                         'mask': mask,
                         'nside': nside,
