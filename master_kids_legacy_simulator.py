@@ -34,7 +34,9 @@ from src.cosmology.map_shears  import make_alm_shear_convergence, filter_EB_alms
 from src.KiDS.tomo import calculate_tomo_nz
 from src.KiDS.rotations import KiDS_PATCH_GOWER_ROTATIONS, KiDS_PATCH_GLASS_ROTATIONS
 from src.KiDS.simulation_config import (
+    CAMB_CLS_CACHE_DIR,
     CAMB_LIMITS,
+    COSMO_BASE_SEED,
     INNER_NUM_SHAPE_NOISE_REALISATIONS,
     LOS_GRID,
     OVERWRITE,
@@ -155,9 +157,30 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path,
                         default=Path("/share/gpu5/asaoulis/transfer_datasets/gower_full_only_mocks"))
 
+    # Shared, persistent CAMB-Cls cache (separate from --output-dir) so analysis variates reuse
+    # the expensive Cls; and the base seed fixing the per-sim_id cosmology across variates.
+    parser.add_argument("--camb-cache-dir", type=Path, default=CAMB_CLS_CACHE_DIR,
+                        help="Shared on-disk cache for CAMB-computed matter Cls, keyed by sim_id.")
+
+    parser.add_argument("--cosmo-base-seed", type=int, default=COSMO_BASE_SEED,
+                        help="Base seed for deterministic per-sim_id cosmology sampling.")
+
     return parser.parse_args()
 
 GLASS_N_JOBS = 16000
+
+# Cosmology parameters drawn (deterministically) per sim_id and fed to CAMB. These are exactly the
+# keys the on-disk Cls cache guard compares (see src/cosmology/mpi_camb.COSMO_GUARD_KEYS).
+COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
+
+# E/B map smoothing variants saved per mock: a list of (fwhm_arcmin, lcut) pairs. Each pair
+# produces one set of pixelised E/B maps, stored under keys E_fwhm{fwhm}_lcut{lcut} /
+# B_fwhm{fwhm}_lcut{lcut} (lcut=None -> smoothing-only, no hard ell-cut, keyed E_fwhm{fwhm}).
+# `lcut` is a hard top-hat applied after the Gaussian beam + cosine taper inside
+# filter_EB_alms_and_make_maps (a Jeffrey-et-al-2025-style hard scale cut). The first entry
+# reproduces the previous production map; append pairs to ALSO save lighter smoothings /
+# hard-cut variants, e.g. [(8.0, None), (6.0, 1024), (4.0, 1024)].
+EB_SMOOTHING_VARIANTS = [(8.0, None)]
 
 # Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
 # ("uniform", lo, hi) or ("normal", mu, sigma); sampled per mock by sim_utils.sample_ia_params.
@@ -240,6 +263,15 @@ if __name__ == "__main__":
         gower_prior = None
     else:
         gower_prior = GowerStPrior.from_csv(csv_path, drop_first=192)
+    # Deterministic per-sim_id cosmology sampler (Gower Street flow prior), glass path only.
+    # Seeded by (cosmo_base_seed, sim_id) so the same sim_id yields the same cosmology across runs /
+    # analysis variates (see prepare_glass_backend). Imported lazily so the heavy ML/eval stack is
+    # only required for the glass path.
+    if SIMULATOR_TYPE == "glass":
+        from src.ml.eval.utils import build_cosmo_param_sampler
+        cosmo_sampler = build_cosmo_param_sampler(COSMO_PARAM_NAMES, csv_path=str(csv_path))
+    else:
+        cosmo_sampler = None
     log10_M_eff_means, log10_M_eff_cov = load_massdep_priors(data_dir)
     if NO_ROTATIONS:
         rotation_specs =  [{"rot": 0, "flip": False, "backend": "pixel"}]
@@ -283,11 +315,17 @@ if __name__ == "__main__":
     OUTPUT_DIR = args.output_dir
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+    CAMB_CACHE_DIR = args.camb_cache_dir
+    COSMO_BASE_SEED_VAL = args.cosmo_base_seed
+    if SIMULATOR_TYPE == "glass":
+        CAMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
     backend_states = {
         "glass": {
             "cache": {},
-            "cosmo_prior": gower_prior,
-            "output_dir": OUTPUT_DIR,
+            "cosmo_sampler": cosmo_sampler,
+            "cls_cache_dir": CAMB_CACHE_DIR,
+            "cosmo_base_seed": COSMO_BASE_SEED_VAL,
         },
     }
     if not SMOKE:
@@ -387,8 +425,9 @@ if __name__ == "__main__":
                         backend = prepare_glass_backend(
                             sim_num,
                             rng=rng,
-                            output_dir=backend_states["glass"]["output_dir"],
-                            cosmo_prior=backend_states["glass"]["cosmo_prior"],
+                            cosmo_sampler=backend_states["glass"]["cosmo_sampler"],
+                            cosmo_base_seed=backend_states["glass"]["cosmo_base_seed"],
+                            cls_cache_dir=backend_states["glass"]["cls_cache_dir"],
                             prior_ranges=ia_prior_spec,
                             sim_grid=SIM_GRID,
                             los_grid=LOS_GRID,
@@ -584,14 +623,19 @@ if __name__ == "__main__":
                         del catalogue
                         gc.collect()
 
-                        E, B = filter_EB_alms_and_make_maps(
-                            alm_list=alm, nside_out=nside_out, lmax_out=None, fwhm_arcmin=8.0, taper_start_frac=0.95
-                        )
+                        # Build E/B maps for each (fwhm, lcut) smoothing variant. Each pair
+                        # adds its own pixelised_results keys (E_fwhm{f}_lcut{l} / B_...; a
+                        # None lcut -> smoothing-only, keyed E_fwhm{f}).
+                        map_types = {}
+                        for fwhm_v, lcut_v in EB_SMOOTHING_VARIANTS:
+                            E_v, B_v = filter_EB_alms_and_make_maps(
+                                alm_list=alm, nside_out=nside_out, lmax_out=None,
+                                fwhm_arcmin=fwhm_v, taper_start_frac=0.95, lcut=lcut_v,
+                            )
+                            tag = f"fwhm{fwhm_v:g}" + ("" if lcut_v is None else f"_lcut{int(lcut_v)}")
+                            map_types[f"E_{tag}"] = E_v
+                            map_types[f"B_{tag}"] = B_v
 
-                        # realised_unmixed_shear_cls, cll_bands, bandpowers = process_cls(mask_cls, nbins, nside, alm, alm_rand, lower_lscale, upper_lscale,lmin, lmax, nbands, )
-
-                        # map_types = {"shear_real": shear.real, "shear_imag": shear.imag, "E":E, "B":B}
-                        map_types = {"E":E, "B":B}
                         pixelised_results = {name:{} for name in map_types.keys()}
                         for name, cat_data in map_types.items():
                             pixelised_tomobin_patches = get_patch_values(cat_data, patches, nside_out, ang)
@@ -606,7 +650,7 @@ if __name__ == "__main__":
                         save_results_h5( OUTPUT_DIR / f"output_{save_string}.h5", total_idx, cls_results, pixelised_results, param_dict)
 
                         # free per-catalogue heavy products
-                        del cls_results, pixelised_results, cll_bands, map_types, E, B, alm, alm_rand
+                        del cls_results, pixelised_results, cll_bands, map_types, alm, alm_rand
                         gc.collect()
 
                         cat_idx += 1

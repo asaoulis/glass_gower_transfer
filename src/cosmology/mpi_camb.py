@@ -231,3 +231,138 @@ def load_camb_child_pickle(out_path, remove_after_load: bool = True):
             pass
 
     return shells, glass_cls
+
+
+# ---------------- Persistent per-sim_id CAMB-Cls disk cache + guard ----------------
+from pathlib import Path as _Path
+
+# Cosmology parameters that fully determine the CAMB matter Cls (everything else in a
+# param_dict — a_ia/b_ia and CAMB defaults — does not change the spectra). These are the keys
+# the guard compares between a deterministically re-derived cosmology and a cached one.
+COSMO_GUARD_KEYS = ("omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu")
+# Grid parameters the CAMB Cls also depend on; cached spectra are only valid for a matching grid.
+GRID_GUARD_KEYS = ("lmax", "zmin", "zmax", "dx")
+
+
+def _cache_path_for_sim(cache_dir, sim_num) -> _Path:
+    return _Path(cache_dir) / f"camb_cls_sim{int(sim_num)}.pkl"
+
+
+def _guard_cosmo_match(expected, found, sim_num, *, rtol: float = 1e-6, atol: float = 1e-9):
+    """Raise if the cached cosmology does not match the (re-derived) expected cosmology.
+
+    This protects the shared cache from silently pairing CAMB Cls computed for one cosmology
+    with a different cosmology for the same sim_id (e.g. prior/seed/preset drift between variates).
+    """
+    mismatched = []
+    for k in COSMO_GUARD_KEYS:
+        if k not in expected:
+            mismatched.append((k, "absent in re-derived cosmology"))
+            continue
+        if k not in found:
+            mismatched.append((k, "absent in cached cosmology"))
+            continue
+        if not np.isclose(float(expected[k]), float(found[k]), rtol=rtol, atol=atol):
+            mismatched.append((k, float(expected[k]), float(found[k])))
+    if mismatched:
+        raise ValueError(
+            f"CAMB Cls cache cosmology mismatch for sim {sim_num}: {mismatched}. "
+            f"The cached cosmology differs from the deterministically re-derived one — refusing "
+            f"to reuse stale/foreign Cls. Delete the cache entry or fix the prior/base-seed/preset."
+        )
+
+
+def _guard_grid_match(expected_grid, found_grid, sim_num, *, rtol: float = 1e-9, atol: float = 0.0):
+    mismatched = []
+    if int(expected_grid["lmax"]) != int(found_grid.get("lmax", -1)):
+        mismatched.append(("lmax", int(expected_grid["lmax"]), found_grid.get("lmax")))
+    for k in ("zmin", "zmax", "dx"):
+        if not np.isclose(float(expected_grid[k]), float(found_grid.get(k, np.nan)), rtol=rtol, atol=atol):
+            mismatched.append((k, float(expected_grid[k]), found_grid.get(k)))
+    if mismatched:
+        raise ValueError(
+            f"CAMB Cls cache grid mismatch for sim {sim_num}: {mismatched}. "
+            f"Cached spectra were computed for a different (lmax, zmin, zmax, dx) grid."
+        )
+
+
+def _atomic_pickle_dump(path, obj):
+    """Write `obj` to `path` atomically (write temp + fsync + os.replace) so a killed run can
+    never leave a partially-written cache file that a later run would read as valid."""
+    path = _Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".tmp.{_os.getpid()}")
+    try:
+        with open(tmp, "wb") as f:
+            _pickle.dump(obj, f, protocol=_pickle.HIGHEST_PROTOCOL)
+            f.flush()
+            _os.fsync(f.fileno())
+        _os.replace(tmp, path)
+    finally:
+        if _os.path.exists(tmp):
+            try:
+                _os.remove(tmp)
+            except Exception:
+                pass
+
+
+def compute_or_load_glass_cls(
+    cosmo_params,
+    grid,
+    *,
+    cache_dir,
+    sim_num,
+    camb_limits,
+):
+    """Return (shells, glass_cls) for `cosmo_params`, using a shared on-disk cache keyed by sim_id.
+
+    - Cache hit: load `{cosmo_params, grid, shells, glass_cls}`, guard that the cached cosmology
+      and grid match `cosmo_params`/`grid`, and return the cached spectra (skipping CAMB entirely).
+    - Cache miss: run the existing CAMB subprocess for `cosmo_params`, then atomically persist the
+      result to the cache so later runs / analysis variates can reuse it.
+
+    `cosmo_params` should contain (at least) the COSMO_GUARD_KEYS in physical units; only the
+    cosmology drives CAMB, so a_ia/b_ia are intentionally excluded from the cache and the worker.
+    `grid` is a dict with keys lmax, zmin, zmax, dx.
+    """
+    cache_path = _cache_path_for_sim(cache_dir, sim_num)
+
+    if cache_path.exists():
+        try:
+            with open(cache_path, "rb") as f:
+                data = _pickle.load(f)
+        except Exception as e:
+            raise RuntimeError(f"Failed to read CAMB Cls cache {cache_path} for sim {sim_num}: {e}")
+        _guard_cosmo_match(cosmo_params, data.get("cosmo_params", {}), sim_num)
+        _guard_grid_match(grid, data.get("grid", {}), sim_num)
+        return data["shells"], data["glass_cls"]
+
+    # Miss: only the cosmology drives CAMB; pass the guard keys as the worker param_dict.
+    worker_params = {k: cosmo_params[k] for k in COSMO_GUARD_KEYS if k in cosmo_params}
+    npz_out_path = compute_camb_glass_in_child_npz_subproc(
+        worker_params,
+        grid["lmax"],
+        grid["zmin"],
+        grid["zmax"],
+        grid["dx"],
+        mem_limit_gb=camb_limits["mem_limit_gb"],
+        timeout_s=camb_limits["timeout_s"],
+        sim_tag=f"sim{sim_num}",
+    )
+    shells, glass_cls = load_camb_child_pickle(npz_out_path, remove_after_load=True)
+
+    _atomic_pickle_dump(
+        cache_path,
+        {
+            "cosmo_params": {k: float(cosmo_params[k]) for k in COSMO_GUARD_KEYS if k in cosmo_params},
+            "grid": {
+                "lmax": int(grid["lmax"]),
+                "zmin": float(grid["zmin"]),
+                "zmax": float(grid["zmax"]),
+                "dx": float(grid["dx"]),
+            },
+            "shells": shells,
+            "glass_cls": glass_cls,
+        },
+    )
+    return shells, glass_cls

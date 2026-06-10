@@ -38,11 +38,23 @@ CAMB_LIMITS = {
 }
 
 
+# Shared, persistent cache of CAMB-computed matter Cls (shells + glass_cls), keyed by sim_id.
+# MUST be separate from any per-variate `output_dir` so that different analysis variates
+# (e.g. NLA-M, NLA-z, clustering, post-proc) reuse the same expensive CAMB products. The first
+# variate to run a given sim_id populates the cache; later variates load it and skip CAMB.
+CAMB_CLS_CACHE_DIR = Path("/share/gpu5/asaoulis/camb_cls_cache")
+
+# Base seed for deterministic per-sim_id cosmology sampling. Combined with sim_id it fixes the
+# cosmology drawn for each sim_id across runs/variates. Change only to deliberately regenerate a
+# different fixed cosmology set (the on-disk cache guard will then flag stale entries).
+COSMO_BASE_SEED = 0
+
+
 # Shape-noise augmentation counts (outer = independent realisations; inner = per-rotation augmentations).
 # NOTE: gower_street outer set to 1 for the theory-test runs (outer reloads the N-body backend,
 # ~40 min each; inner+mask augmentations are cheap). Restore to 4 for production Gower datasets.
 OUTER_NUM_SHAPE_NOISE_REALISATIONS = {
-	"gower_street": 1,
+	"gower_street": 4,
 	"glass": 4,
 }
 

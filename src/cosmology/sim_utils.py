@@ -212,8 +212,9 @@ def prepare_glass_backend(
 	sim_num: int,
 	*,
 	rng: np.random.Generator,
-	output_dir: Path,
-	cosmo_prior,
+	cosmo_sampler,
+	cosmo_base_seed: int,
+	cls_cache_dir,
 	prior_ranges: dict,
 	sim_grid: dict,
 	los_grid: dict,
@@ -223,38 +224,40 @@ def prepare_glass_backend(
 	"""Prepare GLASS matter+shells+cosmology for a given `sim_num`.
 
 	Behavior:
-	- Fixes cosmology+nuisance params per `sim_num`.
-	- If an output file already exists (e.g. resuming after a crash), loads
-	  the saved parameter dict from disk via `load_root_param_dict`.
-	- Recomputes CAMB->GLASS spectra for the chosen parameters and caches the
-	  expensive products (shells, glass_cls) per `sim_num`.
+	- Draws the cosmology *deterministically* per `sim_num` via
+	  `cosmo_sampler(sim_num, cosmo_base_seed)`, so the same sim_id yields the same cosmology
+	  across runs and analysis variates (NLA-M, NLA-z, clustering, post-proc, ...).
+	- Resamples the per-model IA nuisance params from the free `rng` via `sample_ia_params`
+	  (per-variate; they don't affect the cached matter Cls).
+	- Caches the expensive CAMB matter Cls to a shared on-disk cache keyed by sim_id via
+	  `compute_or_load_glass_cls`, with a guard verifying the cached cosmology matches. The first
+	  variate to run a sim_id populates the cache; later variates load it and skip CAMB.
+	- Keeps an in-memory per-rank `cache` so repeated (outer, rot) iterations of the same sim
+	  within one run skip recomputation.
 	"""
 	if sim_num not in cache:
-		param_dict = load_root_param_dict(output_dir, sim_num, cosmo_params=None)
-		if param_dict is None:
-			sampled_cosmo_params = cosmo_prior.draw_param_dict_sample(rng=rng)
-			nuisance_params = sample_ia_params(prior_ranges, rng)
-			param_dict = {
-				**sampled_cosmo_params,
-				**nuisance_params,
-			}
+		from src.cosmology.mpi_camb import compute_or_load_glass_cls
 
-		from src.cosmology.mpi_camb import (
-			compute_camb_glass_in_child_npz_subproc,
-			load_camb_child_pickle,
-		)
+		cosmo_params = cosmo_sampler(sim_num, cosmo_base_seed)
+		nuisance_params = sample_ia_params(prior_ranges, rng)
+		param_dict = {
+			**cosmo_params,
+			**nuisance_params,
+		}
 
-		npz_out_path = compute_camb_glass_in_child_npz_subproc(
-			param_dict,
-			sim_grid["lmax"],
-			los_grid["zmin"],
-			los_grid["zmax"],
-			los_grid["dx"],
-			mem_limit_gb=camb_limits["mem_limit_gb"],
-			timeout_s=camb_limits["timeout_s"],
-			sim_tag=f"sim{sim_num}",
+		grid = {
+			"lmax": sim_grid["lmax"],
+			"zmin": los_grid["zmin"],
+			"zmax": los_grid["zmax"],
+			"dx": los_grid["dx"],
+		}
+		shells, glass_cls = compute_or_load_glass_cls(
+			cosmo_params,
+			grid,
+			cache_dir=cls_cache_dir,
+			sim_num=sim_num,
+			camb_limits=camb_limits,
 		)
-		shells, glass_cls = load_camb_child_pickle(npz_out_path, remove_after_load=True)
 		cache[sim_num] = {
 			"param_dict": param_dict,
 			"shells": shells,

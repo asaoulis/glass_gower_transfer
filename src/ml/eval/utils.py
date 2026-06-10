@@ -139,6 +139,96 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
     )
     return prior
 
+
+# ----------------------- Deterministic per-sim cosmology sampling -----------------------
+# Used by the GLASS simulator to draw a fixed cosmology per sim_id so that many analysis
+# variates (NLA-M, NLA-z, clustering, post-proc) share identical cosmologies — and so the
+# expensive CAMB Cls can be cached per sim_id (see src/cosmology/mpi_camb.compute_or_load_glass_cls).
+
+def _derive_cosmo_seed(base_seed, sim_num):
+    """Stable 32-bit seed from (base_seed, sim_id) for reproducible per-sim cosmology draws."""
+    ss = np.random.SeedSequence([int(base_seed), int(sim_num)])
+    return int(ss.generate_state(1, dtype=np.uint32)[0])
+
+
+def make_seeded_cosmo_sampler(prior, column_names, scaler):
+    """Wrap a scaled-space ([0,1]^D) torch/sbi prior into a deterministic cosmology sampler.
+
+    Returns a callable ``sampler(sim_num, base_seed) -> dict[str, float]`` that:
+      - seeds torch + numpy deterministically from (base_seed, sim_id),
+      - draws ONE sample from ``prior`` (in scaled [0,1] space),
+      - un-scales each event dim to physical units via ``scaler`` (min/max looked up by name),
+        labelling the dims with ``column_names`` (the prior's event-dim order).
+
+    ``column_names`` must match the prior's event-dim order: for ``build_gower_prior`` /
+    ``build_flow_with_extras_prior`` this is ``flow_params + list(extra_priors)`` (no permutation);
+    for ``build_analytic_prior`` it is the requested ``params`` order (it wraps a PermutedDistribution).
+    """
+    column_names = list(column_names)
+    name_to_idx = {n: i for i, n in enumerate(scaler.parameter_names)}
+    mins = np.asarray(scaler.min, dtype=np.float64)
+    maxs = np.asarray(scaler.max, dtype=np.float64)
+
+    def sampler(sim_num, base_seed):
+        seed = _derive_cosmo_seed(base_seed, sim_num)
+        torch.manual_seed(seed)
+        np.random.seed(seed)
+        sample = prior.sample((1,))
+        arr = np.asarray(sample.detach().cpu().numpy(), dtype=np.float64).reshape(-1)
+        if arr.shape[0] != len(column_names):
+            raise ValueError(
+                f"make_seeded_cosmo_sampler: prior returned {arr.shape[0]} event dims but "
+                f"{len(column_names)} column names were given ({column_names})."
+            )
+        out = {}
+        for j, name in enumerate(column_names):
+            idx = name_to_idx[name]
+            out[name] = float(arr[j] * (maxs[idx] - mins[idx]) + mins[idx])
+        return out
+
+    return sampler
+
+
+def build_cosmo_param_sampler(
+    params,
+    csv_path="/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv",
+    preset_overrides=None,
+):
+    """Deterministic per-sim cosmology sampler backed by the Gower Street flow prior.
+
+    Mirrors ``build_gower_prior``'s construction (analytic paper priors + empirical flow over the
+    remaining params), then wraps it via ``make_seeded_cosmo_sampler`` so a given
+    ``(sim_id, base_seed)`` always yields the same physical cosmology dict. ``params`` should be the
+    cosmology parameter names only (e.g. omega_m, sigma_8, ombh2, h, ns, w0, mnu).
+    """
+    params = list(params)
+    known_priors = build_gower_paper_known_priors()
+    known_priors = {**known_priors, **ia_marginal_priors(params)}
+    extra_priors = {p: known_priors[p] for p in params if p in known_priors}
+    flow_params = [p for p in params if p not in extra_priors]
+    if len(flow_params) == 0:
+        raise ValueError("build_cosmo_param_sampler: no parameters left to model with a flow")
+
+    preset = _merged_preset(preset_overrides)
+    full_scaler = _build_cosmo_preset_scaler(preset, params)
+    flow_scaler = _build_cosmo_preset_scaler(preset, flow_params)
+    flow = train_or_load_gower_prior(
+        csv_path=csv_path,
+        variables=flow_params,
+        scaler=flow_scaler,
+        drop_first=192,
+    )
+    prior = build_flow_with_extras_prior(
+        flow,
+        flow_params,
+        full_scaler,
+        extra_priors=extra_priors,
+    )
+    # build_flow_with_extras_prior emits event dims as [flow columns..., extra keys...].
+    column_names = list(flow_params) + list(extra_priors.keys())
+    return make_seeded_cosmo_sampler(prior, column_names, full_scaler)
+
+
 def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, compute_calibration=True, **sampling_kwargs):
     num_samples = sampling_kwargs.pop("num_samples", 10000)
     prior = sampling_kwargs.get("prior", None)
