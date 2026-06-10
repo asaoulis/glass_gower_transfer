@@ -1,4 +1,5 @@
-from typing import Dict, List, Sequence, Tuple, Union
+import re
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -19,6 +20,31 @@ DEFAULT_QUANTITY_PATHS = {
 EB_MAP_KEYS: Tuple[str, str, str, str] = (
     "E_north", "E_south", "B_north", "B_south"
 )
+
+# E/B pixelised-map quantity names: an E or B prefix, an OPTIONAL smoothing tag
+# (e.g. "fwhm8", "fwhm6_lcut1024"), then the patch side. Matches both the logical names
+# ("E_north") and explicit variant-tagged names ("E_fwhm6_lcut1024_north").
+_EB_QUANTITY_RE = re.compile(r"^(E|B)(?:_(.+))?_(north|south)$")
+
+
+def _resolve_eb_quantity(quantity: str, eb_variant: Optional[str]) -> Optional[Tuple[str, str, str]]:
+    """Resolve an E/B map quantity name to its ('pixelised_results', group, side) path.
+
+    - Logical names (no tag, e.g. 'E_north') resolve to group 'E' when ``eb_variant`` is
+      None/empty (legacy bare groups), else 'E_{eb_variant}' (the new multi-variant schema).
+    - Explicit tagged names (e.g. 'E_fwhm8_north') resolve directly to 'E_fwhm8',
+      independent of ``eb_variant`` (lets you load several variants at once).
+    Returns None if ``quantity`` is not an E/B map name.
+    """
+    m = _EB_QUANTITY_RE.match(quantity)
+    if m is None:
+        return None
+    eb, tag, side = m.group(1), m.group(2), m.group(3)
+    if tag is None:
+        group = eb if not eb_variant else f"{eb}_{eb_variant}"
+    else:
+        group = f"{eb}_{tag}"
+    return ("pixelised_results", group, side)
 
 
 class RandomEBPatchAugment:
@@ -56,17 +82,17 @@ class RandomEBPatchAugment:
         return bool(np.random.randint(0, 2))
 
     def __call__(self, data: Dict[str, Union[np.ndarray, torch.Tensor]]):
-        present = [k for k in EB_MAP_KEYS if k in data]
+        present = [k for k in data if _EB_QUANTITY_RE.match(k)]
         if not present:
             return data
 
+        # Group by patch side (north/south) so E and B -- and every smoothing variant -- on
+        # the same side receive the SAME random flips, keeping the E/B pair and all variants
+        # spatially aligned. (For the legacy bare keys this is identical to the old grouping.)
         by_patch: Dict[str, List[str]] = {}
         for k in present:
-            parts = k.split("_", 1)
-            if len(parts) != 2:
-                continue
-            patch = parts[1]
-            by_patch.setdefault(patch, []).append(k)
+            side = "north" if k.endswith("north") else "south"
+            by_patch.setdefault(side, []).append(k)
 
         for patch, keys in by_patch.items():
             first_val = data[keys[0]]
@@ -81,13 +107,26 @@ class RandomEBPatchAugment:
         return data
 
 
-def build_nested_keys_from_quantities(quantities: Sequence[str]) -> Dict[str, Tuple[str, ...]]:
-    """Convert a list of dataset quantity names into a nested_keys mapping."""
+def build_nested_keys_from_quantities(
+    quantities: Sequence[str], eb_variant: Optional[str] = None
+) -> Dict[str, Tuple[str, ...]]:
+    """Convert a list of dataset quantity names into a nested_keys mapping.
+
+    E/B pixelised-map quantities are resolved by pattern (honouring ``eb_variant`` for the
+    logical names E_north/E_south/B_north/B_south); all other quantities come from
+    DEFAULT_QUANTITY_PATHS.
+    """
     nested: Dict[str, Tuple[str, ...]] = {}
-    unknown = [q for q in quantities if q not in DEFAULT_QUANTITY_PATHS]
-    if unknown:
-        known = ", ".join(sorted(DEFAULT_QUANTITY_PATHS.keys()))
-        raise KeyError(f"Unknown dataset_quantities: {unknown}. Known options: {known}")
     for q in quantities:
-        nested[q] = DEFAULT_QUANTITY_PATHS[q]
+        eb_path = _resolve_eb_quantity(q, eb_variant)
+        if eb_path is not None:
+            nested[q] = eb_path
+        elif q in DEFAULT_QUANTITY_PATHS:
+            nested[q] = DEFAULT_QUANTITY_PATHS[q]
+        else:
+            known = ", ".join(sorted(DEFAULT_QUANTITY_PATHS.keys()))
+            raise KeyError(
+                f"Unknown dataset_quantities: {q!r}. Known options: {known} "
+                f"(or E/B map keys like 'E_north' / 'E_<tag>_north')."
+            )
     return nested

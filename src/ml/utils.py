@@ -19,19 +19,29 @@ from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalSca
 MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
 
 N_BINS = 6
+# E/B map quantity names with an optional smoothing tag: 'E_north', 'B_south',
+# 'E_fwhm8_north', 'B_fwhm6_lcut1024_south', ... (mirrors data_augmentations._EB_QUANTITY_RE).
+import re as _re
+_E_MAP_RE = _re.compile(r"^E(?:_.+)?_(north|south)$")
+_B_MAP_RE = _re.compile(r"^B(?:_.+)?_(north|south)$")
+
+
 def _infer_channels_per_map_from_quantities(dataset_quantities: Optional[Sequence[str]]) -> Optional[int]:
     """Infer channels_per_map from dataset_quantities.
 
-    - If only E maps are present (E_north/E_south), use 3.
-    - If B maps are also present, use 6.
+    - If only E maps are present (any E_*_{north,south}), use N_BINS.
+    - If B maps are also present, use 2*N_BINS.
     - If no map quantities are present, return None.
+
+    Matches both the logical names (E_north) and explicit smoothing-variant names
+    (E_fwhm8_north). NOTE: this counts E-vs-(E+B) for a SINGLE smoothing variant; loading
+    several variants as separate stacked inputs would need an explicit channels_per_map.
     """
     if not dataset_quantities:
         return None
     print("Dataset quantities provided:", dataset_quantities)
-    qs = set(dataset_quantities)
-    has_e = ("E_north" in qs) or ("E_south" in qs)
-    has_b = ("B_north" in qs) or ("B_south" in qs)
+    has_e = any(_E_MAP_RE.match(q) for q in dataset_quantities)
+    has_b = any(_B_MAP_RE.match(q) for q in dataset_quantities)
 
     if not has_e and not has_b:
         return None
@@ -173,9 +183,14 @@ def prepare_data_parameters(config):
     Build train/val/test DataLoaders using data.build_dataloaders, then apply
     optional scaling transforms configured by config.scaler_options.
     """
-    # Resolve nested_keys from either dataset_quantities helper or explicit mapping
+    # Resolve nested_keys from either dataset_quantities helper or explicit mapping.
+    # eb_map_variant controls which HDF5 group the logical E/B names resolve to
+    # (None => legacy bare 'E'/'B' groups; e.g. 'fwhm8' => 'E_fwhm8'/'B_fwhm8').
     if getattr(config, 'dataset_quantities', None):
-        nested_keys = build_nested_keys_from_quantities(list(config.dataset_quantities))
+        nested_keys = build_nested_keys_from_quantities(
+            list(config.dataset_quantities),
+            eb_variant=getattr(config, 'eb_map_variant', None),
+        )
     else:
         nested_keys = dict(getattr(config, 'dataset_nested_keys', {}))
 

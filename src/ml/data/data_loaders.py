@@ -51,10 +51,10 @@ class H5CosmoDataset(Dataset):
         return data, cosmo
 
 
-def build_nested_keys_from_quantities(quantities: Sequence[str]):
+def build_nested_keys_from_quantities(quantities: Sequence[str], eb_variant=None):
     from .data_augmentations import build_nested_keys_from_quantities as _build
 
-    return _build(quantities)
+    return _build(quantities, eb_variant=eb_variant)
 
 
 def build_datasets(

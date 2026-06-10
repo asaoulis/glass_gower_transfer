@@ -36,11 +36,24 @@ def _cosine_taper(ell, l0, l1):
     w[m] = 0.5 * (1.0 + np.cos(np.pi * (ell[m] - l0) / float(l1 - l0)))
     return w
 
-def _build_ell_filter(lmax_in, lmax_out, fwhm_arcmin=8.0, taper_start_frac=0.95):
+def _hard_lcut(ell, lcut):
+    """Hard top-hat in harmonic space: 1 for ell <= lcut, 0 above.
+
+    This is the sharp ell-cut applied (after the smooth Gaussian beam + cosine taper) to
+    reproduce a Jeffrey-et-al-2025-style hard scale cut in addition to the smoothing.
+    """
+    step = np.ones_like(ell, dtype=float)
+    step[ell > int(lcut)] = 0.0
+    return step
+
+
+def _build_ell_filter(lmax_in, lmax_out, fwhm_arcmin=8.0, taper_start_frac=0.95, lcut=None):
     """
     Build an anti-aliasing filter for alms:
     - optional Gaussian beam (fwhm_arcmin)
     - cosine taper starting at taper_start_frac*lmax_out to lmax_out, zero above.
+    - optional hard ell-cut (lcut): a sharp top-hat zeroing all ell > lcut (applied on top
+      of the beam+taper). Use None to disable.
     """
     ell = np.arange(lmax_in + 1)
     if fwhm_arcmin and fwhm_arcmin > 0:
@@ -54,9 +67,13 @@ def _build_ell_filter(lmax_in, lmax_out, fwhm_arcmin=8.0, taper_start_frac=0.95)
         l1 = int(lmax_out)
         taper = _cosine_taper(ell, l0, l1)
 
-    return beam * taper
+    fl = beam * taper
+    if lcut is not None:
+        fl = fl * _hard_lcut(ell, lcut)
 
-def filter_EB_alms_and_make_maps(alm_list, nside_out=512, lmax_out=None, fwhm_arcmin=8.0, taper_start_frac=0.95):
+    return fl
+
+def filter_EB_alms_and_make_maps(alm_list, nside_out=512, lmax_out=None, fwhm_arcmin=8.0, taper_start_frac=0.95, lcut=None):
     """
     Apply anti-alias filtering to (E,B) alms per tomographic bin and synthesize
     E and B scalar maps directly at nside_out.
@@ -73,6 +90,10 @@ def filter_EB_alms_and_make_maps(alm_list, nside_out=512, lmax_out=None, fwhm_ar
         Gaussian smoothing FWHM in arcmin (mitigate near-Nyquist modes).
     taper_start_frac : float
         Fraction of lmax_out at which to start cosine taper.
+    lcut : int or None
+        Optional hard ell-cut: a sharp top-hat that zeros all ell > lcut, applied on top of
+        the Gaussian beam + cosine taper (a Jeffrey-et-al-2025-style hard scale cut). None
+        disables it (smoothing-only, the original behaviour).
 
     Returns
     -------
@@ -88,7 +109,8 @@ def filter_EB_alms_and_make_maps(alm_list, nside_out=512, lmax_out=None, fwhm_ar
         lmax_out = min(lmax_in, 3 * nside_out - 1, 1500)
 
     fl = _build_ell_filter(lmax_in=lmax_in, lmax_out=lmax_out,
-                           fwhm_arcmin=fwhm_arcmin, taper_start_frac=taper_start_frac)
+                           fwhm_arcmin=fwhm_arcmin, taper_start_frac=taper_start_frac,
+                           lcut=lcut)
 
     nbins = len(alm_list)
     npix_out = hp.nside2npix(nside_out)

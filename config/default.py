@@ -36,6 +36,12 @@ def get_default_config():
     # Alternatively, specify simple quantity names and we will build dataset_nested_keys
     # Valid options (defaults): E_north, E_south, B_north, B_south, bandpowers, bandpower_ls, cls
     config.dataset_quantities = ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south",]
+    # Which smoothing variant the logical E/B map names resolve to in the HDF5
+    # ('pixelised_results/{E|B}_{eb_map_variant}/{north,south}'). None => legacy bare
+    # 'pixelised_results/{E|B}/...' groups (old datasets). For datasets written by the
+    # multi-variant simulator set e.g. "fwhm8" or "fwhm6_lcut1024". Explicit variant-tagged
+    # quantity names (e.g. "E_fwhm8_north") bypass this and resolve directly.
+    config.eb_map_variant = None
     config.base_path = "/share/gpu5/asaoulis/transfer_models"
     config.cosmo_param_names = [
         "omega_m", "sigma_8"
