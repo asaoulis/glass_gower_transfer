@@ -384,3 +384,29 @@ def save_results_h5(filename, cat_idx, cls_results, pixelised_results, cosmo_dic
 		_save_dict(f.create_group("cosmo_dict"), cosmo_dict)
 
 	print(f"Results saved to {outname}")
+
+
+# ----------------------------- Resume / completeness helpers -----------------------------
+# A mock is one HDF5 file named output_{sim}_out{outer}_rot{rot}_{cat_idx}.h5 (see
+# save_results_h5). A sim is the product of (outer_reps x rotation_specs) (outer,rot) blocks,
+# each holding files_per_block = inner_reps * len(mask_rotation_angles) cat_idx files. The master
+# simulator uses these to skip already-complete work on restart and to clean partials before
+# recomputing. The trailing-underscore globs avoid sim/outer/rot prefix collisions (e.g.
+# output_12_* must not match output_123_*).
+
+def count_block_files(output_dir, sim_num, outer_idx, rot_idx):
+	"""How many cat_idx files already exist for one (sim, outer, rot) block."""
+	return len(list(output_dir.glob(f"output_{sim_num}_out{outer_idx}_rot{rot_idx}_*.h5")))
+
+
+def remove_block_outputs(output_dir, sim_num, outer_idx, rot_idx):
+	"""Delete a block's partial outputs so it can be recomputed cleanly. Returns count removed."""
+	paths = list(output_dir.glob(f"output_{sim_num}_out{outer_idx}_rot{rot_idx}_*.h5"))
+	for path in paths:
+		path.unlink()
+	return len(paths)
+
+
+def sim_is_complete(output_dir, sim_num, expected_files_per_sim):
+	"""True iff the sim already has its full set of augmentation files on disk."""
+	return len(list(output_dir.glob(f"output_{sim_num}_*.h5"))) >= expected_files_per_sim

@@ -4,6 +4,7 @@ from pathlib import Path
 from collections import deque
 import gc
 import argparse
+import traceback
 
 import glass.ext.camb
 
@@ -20,11 +21,14 @@ from src.cosmology.gower_street import GowerStCosmologies, GowerStPrior
 from src.cosmology.sim_utils import (
     build_systematics,
     build_variable_depth,
+    count_block_files,
     model_shift_nz,
     prepare_glass_backend,
     prepare_gower_backend,
+    remove_block_outputs,
     resolve_systematics_model,
     save_results_h5,
+    sim_is_complete,
 )
 
 from src.cosmology.manip_cls import compute_cl_bandpowers, denoise_shear_cls
@@ -39,7 +43,6 @@ from src.KiDS.simulation_config import (
     COSMO_BASE_SEED,
     INNER_NUM_SHAPE_NOISE_REALISATIONS,
     LOS_GRID,
-    OVERWRITE,
     OUTER_NUM_SHAPE_NOISE_REALISATIONS,
     SIM_GRID,
     bias,
@@ -125,6 +128,11 @@ def parse_args():
 
     parser.add_argument("--no-rotations", action="store_true",
                         help="Disable rotations")
+
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Force a clean regen: recompute every sim even if complete outputs "
+                             "already exist. Default OFF = resume (skip already-complete sims and "
+                             "(outer,rot) blocks, recompute only what is missing/incomplete).")
 
     parser.add_argument("--num-sims", type=int, default=None,
                         help="Cap the number of cosmologies/simulations to the first N "
@@ -247,6 +255,7 @@ if __name__ == "__main__":
     ia_prior_spec = IA_PRIOR_SPECS[IA_MODEL]
     NO_ROTATIONS = args.no_rotations
     NO_AUGMENTATION = args.no_augmentation
+    OVERWRITE = args.overwrite  # OFF (default) = resume: skip complete sims/blocks (see loop below)
     SHEAR_NORMALIZATION = args.shear_normalization
     USE_KIDS_MASK = args.use_kids_mask
     csv_path = args.csv_path
@@ -311,6 +320,17 @@ if __name__ == "__main__":
         if rank == 0:
             print("[rank 0] --no-augmentation: 1 mock/cosmology "
                   "(1 rotation, outer_reps=inner_reps=1).")
+
+    # Full augmentation set per (outer,rot) block and per sim, derived from the now-finalised
+    # constants (so smoke / --no-augmentation collapse correctly). These define what "complete"
+    # means on disk for the resume logic below: a block produces inner_reps * len(mask_rotation_angles)
+    # files (simulator.run), and a sim is outer_reps * len(rotation_specs) such blocks.
+    files_per_block = inner_reps * len(mask_rotation_angles)
+    expected_files_per_sim = outer_reps * len(rotation_specs) * files_per_block
+    if rank == 0:
+        mode = "OVERWRITE (regen all)" if OVERWRITE else "resume (skip complete)"
+        print(f"[rank 0] {mode}: {files_per_block} files/block, "
+              f"{expected_files_per_sim} files/sim.")
 
     OUTPUT_DIR = args.output_dir
     CAMB_CACHE_DIR = args.camb_cache_dir
@@ -387,23 +407,27 @@ if __name__ == "__main__":
 
     # sims: last column interpreted as integers (works even if recvbuf is empty)
     sims = recvbuf[:, -1].astype(int) if recvbuf.size else np.array([], dtype=int)
-    try:
-        for num_sim_this_batch in range(len(recvbuf)):
-            path_glob_pattern = f"output_{sims[num_sim_this_batch]}*.h5"
-            existing_files = list(OUTPUT_DIR.glob(path_glob_pattern))
-            if (not OVERWRITE) and len(existing_files) > 0:
-                print(f"[rank {rank}] Skipping sim {sims[num_sim_this_batch]} as output files already exist.")
+    for num_sim_this_batch in range(len(recvbuf)):
+        sim_num = sims[num_sim_this_batch]
+        # Per-sim crash isolation: a failure on one sim (e.g. a CAMB error) is logged and the rank
+        # moves on to its next sim_id rather than abandoning the rest of its chunk (see except below).
+        try:
+            # Resume fast-path: skip a sim whose full augmentation set is already on disk.
+            if (not OVERWRITE) and sim_is_complete(OUTPUT_DIR, sim_num, expected_files_per_sim):
+                print(f"[rank {rank}] sim {sim_num} complete ({expected_files_per_sim} files) — skipping.")
                 continue
             for outer_idx in range(outer_reps):
                 for rot_idx, rotation_spec in enumerate(rotation_specs):
-                    sim_num = sims[num_sim_this_batch]
-                    if SIMULATOR_TYPE == "gower_street" and not OVERWRITE:
-                        # check if any sim files for this sim+rotidx+outeridx already exist, and skip if so
-                        path_glob_pattern = f"output_{sim_num}_out{outer_idx}_rot{rot_idx}*.h5"
-                        existing_files = list(OUTPUT_DIR.glob(path_glob_pattern))
-                        if len(existing_files) > 0:
-                            print(f"[rank {rank}] Skipping sim {sim_num} with rot_idx {rot_idx} and outer_idx {outer_idx} as output files already exist.")
+                    # Block-level resume: skip a complete (outer,rot) block; otherwise clear any
+                    # partial files left by an earlier kill so the block recomputes cleanly.
+                    if not OVERWRITE:
+                        if count_block_files(OUTPUT_DIR, sim_num, outer_idx, rot_idx) >= files_per_block:
+                            print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx} complete — skipping.")
                             continue
+                        removed = remove_block_outputs(OUTPUT_DIR, sim_num, outer_idx, rot_idx)
+                        if removed:
+                            print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx}: "
+                                  f"removed {removed} partial files; recomputing.")
                     rng = np.random.default_rng()
                     log10_M_eff = rng.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
                     if USE_KIDS_MASK:
@@ -669,6 +693,11 @@ if __name__ == "__main__":
                 print(f'Saved results for sim {sim_num}')
             
             print(f'Entire simulation took {time.time() - s:.2f} seconds')
-    except Exception as e:
-        print(f"[rank {rank}] Error processing sims: {e}")
-        # Don't re-raise to avoid MPI hang; just log the error and continue
+        except Exception as e:
+            # Per-sim failure: log (with traceback) and continue to the next sim_id so one bad sim
+            # never kills the rank. Any partial block this sim wrote is reclaimed on a later visit
+            # by the block-level "incomplete -> clean -> recompute" gate above; a permanently
+            # failing sim simply never reaches its full file count, so it is never marked complete.
+            print(f"[rank {rank}] sim {sim_num} FAILED: {e!r}; continuing to next sim.")
+            traceback.print_exc()
+            continue
