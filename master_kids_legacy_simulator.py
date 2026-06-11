@@ -313,12 +313,19 @@ if __name__ == "__main__":
                   "(1 rotation, outer_reps=inner_reps=1).")
 
     OUTPUT_DIR = args.output_dir
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-
     CAMB_CACHE_DIR = args.camb_cache_dir
     COSMO_BASE_SEED_VAL = args.cosmo_base_seed
-    if SIMULATOR_TYPE == "glass":
-        CAMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # Create the output / CAMB-cache dirs on rank 0 ONLY, then barrier. Running
+    # Path.mkdir(parents=True) concurrently from every rank races on the shared
+    # /share filesystem: the losers get a transient FileNotFoundError (ENOENT)
+    # which exist_ok=True does NOT suppress (it only catches FileExistsError),
+    # crashing those ranks and failing the whole job (afterok validators then
+    # never fire). Single-writer + Barrier makes the directory exist for all.
+    if rank == 0:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        if SIMULATOR_TYPE == "glass":
+            CAMB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    comm.Barrier()
 
     backend_states = {
         "glass": {
