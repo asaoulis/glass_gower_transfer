@@ -307,6 +307,50 @@ def _filter_paths_by_shape_noise_idx(paths: List[str], test_shape_noise_idx: Opt
     return filtered
 
 
+def _resolve_forced_test_cosmos(
+    fixed_test_sim_ids: Optional[Union[str, Sequence[int]]],
+    by_cosmo: Dict[int, List[str]],
+) -> Optional[List[int]]:
+    """Resolve the opt-in fixed test set to the on-disk cosmologies to force into test.
+
+    Returns a sorted list of cosmology ids to force into the test split, or ``None`` to
+    use the normal split. ``None`` is returned when the feature is off, when none of the
+    locked ids are present on disk, or when forcing them would leave train/val empty
+    (graceful fallback — keeps small datasets, e.g. the smoke mini-dataset, working).
+    """
+    if fixed_test_sim_ids is None:
+        return None
+    from .fixed_test_set import resolve_fixed_test_ids
+
+    requested = resolve_fixed_test_ids(fixed_test_sim_ids)
+    if not requested:
+        return None
+
+    n_present = len(by_cosmo)
+    forced = sorted(set(requested) & set(by_cosmo.keys()))
+    if not forced:
+        print(
+            f"[split_by_cosmology] fixed_test_sim_ids: none of the {len(requested)} locked "
+            f"sim_ids are present on disk; falling back to the normal split.",
+            flush=True,
+        )
+        return None
+    if n_present - len(forced) < 1:
+        print(
+            f"[split_by_cosmology] fixed_test_sim_ids: forcing {len(forced)} sim_ids into "
+            f"test would leave no train/val cosmologies (of {n_present} on disk); falling "
+            f"back to the normal split.",
+            flush=True,
+        )
+        return None
+    print(
+        f"[split_by_cosmology] fixed_test_sim_ids: forced {len(forced)} cosmologies into test "
+        f"(of {len(requested)} requested, {n_present} on disk).",
+        flush=True,
+    )
+    return forced
+
+
 def split_by_cosmology(
     patterns: Union[str, Sequence[str]],
     train_frac: float = 0.8,
@@ -320,6 +364,7 @@ def split_by_cosmology(
     selection_cosmo_params: Optional[List[str]] = None,
     stratified_bins: StratifiedBins = 5,
     N_extra_test_cosmologies: Optional[int] = None,
+    fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """Glob files, group by cosmology index, shuffle cosmologies, and split without leakage."""
     print(
@@ -347,13 +392,20 @@ def split_by_cosmology(
     if n_total == 0:
         raise ValueError("No cosmologies found.")
 
-    n_test = int(round(n_total * test_frac))
-    n_test = max(1, n_test) if test_frac > 0 else 0
-    if n_test > n_total:
-        n_test = n_total
+    # Opt-in fixed test set: force the on-disk subset of the locked sim_ids into test and
+    # remove them from the trainval pool (else use the normal last-slice test selection).
+    forced_test_cosmos = _resolve_forced_test_cosmos(fixed_test_sim_ids, by_cosmo)
+    if forced_test_cosmos is not None:
+        test_cosmos = set(forced_test_cosmos)
+        remaining_cosmos = [c for c in cosmologies if c not in test_cosmos]
+    else:
+        n_test = int(round(n_total * test_frac))
+        n_test = max(1, n_test) if test_frac > 0 else 0
+        if n_test > n_total:
+            n_test = n_total
 
-    test_cosmos = set(cosmologies[-n_test:]) if n_test > 0 else set()
-    remaining_cosmos = cosmologies[:-n_test] if n_test > 0 else cosmologies
+        test_cosmos = set(cosmologies[-n_test:]) if n_test > 0 else set()
+        remaining_cosmos = cosmologies[:-n_test] if n_test > 0 else cosmologies
     if seed != 42:
         rng.seed(seed)
         rng.shuffle(remaining_cosmos)

@@ -39,8 +39,8 @@ def get_default_config():
     # Which smoothing variant the logical E/B map names resolve to in the HDF5
     # ('pixelised_results/{E|B}_{eb_map_variant}/{north,south}'). None => legacy bare
     # 'pixelised_results/{E|B}/...' groups (old datasets). For datasets written by the
-    # multi-variant simulator set e.g. "fwhm8" or "fwhm6_lcut1024". Explicit variant-tagged
-    # quantity names (e.g. "E_fwhm8_north") bypass this and resolve directly.
+    # multi-variant simulator set e.g. "fwhm8", "fwhm6_lcut1024" or "fwhm6_lmin76_lcut1024".
+    # Explicit variant-tagged quantity names (e.g. "E_fwhm8_north") bypass this and resolve directly.
     config.eb_map_variant = None
     config.base_path = "/share/gpu5/asaoulis/transfer_models"
     config.cosmo_param_names = [
@@ -54,6 +54,13 @@ def get_default_config():
     config.test_frac = 0.1
     config.split_seed = 42
     config.N_extra_test_cosmologies = None  # int or None
+    # Opt-in fixed test set (EXTRA functionality; None => off, normal split unchanged).
+    # Path to a JSON lock-file of Gower sim_ids (e.g.
+    # "config/fixed_test_sets/gower_test_ids.json") OR an explicit list of ints. When set,
+    # exactly those sim_ids present on disk are FORCED into the test split (shared across
+    # all experiments) and removed from the train/val pool. Ids absent on disk are ignored;
+    # if forcing would empty train/val it falls back to the normal split (with a warning).
+    config.fixed_test_sim_ids = None
     config.shuffle_train = True
     config.num_workers = None
     config.pin_memory = False

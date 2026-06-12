@@ -21,6 +21,9 @@ build/
 *.ipynb
 wandb/
 *.json
+# Committed data files: locked fixed test-set sim_id lists (override the *.json ignore)
+!config/fixed_test_sets/
+!config/fixed_test_sets/*.json
 lightning_logs/
 sbi-logs/
 logs/

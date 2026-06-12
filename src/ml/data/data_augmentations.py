@@ -22,8 +22,8 @@ EB_MAP_KEYS: Tuple[str, str, str, str] = (
 )
 
 # E/B pixelised-map quantity names: an E or B prefix, an OPTIONAL smoothing tag
-# (e.g. "fwhm8", "fwhm6_lcut1024"), then the patch side. Matches both the logical names
-# ("E_north") and explicit variant-tagged names ("E_fwhm6_lcut1024_north").
+# (e.g. "fwhm8", "fwhm6_lcut1024", "fwhm6_lmin76_lcut1024"), then the patch side. Matches both the
+# logical names ("E_north") and explicit variant-tagged names ("E_fwhm6_lmin76_lcut1024_north").
 _EB_QUANTITY_RE = re.compile(r"^(E|B)(?:_(.+))?_(north|south)$")
 
 

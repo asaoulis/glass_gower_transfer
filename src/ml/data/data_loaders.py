@@ -77,6 +77,7 @@ def build_datasets(
     test_shape_noise_idx: Optional[Sequence[int]] = None,
     ensemble_seed: Optional[int] = None,
     N_extra_test_cosmologies: Optional[int] = None,
+    fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     train_paths, val_paths, test_paths = split_by_cosmology(
         patterns,
@@ -91,6 +92,7 @@ def build_datasets(
         test_shape_noise_idx=test_shape_noise_idx,
         ensemble_seed=ensemble_seed,
         N_extra_test_cosmologies=N_extra_test_cosmologies,
+        fixed_test_sim_ids=fixed_test_sim_ids,
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
@@ -134,6 +136,7 @@ def build_dataloaders(
     test_shape_noise_idx: Optional[Sequence[int]] = None,
     ensemble_seed: Optional[int] = None,
     N_extra_test_cosmologies: Optional[int] = None,
+    fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Return DataLoaders for train/val/test ensuring no cosmology leakage."""
     if num_workers is None:
@@ -164,6 +167,7 @@ def build_dataloaders(
         test_shape_noise_idx=test_shape_noise_idx,
         ensemble_seed=ensemble_seed,
         N_extra_test_cosmologies=N_extra_test_cosmologies,
+        fixed_test_sim_ids=fixed_test_sim_ids,
     )
 
     if val_batch_size is None:

@@ -181,14 +181,16 @@ GLASS_N_JOBS = 16000
 # keys the on-disk Cls cache guard compares (see src/cosmology/mpi_camb.COSMO_GUARD_KEYS).
 COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 
-# E/B map smoothing variants saved per mock: a list of (fwhm_arcmin, lcut) pairs. Each pair
-# produces one set of pixelised E/B maps, stored under keys E_fwhm{fwhm}_lcut{lcut} /
-# B_fwhm{fwhm}_lcut{lcut} (lcut=None -> smoothing-only, no hard ell-cut, keyed E_fwhm{fwhm}).
-# `lcut` is a hard top-hat applied after the Gaussian beam + cosine taper inside
-# filter_EB_alms_and_make_maps (a Jeffrey-et-al-2025-style hard scale cut). The first entry
-# reproduces the previous production map; append pairs to ALSO save lighter smoothings /
-# hard-cut variants, e.g. [(8.0, None), (6.0, 1024), (4.0, 1024)].
-EB_SMOOTHING_VARIANTS = [(8.0, None)]
+# E/B map smoothing variants saved per mock: a list of (fwhm_arcmin, lmin, lcut) triples. Each
+# triple produces one set of pixelised E/B maps, stored under keys
+# E_fwhm{fwhm}[_lmin{lmin}][_lcut{lcut}] / B_... . `lmin` / `lcut` are hard top-hats (lower /
+# upper ell-cut) applied after the Gaussian beam + cosine taper inside
+# filter_EB_alms_and_make_maps: lmin zeros all ell < lmin, lcut zeros all ell > lcut (a
+# Jeffrey-et-al-2025-style hard scale band). Either may be None to disable that edge (both None
+# -> smoothing-only, keyed E_fwhm{fwhm}). The first entry reproduces the previous production map;
+# append triples to ALSO save lighter smoothings / hard-cut band variants, e.g.
+# [(8.0, None, None), (6.0, None, 1024), (6.0, 76, 1024)].
+EB_SMOOTHING_VARIANTS = [(8.0, None, None)]
 
 # Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
 # ("uniform", lo, hi) or ("normal", mu, sigma); sampled per mock by sim_utils.sample_ia_params.
@@ -654,16 +656,20 @@ if __name__ == "__main__":
                         del catalogue
                         gc.collect()
 
-                        # Build E/B maps for each (fwhm, lcut) smoothing variant. Each pair
-                        # adds its own pixelised_results keys (E_fwhm{f}_lcut{l} / B_...; a
-                        # None lcut -> smoothing-only, keyed E_fwhm{f}).
+                        # Build E/B maps for each (fwhm, lmin, lcut) smoothing variant. Each
+                        # triple adds its own pixelised_results keys
+                        # (E_fwhm{f}[_lmin{lo}][_lcut{hi}] / B_...; both lmin & lcut None ->
+                        # smoothing-only, keyed E_fwhm{f}).
                         map_types = {}
-                        for fwhm_v, lcut_v in EB_SMOOTHING_VARIANTS:
+                        for fwhm_v, lmin_v, lcut_v in EB_SMOOTHING_VARIANTS:
                             E_v, B_v = filter_EB_alms_and_make_maps(
                                 alm_list=alm, nside_out=nside_out, lmax_out=None,
-                                fwhm_arcmin=fwhm_v, taper_start_frac=0.95, lcut=lcut_v,
+                                fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
+                                lmin=lmin_v, lcut=lcut_v,
                             )
-                            tag = f"fwhm{fwhm_v:g}" + ("" if lcut_v is None else f"_lcut{int(lcut_v)}")
+                            tag = (f"fwhm{fwhm_v:g}"
+                                   + ("" if lmin_v is None else f"_lmin{int(lmin_v)}")
+                                   + ("" if lcut_v is None else f"_lcut{int(lcut_v)}"))
                             map_types[f"E_{tag}"] = E_v
                             map_types[f"B_{tag}"] = B_v
 

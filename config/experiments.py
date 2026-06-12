@@ -49,6 +49,24 @@ experiments = {
         "repeats": 3,
 
     },
+    # Example: opt into the shared fixed Gower test set. The locked sim_ids (193..max) are
+    # forced into the test split for EVERY run that sets this, so experiments share one fixed
+    # test set. Set to None (the default) to use the normal cosmology-based split.
+    "gower_fixed_testset_example": {
+        "data_patterns": "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
+        "model_type": "kids_bandpowers_mlp",
+        "dataset_quantities": ["mixed_bandpowers"],
+        "batch_size": 128,
+        "latent_dim": 8,
+        "flow_kwargs": {"hidden_features": 32, "dropout": 0.0},
+        "model_kwargs": {
+            "hidden_multiple": 32,
+            "dropout": 0.0,
+        },
+        "epochs": 40,
+        "cosmo_param_names": ["omega_m", "sigma_8"],
+        "fixed_test_sim_ids": "config/fixed_test_sets/gower_test_ids.json",
+    },
     "bandpower_mlp_lat8_9param": {
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
         "model_type": "kids_bandpowers_mlp",

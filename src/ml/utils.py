@@ -20,7 +20,7 @@ MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
 
 N_BINS = 6
 # E/B map quantity names with an optional smoothing tag: 'E_north', 'B_south',
-# 'E_fwhm8_north', 'B_fwhm6_lcut1024_south', ... (mirrors data_augmentations._EB_QUANTITY_RE).
+# 'E_fwhm8_north', 'B_fwhm6_lmin76_lcut1024_south', ... (mirrors data_augmentations._EB_QUANTITY_RE).
 import re as _re
 _E_MAP_RE = _re.compile(r"^E(?:_.+)?_(north|south)$")
 _B_MAP_RE = _re.compile(r"^B(?:_.+)?_(north|south)$")
@@ -231,6 +231,7 @@ def prepare_data_parameters(config):
         test_shape_noise_idx=test_shape_noise_idx,
         ensemble_seed=getattr(config, 'ensemble_seed', None),
         N_extra_test_cosmologies=getattr(config, 'N_extra_test_cosmologies', None),
+        fixed_test_sim_ids=getattr(config, 'fixed_test_sim_ids', None),
     )
 
     # Print dataset lengths for visibility
