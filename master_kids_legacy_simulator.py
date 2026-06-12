@@ -173,9 +173,17 @@ def parse_args():
     parser.add_argument("--cosmo-base-seed", type=int, default=COSMO_BASE_SEED,
                         help="Base seed for deterministic per-sim_id cosmology sampling.")
 
+    parser.add_argument(
+        "--galaxy-bias", type=float, default=None,
+        help="Override the linear source-galaxy clustering bias b_g fed to "
+             "positions_from_delta (default: the simulation_config `bias` constant when "
+             "systematics are ON). Only takes effect on the systematics-ON path; the clean "
+             "theory-test path (systematics OFF) always uses galaxy_bias=0. Use to generate "
+             "clustering variates, e.g. --galaxy-bias 1.5 (strong) / 0.7 (weak).")
+
     return parser.parse_args()
 
-GLASS_N_JOBS = 16000
+GLASS_N_JOBS = 6500
 
 # Cosmology parameters drawn (deterministically) per sim_id and fed to CAMB. These are exactly the
 # keys the on-disk Cls cache guard compares (see src/cosmology/mpi_camb.COSMO_GUARD_KEYS).
@@ -190,7 +198,7 @@ COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 # -> smoothing-only, keyed E_fwhm{fwhm}). The first entry reproduces the previous production map;
 # append triples to ALSO save lighter smoothings / hard-cut band variants, e.g.
 # [(8.0, None, None), (6.0, None, 1024), (6.0, 76, 1024)].
-EB_SMOOTHING_VARIANTS = [(8.0, None, None)]
+EB_SMOOTHING_VARIANTS = [(8.0, None, None), (4.0, 50, 1400,), (8.0, 50, 1400), (12.0, 50, 1024)]
 
 # Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
 # ("uniform", lo, hi) or ("normal", mu, sigma); sampled per mock by sim_utils.sample_ia_params.
@@ -597,7 +605,11 @@ if __name__ == "__main__":
                         galaxy_bias_sim = 0.0
                     else:
                         m_bias_for_shear = m_bias
-                        galaxy_bias_sim = bias
+                        # Default to the config `bias` constant; a CLI override (--galaxy-bias)
+                        # lets us generate clustering variates (e.g. b_g=1.5 strong / 0.7 weak)
+                        # without touching the protected physics. Only the systematics-ON path
+                        # honours it; the clean theory-test path above keeps galaxy_bias=0.
+                        galaxy_bias_sim = bias if args.galaxy_bias is None else args.galaxy_bias
 
                     kwargs = {
                         'cosmo': cosmo,
