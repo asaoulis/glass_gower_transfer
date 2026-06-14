@@ -198,7 +198,7 @@ COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 # -> smoothing-only, keyed E_fwhm{fwhm}). The first entry reproduces the previous production map;
 # append triples to ALSO save lighter smoothings / hard-cut band variants, e.g.
 # [(8.0, None, None), (6.0, None, 1024), (6.0, 76, 1024)].
-EB_SMOOTHING_VARIANTS = [(8.0, None, None), (4.0, 50, 1400,), (8.0, 50, 1400), (12.0, 50, 1024)]
+EB_SMOOTHING_VARIANTS = [(4.0, 50, 1400,), (8.0, 50, 1400), (12.0, 50, 1024)]
 
 # Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
 # ("uniform", lo, hi) or ("normal", mu, sigma); sampled per mock by sim_utils.sample_ia_params.
