@@ -11,8 +11,10 @@ memory-optimal batch the AMP+torch.compile speedups free up). Both carry the shi
 `ml_perf` (amp = bf16 autocast scoped to the map encoder, flow fp32; compile = torch.compile the CNN
 backbone) — see config.ml_perf / the architectures/model-optimization task.
 
-`match_num_cosmo=False` (no max_trainval_cosmos) ⇒ band + hybrid share the repeat-match "_0", so the
-hybrid's get_best_checkpoint finds the band ckpt under checkpoints/kids_legacy_band_nla_m/pretrain__0/.
+No max_trainval_cosmos + default match_num_cosmo=True ⇒ band + hybrid share the unique repeat-match
+"ncosmoNone_0", so the hybrid's get_best_checkpoint finds the band ckpt under
+checkpoints/kids_legacy_band_nla_m/pretrain_ncosmoNone_0/ (and does NOT collide with the old,
+superseded ncosmo530_0 band from the first attempt).
 
 Workflow:
   1. train.py kids_legacy_band_nla_m          # Stage I (shared band MLP) -> band checkpoint
@@ -58,7 +60,6 @@ def _hybrid(batch_size):
         "persistent_workers": True,
         "prefetch_factor": 4,
         "pin_memory": True,
-        "match_num_cosmo": False,
         "epochs": 60,
         "batch_size": batch_size,
         "scheduler_type": "cyclic",
@@ -84,7 +85,6 @@ kids_legacy_experiments = {
         "model_kwargs": {"hidden_multiple": 32, "dropout": 0.0},
         "epochs": 40,
         "cosmo_param_names": _COSMO_9,
-        "match_num_cosmo": False,
         "project": "glass-pretraining",
         "repeats": 1,
     },
