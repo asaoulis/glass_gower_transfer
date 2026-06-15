@@ -113,8 +113,15 @@ def _fit_data_key_scalers_from_paths(
         # shuffle
         np.random.shuffle(train_paths)
         for p in train_paths[:max_obs]:
-            data, _ = unpack_data(p, single_key, [], as_torch=False, dtype=np.float32, stack_groups=False)
-            arr = data[key]
+            # Skip corrupt/truncated files or ones missing the requested group (robust to a
+            # large, partially-generated out-of-core dataset) — same policy as H5CosmoDataset.
+            try:
+                data, _ = unpack_data(p, single_key, [], as_torch=False, dtype=np.float32, stack_groups=False)
+                arr = data[key]
+            except (OSError, KeyError) as e:
+                import warnings
+                warnings.warn(f"[scaler-fit] skipping unreadable file ({type(e).__name__}): {p}")
+                continue
             vals.append(arr.reshape(-1))
         if not vals:
             continue

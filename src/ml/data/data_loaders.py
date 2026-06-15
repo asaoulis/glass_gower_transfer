@@ -8,6 +8,16 @@ from torch.utils.data import DataLoader, Dataset
 from .data_augmentations import RandomEBPatchAugment
 from .data_selection import SelectionStrategy, StratifiedBins, split_by_cosmology
 
+# Track corrupt/unreadable h5 files so we warn once each (not every epoch/worker).
+_BAD_PATHS = set()
+
+
+def _warn_bad_file(path, err):
+    if path not in _BAD_PATHS:
+        _BAD_PATHS.add(path)
+        import warnings
+        warnings.warn(f"[dataloader] skipping unreadable file ({type(err).__name__}): {path}")
+
 
 class H5CosmoDataset(Dataset):
     """Dataset that loads items via unpack_data for given HDF5 paths."""
@@ -37,18 +47,34 @@ class H5CosmoDataset(Dataset):
     def __getitem__(self, idx: int):
         from .data_loading import unpack_data
 
-        path = self.paths[idx]
-        data, cosmo = unpack_data(
-            path,
-            self.nested_keys,
-            self.cosmo_params,
-            as_torch=self.as_torch,
-            dtype=self.dtype,
-            stack_groups=self.stack_groups,
+        # Resilience for large/partially-generated out-of-core datasets: a corrupt/truncated
+        # h5 file (OSError "file signature not found") or one missing the requested E/B variant
+        # group (KeyError) must NOT crash training. Skip to the next valid sample (bounded), and
+        # warn ONCE per bad path. A handful of bad files in ~10^4 is a negligible sampling change.
+        n = len(self.paths)
+        last_err = None
+        for attempt in range(min(n, 64)):
+            j = (idx + attempt) % n
+            path = self.paths[j]
+            try:
+                data, cosmo = unpack_data(
+                    path,
+                    self.nested_keys,
+                    self.cosmo_params,
+                    as_torch=self.as_torch,
+                    dtype=self.dtype,
+                    stack_groups=self.stack_groups,
+                )
+                if self.transform is not None:
+                    data = self.transform(data)
+                return data, cosmo
+            except (OSError, KeyError) as e:
+                last_err = e
+                _warn_bad_file(path, e)
+                continue
+        raise RuntimeError(
+            f"Could not read a valid sample within 64 of idx {idx} (last error: {last_err})"
         )
-        if self.transform is not None:
-            data = self.transform(data)
-        return data, cosmo
 
 
 def build_nested_keys_from_quantities(quantities: Sequence[str], eb_variant=None):
