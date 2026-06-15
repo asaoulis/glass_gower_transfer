@@ -92,3 +92,21 @@ kids_legacy_experiments = {
     "kids_legacy_hybrid_nla_m_b100": _hybrid(100),
     "kids_legacy_hybrid_nla_m_b224": _hybrid(224),
 }
+
+
+def _gpu5_locality_test():
+    """DATA-LOCALITY THROUGHPUT TEST: the SAME amp+compile B=100 hybrid, but reading gpu5
+    glass_mocks_prior (LOCAL disk to the l40s node) instead of gpu4 glass_mocks_nla_m (NFS).
+    Same simulator ⇒ same map geometry ⇒ same bytes/batch, so the it/s difference isolates the
+    data-locality effect. Band trained from scratch (freeze_band=False, no ckpt) — the band is
+    tiny so it doesn't affect map-read throughput. Short run; cancel after reading steady it/s."""
+    c = _hybrid(100)
+    c["data_patterns"] = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_prior/output_*.h5"
+    c.pop("eb_map_variant", None)            # glass_mocks_prior uses bare E/B groups
+    c["pretrained_band_ckpt_path"] = None    # no band-ckpt dependency for a throughput probe
+    c["freeze_band"] = False
+    c["epochs"] = 3
+    return c
+
+
+kids_legacy_experiments["kids_legacy_hybrid_gpu5_test"] = _gpu5_locality_test()
