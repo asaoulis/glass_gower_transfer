@@ -23,7 +23,10 @@ Workflow:
   4. train.py kids_legacy_hybrid_nla_m_b224    # Stage II, batch 224 (loads frozen band)
 """
 
-_NLA_M_DATA = "/share/gpu4/asaoulis/transfer_datasets/glass_mocks_nla_m/output_*.h5"
+# f16 extracted-E store PRE-BAKED on gpu5 (l40s-local, ~4.5x faster than the raw gpu4 NFS set).
+# Built via: run_remote.py prebake --src-datasets-root gpu4 --src-dir glass_mocks_nla_m
+#   --out-dir glass_mocks_nla_m_f16 --eb-variant fwhm8_lmin50_lcut1400 --keep-variant-tag
+_NLA_M_DATA = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_m_f16/output_*.h5"
 _EB_VARIANT = "fwhm8_lmin50_lcut1400"
 _COSMO_9 = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"]
 # Stage I writes here; Stage II loads the frozen band from this folder.
