@@ -147,8 +147,13 @@ def checkpoint(func, inputs, params, flag):
     :param flag: if False, disable gradient checkpointing.
     """
     if flag:
-        args = tuple(inputs) + tuple(params)
-        return CheckpointFunction.apply(func, len(inputs), *args)
+        # The legacy CheckpointFunction below passed `params` positionally into `func`, but the
+        # ResBlock/AttentionBlock `_forward(x, emb)` signatures don't accept them (=> "takes 3
+        # positional arguments but 11 were given"). torch's non-reentrant checkpoint tracks the
+        # module params through the autograd graph automatically, so `params` is unused here.
+        # Numerically identical to a normal forward; only activates when use_checkpoint=True.
+        from torch.utils.checkpoint import checkpoint as _torch_checkpoint
+        return _torch_checkpoint(func, *inputs, use_reentrant=False)
     else:
         return func(*inputs)
 

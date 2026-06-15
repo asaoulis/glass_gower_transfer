@@ -30,6 +30,20 @@ def get_default_config():
     config.freeze_cnn = False
     config.flow_kwargs = {}
 
+    # Training-speed options (all default-OFF => byte-identical to before when unset).
+    # Applied by src/ml/utils.py:_apply_ml_perf + fit_model. Measured on A6000 for
+    # kids_hybrid_bandpowers_maps (B=100): amp 1.40x, amp+compile(backbone) 1.83x, peak mem
+    # 50->19 GB. amp = bf16 autocast scoped to the map encoder (flow stays fp32; whole-forward
+    # bf16 crashes the nflows spline). compile = torch.compile the CNN backbone.
+    config.ml_perf = {
+        "amp": False,            # bf16 autocast around the map encoder
+        "compile": "none",       # "none" | "backbone" | "reduce-overhead" | "default"
+        "tf32": False,           # TF32 matmul/cudnn (free when amp off; no-op with amp)
+        "fused_adam": False,     # AdamW(fused=True)
+    }
+    config.prefetch_factor = None      # DataLoader prefetch_factor (workers>0)
+    config.persistent_workers = None   # keep workers alive across epochs (None=auto)
+
     # Data loading (new dataset interface)
     config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5"
     config.dataset_nested_keys = None

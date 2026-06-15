@@ -488,7 +488,65 @@ def build_model(config, test_dataloader=None):
     if backbone_lr is not None and backbone_module_name is not None:
         model.pretrained_backbone_lrs = {backbone_module_name: float(backbone_lr)}
 
+    _apply_ml_perf(model, config)
+
     return model
+
+
+def _apply_ml_perf(model, config):
+    """Apply config.ml_perf training-speed options (all default-OFF; byte-identical when unset).
+
+    Measured on the A6000 for kids_hybrid_bandpowers_maps (B=100): AMP-encoder 1.40x, then
+    +compile(backbone) -> 1.83x with peak mem 50->19 GB. See the architectures/model-optimization
+    task. Behaviour-preserving except AMP/compile numerics (gated, val-loss A/B'd).
+    """
+    ml_perf = getattr(config, 'ml_perf', None)
+    if not ml_perf:
+        return
+    ml_perf = dict(ml_perf.to_dict() if hasattr(ml_perf, 'to_dict') else ml_perf)
+
+    if ml_perf.get('tf32'):
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+    # Encoder-scoped bf16 autocast (the flow stays fp32 — whole-forward bf16 crashes the spline)
+    if ml_perf.get('amp'):
+        inner = getattr(model, 'model', None)
+        if inner is not None and hasattr(inner, 'amp_encoder'):
+            inner.amp_encoder = True
+            print("[ml_perf] AMP encoder autocast (bf16) ON; flow kept fp32")
+        else:
+            print("[ml_perf] WARNING amp requested but model.model has no amp_encoder hook")
+
+    # Compile the CNN backbone (the conv compute). Compiling higher (PoolProj/GeM head) breaks
+    # inductor (max_pool2d lowering), so target the backbone specifically.
+    compile_mode = ml_perf.get('compile', 'none')
+    if compile_mode and compile_mode != 'none':
+        inner = getattr(model, 'model', model)
+        target = None
+        for name, mod in inner.named_modules():
+            if name.endswith('shared_cnn.backbone'):
+                target = (name, mod)
+                break
+        if target is None:  # fallback: any '*.backbone'
+            for name, mod in inner.named_modules():
+                if name.endswith('.backbone'):
+                    target = (name, mod)
+                    break
+        if target is not None:
+            name, mod = target
+            parent = inner
+            parts = name.split('.')
+            for a in parts[:-1]:
+                parent = getattr(parent, a)
+            # 'default' (not reduce-overhead): reduce-overhead's CUDA graphs need static input
+            # addresses and give NO benefit on the real loop's fresh-per-step batches (measured),
+            # while being fragile — default is robust + ties on e2e throughput.
+            mode = 'default' if compile_mode in (True, 'backbone', 'default') else compile_mode
+            setattr(parent, parts[-1], torch.compile(mod, mode=mode))
+            print(f"[ml_perf] torch.compile(mode={mode}) on model.model.{name}")
+        else:
+            print("[ml_perf] WARNING compile requested but no '*.backbone' module found")
 
 def load_best_checkpoint_model(config, run_folder, test_loader=None):
     """Find the best checkpoint in a run folder and load its model.

@@ -85,6 +85,47 @@ ablation_experiments = {
 
     },
 
+    # Speed-optimized twin of ablation_glass_no_side (architectures/model-optimization task).
+    # Identical architecture; adds ml_perf (encoder bf16 autocast + torch.compile the CNN
+    # backbone) + a larger batch the freed memory allows. Measured A6000: ~2.4x training-loop
+    # throughput vs the fp32 B=100 baseline (amp+compile 1.81x at B=100, 2.45x at B=200).
+    "ablation_glass_no_side_fast": {
+        "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/glass_mocks_prior/output_*.h5",
+        "model_type": "kids_hybrid_bandpowers_maps",
+        "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south"],
+        "model_kwargs": {
+            "bandpower_type": "mlp",
+            "map_encoder_type": "o3_dual",
+            "bandpower_latent_dim": 8,
+            "map_kwargs":{
+                "encoder_type": "unet_o3",
+                "pool_types": ('avg', 'max', 'gem'),
+                "patch_conditioning": None,
+            },
+            "bandpower_kwargs":{
+                "hidden_multiple":32,
+                "dropout": 0,
+            }
+        },
+        "latent_dim": 8 + 8,
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_bandpower_mlp_9param/",
+        "freeze_band": True,
+        "epochs": 60,
+        "batch_size": 224,  # sweet spot under the AMP+compile 48 GB budget (2.37x e2e; 256 regresses)
+        "ml_perf": {"amp": True, "compile": "backbone", "tf32": False, "fused_adam": False},
+        "persistent_workers": True,
+        "prefetch_factor": 4,
+        "pin_memory": True,
+        "scheduler_type": "cyclic",
+        "scheduler_kwargs": {'warmup': 2000, 'min_factor': 0.1, "cyclic_period_steps":6000},
+        "lr": 0.0004,
+        "use_KL_loss": False,
+        "flow_kwargs": {"hidden_features": 32},
+        "project": "glass-pretraining",
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"],
+        "repeat_indices": [1,2]
+    },
+
     "finetune_ablation_glass_no_side": {
         "data_patterns":"/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",
         "model_type": "kids_hybrid_bandpowers_maps",

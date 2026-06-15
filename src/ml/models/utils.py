@@ -93,6 +93,13 @@ def fit_model(
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
 
+    # Precision: when ml_perf.amp scopes bf16 to the map encoder (model.model.amp_encoder),
+    # Lightning must run fp32 — a SECOND whole-forward autocast (precision='bf16-mixed') would
+    # push the flow's rational-quadratic spline to bf16 and crash at its index_put. The scoped
+    # autocast already gives the bf16 tensor-core/bandwidth win on the encoder (the 90% cost).
+    amp_encoder_on = bool(getattr(getattr(model, "model", None), "amp_encoder", False))
+    precision = "32" if amp_encoder_on else "bf16-mixed"
+
     trainer = pl.Trainer(
         max_epochs=epochs,
         accelerator=accelerator,
@@ -103,7 +110,7 @@ def fit_model(
         log_every_n_steps=10,
         check_val_every_n_epoch=1,
         gradient_clip_val=0.5,
-        precision="bf16-mixed",
+        precision=precision,
         accumulate_grad_batches=accumulate_grad_batches,
     )
 

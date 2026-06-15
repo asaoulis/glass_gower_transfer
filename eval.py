@@ -1,6 +1,7 @@
 from config.default import get_default_config
 from config.experiments import experiments
 from config.ablations import ablation_experiments
+from config.kids_legacy import kids_legacy_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
 from pathlib import Path
 import numpy as np
@@ -8,6 +9,7 @@ import torch
 from copy import copy
 
 experiments.update(ablation_experiments)  # Combine experiments and ablations into a single dict
+experiments.update(kids_legacy_experiments)  # KiDS-Legacy NLA-M configs
 
 def load_config(experiment_name: str):
     """Load config in a way consistent with train.py."""

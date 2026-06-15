@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from config.ablations import ablation_experiments
+from config.kids_legacy import kids_legacy_experiments
 from config.default import get_default_config
 from config.experiments import experiments
 from src.ml.eval import diag_gaussian_symmetric_kl, median_heuristic_sigma2, mmd_disagreement_score
@@ -69,6 +70,7 @@ def parse_args():
 def main():
     # Combine experiments and ablations into a single dict (mirrors eval.py)
     experiments.update(ablation_experiments)
+    experiments.update(kids_legacy_experiments)
 
     args = parse_args()
     out_dir: Path = args.output
