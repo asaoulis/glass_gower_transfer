@@ -1,6 +1,11 @@
 #!/usr/bin/env python
 """Pre-bake a compact ML training store from the raw glass mock h5 files.
 
+⭐ THE STANDARD remote-training data-prep step: map training is I/O-bound, so pre-bake with this
+tool, put the compact store on /share/gpu5 (the l40s node's LOCAL disk), then `train --gpu l40s`.
+Reading maps NON-local over NFS (e.g. /share/gpu4) is ~4.5x slower (measured 30 vs 135 smp/s). See
+glass CLAUDE.md → "Data → Fast out-of-core training" and .claude/cluster/README_cluster.md.
+
 The raw mocks (~63 MB each, float64) carry 8 E/B smoothing variants x {north,south}, but a
 training run reads only ONE E variant (north+south) + bandpowers + cosmo params. This tool
 extracts just those, downcasts the maps to float16/float32, and writes them under the *bare*
