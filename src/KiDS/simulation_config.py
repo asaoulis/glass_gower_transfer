@@ -63,7 +63,7 @@ INNER_NUM_SHAPE_NOISE_REALISATIONS = {
 	"glass": 1,
 }
 
-lower_lscale = 76
+lower_lscale = 50
 upper_lscale = 1500
 nbands = 8
 

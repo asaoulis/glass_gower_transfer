@@ -17,7 +17,7 @@ Two theory recipes are supported (``theory_mode``); both share the identical dow
         -> C_l^{kk}_{tt'} = sum_{jk} g_{tj} g_{t'k} C_l^{d_j d_k}
 
   The continuous ``SplinedSourceWindow`` theory and the simulated *discrete* shell
-  projection differ by a smooth, rising ℓ-tilt (~+5% over [76,1500]); using the shell
+  projection differ by a smooth, rising ℓ-tilt (~+5% over [50,1500]); using the shell
   projection removes it (validated: emp/theory ℓ-slope +0.017 -> +0.003).  Theory_B is
   faithful by construction: it calls the **same** ``get_camb_matter_cls`` the simulator
   uses (so it inherits the sim's exact NonLinear_both / kmax / non-Limber settings, and
@@ -284,7 +284,7 @@ def compute_bandpower_theory_from_cosmo_vec(
         raise ValueError(f"unknown theory_mode {theory_mode!r}")
 
     # Shared downstream: MCM -> pol pixel window pw**2 -> ℓ-cut -> bandpower binning.
-    # (kk and shear-EE differ only by fl=(l+2)(l-1)/[l(l+1)] ~ 1 for l>=76; omitted, as
+    # (kk and shear-EE differ only by fl=(l+2)(l-1)/[l(l+1)] ~ 1 for l>=50; omitted, as
     # in the legacy splined recipe, so the two modes stay directly comparable.)
     _, pw = hp.pixwin(nside, lmax=lmax, pol=True)
 

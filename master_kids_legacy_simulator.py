@@ -197,7 +197,7 @@ COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 # Jeffrey-et-al-2025-style hard scale band). Either may be None to disable that edge (both None
 # -> smoothing-only, keyed E_fwhm{fwhm}). The first entry reproduces the previous production map;
 # append triples to ALSO save lighter smoothings / hard-cut band variants, e.g.
-# [(8.0, None, None), (6.0, None, 1024), (6.0, 76, 1024)].
+# [(8.0, None, None), (6.0, None, 1024), (6.0, 50, 1024)].
 EB_SMOOTHING_VARIANTS = [(4.0, 50, 1400,), (8.0, 50, 1400), (12.0, 50, 1024)]
 
 # Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
@@ -689,7 +689,13 @@ if __name__ == "__main__":
                         for name, cat_data in map_types.items():
                             pixelised_tomobin_patches = get_patch_values(cat_data, patches, nside_out, ang)
                             for patch_idx, patch_name in enumerate(named_patches.keys()):
-                                pixelised_results[name][patch_name] = pixelised_tomobin_patches[patch_idx]
+                                # Store the pixelised E/B maps as float32: halves on-disk size, and
+                                # the ML loader casts them to float32 on read anyway
+                                # (src/ml/data/data_loading.py), so no analysis precision is lost.
+                                # Only the maps are downcast; cls/bandpowers/cosmo stay float64.
+                                pixelised_results[name][patch_name] = (
+                                    pixelised_tomobin_patches[patch_idx].astype(np.float32, copy=False)
+                                )
 
                         # cls_results['full'] = {"cls": mixed_cls, "mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands}
                         cls_results['full'] = {"mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands, "cls": mixed_cls[:, :, :2, :]}  # only save EE and BB

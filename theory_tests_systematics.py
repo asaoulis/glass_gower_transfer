@@ -96,7 +96,7 @@ for theory_test_index in range(10):
     NUM_JOBS = 12500
     inner_num_shape_noise_realisations=1
     outer_num_shape_noise_realisations=1
-    lower_lscale = 76
+    lower_lscale = 50
     upper_lscale = 1500
     nbands = 20
     named_patches = {
@@ -286,7 +286,7 @@ for theory_test_index in range(10):
             
         catalogue = np.concatenate(catalogues[0])
 
-        lower_lscale = 76
+        lower_lscale = 50
         upper_lscale = 1500
         nbands = 8
         alm, alm_rand = make_alm_shear_convergence(
@@ -298,7 +298,7 @@ for theory_test_index in range(10):
 
 
         nbands = 8
-        lmin_cut = 76
+        lmin_cut = 50
         lmax_cut = 1500
         # lmax_cut = 750
 
@@ -464,7 +464,7 @@ for theory_test_index in range(10):
 
 
         nbands = 8
-        lmin_cut = 76
+        lmin_cut = 50
         lmax_cut = 1500
         # lmax_cut = 750
 
