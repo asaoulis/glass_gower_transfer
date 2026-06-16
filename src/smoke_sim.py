@@ -29,7 +29,7 @@ SMOKE_CONFIG = {
     "zmax": 2.0,           # full tomographic range so all 6 bins populate
     "dx": 700.0,           # Mpc/h -> ~7 shells (z_eff up to ~1.7)
     "n_los_chi": 100,      # line-of-sight integration grid (prod 1000)
-    "lower_lscale": 50,
+    "lower_lscale": 56,
     "upper_lscale": 480,   # < lmax=512
     "nbands": 8,
     "nside_out": 128,      # pixelised map output nside (prod 512)

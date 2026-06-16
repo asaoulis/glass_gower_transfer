@@ -14,7 +14,7 @@ NSIDE = 1024
 LMAX = 2 * NSIDE          # 2048
 NBINS = 6                 # tomographic bins -> 6*7/2 = 21 spectra
 N_SPECTRA = NBINS * (NBINS + 1) // 2
-LMIN_CUT = 50
+LMIN_CUT = 56
 LMAX_CUT = 1500
 NBANDS = 8
 
