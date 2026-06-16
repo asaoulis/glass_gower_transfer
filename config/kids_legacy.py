@@ -21,6 +21,14 @@ Workflow:
   2. wait for the band checkpoint, then:
   3. train.py kids_legacy_hybrid_nla_m_b100    # Stage II, batch 100 (loads frozen band)
   4. train.py kids_legacy_hybrid_nla_m_b224    # Stage II, batch 224 (loads frozen band)
+
+3-way smoothing comparison (b100, one hybrid per on-disk EB variant; share the one frozen band):
+  - kids_legacy_hybrid_nla_m_fwhm4   # fwhm4_lmin50_lcut1400
+  - kids_legacy_hybrid_nla_m_fwhm8   # fwhm8_lmin50_lcut1400 (existing store; == _b100)
+  - kids_legacy_hybrid_nla_m_fwhm12  # fwhm12_lmin50_lcut1024
+The on-disk EB tags are the b7203e0 set (lmin50), which the prebake reads directly (a missing tag
+prints ok=0/all-bad), NOT the drifted HEAD set (lmin56). The two non-fwhm8 stores are prebaked onto
+gpu5 from gpu4 glass_mocks_nla_m (jobs 1308302 / 1308303).
 """
 
 # f16 extracted-E store PRE-BAKED on gpu5 (l40s-local, ~4.5x faster than the raw gpu4 NFS set).
@@ -28,6 +36,14 @@ Workflow:
 #   --out-dir glass_mocks_nla_m_f16 --eb-variant fwhm8_lmin50_lcut1400 --keep-variant-tag
 _NLA_M_DATA = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_m_f16/output_*.h5"
 _EB_VARIANT = "fwhm8_lmin50_lcut1400"
+
+# The other TWO b7203e0 on-disk EB smoothing variants, prebaked onto gpu5 the same way
+# (jobs 1308302 / 1308303, 2026-06-16). Used by the 3-way smoothing comparison below.
+# NB: the on-disk tags are the b7203e0 set (lmin50), NOT the drifted HEAD set (lmin56).
+_NLA_M_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_m_f16_fwhm4_lmin50_lcut1400/output_*.h5"
+_EB_VARIANT_FWHM4 = "fwhm4_lmin50_lcut1400"
+_NLA_M_DATA_FWHM12 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_m_f16_fwhm12_lmin50_lcut1024/output_*.h5"
+_EB_VARIANT_FWHM12 = "fwhm12_lmin50_lcut1024"
 _COSMO_9 = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"]
 # Stage I writes here; Stage II loads the frozen band from this folder.
 _BAND_CKPT_DIR = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m/"
@@ -36,11 +52,14 @@ _BAND_CKPT_DIR = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_b
 _ML_PERF = {"amp": True, "compile": "backbone", "tf32": False, "fused_adam": False}
 
 
-def _hybrid(batch_size):
-    """A kids_hybrid_bandpowers_maps run mirroring glass_hybrid_patches_16_9param, on NLA-M maps."""
+def _hybrid(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT):
+    """A kids_hybrid_bandpowers_maps run mirroring glass_hybrid_patches_16_9param, on NLA-M maps.
+
+    data_patterns / eb_variant select the prebaked smoothing-variant store (default fwhm8); the band
+    is smoothing-independent so the SAME frozen _BAND_CKPT_DIR is loaded regardless of variant."""
     return {
-        "data_patterns": _NLA_M_DATA,
-        "eb_map_variant": _EB_VARIANT,
+        "data_patterns": data_patterns,
+        "eb_map_variant": eb_variant,
         "model_type": "kids_hybrid_bandpowers_maps",
         "dataset_quantities": ["mixed_bandpowers", "E_north", "E_south"],
         "model_kwargs": {
@@ -63,11 +82,11 @@ def _hybrid(batch_size):
         "persistent_workers": True,
         "prefetch_factor": 4,
         "pin_memory": True,
-        "epochs": 60,
+        "epochs": 150,
         "batch_size": batch_size,
         "scheduler_type": "cyclic",
-        "scheduler_kwargs": {"warmup": 2000, "min_factor": 0.1, "cyclic_period_steps": 6000},
-        "lr": 0.0001,
+        "scheduler_kwargs": {"warmup": 2000, "min_factor": 0.1, "cyclic_period_steps": 4000},
+        "lr": 0.0002,
         "use_KL_loss": False,
         "flow_kwargs": {"hidden_features": 32},
         "project": "glass-pretraining",
@@ -94,6 +113,12 @@ kids_legacy_experiments = {
     # --- Stage II: two hybrids, identical except batch_size ---
     "kids_legacy_hybrid_nla_m_b100": _hybrid(100),
     "kids_legacy_hybrid_nla_m_b224": _hybrid(224),
+    # --- Stage II 3-way smoothing comparison: one hybrid per b7203e0 on-disk EB variant ---
+    # Identical except the prebaked map store + eb_map_variant; all b100, all load the SAME frozen
+    # band (_BAND_CKPT_DIR, ncosmoNone_0). fwhm8 reuses the existing store (== _b100).
+    "kids_legacy_hybrid_nla_m_fwhm4":  _hybrid(100, _NLA_M_DATA_FWHM4,  _EB_VARIANT_FWHM4),
+    "kids_legacy_hybrid_nla_m_fwhm8":  _hybrid(100, _NLA_M_DATA,        _EB_VARIANT),
+    "kids_legacy_hybrid_nla_m_fwhm12": _hybrid(100, _NLA_M_DATA_FWHM12, _EB_VARIANT_FWHM12),
 }
 
 
