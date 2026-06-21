@@ -175,6 +175,11 @@ def _hybrid_lmin50(repeat_indices, band_ckpt_dir):
     c["pretrained_band_ckpt_path"] = band_ckpt_dir
     c["repeat_indices"] = repeat_indices
     c["repeats"] = 4
+    # Fewer dataloader workers + smaller prefetch so the job fits a lowered --mem-gb (~28G) and can
+    # run on a RAM-contended l40s node. The prebaked store is gpu5-LOCAL (fast), so 8 workers still
+    # saturate the read path. Submit with: train ... --mem-gb 28.
+    c["num_workers"] = 8
+    c["prefetch_factor"] = 2
     return c
 
 
