@@ -54,12 +54,12 @@ _BAND_CKPT_DIR = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_b
 # The Stage-I band is bandpower-only (smoothing-independent) so it reads bandpowers DIRECTLY off the
 # raw gpu4 store (no map prebake needed) and starts immediately, in parallel with the map prebake.
 _NLA_M_DATA_LMIN50_RAW = "/share/gpu4/asaoulis/transfer_datasets/glass_mocks_nla_m_lmin50/output_*.h5"
-# Per-repeat band ckpt dirs (derived from the band EXPERIMENT NAME): the _r01 band writes
-# pretrain_ncosmoNone_{0,1} and the _r23 band writes pretrain_ncosmoNone_{2,3}. Each hybrid variant
-# points pretrained_band_ckpt_path at the MATCHING band dir, so hybrid repeat i loads band i
-# (get_best_checkpoint matches "_{i}" within that one dir — verified: "_0" matches ncosmoNone_0, not _1).
-_BAND_CKPT_DIR_LMIN50_R01 = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m_lmin50_r01/"
-_BAND_CKPT_DIR_LMIN50_R23 = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m_lmin50_r23/"
+# ONE unified band ckpt dir. All 4 band repeats live here as pretrain_ncosmoNone_{0,1,2,3}; the hybrid
+# loads band i via pretrained_band_match_string "_{i}". Populate it EITHER by consolidating the earlier
+# split _r01/_r23 band runs into this dir (no retrain — `mv .../kids_legacy_band_nla_m_lmin50_{r01,r23}/
+# pretrain_ncosmoNone_* here`) OR by a fresh retrain of `kids_legacy_band_nla_m_lmin50` split across two
+# jobs via `train ... --repeat-indices 0,1` / `--repeat-indices 2,3` (same exp name => one dir).
+_BAND_CKPT_DIR_LMIN50 = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m_lmin50/"
 # Prebaked fwhm4 E-mode store (prebake job 1309640 on COMPUTE). Tag CONFIRMED fwhm4_lmin56_lcut1400:
 # the full 96985-file / 178G store proves the E_<tag> group exists on disk (a wrong tag => empty store).
 # 4-arcmin smoothing scale, E mode only (N+S), f16. The hybrids train data-local on gpu5 (--gpu l40s).
@@ -140,12 +140,14 @@ kids_legacy_experiments = {
 }
 
 
-def _band_lmin50(repeat_indices):
+def _band_lmin50():
     """Stage-I bandpower MLP on the lmin50 production mocks (mixed_bandpowers only).
 
     Smoothing-independent, so it reads bandpowers directly off the raw gpu4 store (no map prebake).
-    One ckpt per repeat under checkpoints/<exp_name>/pretrain_ncosmoNone_{i}/; the matching hybrid
-    loads it FROZEN. Two subs ([0,1] and [2,3]) give 4 band members across two GPUs."""
+    ONE experiment, 4 repeats; all land under checkpoints/kids_legacy_band_nla_m_lmin50/
+    pretrain_ncosmoNone_{0..3}/. Split across two parallel jobs at SUBMIT time:
+      train --exp kids_legacy_band_nla_m_lmin50 --repeat-indices 0,1   (and 2,3).
+    No repeat_indices in the config (left None) so the arg overrides cleanly."""
     return {
         "data_patterns": _NLA_M_DATA_LMIN50_RAW,
         "model_type": "kids_bandpowers_mlp",
@@ -158,34 +160,29 @@ def _band_lmin50(repeat_indices):
         "cosmo_param_names": _COSMO_9,
         "project": "glass-pretraining",
         "repeats": 4,
-        "repeat_indices": repeat_indices,
     }
 
 
-# Stage-I band: two submissions, repeat_indices [0,1] and [2,3] -> 4 band members (one ckpt dir each).
-kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r01"] = _band_lmin50([0, 1])
-kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r23"] = _band_lmin50([2, 3])
+kids_legacy_experiments["kids_legacy_band_nla_m_lmin50"] = _band_lmin50()
 
 
-def _hybrid_lmin50(repeat_indices, band_ckpt_dir):
-    """Stage-II hybrid on the lmin50 fwhm4 prebaked store; loads its FROZEN per-repeat band from
-    band_ckpt_dir. Two subs ([0,1]/[2,3]) -> 4 hybrid members; each repeat i loads band i (the
-    pretrained_band_match_string '_{i}' resolves pretrain_ncosmoNone_{i} within that band dir)."""
+def _hybrid_lmin50():
+    """Stage-II hybrid on the lmin50 fwhm4 prebaked store; loads its FROZEN per-repeat band from the
+    ONE unified band dir (_BAND_CKPT_DIR_LMIN50). ONE experiment, 4 repeats; each repeat i loads band i
+    (pretrained_band_match_string '_{i}' -> pretrain_ncosmoNone_{i}). Split across two parallel jobs at
+    SUBMIT time: train --exp kids_legacy_hybrid_nla_m_lmin50_fwhm4 --gpu l40s --mem-gb 28 --repeat-indices 0,1
+    (and 2,3). NB: v100 OOMs on the maps -> hybrids run on l40s (or a100), NEVER v100."""
     c = _hybrid(100, _NLA_M_DATA_LMIN50_FWHM4, _EB_VARIANT_LMIN50_FWHM4)
-    c["pretrained_band_ckpt_path"] = band_ckpt_dir
-    c["repeat_indices"] = repeat_indices
+    c["pretrained_band_ckpt_path"] = _BAND_CKPT_DIR_LMIN50
     c["repeats"] = 4
-    # Fewer dataloader workers + smaller prefetch so the job fits a lowered --mem-gb (~28G) and can
-    # run on a RAM-contended l40s node. The prebaked store is gpu5-LOCAL (fast), so 8 workers still
-    # saturate the read path. Submit with: train ... --mem-gb 28.
+    # Fewer dataloader workers + smaller prefetch so the job fits a lowered --mem-gb (~28G) on a
+    # RAM-contended l40s node. The prebaked store is gpu5-LOCAL (fast), so 8 workers still saturate.
     c["num_workers"] = 8
     c["prefetch_factor"] = 2
     return c
 
 
-# Stage-II std hybrids: two subs, repeat_indices [0,1]/[2,3], each pointing at its matching band dir.
-kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_r01"] = _hybrid_lmin50([0, 1], _BAND_CKPT_DIR_LMIN50_R01)
-kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_r23"] = _hybrid_lmin50([2, 3], _BAND_CKPT_DIR_LMIN50_R23)
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4"] = _hybrid_lmin50()
 
 
 def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,

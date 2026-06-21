@@ -44,6 +44,15 @@ if __name__ == "__main__":
             continue
         setattr(config, key, val)
 
+    # Submit-time override: REPEAT_INDICES env (set by the gatekeeper from run_remote --repeat-indices)
+    # OVERRIDES config.repeat_indices, so the SAME experiment name can be split across multiple parallel
+    # jobs (e.g. "0,1" and "2,3") while keeping all repeats under one checkpoints/<exp>/ dir — required
+    # for correct per-repeat band loading + ensemble loading. No config edit/re-sync per split.
+    _ri = os.environ.get("REPEAT_INDICES", "").strip()
+    if _ri:
+        config.repeat_indices = [int(x) for x in _ri.split(",") if x.strip() != ""]
+        print(f"[train.py] REPEAT_INDICES override -> repeat_indices={config.repeat_indices}")
+
     # Handle max_trainval_cosmos separately so it can be either scalar or list in experiments.py
     max_tv = experiment_config.get("max_trainval_cosmos", None)
     if isinstance(max_tv, (list, tuple)):
