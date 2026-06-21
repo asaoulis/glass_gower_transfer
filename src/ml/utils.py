@@ -87,11 +87,20 @@ class TransformingDataset(torch.utils.data.Dataset):
         return len(self.base_ds)
 
     def __getitem__(self, idx: int):
-        data, cosmo = self.base_ds[idx]
+        item = self.base_ds[idx]
+        # Base ds returns either (data, cosmo) or, when return_cosmo_id is on (VICReg train loader),
+        # (data, cosmo, cosmo_id). Scalers never touch the integer cosmo_id — pass it through.
+        if len(item) == 3:
+            data, cosmo, cid = item
+        else:
+            data, cosmo = item
+            cid = None
         if self.data_transform is not None:
             data = self.data_transform(data)
         if self.cosmo_scaler is not None:
             cosmo = self.cosmo_scaler.transform(cosmo)
+        if cid is not None:
+            return data, cosmo, cid
         return data, cosmo
 
 
@@ -169,20 +178,34 @@ def _build_cosmo_preset_scaler(preset_minmax: Dict[str, Tuple[float, float]], co
 
 
 def _wrap_loader_with_transforms(loader: torch.utils.data.DataLoader, data_transform, cosmo_scaler, shuffle=True):
+    from .data.cosmo_batch_sampler import MPerCosmoBatchSampler
+
     base_ds = loader.dataset
     wrapped_ds = TransformingDataset(base_ds, data_transform=data_transform, cosmo_scaler=cosmo_scaler)
 
-    new_loader = torch.utils.data.DataLoader(
-        wrapped_ds,
-        batch_size=loader.batch_size,
-        shuffle=shuffle,
+    common = dict(
         num_workers=loader.num_workers,
         pin_memory=loader.pin_memory,
         persistent_workers=getattr(loader, 'persistent_workers', False),
-        drop_last=getattr(loader, 'drop_last', False),
         collate_fn=getattr(loader, 'collate_fn', None),
     )
-    return new_loader
+
+    # VICReg train loader carries an MPerCosmoBatchSampler. Reuse it (the wrapped dataset has the
+    # same indices/order as the base dataset, so positions still map to the same samples).
+    # batch_sampler is mutually exclusive with batch_size/shuffle/drop_last. NOTE: PyTorch sets
+    # loader.batch_sampler to an auto-created BatchSampler even for plain loaders, so the type check
+    # (not a None check) is what distinguishes the VICReg path.
+    bs = getattr(loader, 'batch_sampler', None)
+    if isinstance(bs, MPerCosmoBatchSampler):
+        return torch.utils.data.DataLoader(wrapped_ds, batch_sampler=bs, **common)
+
+    return torch.utils.data.DataLoader(
+        wrapped_ds,
+        batch_size=loader.batch_size,
+        shuffle=shuffle,
+        drop_last=getattr(loader, 'drop_last', False),
+        **common,
+    )
 
 
 def prepare_data_parameters(config):
@@ -239,6 +262,10 @@ def prepare_data_parameters(config):
         ensemble_seed=getattr(config, 'ensemble_seed', None),
         N_extra_test_cosmologies=getattr(config, 'N_extra_test_cosmologies', None),
         fixed_test_sim_ids=getattr(config, 'fixed_test_sim_ids', None),
+        # VICReg: m-per-cosmology train batches + per-sample cosmo id (gated entirely by
+        # use_vicreg_loss; every other mode keeps the plain random loader and 2-tuple batches).
+        use_cosmo_batch_sampler=getattr(config, 'use_vicreg_loss', False),
+        m_per_cosmo=int(getattr(config, 'vicreg_m_per_cosmo', 2)),
     )
 
     # Print dataset lengths for visibility

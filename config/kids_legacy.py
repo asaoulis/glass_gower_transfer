@@ -191,8 +191,12 @@ def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT
 
     Identical to _hybrid() but selects VICRegRegularisedNDELightningModule via use_vicreg_loss and
     sets the paper's UNIT VIC weights (lambda=mu=nu=1; gamma=1, eps=1e-4). The frozen Stage-I band
-    is REUSED (no VICReg in Stage I). Two views are produced by two augmented passes (flips/180-rot)
-    of the E/B map patches inside the module."""
+    is REUSED (no VICReg in Stage I). The invariance term acts on the FINAL post-hybrid_head summary
+    z and pulls together DIFFERENT REALISATIONS of the SAME cosmology (eq.13): use_vicreg_loss
+    auto-enables the m-per-cosmology train batch sampler (k distinct cosmologies x vicreg_m_per_cosmo
+    realisations per batch) + the per-sample cosmology-id 3rd batch element. NB: batch_size must be
+    divisible by vicreg_m_per_cosmo, and k = batch_size//m must be <= the number of TRAIN
+    cosmologies (the full lmin50 store has thousands, so k=50 is fine; only the smoke is constrained)."""
     c = _hybrid(batch_size, data_patterns, eb_variant)
     c["use_KL_loss"] = False
     c["use_vicreg_loss"] = True
@@ -201,6 +205,7 @@ def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT
     c["vicreg_cov_coeff"] = 1.0
     c["vicreg_gamma"] = 1.0
     c["vicreg_eps"] = 1e-4
+    c["vicreg_m_per_cosmo"] = 2   # m: realisations per cosmology per batch (m=2 == literal eq.13 pair)
     c["pretrained_band_ckpt_path"] = band_ckpt_dir
     if repeat_indices is not None:
         c["repeat_indices"] = repeat_indices
@@ -210,16 +215,43 @@ def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT
 
 def _hybrid_vicreg_smoke():
     """Local SMOKE-only VICReg hybrid: from-scratch band (no ckpt dependency) on the fwhm8 variant
-    the local smoke fixture carries (E_fwhm8) -> isolates the VICReg module (two views + finite VIC
-    loss) without needing the cluster band ckpt."""
-    c = _hybrid_vicreg(100)
+    the local smoke fixture carries (E_fwhm8) -> isolates the VICReg module (m-per-cosmology sampler
+    + same-cosmology invariance + finite VIC loss) without needing the cluster band ckpt.
+
+    batch_size=8, m=2 -> k=4 distinct cosmologies/batch. The smoke fixture has 8 cosmologies; the
+    default ~80/10/10 split leaves ~6 train cosmologies, so k=4 <= 6 holds. num_workers low for a
+    local CPU/GPU smoke on the tiny (~116-file) fixture."""
+    c = _hybrid_vicreg(8)
     c["pretrained_band_ckpt_path"] = None
     c["freeze_band"] = False
     c["epochs"] = 3
+    c["num_workers"] = 2
+    c["prefetch_factor"] = 2
+    c["persistent_workers"] = False
     return c
 
 
 kids_legacy_experiments["kids_legacy_hybrid_vicreg_smoke"] = _hybrid_vicreg_smoke()
+
+
+def _hybrid_vicreg_lmin50():
+    """Stage-II VICReg hybrid on the lmin50 fwhm4 prebaked store; REUSES the SAME 4 frozen Stage-I
+    bands as the standard lmin50 hybrid (_BAND_CKPT_DIR_LMIN50, no VICReg in Stage I). Identical
+    data/band/perf to _hybrid_lmin50() but with the VICReg summary regulariser (same-cosmology
+    invariance via the m-per-cosmology sampler, m=2). ONE experiment, 4 repeats; each repeat i loads
+    band i. Split across two parallel jobs at SUBMIT time:
+      train --exp kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg --gpu l40s --mem-gb 28 --repeat-indices 0,1
+      (and 2,3). v100 OOMs the maps -> l40s (or a100), NEVER v100. batch_size=100, m=2 -> k=50
+      distinct cosmologies/batch (the lmin50 store has thousands of train cosmologies)."""
+    c = _hybrid_vicreg(100, _NLA_M_DATA_LMIN50_FWHM4, _EB_VARIANT_LMIN50_FWHM4,
+                       band_ckpt_dir=_BAND_CKPT_DIR_LMIN50)
+    c["repeats"] = 4
+    c["num_workers"] = 8
+    c["prefetch_factor"] = 2
+    return c
+
+
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"] = _hybrid_vicreg_lmin50()
 
 
 def _gpu5_locality_test():

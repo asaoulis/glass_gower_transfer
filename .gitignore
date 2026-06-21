@@ -30,6 +30,7 @@ logs/
 *.png
 *.svg
 *.tch
+*.ckpt
 .claude/
 CLAUDE.md
 # validation shell-projection matter_cls disk cache

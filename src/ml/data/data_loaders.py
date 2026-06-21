@@ -6,7 +6,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 
 from .data_augmentations import RandomEBPatchAugment
-from .data_selection import SelectionStrategy, StratifiedBins, split_by_cosmology
+from .data_selection import SelectionStrategy, StratifiedBins, split_by_cosmology, extract_cosmo_index
 
 # Track corrupt/unreadable h5 files so we warn once each (not every epoch/worker).
 _BAD_PATHS = set()
@@ -32,6 +32,7 @@ class H5CosmoDataset(Dataset):
         dtype=np.float32,
         stack_groups: bool = False,
         transform=None,
+        return_cosmo_id: bool = False,
     ):
         self.paths = list(paths)
         self.nested_keys = nested_keys
@@ -40,6 +41,10 @@ class H5CosmoDataset(Dataset):
         self.dtype = dtype
         self.stack_groups = stack_groups
         self.transform = transform
+        # Opt-in: also return the integer cosmology id as a 3rd batch element. Default OFF so every
+        # non-VICReg path keeps the unchanged (data_dict, theta) 2-tuple contract. Used by the VICReg
+        # train loader to group same-cosmology samples for the invariance term.
+        self.return_cosmo_id = return_cosmo_id
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -67,6 +72,12 @@ class H5CosmoDataset(Dataset):
                 )
                 if self.transform is not None:
                     data = self.transform(data)
+                if self.return_cosmo_id:
+                    # CRITICAL: derive the id from the file ACTUALLY returned (post skip-bad-file
+                    # fallback `path = self.paths[j]`), never the requested idx — so a corrupt-file
+                    # swap groups the sample under its true cosmology, not a mislabelled slot.
+                    cid = extract_cosmo_index(path)
+                    return data, cosmo, cid
                 return data, cosmo
             except (OSError, KeyError) as e:
                 last_err = e
@@ -104,6 +115,7 @@ def build_datasets(
     ensemble_seed: Optional[int] = None,
     N_extra_test_cosmologies: Optional[int] = None,
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
+    return_cosmo_id: bool = False,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     train_paths, val_paths, test_paths = split_by_cosmology(
         patterns,
@@ -122,7 +134,8 @@ def build_datasets(
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
-        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=transform
+        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=transform,
+        return_cosmo_id=return_cosmo_id,
     )
     val_ds = H5CosmoDataset(
         val_paths, nested_keys, cosmo_params,
@@ -163,8 +176,15 @@ def build_dataloaders(
     ensemble_seed: Optional[int] = None,
     N_extra_test_cosmologies: Optional[int] = None,
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
+    use_cosmo_batch_sampler: bool = False,
+    m_per_cosmo: int = 2,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Return DataLoaders for train/val/test ensuring no cosmology leakage."""
+    """Return DataLoaders for train/val/test ensuring no cosmology leakage.
+
+    When ``use_cosmo_batch_sampler`` (VICReg only) the TRAIN loader uses an
+    :class:`MPerCosmoBatchSampler` (k distinct cosmologies × ``m_per_cosmo`` realisations per
+    batch) and the train dataset returns the per-sample cosmology id as a 3rd batch element. The
+    val/test loaders are unchanged (plain random/sequential, 2-tuple batches)."""
     if num_workers is None:
         try:
             cpu_count = os.cpu_count() or 1
@@ -194,6 +214,7 @@ def build_dataloaders(
         ensemble_seed=ensemble_seed,
         N_extra_test_cosmologies=N_extra_test_cosmologies,
         fixed_test_sim_ids=fixed_test_sim_ids,
+        return_cosmo_id=use_cosmo_batch_sampler,
     )
 
     if val_batch_size is None:
@@ -204,14 +225,34 @@ def build_dataloaders(
     if persistent_workers is None:
         persistent_workers = num_workers > 0
 
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=batch_size,
-        shuffle=shuffle_train,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=persistent_workers,
-    )
+    if use_cosmo_batch_sampler:
+        # VICReg: m-per-cosmology batches. batch_sampler is mutually exclusive with
+        # batch_size/shuffle/drop_last (they are encoded by the sampler itself).
+        from .cosmo_batch_sampler import MPerCosmoBatchSampler
+
+        train_batch_sampler = MPerCosmoBatchSampler(
+            train_ds.paths,
+            m_per_cosmo,
+            batch_size,
+            shuffle=shuffle_train,
+            seed=seed,
+        )
+        train_loader = DataLoader(
+            train_ds,
+            batch_sampler=train_batch_sampler,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+        )
+    else:
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=batch_size,
+            shuffle=shuffle_train,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+        )
     val_loader = DataLoader(
         val_ds,
         batch_size=val_batch_size,
