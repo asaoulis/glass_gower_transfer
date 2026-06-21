@@ -60,6 +60,11 @@ _NLA_M_DATA_LMIN50_RAW = "/share/gpu4/asaoulis/transfer_datasets/glass_mocks_nla
 # (get_best_checkpoint matches "_{i}" within that one dir — verified: "_0" matches ncosmoNone_0, not _1).
 _BAND_CKPT_DIR_LMIN50_R01 = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m_lmin50_r01/"
 _BAND_CKPT_DIR_LMIN50_R23 = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m_lmin50_r23/"
+# Prebaked fwhm4 E-mode store (prebake job 1309640 on COMPUTE). Tag CONFIRMED fwhm4_lmin56_lcut1400:
+# the full 96985-file / 178G store proves the E_<tag> group exists on disk (a wrong tag => empty store).
+# 4-arcmin smoothing scale, E mode only (N+S), f16. The hybrids train data-local on gpu5 (--gpu l40s).
+_NLA_M_DATA_LMIN50_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_m_lmin50_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_EB_VARIANT_LMIN50_FWHM4 = "fwhm4_lmin56_lcut1400"
 
 # Shipped training-speed options (default-OFF elsewhere; ON for the hybrid runs).
 _ML_PERF = {"amp": True, "compile": "backbone", "tf32": False, "fused_adam": False}
@@ -160,6 +165,22 @@ def _band_lmin50(repeat_indices):
 # Stage-I band: two submissions, repeat_indices [0,1] and [2,3] -> 4 band members (one ckpt dir each).
 kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r01"] = _band_lmin50([0, 1])
 kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r23"] = _band_lmin50([2, 3])
+
+
+def _hybrid_lmin50(repeat_indices, band_ckpt_dir):
+    """Stage-II hybrid on the lmin50 fwhm4 prebaked store; loads its FROZEN per-repeat band from
+    band_ckpt_dir. Two subs ([0,1]/[2,3]) -> 4 hybrid members; each repeat i loads band i (the
+    pretrained_band_match_string '_{i}' resolves pretrain_ncosmoNone_{i} within that band dir)."""
+    c = _hybrid(100, _NLA_M_DATA_LMIN50_FWHM4, _EB_VARIANT_LMIN50_FWHM4)
+    c["pretrained_band_ckpt_path"] = band_ckpt_dir
+    c["repeat_indices"] = repeat_indices
+    c["repeats"] = 4
+    return c
+
+
+# Stage-II std hybrids: two subs, repeat_indices [0,1]/[2,3], each pointing at its matching band dir.
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_r01"] = _hybrid_lmin50([0, 1], _BAND_CKPT_DIR_LMIN50_R01)
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_r23"] = _hybrid_lmin50([2, 3], _BAND_CKPT_DIR_LMIN50_R23)
 
 
 def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,
