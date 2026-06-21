@@ -48,6 +48,19 @@ _COSMO_9 = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia
 # Stage I writes here; Stage II loads the frozen band from this folder.
 _BAND_CKPT_DIR = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m/"
 
+# --- lmin50 PRODUCTION run (4 ensemble members; fwhm4 E-mode only) -------------------------------
+# The completed full GLASS pre-training set glass_mocks_nla_m_lmin50 (raw f32 maps on gpu4).
+# 4 members trained as TWO submissions per stage via repeat_indices: [0,1] (_r01) and [2,3] (_r23).
+# The Stage-I band is bandpower-only (smoothing-independent) so it reads bandpowers DIRECTLY off the
+# raw gpu4 store (no map prebake needed) and starts immediately, in parallel with the map prebake.
+_NLA_M_DATA_LMIN50_RAW = "/share/gpu4/asaoulis/transfer_datasets/glass_mocks_nla_m_lmin50/output_*.h5"
+# Per-repeat band ckpt dirs (derived from the band EXPERIMENT NAME): the _r01 band writes
+# pretrain_ncosmoNone_{0,1} and the _r23 band writes pretrain_ncosmoNone_{2,3}. Each hybrid variant
+# points pretrained_band_ckpt_path at the MATCHING band dir, so hybrid repeat i loads band i
+# (get_best_checkpoint matches "_{i}" within that one dir — verified: "_0" matches ncosmoNone_0, not _1).
+_BAND_CKPT_DIR_LMIN50_R01 = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m_lmin50_r01/"
+_BAND_CKPT_DIR_LMIN50_R23 = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_band_nla_m_lmin50_r23/"
+
 # Shipped training-speed options (default-OFF elsewhere; ON for the hybrid runs).
 _ML_PERF = {"amp": True, "compile": "backbone", "tf32": False, "fused_adam": False}
 
@@ -120,6 +133,33 @@ kids_legacy_experiments = {
     "kids_legacy_hybrid_nla_m_fwhm8":  _hybrid(100, _NLA_M_DATA,        _EB_VARIANT),
     "kids_legacy_hybrid_nla_m_fwhm12": _hybrid(100, _NLA_M_DATA_FWHM12, _EB_VARIANT_FWHM12),
 }
+
+
+def _band_lmin50(repeat_indices):
+    """Stage-I bandpower MLP on the lmin50 production mocks (mixed_bandpowers only).
+
+    Smoothing-independent, so it reads bandpowers directly off the raw gpu4 store (no map prebake).
+    One ckpt per repeat under checkpoints/<exp_name>/pretrain_ncosmoNone_{i}/; the matching hybrid
+    loads it FROZEN. Two subs ([0,1] and [2,3]) give 4 band members across two GPUs."""
+    return {
+        "data_patterns": _NLA_M_DATA_LMIN50_RAW,
+        "model_type": "kids_bandpowers_mlp",
+        "dataset_quantities": ["mixed_bandpowers"],
+        "batch_size": 100,
+        "latent_dim": 8,
+        "flow_kwargs": {"hidden_features": 32, "dropout": 0.0},
+        "model_kwargs": {"hidden_multiple": 32, "dropout": 0.0},
+        "epochs": 40,
+        "cosmo_param_names": _COSMO_9,
+        "project": "glass-pretraining",
+        "repeats": 4,
+        "repeat_indices": repeat_indices,
+    }
+
+
+# Stage-I band: two submissions, repeat_indices [0,1] and [2,3] -> 4 band members (one ckpt dir each).
+kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r01"] = _band_lmin50([0, 1])
+kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r23"] = _band_lmin50([2, 3])
 
 
 def _gpu5_locality_test():
