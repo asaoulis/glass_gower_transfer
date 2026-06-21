@@ -162,6 +162,43 @@ kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r01"] = _band_lmin50([0, 
 kids_legacy_experiments["kids_legacy_band_nla_m_lmin50_r23"] = _band_lmin50([2, 3])
 
 
+def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,
+                   repeat_indices=None, band_ckpt_dir=_BAND_CKPT_DIR):
+    """Stage-II hybrid + VICReg summary regulariser (Williamson DES Y3 arXiv:2606.11309 §3.4).
+
+    Identical to _hybrid() but selects VICRegRegularisedNDELightningModule via use_vicreg_loss and
+    sets the paper's UNIT VIC weights (lambda=mu=nu=1; gamma=1, eps=1e-4). The frozen Stage-I band
+    is REUSED (no VICReg in Stage I). Two views are produced by two augmented passes (flips/180-rot)
+    of the E/B map patches inside the module."""
+    c = _hybrid(batch_size, data_patterns, eb_variant)
+    c["use_KL_loss"] = False
+    c["use_vicreg_loss"] = True
+    c["vicreg_sim_coeff"] = 1.0
+    c["vicreg_var_coeff"] = 1.0
+    c["vicreg_cov_coeff"] = 1.0
+    c["vicreg_gamma"] = 1.0
+    c["vicreg_eps"] = 1e-4
+    c["pretrained_band_ckpt_path"] = band_ckpt_dir
+    if repeat_indices is not None:
+        c["repeat_indices"] = repeat_indices
+        c["repeats"] = 4
+    return c
+
+
+def _hybrid_vicreg_smoke():
+    """Local SMOKE-only VICReg hybrid: from-scratch band (no ckpt dependency) on the fwhm8 variant
+    the local smoke fixture carries (E_fwhm8) -> isolates the VICReg module (two views + finite VIC
+    loss) without needing the cluster band ckpt."""
+    c = _hybrid_vicreg(100)
+    c["pretrained_band_ckpt_path"] = None
+    c["freeze_band"] = False
+    c["epochs"] = 3
+    return c
+
+
+kids_legacy_experiments["kids_legacy_hybrid_vicreg_smoke"] = _hybrid_vicreg_smoke()
+
+
 def _gpu5_locality_test():
     """DATA-LOCALITY THROUGHPUT TEST: the SAME amp+compile B=100 hybrid, but reading gpu5
     glass_mocks_prior (LOCAL disk to the l40s node) instead of gpu4 glass_mocks_nla_m (NFS).

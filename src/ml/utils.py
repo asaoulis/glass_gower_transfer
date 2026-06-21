@@ -5,7 +5,7 @@ import torch
 import os
 
 from .models.deprecated.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, EnsembleLikelihoodNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, VICRegRegularisedNDELightningModule, EnsembleNDELightningModule, EnsembleLikelihoodNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
@@ -314,6 +314,9 @@ def build_model(config, test_dataloader=None):
 
     redundancy_dim = getattr(config, 'redundancy_dim', 0)
     use_KL_loss = getattr(config, 'use_KL_loss', False)
+    # VICReg regulariser on the summary (mutually exclusive with use_KL_loss; VICReg operates on
+    # the deterministic summary so it leaves use_kl=False / the single-width head).
+    use_vicreg_loss = getattr(config, 'use_vicreg_loss', False)
     # Flag indicating distributed training (set in train_model/fit_model)
     is_distributed = getattr(config, 'is_distributed', False)
 
@@ -378,6 +381,15 @@ def build_model(config, test_dataloader=None):
         lm_extra_kwargs = {"num_flows": num_flow_heads}
     elif use_KL_loss:
         LightningModule = KLDRegularisedNDELightningModule
+    elif use_vicreg_loss:
+        LightningModule = VICRegRegularisedNDELightningModule
+        lm_extra_kwargs = {
+            "vicreg_sim_coeff": float(getattr(config, "vicreg_sim_coeff", 1.0)),
+            "vicreg_var_coeff": float(getattr(config, "vicreg_var_coeff", 1.0)),
+            "vicreg_cov_coeff": float(getattr(config, "vicreg_cov_coeff", 1.0)),
+            "vicreg_gamma": float(getattr(config, "vicreg_gamma", 1.0)),
+            "vicreg_eps": float(getattr(config, "vicreg_eps", 1e-4)),
+        }
     elif inference_mode == 'nle':
         LightningModule = LikelihoodNDELightningModule  # NLE is just a special case of NDE with swapped conditioning/inference
     else:
