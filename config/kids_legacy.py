@@ -335,3 +335,44 @@ kids_legacy_experiments["glass_nle_pretrain_nla_m_base"] = _nle_pretrain()
 kids_legacy_experiments["glass_nle_pretrain_nla_m_vicreg"] = _nle_pretrain()
 kids_legacy_experiments["gower_nle_finetune_nla_m_base"] = _nle_finetune("glass_nle_pretrain_nla_m_base")
 kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg")
+
+
+# --- NPE whole-model fine-tune (Stage 3a) — the NPE arm of the NPE-vs-NLE comparison ------------
+# Fine-tune the WHOLE GLASS-pretrained hybrid (encoder + NPE flow) on the prebaked gower fwhm4 store,
+# via train.py (NOT train_embeddings.py). build_model loads the whole model from `checkpoint_path`,
+# which train_model resolves PER-REPEAT: match_num_cosmo=False => repeat_match "_{i}" =>
+# get_best_checkpoint(<glass hybrid ckpt dir>, "_0") -> pretrain_ncosmoNone_0/checkpoint-*.ckpt
+# (the compile-trained ckpt's `_orig_mod.` keys are aligned by npe.py load_from_checkpoint). Cloned
+# from _hybrid_lmin50() so the architecture EXACTLY matches the checkpoint. repeat_indices=[0]; L40s
+# (maps OOM v100). max_trainval_cosmos=[80] MATCHES the NLE finetune for a fair NPE-vs-NLE compare.
+# The vicreg variant just loads the vicreg-encoder hybrid ckpt as init and fine-tunes as plain NPE
+# (no VICReg loss at finetune). Shares Phase-5b's prebaked gower store with the NLE finetune.
+_GLASS_HYBRID_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints/{exp}/"
+
+
+def _npe_finetune_lmin50(checkpoint_dir):
+    c = _hybrid_lmin50()                              # exact GLASS-hybrid architecture + l40s tuning + ml_perf
+    c["data_patterns"] = _GOWER_NLA_M_DATA_FWHM4
+    c["eb_map_variant"] = _GOWER_EB_VARIANT_FWHM4
+    c["checkpoint_path"] = checkpoint_dir             # whole-model load, resolved per-repeat to ncosmoNone_0
+    c.pop("pretrained_band_ckpt_path", None)          # ignored when checkpoint_path is set (band comes with it)
+    c["freeze_band"] = False                          # whole-model fine-tune (band included)
+    c["epochs"] = 25
+    c["lr"] = 1e-5
+    c["batch_size"] = 128
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"warmup": 0}
+    c["max_trainval_cosmos"] = [80]                   # match the NLE finetune (fair NPE-vs-NLE)
+    c["train_frac"] = 0.65
+    c["val_frac"] = 0.25
+    c["match_num_cosmo"] = False
+    c["repeat_indices"] = [0]
+    c.pop("repeats", None)                            # repeat_indices overrides repeats
+    c["project"] = "gower-finetuning"
+    return c
+
+
+kids_legacy_experiments["gower_npe_finetune_nla_m_base"] = _npe_finetune_lmin50(
+    _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4"))
+kids_legacy_experiments["gower_npe_finetune_nla_m_vicreg"] = _npe_finetune_lmin50(
+    _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"))
