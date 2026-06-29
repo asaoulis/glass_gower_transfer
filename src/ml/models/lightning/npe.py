@@ -87,7 +87,15 @@ class NDELightningModule(BaseLightningModule):
             map_location=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
         )
         print("Overwriting model weights from checkpoint:", checkpoint_path)
-        self.load_state_dict(checkpoint["state_dict"])
+        state_dict = checkpoint["state_dict"]
+        # Checkpoints saved from a torch.compile'd submodule carry an `_orig_mod.` prefix on the
+        # compiled keys (e.g. ...shared_cnn.backbone._orig_mod.patch_embed.weight). When the model
+        # is rebuilt UNcompiled (e.g. the embeddings pipeline / eval load a compile-trained hybrid),
+        # a strict load_state_dict would reject every such key. Strip the compile artifact so the
+        # keys align; keep the load strict so a genuine architecture mismatch still surfaces.
+        if not any("_orig_mod." in k for k in self.state_dict()):
+            state_dict = {k.replace("._orig_mod.", "."): v for k, v in state_dict.items()}
+        self.load_state_dict(state_dict)
 
     def build_posterior_object(self, prior=None):
         device = "cuda" if torch.cuda.is_available() else "cpu"
