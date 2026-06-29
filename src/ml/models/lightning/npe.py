@@ -88,13 +88,21 @@ class NDELightningModule(BaseLightningModule):
         )
         print("Overwriting model weights from checkpoint:", checkpoint_path)
         state_dict = checkpoint["state_dict"]
-        # Checkpoints saved from a torch.compile'd submodule carry an `_orig_mod.` prefix on the
-        # compiled keys (e.g. ...shared_cnn.backbone._orig_mod.patch_embed.weight). When the model
-        # is rebuilt UNcompiled (e.g. the embeddings pipeline / eval load a compile-trained hybrid),
-        # a strict load_state_dict would reject every such key. Strip the compile artifact so the
-        # keys align; keep the load strict so a genuine architecture mismatch still surfaces.
-        if not any("_orig_mod." in k for k in self.state_dict()):
-            state_dict = {k.replace("._orig_mod.", "."): v for k, v in state_dict.items()}
+        # torch.compile wraps a submodule and inserts an `_orig_mod.` segment into its state_dict
+        # keys (e.g. ...shared_cnn.backbone._orig_mod.patch_embed.weight). The compile decision can
+        # differ between the saved checkpoint and the rebuilt model (e.g. the embeddings pipeline /
+        # eval rebuild a compile-trained hybrid UNcompiled), and a model can even carry a mix (the
+        # _CondEmbeddingFlow holds a second reference to embedding_net), so a strict load rejects the
+        # mismatched keys. Align EACH checkpoint key to the model's ACTUAL key by matching on the
+        # `_orig_mod.`-stripped ("canonical") name — per-key and bidirectional, so it works whichever
+        # side is compiled. Keep the load strict so a genuine architecture mismatch still surfaces.
+        canonical_to_model = {
+            k.replace("._orig_mod.", "."): k for k in self.state_dict().keys()
+        }
+        state_dict = {
+            canonical_to_model.get(k.replace("._orig_mod.", "."), k): v
+            for k, v in state_dict.items()
+        }
         self.load_state_dict(state_dict)
 
     def build_posterior_object(self, prior=None):
