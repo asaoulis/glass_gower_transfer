@@ -117,6 +117,7 @@ def get_default_config():
     config.num_flow_heads = 1
     config.load_pretrained_flow = False
     config.run_training = True # for embedding eval pattern
+    config.run_evaluation = True # embeddings: set False to skip post-training (MCMC) evaluation
 
     # Embeddings pipeline options
     # If False, do not normalise/standardise the precomputed embedding vectors

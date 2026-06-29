@@ -270,3 +270,68 @@ def _gpu5_locality_test():
 
 
 kids_legacy_experiments["kids_legacy_hybrid_gpu5_test"] = _gpu5_locality_test()
+
+
+# --- vicreg-nle-first-test: two-stage multifidelity NLE on FROZEN hybrid encoders ----------------
+# Train an NLE flow p(z|theta) on the frozen 16-d hybrid-encoder embedding z, for a SINGLE model
+# (repeat_indices=[0]), for BOTH the baseline and the VICReg encoder. Two stages per encoder, driven
+# by `train_embeddings.py <target> <source-encoder-exp>`:
+#   A. PRE-TRAIN on the full GLASS fwhm4 suite (no dataset cap; eval OFF -> no MCMC on GLASS; V100).
+#   B. FINE-TUNE on the PREBAKED gower fwhm4 store (load the Stage-A flow; eval ON -> MCMC; CORES64).
+# The SOURCE encoders are the kids_legacy_hybrid_nla_m_lmin50_fwhm4 / ..._vicreg experiments above,
+# passed on the train_embeddings.py CLI (NOT in these dicts). match_num_cosmo=False so the repeat-0
+# source/flow resolve via None_0 -> pretrain_ncosmoNone_0. dataset_quantities=[] is overwritten from
+# the source encoder at runtime. eb_map_variant MUST match the encoder's fwhm4 smoothing so the
+# frozen encoder sees identically-processed E maps.
+
+# Prebaked gower fwhm4 store (Phase 5b: gower_mocks_nla_m is RAW -> prebaked to fwhm4 to MATCH the
+# encoder maps). The tag is re-checked after the prebake auto-detect (try fwhm4_lmin56_lcut1400 first).
+_GOWER_NLA_M_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/gower_mocks_nla_m_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_GOWER_EB_VARIANT_FWHM4 = "fwhm4_lmin56_lcut1400"   # gower prebake tag; re-confirm after Phase 5b
+_NLE_PRETRAIN_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints/{exp}/"
+
+
+def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT_LMIN50_FWHM4):
+    """NLE flow pre-trained on the FULL GLASS fwhm4 suite on top of a frozen hybrid-encoder source.
+    No max_trainval_cosmos (full suite); run_evaluation=False (skip the post-training MCMC on GLASS)."""
+    return {
+        "data_patterns": data_patterns,
+        "eb_map_variant": eb_variant,
+        "dataset_quantities": [],            # overwritten from the source encoder at runtime
+        "latent_dim": 8,
+        "epochs": 250,
+        "batch_size": 128,
+        "lr": 0.001,
+        "flow_kwargs": {"hidden_features": 64},
+        "project": "gower-finetuning",
+        "cosmo_param_names": _COSMO_9,
+        "inference_mode": "nle",
+        "repeat_indices": [0],
+        "match_num_cosmo": False,
+        "scale_embeddings": False,
+        "run_evaluation": False,
+    }
+
+
+def _nle_finetune(pretrain_exp):
+    """NLE flow fine-tuned on the prebaked gower fwhm4 store; loads the Stage-A flow from
+    checkpoints/<pretrain_exp>/ via load_pretrained_flow. max_trainval_cosmos=[80] (single point);
+    run_evaluation=True (MCMC eval on CORES64)."""
+    c = _nle_pretrain(_GOWER_NLA_M_DATA_FWHM4, _GOWER_EB_VARIANT_FWHM4)
+    c["epochs"] = 50
+    c["lr"] = 0.0004
+    c["load_pretrained_flow"] = True
+    c["pretrained_band_ckpt_path"] = _NLE_PRETRAIN_CKPT.format(exp=pretrain_exp)
+    c["max_trainval_cosmos"] = [80]
+    c["train_frac"] = 0.7
+    c["val_frac"] = 0.2
+    c["run_evaluation"] = True
+    return c
+
+
+# base and vicreg pretrain dicts are identical bodies; the source encoder differs at the CLI and the
+# distinct names give separate checkpoint dirs (checkpoints/glass_nle_pretrain_nla_m_{base,vicreg}/).
+kids_legacy_experiments["glass_nle_pretrain_nla_m_base"] = _nle_pretrain()
+kids_legacy_experiments["glass_nle_pretrain_nla_m_vicreg"] = _nle_pretrain()
+kids_legacy_experiments["gower_nle_finetune_nla_m_base"] = _nle_finetune("glass_nle_pretrain_nla_m_base")
+kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg")

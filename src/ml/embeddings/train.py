@@ -416,6 +416,12 @@ def train_embeddings_experiment(
         target_n_cosmo = None if split_on_source else n_cosmo
         base_target_cfg = build_cfg_from_experiment_dict(target_experiment, target_exp_dict, n_cosmo=target_n_cosmo)
 
+        # Config-driven evaluation on/off switch. Pre-training runs set `run_evaluation: False`
+        # to skip the (expensive MCMC) post-training evaluation; fine-tuning runs leave it True.
+        # This gates BOTH the single-run eval (in train_embedding_run) and the ensemble deferred
+        # eval below, so eval can be fully disabled regardless of ensemble_repeats.
+        cfg_run_evaluation = bool(getattr(base_target_cfg, "run_evaluation", True))
+
         n_cosmo_tag = format_ncosmo_tag(n_cosmo)
 
         # Overrides are only needed in source-split mode.
@@ -469,13 +475,13 @@ def train_embeddings_experiment(
                     source_cfg_overrides=source_cfg_overrides,
                     run_name=run_name,
                     repeat_idx=i,
-                    run_evaluation=(ensemble_repeats <= 1),
+                    run_evaluation=(ensemble_repeats <= 1) and cfg_run_evaluation,
                 )
 
                 if deferred_eval_context is not None:
                     ensemble_member_test_loaders.append(deferred_eval_context.get("test_loader"))
 
-            if ensemble_repeats > 1:
+            if ensemble_repeats > 1 and cfg_run_evaluation:
                 if deferred_eval_context is None:
                     raise RuntimeError(
                         f"Missing deferred evaluation context for repeat {i} of experiment '{target_experiment}'."
