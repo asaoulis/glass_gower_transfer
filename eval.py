@@ -48,9 +48,12 @@ experiments_to_evaluate = [
     # "finetune_ablation_glass_no_side",
     # "finetune_ablation_glass_no_GEM",
     # "finetune_ablation_glass_MAF",
-    "finetune_hybrid_16_9param",
-    "finetune_ablation_glass_no_cyclic"
+    # "finetune_hybrid_16_9param",
+    # "finetune_ablation_glass_no_cyclic"
     # "finetune_ablation_glass_B_modes"
+    # vicreg-nle-first-test: NPE whole-model finetune checkpoints (NPE arm of the NPE-vs-NLE compare)
+    "gower_npe_finetune_nla_m_base",
+    "gower_npe_finetune_nla_m_vicreg",
 ]
 
 for experiment_name in experiments_to_evaluate:
