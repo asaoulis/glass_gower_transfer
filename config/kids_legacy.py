@@ -313,10 +313,12 @@ def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT
     }
 
 
-def _nle_finetune(pretrain_exp):
+def _nle_finetune(pretrain_exp, ensemble_repeats=1):
     """NLE flow fine-tuned on the prebaked gower fwhm4 store; loads the Stage-A flow from
     checkpoints/<pretrain_exp>/ via load_pretrained_flow. max_trainval_cosmos=[80] (single point);
-    run_evaluation=True (MCMC eval on CORES64)."""
+    run_evaluation=True (MCMC eval on CORES64). ensemble_repeats>1 trains N flow members
+    (ncosmo80_0_ens{j}) all warm-started from the SAME Stage-A flow, diverging only via ensemble_seed;
+    the train-time deferred eval then writes ensemble_evaluation_results / ensemble_tarp json."""
     c = _nle_pretrain(_GOWER_NLA_M_DATA_FWHM4, _GOWER_EB_VARIANT_FWHM4)
     c["epochs"] = 50
     c["lr"] = 0.0004
@@ -326,6 +328,7 @@ def _nle_finetune(pretrain_exp):
     c["train_frac"] = 0.7
     c["val_frac"] = 0.2
     c["run_evaluation"] = True
+    c["ensemble_repeats"] = ensemble_repeats
     return c
 
 
@@ -333,8 +336,8 @@ def _nle_finetune(pretrain_exp):
 # distinct names give separate checkpoint dirs (checkpoints/glass_nle_pretrain_nla_m_{base,vicreg}/).
 kids_legacy_experiments["glass_nle_pretrain_nla_m_base"] = _nle_pretrain()
 kids_legacy_experiments["glass_nle_pretrain_nla_m_vicreg"] = _nle_pretrain()
-kids_legacy_experiments["gower_nle_finetune_nla_m_base"] = _nle_finetune("glass_nle_pretrain_nla_m_base")
-kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg")
+kids_legacy_experiments["gower_nle_finetune_nla_m_base"] = _nle_finetune("glass_nle_pretrain_nla_m_base", ensemble_repeats=5)
+kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg", ensemble_repeats=5)
 
 
 # --- NPE whole-model fine-tune (Stage 3a) — the NPE arm of the NPE-vs-NLE comparison ------------
@@ -376,3 +379,20 @@ kids_legacy_experiments["gower_npe_finetune_nla_m_base"] = _npe_finetune_lmin50(
     _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4"))
 kids_legacy_experiments["gower_npe_finetune_nla_m_vicreg"] = _npe_finetune_lmin50(
     _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"))
+
+# NPE finetune RE-RUN vs the now-FROZEN vicreg hybrid encoder. The original
+# gower_npe_finetune_nla_m_vicreg loaded an IN-FLIGHT encoder ckpt (epoch-58) because the encoder was
+# still training when it ran; the frozen best is epoch-89. This _v2 produces a CLEAN Gower-finetuned
+# vicreg embedding net, used as the SOURCE encoder for the 1-head NLE test below.
+kids_legacy_experiments["gower_npe_finetune_nla_m_vicreg_v2"] = _npe_finetune_lmin50(
+    _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"))
+
+# 1-head NLE test (SINGLE flow, ensemble_repeats=1): take the pretrained vicreg NLE head
+# (glass_nle_pretrain_nla_m_vicreg) and fine-tune it on embeddings produced by the NPE-finetuned vicreg
+# embedding net (gower_npe_finetune_nla_m_vicreg_v2) instead of the frozen GLASS hybrid encoder. The
+# source encoder is passed at the CLI: `embed --cpu --target ... --sources gower_npe_finetune_nla_m_vicreg_v2`.
+# match_num_cosmo=True so the source-encoder lookup searches "ncosmo80_0" (the NPE finetune writes
+# finetune_ncosmo80_0, which lacks the "None_0" tag the default resolver needs); the pretrained-FLOW
+# lookup is independent (hardcoded None_0 -> glass_nle_pretrain_nla_m_vicreg/ncosmoNone_0), unaffected.
+kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg_npesrc"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg")
+kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg_npesrc"]["match_num_cosmo"] = True
