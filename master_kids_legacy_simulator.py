@@ -181,6 +181,19 @@ def parse_args():
              "theory-test path (systematics OFF) always uses galaxy_bias=0. Use to generate "
              "clustering variates, e.g. --galaxy-bias 1.5 (strong) / 0.7 (weak).")
 
+    parser.add_argument("--outer-reps", type=int, default=None,
+                        help="Override the per-sim OUTER shape-noise realisation count (default: the "
+                             "OUTER_NUM_SHAPE_NOISE_REALISATIONS[simulator] config value; glass=4, "
+                             "gower=4). Used to produce smaller datasets, e.g. --outer-reps 1 on GLASS "
+                             "gives 1 outer x rotations x inner x mask files/sim. Ignored under --smoke "
+                             "and --no-augmentation, which already force outer_reps=1.")
+
+    parser.add_argument("--gower-sim-set", type=str, default="full",
+                        choices=["full", "fixed_test"],
+                        help="gower_street sim_id selection: 'full' = np.arange(193,782) (589 ids); "
+                             "'fixed_test' = the committed 200-id lock-file "
+                             "config/fixed_test_sets/gower_test_ids.json. Ignored for glass/smoke.")
+
     return parser.parse_args()
 
 GLASS_N_JOBS = 6500
@@ -243,6 +256,17 @@ if __name__ == "__main__":
         args = parse_args()
 
         sim_samples = SIM_TYPE_CONFIGS[args.simulator_type]["get_sim_samples"]()
+
+        if args.simulator_type == "gower_street" and args.gower_sim_set == "fixed_test":
+            # Reduced Gower suite: use exactly the committed 200-id fixed test set instead of the
+            # full np.arange(193,782). Reads the repo lock-file (single source of truth; synced to
+            # the cluster checkout). Lazy import so the glass/smoke paths don't need the ml stack.
+            from src.ml.data.fixed_test_set import load_fixed_test_ids
+            json_path = Path(__file__).resolve().parent / "config" / "fixed_test_sets" / "gower_test_ids.json"
+            fixed_ids = sorted(load_fixed_test_ids(str(json_path)))
+            sim_samples = np.array(fixed_ids, dtype=np.float64).reshape(-1)
+            print(f"[rank 0] --gower-sim-set fixed_test: using {len(fixed_ids)} sim_ids from "
+                  f"{json_path.name} (min {fixed_ids[0]}, max {fixed_ids[-1]}).")
 
         if args.num_sims is not None:
             n_keep = min(args.num_sims, len(sim_samples))
@@ -318,7 +342,9 @@ if __name__ == "__main__":
         inner_reps = 1
     else:
         nside_out = 512
-        outer_reps = OUTER_NUM_SHAPE_NOISE_REALISATIONS[SIMULATOR_TYPE]
+        # --outer-reps overrides the config default (used to shrink datasets, e.g. GLASS outer=1).
+        outer_reps = (args.outer_reps if args.outer_reps is not None
+                      else OUTER_NUM_SHAPE_NOISE_REALISATIONS[SIMULATOR_TYPE])
         inner_reps = INNER_NUM_SHAPE_NOISE_REALISATIONS[SIMULATOR_TYPE]
 
     if NO_AUGMENTATION and not SMOKE:
