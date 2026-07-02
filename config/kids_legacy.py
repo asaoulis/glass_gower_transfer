@@ -185,6 +185,56 @@ def _hybrid_lmin50():
 kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4"] = _hybrid_lmin50()
 
 
+def _hybrid_lmin50_z6():
+    """6-D-summary variant of _hybrid_lmin50() — the ENCODER-LEVEL "whitening at the source" fix.
+
+    IDENTICAL to kids_legacy_hybrid_nla_m_lmin50_fwhm4 (same lmin50 fwhm4 prebaked gpu5 store,
+    same FROZEN per-repeat Stage-I band from _BAND_CKPT_DIR_LMIN50, same ml_perf amp+compile,
+    l40s tuning, epochs 100 / lr 2e-4 / batch 100 / cyclic / flow hidden 32, 4 repeats) EXCEPT the
+    hybrid head now projects the band(8)+patch(8)=16-D concat down to a 6-D FINAL summary z via
+    model_kwargs['hybrid_output_dim']=6. The downstream NLE flow q(theta|z) then sees a 6-D z, so
+    the ~4-D degenerate subspace that made the 16-D NLE joint-miscalibrated at N~80 never exists
+    (research task nle-overconfidence-research P6: within-cosmology residuals live on a ~4-D
+    manifold, cond number ~5e5; the top-6 PCs carry 100% of the sigma8 gradient). The frozen 8-D
+    band is REUSED as-is (band NOT retrained); only the fresh 16->6 hybrid_head + map encoder
+    train. build_model reads hybrid_output_dim from model_kwargs and mirrors it on the flow side
+    (conditioning_dim <- 6). ONE experiment, 4 repeats; split across two parallel jobs at SUBMIT
+    time: train --exp kids_legacy_hybrid_nla_m_lmin50_fwhm4_z6 --gpu l40s --mem-gb 28
+    --repeat-indices 0,1 (and 2,3). v100 OOMs the maps -> l40s (or a100), NEVER v100."""
+    c = _hybrid_lmin50()
+    c["model_kwargs"] = {**c["model_kwargs"], "hybrid_output_dim": 6}
+    return c
+
+
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z6"] = _hybrid_lmin50_z6()
+
+
+def _hybrid_lmin50_z6_smoke():
+    """LOCAL SMOKE-ONLY clone of kids_legacy_hybrid_nla_m_lmin50_fwhm4_z6: proves the 6-D-summary
+    hybrid (hybrid_output_dim=6, 16->6 head) BUILDS and trains one epoch with a finite loss WITHOUT
+    the cluster band ckpt. De-clustered exactly like _hybrid_vicreg_smoke: from-scratch band
+    (pretrained_band_ckpt_path=None, freeze_band=False), epochs cut, low workers. Points at the
+    fwhm8_lmin50_lcut1400 variant because the LOCAL smoke fixture (.claude/cluster/smoke_data_nla)
+    only carries E_fwhm8 groups -> the production fwhm4_lmin56 config false-fails the smoke
+    data-load (memory: "smoke fixture is fwhm8-only"). Run:
+      OMP_NUM_THREADS=4 nice -n 10 /data/alex/glass/env/bin/python \\
+        .claude/cluster/smoke_test_experiment.py \\
+        --experiment kids_legacy_hybrid_nla_m_lmin50_fwhm4_z6_smoke
+    NOT for cluster use (the real run is ..._z6)."""
+    c = _hybrid(8, _NLA_M_DATA, _EB_VARIANT)          # fwhm8 variant the local fixture carries
+    c["model_kwargs"] = {**c["model_kwargs"], "hybrid_output_dim": 6}
+    c["pretrained_band_ckpt_path"] = None
+    c["freeze_band"] = False
+    c["epochs"] = 3
+    c["num_workers"] = 2
+    c["prefetch_factor"] = 2
+    c["persistent_workers"] = False
+    return c
+
+
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z6_smoke"] = _hybrid_lmin50_z6_smoke()
+
+
 def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,
                    repeat_indices=None, band_ckpt_dir=_BAND_CKPT_DIR):
     """Stage-II hybrid + VICReg summary regulariser (Williamson DES Y3 arXiv:2606.11309 §3.4).

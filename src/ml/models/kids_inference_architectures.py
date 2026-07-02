@@ -428,15 +428,20 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         patch_scale_learnable: bool = True,
         **kwargs,
     ):
-        # For the *hybrid* encoder, latent_dim is the dim of mu after
-        # concatenation; model_output_dim is 2*latent_dim when KL is used.
-        # if hybrid_output_dim is set, it overrides the default model_output_dim = latent_dim or 2*latent_dim.
+        # For the *hybrid* encoder, latent_dim is the dim of mu after concatenation of the
+        # band + patch branches: it drives the dim_band/dim_patch split AND the hybrid_head
+        # INPUT. hybrid_output_dim, when set, decouples the FINAL summary width (the hybrid_head
+        # OUTPUT == model_output_dim == what the flow conditions on) from that concat dim -- e.g.
+        # project a band(8)+patch(8)=16-D concat down to a 6-D summary. When None the output
+        # equals latent_dim (fully backward compatible). NB: build_model mirrors this on the flow
+        # side (src/ml/utils.py: latent_dim <- hybrid_output_dim for conditioning_dim), so the two
+        # stay consistent. (Only exercised with use_kl=False; the hybrid_output_dim + KL combo is
+        # untested -- forward()'s KL shape check assumes model_output_dim == 2*latent_dim.)
+        super().__init__(latent_dim=latent_dim, use_kl=use_kl, **kwargs)
         if hybrid_output_dim is not None:
-            final_output_dim = hybrid_output_dim
-        else:
-            final_output_dim = latent_dim
-
-        super().__init__(latent_dim=final_output_dim, use_kl=use_kl, **kwargs)
+            # Override ONLY the head output width; keep self.latent_dim == concat dim so the
+            # band/patch split and the hybrid_head input stay correct.
+            self.model_output_dim = 2 * hybrid_output_dim if use_kl else hybrid_output_dim
 
         bandpower_kwargs = bandpower_kwargs or {}
         print("Bandpower kwargs", bandpower_kwargs, flush=True)
