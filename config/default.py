@@ -123,6 +123,17 @@ def get_default_config():
     # If False, do not normalise/standardise the precomputed embedding vectors
     # before training the NDE on embeddings.
     config.scale_embeddings = True
+    # Per-source whitening + optional PCA truncation of the embedding vectors, applied INSTEAD of
+    # `scale_embeddings` when set. None = disabled (fully backward-compatible no-op). When a dict
+    # {"k": int} is given, a WhitenPCAScaler is fit ONCE on the pretrain (GLASS) train split,
+    # persisted next to that run's emb cache (datasets/whitener.pt), and REUSED unchanged by the
+    # finetune + eval (never refit downstream) — the fix for research Finding C3.
+    config.whiten_embeddings = None
+    # Warm-start regression guard (embeddings finetune with whitening on): abort if the finetune ep0
+    # validation NLL sits more than this many nats above the pretrain checkpoint's recorded best val
+    # (the from-scratch / mis-framed-input signature is >=15 nats; genuine warm starts land ~2-5).
+    # Set to None (or <=0) to disable the guard.
+    config.whiten_warmstart_max_gap_nats = 12.0
     config.accumulate_grad_batches = 1
     config.inference_mode = "npe"
 

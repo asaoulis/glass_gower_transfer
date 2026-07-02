@@ -99,6 +99,20 @@ def load_partial_weights(
     if hasattr(target_module, "only_return_mu"):
         target_module.only_return_mu = True
 
+    # Return diagnostics so callers can convert a *silent* partial load into a hard failure when
+    # correctness demands it (e.g. whitened-embedding warm starts, where a shape mismatch would
+    # otherwise leave flow layers randomly initialised with a finite loss). `unused_source` is
+    # intentionally excluded from the "hard" fields below because the source is usually a whole-model
+    # state_dict and only a prefixed submodule is targeted.
+    return {
+        "loaded": len(loaded_weights),
+        "missing": list(missing),
+        "unexpected": list(unexpected),
+        "unused_source": list(unused_source),
+        "skipped_shape": skipped_shape,
+        "skipped_missing": skipped_missing,
+    }
+
 
 class ConditionDict(dict):
     """Dict-like that additionally exposes a ``.shape`` property.

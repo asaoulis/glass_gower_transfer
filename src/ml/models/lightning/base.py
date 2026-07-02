@@ -280,18 +280,34 @@ class BaseLightningModule(pl.LightningModule):
         ckpt_path: str,
         freeze: bool,
         flow_prefix: str = "model.flow.",
+        error_on_mismatch: bool = False,
     ) -> None:
         print(f"[NDELightningModule] Loading pretrained flow from {ckpt_path}...")
         checkpoint = torch.load(ckpt_path, map_location="cpu")
         src_state = checkpoint.get("state_dict", checkpoint)
 
-        load_partial_weights(
+        diag = load_partial_weights(
             target_module=self.model.flow,
             source_state_dict=src_state,
             prefix=flow_prefix,
             freeze=freeze,
             verbose=True,
         )
+        # Guard (a): a warm start whose flow shapes don't match the checkpoint would otherwise be
+        # silently skipped (load_partial_weights defaults to lenient), leaving flow layers random.
+        # When the caller demands correctness (whitened embeddings), turn that into a hard failure.
+        if error_on_mismatch and diag is not None:
+            n_shape = len(diag.get("skipped_shape") or [])
+            n_missing = len(diag.get("missing") or [])
+            if n_shape > 0 or n_missing > 0:
+                raise RuntimeError(
+                    "Pretrained-flow warm start is incomplete: "
+                    f"{n_shape} shape-mismatched key(s), {n_missing} flow key(s) left uninitialised "
+                    f"(loaded {diag.get('loaded')}). This almost certainly means the finetune "
+                    "embedding dimension (whitener k) disagrees with the pretrain flow the checkpoint "
+                    f"was trained on. Checkpoint: {ckpt_path}. First mismatches: "
+                    f"{(diag.get('skipped_shape') or [])[:5]}"
+                )
 
     def _load_pretrained_cnn_backbone(
         self,

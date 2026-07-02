@@ -341,10 +341,16 @@ _GOWER_EB_VARIANT_FWHM4 = "fwhm4_lmin56_lcut1400"   # gower prebake tag; re-conf
 _NLE_PRETRAIN_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints/{exp}/"
 
 
-def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT_LMIN50_FWHM4):
+def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT_LMIN50_FWHM4,
+                  whiten_k=None):
     """NLE flow pre-trained on the FULL GLASS fwhm4 suite on top of a frozen hybrid-encoder source.
-    No max_trainval_cosmos (full suite); run_evaluation=False (skip the post-training MCMC on GLASS)."""
-    return {
+    No max_trainval_cosmos (full suite); run_evaluation=False (skip the post-training MCMC on GLASS).
+
+    whiten_k: if set, enable per-source embedding whitening + PCA truncation to k dims. The whitener
+    is fit ONCE on THIS pretrain run's train split and persisted (datasets/whitener.pt); the finetune
+    + eval RESOLVE and REUSE it (never refit) — the research Finding-C3 fix. k < emb_dim truncates
+    (16-D base encoder), k == emb_dim is pure-whiten (the 6-D z6 encoder)."""
+    c = {
         "data_patterns": data_patterns,
         "eb_map_variant": eb_variant,
         "dataset_quantities": [],            # overwritten from the source encoder at runtime
@@ -361,15 +367,21 @@ def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT
         "scale_embeddings": False,
         "run_evaluation": False,
     }
+    if whiten_k:
+        c["whiten_embeddings"] = {"k": int(whiten_k)}
+    return c
 
 
-def _nle_finetune(pretrain_exp, ensemble_repeats=1):
+def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None):
     """NLE flow fine-tuned on the prebaked gower fwhm4 store; loads the Stage-A flow from
     checkpoints/<pretrain_exp>/ via load_pretrained_flow. max_trainval_cosmos=[80] (single point);
     run_evaluation=True (MCMC eval on CORES64). ensemble_repeats>1 trains N flow members
     (ncosmo80_0_ens{j}) all warm-started from the SAME Stage-A flow, diverging only via ensemble_seed;
-    the train-time deferred eval then writes ensemble_evaluation_results / ensemble_tarp json."""
-    c = _nle_pretrain(_GOWER_NLA_M_DATA_FWHM4, _GOWER_EB_VARIANT_FWHM4)
+    the train-time deferred eval then writes ensemble_evaluation_results / ensemble_tarp json.
+
+    whiten_k MUST match the pretrain_exp's whiten_k (the flow ckpt shapes differ per k). The finetune
+    resolves the whitener from checkpoints/<pretrain_exp>/ (same run folder as the flow ckpt)."""
+    c = _nle_pretrain(_GOWER_NLA_M_DATA_FWHM4, _GOWER_EB_VARIANT_FWHM4, whiten_k=whiten_k)
     c["epochs"] = 50
     c["lr"] = 0.0004
     c["load_pretrained_flow"] = True
@@ -388,6 +400,29 @@ kids_legacy_experiments["glass_nle_pretrain_nla_m_base"] = _nle_pretrain()
 kids_legacy_experiments["glass_nle_pretrain_nla_m_vicreg"] = _nle_pretrain()
 kids_legacy_experiments["gower_nle_finetune_nla_m_base"] = _nle_finetune("glass_nle_pretrain_nla_m_base", ensemble_repeats=5)
 kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg", ensemble_repeats=5)
+
+
+# --- WHITENED NLE chain (research nle-overconfidence-research: Finding-C3 fix promoted to prod) ---
+# WhitenPCAScaler (standardise -> PCA rotate -> keep top-k -> unit-variance per PC), fit ONCE on the
+# GLASS pretrain train split and persisted (datasets/whitener.pt), then RESOLVED + REUSED unchanged
+# by the finetune + eval (never refit). k=6 is the prototype's SBC-filter winner (D_white6). The
+# CRITICAL pairing constraint: each finetune's pretrain_exp MUST be the matching _white6/_z6 pretrain
+# (the flow ckpt event-dim = k differs from the unwhitened k=16; pointing at the wrong pretrain would
+# trip guard (a), a hard error). The source encoder is passed at the train_embeddings.py CLI.
+#
+# base_white6: the EXISTING 16-D base encoder (kids_legacy_hybrid_nla_m_lmin50_fwhm4) + TRUNCATION to
+# the top-6 PCs (16 -> 6). Ready to launch now.
+kids_legacy_experiments["glass_nle_pretrain_nla_m_base_white6"] = _nle_pretrain(whiten_k=6)
+kids_legacy_experiments["gower_nle_finetune_nla_m_base_white6"] = _nle_finetune(
+    "glass_nle_pretrain_nla_m_base_white6", ensemble_repeats=5, whiten_k=6)
+
+# z6: the FUTURE 6-D-summary hybrid encoder (kids_legacy_hybrid_nla_m_lmin50_fwhm4_z6) as the source;
+# whitening k=6 == PURE-WHITEN mode (no truncation) on the already-6-D summary z.
+# ⚠️ WAITS ON the z6 ENCODER TRAINING JOB 1311931 finishing — the frozen z6 hybrid checkpoint is the
+# required source encoder. Do NOT launch these until that job completes and the checkpoint exists.
+kids_legacy_experiments["glass_nle_pretrain_nla_m_z6"] = _nle_pretrain(whiten_k=6)
+kids_legacy_experiments["gower_nle_finetune_nla_m_z6"] = _nle_finetune(
+    "glass_nle_pretrain_nla_m_z6", ensemble_repeats=5, whiten_k=6)
 
 
 # --- NPE whole-model fine-tune (Stage 3a) — the NPE arm of the NPE-vs-NLE comparison ------------
