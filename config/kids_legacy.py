@@ -235,6 +235,50 @@ def _hybrid_lmin50_z6_smoke():
 kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z6_smoke"] = _hybrid_lmin50_z6_smoke()
 
 
+def _hybrid_lmin50_z8():
+    """8-D-summary variant of _hybrid_lmin50() — same ENCODER-LEVEL bottleneck as ..._z6 but at
+    hybrid_output_dim=8 (an intermediate point between the raw 16-D concat and the 6-D whitened
+    summary; a sweep companion to ..._z6). IDENTICAL to kids_legacy_hybrid_nla_m_lmin50_fwhm4
+    (same lmin50 fwhm4 prebaked gpu5 store, same FROZEN per-repeat Stage-I band from
+    _BAND_CKPT_DIR_LMIN50, same ml_perf amp+compile, l40s tuning, epochs 100 / lr 2e-4 / batch 100
+    / cyclic / flow hidden 32, 4 repeats) EXCEPT the hybrid head projects the band(8)+patch(8)=16-D
+    concat down to an 8-D FINAL summary z via model_kwargs['hybrid_output_dim']=8. The frozen 8-D
+    band is REUSED as-is; only the fresh 16->8 hybrid_head + map encoder train. build_model mirrors
+    hybrid_output_dim on the flow side (conditioning_dim <- 8). ONE experiment, 4 repeats; submit as
+    train --exp kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8 --gpu l40s --mem-gb 28 --repeat-indices 0,1
+    (and 2,3). v100 OOMs the maps -> l40s (or a100), NEVER v100."""
+    c = _hybrid_lmin50()
+    c["model_kwargs"] = {**c["model_kwargs"], "hybrid_output_dim": 8}
+    return c
+
+
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"] = _hybrid_lmin50_z8()
+
+
+def _hybrid_lmin50_z8_smoke():
+    """LOCAL SMOKE-ONLY clone of kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8: proves the 8-D-summary
+    hybrid (hybrid_output_dim=8, 16->8 head) BUILDS and trains one epoch with a finite loss WITHOUT
+    the cluster band ckpt. Identical de-clustering to _hybrid_lmin50_z6_smoke: from-scratch band
+    (pretrained_band_ckpt_path=None, freeze_band=False), epochs cut, low workers, fwhm8 variant the
+    LOCAL smoke fixture (.claude/cluster/smoke_data_nla) carries. Run:
+      OMP_NUM_THREADS=4 nice -n 10 /data/alex/glass/env/bin/python \\
+        .claude/cluster/smoke_test_experiment.py \\
+        --experiment kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8_smoke
+    NOT for cluster use (the real run is ..._z8)."""
+    c = _hybrid(8, _NLA_M_DATA, _EB_VARIANT)          # fwhm8 variant the local fixture carries
+    c["model_kwargs"] = {**c["model_kwargs"], "hybrid_output_dim": 8}
+    c["pretrained_band_ckpt_path"] = None
+    c["freeze_band"] = False
+    c["epochs"] = 3
+    c["num_workers"] = 2
+    c["prefetch_factor"] = 2
+    c["persistent_workers"] = False
+    return c
+
+
+kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8_smoke"] = _hybrid_lmin50_z8_smoke()
+
+
 def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,
                    repeat_indices=None, band_ckpt_dir=_BAND_CKPT_DIR):
     """Stage-II hybrid + VICReg summary regulariser (Williamson DES Y3 arXiv:2606.11309 §3.4).
