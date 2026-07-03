@@ -416,7 +416,7 @@ def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT
     return c
 
 
-def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None):
+def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None, warmstart_max_gap_nats=None):
     """NLE flow fine-tuned on the prebaked gower fwhm4 store; loads the Stage-A flow from
     checkpoints/<pretrain_exp>/ via load_pretrained_flow. max_trainval_cosmos=[80] (single point);
     run_evaluation=True (MCMC eval on CORES64). ensemble_repeats>1 trains N flow members
@@ -435,6 +435,14 @@ def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None):
     c["val_frac"] = 0.2
     c["run_evaluation"] = True
     c["ensemble_repeats"] = ensemble_repeats
+    # Override the warm-start regression guard threshold (guard-c, embeddings_utils.py). Default 12
+    # nats is calibrated on ~6-D whitened prototypes with pretrain best ~0. A PURE-WHITEN of a
+    # RANK-DEFICIENT summary inflates the genuine ep0 gap: near-null PCs are pretrain-fit sharply
+    # (very negative best) AND amplify the GLASS->Gower shift (divide by a tiny sqrt-eigenvalue), so
+    # ep0 Gower NLL is legitimately high without the warm start being broken. z8 (8-D, ~2.6 eff-rank,
+    # ~4 near-null PCs) genuinely gaps ~16 nats vs z6's ~5 — see whitened-nle-z6-z8 log 2026-07-03.
+    if warmstart_max_gap_nats is not None:
+        c["whiten_warmstart_max_gap_nats"] = warmstart_max_gap_nats
     return c
 
 
@@ -493,10 +501,15 @@ kids_legacy_experiments["gower_nle_finetune_nla_m_z6_r2_ens5"] = _nle_bake_repea
 
 # z8, repeat 0 — 8-D summary, pure-whiten k=8 (NEW z8 NLE chain; k=8 pure-whiten is new vs the k=6 chains)
 kids_legacy_experiments["glass_nle_pretrain_nla_m_z8_r0"] = _nle_bake_repeat(_nle_pretrain(whiten_k=8, epochs=150), 0)
+# z8 pure-whiten (k=8) is rank-deficient (~2.6 eff-rank, ~4 near-null PCs) => genuine ep0 warm-start
+# gap ~16 nats trips the default guard-c (12). Raise the threshold to 22 (still well below a truly
+# broken 8-D warm start); the gap is confirmed genuine (whitener reused OK, guard-a shape-check passed).
 kids_legacy_experiments["gower_nle_finetune_nla_m_z8_r0"] = _nle_bake_repeat(
-    _nle_finetune("glass_nle_pretrain_nla_m_z8_r0", ensemble_repeats=1, whiten_k=8), 0)
+    _nle_finetune("glass_nle_pretrain_nla_m_z8_r0", ensemble_repeats=1, whiten_k=8,
+                  warmstart_max_gap_nats=22.0), 0)
 kids_legacy_experiments["gower_nle_finetune_nla_m_z8_r0_ens5"] = _nle_bake_repeat(
-    _nle_finetune("glass_nle_pretrain_nla_m_z8_r0", ensemble_repeats=5, whiten_k=8), 0)
+    _nle_finetune("glass_nle_pretrain_nla_m_z8_r0", ensemble_repeats=5, whiten_k=8,
+                  warmstart_max_gap_nats=22.0), 0)
 
 
 # --- NPE whole-model fine-tune (Stage 3a) — the NPE arm of the NPE-vs-NLE comparison ------------
