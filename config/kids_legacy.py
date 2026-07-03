@@ -469,6 +469,36 @@ kids_legacy_experiments["gower_nle_finetune_nla_m_z6"] = _nle_finetune(
     "glass_nle_pretrain_nla_m_z6", ensemble_repeats=5, whiten_k=6)
 
 
+# --- z6-r2 / z8-r0 whitened NLE (task whitened-nle-z6-z8, 2026-07-03) ---------------------------
+# Same PCA pure-whiten chain as the _z6 block above, but for the SPECIFIC landed encoder repeats the
+# user requested (z6 repeat 2, z8 repeat 0), each with BOTH a single-model (ens=1) and a 5-member
+# (ens=5) finetune. `embed` ignores --repeat-indices, so the repeat is BAKED into the config dict:
+# match_num_cosmo=False => repeat_match "_{i}" resolves BOTH the source encoder's repeat-i ckpt
+# (pretrain_ncosmoNone_i) AND trains the flow as repeat i. whiten_k = the encoder summary dim => PCA
+# PURE-WHITEN, k=full, NO truncation (user decision 2026-07-03): z6->k=6, z8->k=8. The whitener is
+# fit ONCE on the GLASS pretrain train split + persisted, reused by finetune/eval (C3-safe). Source
+# encoders on the train_embeddings.py CLI: --sources kids_legacy_hybrid_nla_m_lmin50_fwhm4_{z6,z8}.
+def _nle_bake_repeat(c, i):
+    """Bake a single repeat index into an NLE config dict (each _nle_* factory returns a fresh dict)."""
+    c["repeat_indices"] = [int(i)]
+    return c
+
+
+# z6, repeat 2 — 6-D summary, pure-whiten k=6
+kids_legacy_experiments["glass_nle_pretrain_nla_m_z6_r2"] = _nle_bake_repeat(_nle_pretrain(whiten_k=6), 2)
+kids_legacy_experiments["gower_nle_finetune_nla_m_z6_r2"] = _nle_bake_repeat(
+    _nle_finetune("glass_nle_pretrain_nla_m_z6_r2", ensemble_repeats=1, whiten_k=6), 2)
+kids_legacy_experiments["gower_nle_finetune_nla_m_z6_r2_ens5"] = _nle_bake_repeat(
+    _nle_finetune("glass_nle_pretrain_nla_m_z6_r2", ensemble_repeats=5, whiten_k=6), 2)
+
+# z8, repeat 0 — 8-D summary, pure-whiten k=8 (NEW z8 NLE chain; k=8 pure-whiten is new vs the k=6 chains)
+kids_legacy_experiments["glass_nle_pretrain_nla_m_z8_r0"] = _nle_bake_repeat(_nle_pretrain(whiten_k=8), 0)
+kids_legacy_experiments["gower_nle_finetune_nla_m_z8_r0"] = _nle_bake_repeat(
+    _nle_finetune("glass_nle_pretrain_nla_m_z8_r0", ensemble_repeats=1, whiten_k=8), 0)
+kids_legacy_experiments["gower_nle_finetune_nla_m_z8_r0_ens5"] = _nle_bake_repeat(
+    _nle_finetune("glass_nle_pretrain_nla_m_z8_r0", ensemble_repeats=5, whiten_k=8), 0)
+
+
 # --- NPE whole-model fine-tune (Stage 3a) — the NPE arm of the NPE-vs-NLE comparison ------------
 # Fine-tune the WHOLE GLASS-pretrained hybrid (encoder + NPE flow) on the prebaked gower fwhm4 store,
 # via train.py (NOT train_embeddings.py). build_model loads the whole model from `checkpoint_path`,
