@@ -386,7 +386,7 @@ _NLE_PRETRAIN_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints/{exp}/"
 
 
 def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT_LMIN50_FWHM4,
-                  whiten_k=None):
+                  whiten_k=None, epochs=250):
     """NLE flow pre-trained on the FULL GLASS fwhm4 suite on top of a frozen hybrid-encoder source.
     No max_trainval_cosmos (full suite); run_evaluation=False (skip the post-training MCMC on GLASS).
 
@@ -399,7 +399,7 @@ def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT
         "eb_map_variant": eb_variant,
         "dataset_quantities": [],            # overwritten from the source encoder at runtime
         "latent_dim": 8,
-        "epochs": 250,
+        "epochs": epochs,
         "batch_size": 128,
         "lr": 0.001,
         "flow_kwargs": {"hidden_features": 64},
@@ -456,7 +456,7 @@ kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg"] = _nle_finetune("glas
 #
 # base_white6: the EXISTING 16-D base encoder (kids_legacy_hybrid_nla_m_lmin50_fwhm4) + TRUNCATION to
 # the top-6 PCs (16 -> 6). Ready to launch now.
-kids_legacy_experiments["glass_nle_pretrain_nla_m_base_white6"] = _nle_pretrain(whiten_k=6)
+kids_legacy_experiments["glass_nle_pretrain_nla_m_base_white6"] = _nle_pretrain(whiten_k=6, epochs=150)
 kids_legacy_experiments["gower_nle_finetune_nla_m_base_white6"] = _nle_finetune(
     "glass_nle_pretrain_nla_m_base_white6", ensemble_repeats=5, whiten_k=6)
 
@@ -464,7 +464,7 @@ kids_legacy_experiments["gower_nle_finetune_nla_m_base_white6"] = _nle_finetune(
 # whitening k=6 == PURE-WHITEN mode (no truncation) on the already-6-D summary z.
 # ⚠️ WAITS ON the z6 ENCODER TRAINING JOB 1311931 finishing — the frozen z6 hybrid checkpoint is the
 # required source encoder. Do NOT launch these until that job completes and the checkpoint exists.
-kids_legacy_experiments["glass_nle_pretrain_nla_m_z6"] = _nle_pretrain(whiten_k=6)
+kids_legacy_experiments["glass_nle_pretrain_nla_m_z6"] = _nle_pretrain(whiten_k=6, epochs=150)
 kids_legacy_experiments["gower_nle_finetune_nla_m_z6"] = _nle_finetune(
     "glass_nle_pretrain_nla_m_z6", ensemble_repeats=5, whiten_k=6)
 
@@ -485,14 +485,14 @@ def _nle_bake_repeat(c, i):
 
 
 # z6, repeat 2 — 6-D summary, pure-whiten k=6
-kids_legacy_experiments["glass_nle_pretrain_nla_m_z6_r2"] = _nle_bake_repeat(_nle_pretrain(whiten_k=6), 2)
+kids_legacy_experiments["glass_nle_pretrain_nla_m_z6_r2"] = _nle_bake_repeat(_nle_pretrain(whiten_k=6, epochs=150), 2)
 kids_legacy_experiments["gower_nle_finetune_nla_m_z6_r2"] = _nle_bake_repeat(
     _nle_finetune("glass_nle_pretrain_nla_m_z6_r2", ensemble_repeats=1, whiten_k=6), 2)
 kids_legacy_experiments["gower_nle_finetune_nla_m_z6_r2_ens5"] = _nle_bake_repeat(
     _nle_finetune("glass_nle_pretrain_nla_m_z6_r2", ensemble_repeats=5, whiten_k=6), 2)
 
 # z8, repeat 0 — 8-D summary, pure-whiten k=8 (NEW z8 NLE chain; k=8 pure-whiten is new vs the k=6 chains)
-kids_legacy_experiments["glass_nle_pretrain_nla_m_z8_r0"] = _nle_bake_repeat(_nle_pretrain(whiten_k=8), 0)
+kids_legacy_experiments["glass_nle_pretrain_nla_m_z8_r0"] = _nle_bake_repeat(_nle_pretrain(whiten_k=8, epochs=150), 0)
 kids_legacy_experiments["gower_nle_finetune_nla_m_z8_r0"] = _nle_bake_repeat(
     _nle_finetune("glass_nle_pretrain_nla_m_z8_r0", ensemble_repeats=1, whiten_k=8), 0)
 kids_legacy_experiments["gower_nle_finetune_nla_m_z8_r0_ens5"] = _nle_bake_repeat(
