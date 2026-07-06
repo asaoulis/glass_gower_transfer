@@ -51,9 +51,17 @@ experiments_to_evaluate = [
     # "finetune_hybrid_16_9param",
     # "finetune_ablation_glass_no_cyclic"
     # "finetune_ablation_glass_B_modes"
-    # vicreg-nle-first-test: NPE whole-model finetune checkpoints (NPE arm of the NPE-vs-NLE compare)
-    "gower_npe_finetune_nla_m_base",
-    "gower_npe_finetune_nla_m_vicreg",
+    # vicreg-nle-first-test (superseded by the z8 production run):
+    # "gower_npe_finetune_nla_m_base",
+    # "gower_npe_finetune_nla_m_vicreg",
+    # PRODUCTION eval (run on v100 as jobs finish; evaluate_best_checkpoint skips repeats/runs with no
+    # checkpoint yet, so re-running is safe): main-variate Gower NPE ens9 (all 5 repeats) + the GLASS
+    # sub-variate encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
+    # ensemble_evaluation_results_*.json + the P0 posterior_samples.npz / ensemble_posterior_samples_*.npz.
+    "gower_npe_finetune_nla_m_z8",
+    "glass_encoder_finetune_nla_z_z8",
+    "glass_encoder_finetune_nla_z8",
+    "glass_encoder_finetune_no_vd_z8",
 ]
 
 for experiment_name in experiments_to_evaluate:
@@ -66,8 +74,10 @@ for experiment_name in experiments_to_evaluate:
     # Handle max_trainval_cosmos similarly to train.py
     max_tv = experiment_config.get("max_trainval_cosmos", None)
 
-    # Keep evaluation consistent with training: evaluate across repeats
+    # Keep evaluation consistent with training: evaluate across repeats. Production configs use
+    # `repeat_indices` (not `repeats`); fall back to range(repeats) for legacy configs.
     repeats = getattr(config, "repeats", 1)
+    repeat_idxs = list(getattr(config, "repeat_indices", None) or range(repeats))
 
     if isinstance(max_tv, (list, tuple)):
         # Multiple cosmos: evaluate each separately
@@ -83,7 +93,7 @@ for experiment_name in experiments_to_evaluate:
 
             cfg.max_trainval_cosmos = int(n_cosmo)
             cfg.match_num_cosmo = True  # Ensure match_string includes n_cosmo
-            for i in range(repeats):
+            for i in repeat_idxs:
                 cfg_copy = copy(cfg)  # Avoid mutating cfg across repeats
                 # Apply the exact repeat match_string logic used by train_model
                 repeat_match, _ = apply_repeat_config(cfg_copy, i)
@@ -102,7 +112,7 @@ for experiment_name in experiments_to_evaluate:
         if max_tv is not None:
             config.max_trainval_cosmos = int(max_tv)
 
-        for i in range(repeats):
+        for i in repeat_idxs:
             repeat_match, _ = apply_repeat_config(config, i)
             config.match_string = repeat_match
 

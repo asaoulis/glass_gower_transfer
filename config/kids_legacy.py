@@ -322,9 +322,9 @@ def _encoder_finetune_z8(data_patterns, eb_variant, cosmo_param_names, repeat_in
     return c
 
 
-# nla_z, repeat 0 — HIGH-PRIORITY first test (check the warm-start training curve).
+# nla_z sub-variate encoder-finetune, all 5 repeats (r0 was the validated first test).
 kids_legacy_experiments["glass_encoder_finetune_nla_z_z8"] = _encoder_finetune_z8(
-    _NLA_Z_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9_NLAZ, repeat_indices=(0,))
+    _NLA_Z_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9_NLAZ, repeat_indices=(0, 1, 2, 3, 4))
 
 
 def _encoder_finetune_z8_smoke(cosmo_param_names):
