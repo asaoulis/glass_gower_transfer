@@ -18,6 +18,7 @@ from ..data.priors import (
     ia_marginal_priors,
 )
 from .evaluate_models import run_evaluation_on_samples
+from ..data.data_selection import extract_cosmo_index
 
 
 def _merged_preset(preset_overrides=None):
@@ -229,6 +230,50 @@ def build_cosmo_param_sampler(
     return make_seeded_cosmo_sampler(prior, column_names, full_scaler)
 
 
+def _resolve_test_paths(test_loader):
+    """Best-effort recovery of the ordered test-file list backing a loader, so posterior samples can be
+    tagged with the sim/aug id of the test point each came from. Returns None if unavailable."""
+    ds = getattr(test_loader, "dataset", None)
+    for candidate in (ds, getattr(ds, "dataset", None)):
+        paths = getattr(candidate, "paths", None)
+        if paths is not None:
+            return list(paths)
+    return None
+
+
+def _parse_aug_id(basename: str) -> int:
+    """Trailing augmentation/noise index from an `output_<sim>_..._<aug>.h5` basename (-1 if absent)."""
+    m = re.search(r"_(\d+)\.h5$", basename)
+    return int(m.group(1)) if m else -1
+
+
+def _save_posterior_samples(out_path, theta0s, samples, test_paths):
+    """Persist raw posterior samples + true params next to the eval json, tagged with per-test-point
+    sim/aug ids so runs can be checked for commensurability. theta0s ~ [N, D]; samples ~ [S, N, D];
+    the id arrays align with axis-N. Positional path alignment assumes NO corrupt-file skips (true for
+    the clean prebaked stores; H5CosmoDataset skips corrupt files, which would shift indices — guarded
+    by a length check). Failures are non-fatal — the metrics json is the primary artifact."""
+    try:
+        theta_np = theta0s.detach().cpu().numpy() if hasattr(theta0s, "detach") else np.asarray(theta0s)
+        samp_np = samples.detach().cpu().numpy() if hasattr(samples, "detach") else np.asarray(samples)
+        payload = {"samples": samp_np, "theta0s": theta_np}
+        n = theta_np.shape[0]
+        if test_paths is not None and len(test_paths) == n:
+            files = [os.path.basename(p) for p in test_paths]
+            payload["test_files"] = np.array(files)
+            payload["sim_ids"] = np.array([extract_cosmo_index(p) for p in test_paths], dtype=np.int64)
+            payload["aug_ids"] = np.array([_parse_aug_id(f) for f in files], dtype=np.int64)
+        elif test_paths is not None:
+            print(f"[save-samples] path/theta count mismatch ({len(test_paths)} vs {n}); saving samples "
+                  "WITHOUT sim/aug ids (corrupt-file skip or wrong loader?).", flush=True)
+        else:
+            print("[save-samples] test paths unavailable; saving samples without sim/aug ids.", flush=True)
+        np.savez_compressed(out_path, **payload)
+        print(f"[save-samples] wrote {out_path}  (N={n}, keys={sorted(payload)})", flush=True)
+    except Exception as e:  # never let a sample dump break the eval
+        print(f"[save-samples] WARNING: failed to save posterior samples to {out_path}: {e}", flush=True)
+
+
 def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, compute_calibration=True, **sampling_kwargs):
     num_samples = sampling_kwargs.pop("num_samples", 10000)
     prior = sampling_kwargs.get("prior", None)
@@ -243,7 +288,8 @@ def generate_samples_and_run_eval(model, param_scaler, reference_samples=None, c
         prior=prior,
         prior_num_samples=prior_num_samples,
     )
-    return eval_metrics
+    # Also return the raw draws + true params so callers can persist them with sim/aug ids.
+    return eval_metrics, theta0s, samples
 
 
 def evaluate_best_checkpoint(
@@ -292,7 +338,7 @@ def evaluate_best_checkpoint(
             print("Failed to build ensemble model; falling back to single-run evaluation.")
         else:
             metrics = compute_log_prob(ensemble_model)
-            eval_metrics = generate_samples_and_run_eval(
+            eval_metrics, theta0s, samples = generate_samples_and_run_eval(
                 ensemble_model,
                 param_scaler,
                 reference_samples,
@@ -323,6 +369,11 @@ def evaluate_best_checkpoint(
                 )
                 with open(intervals_path, "w") as f:
                     json.dump(_to_json_compatible(tarp_intervals), f, indent=4)
+
+            _save_posterior_samples(
+                os.path.join(experiment_path, f"ensemble_posterior_samples_{match_string}.npz"),
+                theta0s, samples, _resolve_test_paths(test_loader),
+            )
             return {"ensemble": out}
 
     experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/"
@@ -375,7 +426,7 @@ def evaluate_best_checkpoint(
             continue
 
         metrics = compute_log_prob(model)
-        eval_metrics = generate_samples_and_run_eval(model, param_scaler, reference_samples, **sampling_kwargs)
+        eval_metrics, theta0s, samples = generate_samples_and_run_eval(model, param_scaler, reference_samples, **sampling_kwargs)
 
         metrics_payload = {**metrics, **eval_metrics}
         tarp_intervals = _pop_credible_intervals(metrics_payload)
@@ -394,6 +445,11 @@ def evaluate_best_checkpoint(
             intervals_path = os.path.join(run_folder, "tarp_credible_intervals.json")
             with open(intervals_path, "w") as f:
                 json.dump(_to_json_compatible(tarp_intervals), f, indent=4)
+
+        _save_posterior_samples(
+            os.path.join(run_folder, "posterior_samples.npz"),
+            theta0s, samples, _resolve_test_paths(test_loader),
+        )
 
     return results
 
