@@ -492,7 +492,7 @@ def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None, warmstart_max
     resolves the whitener from checkpoints/<pretrain_exp>/ (same run folder as the flow ckpt)."""
     c = _nle_pretrain(_GOWER_NLA_M_DATA_FWHM4, _GOWER_EB_VARIANT_FWHM4, whiten_k=whiten_k)
     c["epochs"] = 50
-    c["lr"] = 0.0004
+    c["lr"] = 0.00008   # 1/5 of the previous 4e-4 (user 2026-07-06: gentler NLE finetune, ALL variates)
     c["load_pretrained_flow"] = True
     c["pretrained_band_ckpt_path"] = _NLE_PRETRAIN_CKPT.format(exp=pretrain_exp)
     c["max_trainval_cosmos"] = [80]
@@ -577,6 +577,27 @@ kids_legacy_experiments["gower_nle_finetune_nla_m_z8_r0_ens5"] = _nle_bake_repea
                   warmstart_max_gap_nats=22.0), 0)
 
 
+# --- PRODUCTION main-variate NLE: all 5 repeats × 9-member ensemble (z8, pure-whiten k=8) ---------
+# Per repeat r: GLASS pretrain (glass_nle_pretrain_nla_m_z8_r{r}, v100) -> Gower ens9 finetune
+# (gower_nle_finetune_nla_m_z8_r{r}_ens9, CORES64 MCMC eval). MAIN-variate split: 300 train/val cosmos
+# (80/20 split), 200 fixed-test ids held out (config/fixed_test_sets/gower_test_ids.json). lr 8e-5 (1/5).
+# Source encoder on the embed CLI: --sources kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8.
+def _register_main_nle_z8():
+    for r in range(5):
+        kids_legacy_experiments[f"glass_nle_pretrain_nla_m_z8_r{r}"] = _nle_bake_repeat(
+            _nle_pretrain(whiten_k=8, epochs=150), r)
+        ft = _nle_finetune(f"glass_nle_pretrain_nla_m_z8_r{r}", ensemble_repeats=9,
+                           whiten_k=8, warmstart_max_gap_nats=22.0)
+        ft["max_trainval_cosmos"] = [300]
+        ft["train_frac"] = 0.8
+        ft["val_frac"] = 0.2
+        ft["fixed_test_sim_ids"] = "config/fixed_test_sets/gower_test_ids.json"
+        kids_legacy_experiments[f"gower_nle_finetune_nla_m_z8_r{r}_ens9"] = _nle_bake_repeat(ft, r)
+
+
+_register_main_nle_z8()
+
+
 # --- NPE whole-model fine-tune (Stage 3a) — the NPE arm of the NPE-vs-NLE comparison ------------
 # Fine-tune the WHOLE GLASS-pretrained hybrid (encoder + NPE flow) on the prebaked gower fwhm4 store,
 # via train.py (NOT train_embeddings.py). build_model loads the whole model from `checkpoint_path`,
@@ -616,6 +637,37 @@ kids_legacy_experiments["gower_npe_finetune_nla_m_base"] = _npe_finetune_lmin50(
     _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4"))
 kids_legacy_experiments["gower_npe_finetune_nla_m_vicreg"] = _npe_finetune_lmin50(
     _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"))
+
+
+def _npe_finetune_z8(checkpoint_dir):
+    """PRODUCTION NPE 9-member ensemble finetune, MAIN variate — z8 architecture (matches the z8
+    foundation ckpt). Whole-model load (encoder + NPE flow) from the foundation, finetune all. Split:
+    300 train/val cosmos (80/20), 200 fixed-test ids held out. ALL 5 repeats (one job per repeat)."""
+    c = _hybrid_lmin50_z8()                            # z8 arch EXACTLY matches the z8 foundation ckpt
+    c["data_patterns"] = _GOWER_NLA_M_DATA_FWHM4
+    c["eb_map_variant"] = _GOWER_EB_VARIANT_FWHM4
+    c["checkpoint_path"] = checkpoint_dir              # whole-model load, per-repeat "_{i}" (_orig_mod-safe)
+    c.pop("pretrained_band_ckpt_path", None)
+    c["freeze_band"] = False
+    c["epochs"] = 25
+    c["lr"] = 1e-5
+    c["batch_size"] = 128
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"warmup": 0}
+    c["ensemble_repeats"] = 9
+    c["max_trainval_cosmos"] = [300]
+    c["train_frac"] = 0.8
+    c["val_frac"] = 0.2
+    c["fixed_test_sim_ids"] = "config/fixed_test_sets/gower_test_ids.json"
+    c["match_num_cosmo"] = False
+    c["repeat_indices"] = [0, 1, 2, 3, 4]
+    c.pop("repeats", None)
+    c["project"] = "gower-finetuning"
+    return c
+
+
+kids_legacy_experiments["gower_npe_finetune_nla_m_z8"] = _npe_finetune_z8(
+    _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"))
 
 # NPE finetune RE-RUN vs the now-FROZEN vicreg hybrid encoder. The original
 # gower_npe_finetune_nla_m_vicreg loaded an IN-FLIGHT encoder ckpt (epoch-58) because the encoder was
