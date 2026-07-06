@@ -299,9 +299,14 @@ _NLA_Z_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_z_f1
 _FOUNDATION_Z8_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8/"
 
 
-def _encoder_finetune_z8(data_patterns, eb_variant, cosmo_param_names, repeat_indices=(0,)):
+def _encoder_finetune_z8(data_patterns, eb_variant, cosmo_param_names, repeat_indices=(0,),
+                         preset_overrides=None):
     """Warm-start the foundation z8 hybrid ENCODER (band+map) + a FRESH flow head, then finetune the
-    WHOLE model on a sub-variate GLASS suite. exp-decay LR 2e-4 -> ~4e-5 over 100 epochs."""
+    WHOLE model on a sub-variate GLASS suite. exp-decay LR 2e-4 -> ~4e-5 over 100 epochs.
+
+    preset_overrides: per-config cosmo scaler box overrides. NLA-family variates (nla, nla_z, tatt)
+    use a_ia ~ U[-6,6]; the global preset's a_ia box is the NLA-M range (4.48,7.0), so a_ia MUST be
+    overridden (constants.py note) — else a_ia is mis-scaled in BOTH training and eval. no_vd=NLA-M."""
     c = _hybrid_lmin50_z8()                       # exact foundation architecture (hybrid_output_dim=8)
     c["data_patterns"] = data_patterns
     c["eb_map_variant"] = eb_variant
@@ -319,12 +324,20 @@ def _encoder_finetune_z8(data_patterns, eb_variant, cosmo_param_names, repeat_in
     c["repeat_indices"] = list(repeat_indices)
     c["match_num_cosmo"] = False                  # resolve the embedding ckpt per-repeat as "_{i}"
     c["project"] = "glass-pretraining"
+    if preset_overrides:
+        c["scaler_options"] = {
+            "data": {"type": "standard", "keys": None},
+            "cosmo": {"type": "preset", "preset_overrides": dict(preset_overrides)},
+        }
     return c
 
 
-# nla_z sub-variate encoder-finetune, all 5 repeats (r0 was the validated first test).
+_A_IA_NLA_BOX = {"a_ia": (-6.0, 6.0)}   # NLA/NLA-z/TATT a_ia box (vs the default NLA-M 4.48-7.0)
+
+# nla_z sub-variate encoder-finetune, all 5 repeats. a_ia override REQUIRED (nla_z a_ia~U[-6,6]).
 kids_legacy_experiments["glass_encoder_finetune_nla_z_z8"] = _encoder_finetune_z8(
-    _NLA_Z_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9_NLAZ, repeat_indices=(0, 1, 2, 3, 4))
+    _NLA_Z_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9_NLAZ, repeat_indices=(0, 1, 2, 3, 4),
+    preset_overrides=_A_IA_NLA_BOX)
 
 
 def _encoder_finetune_z8_smoke(cosmo_param_names):
@@ -348,9 +361,10 @@ kids_legacy_experiments["glass_encoder_finetune_nla_z_z8_smoke"] = _encoder_fine
 # just variable-depth OFF). Submit one repeat per l40s job via --repeat-indices <i> (like NPE).
 _NLA_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_f16_fwhm4_lmin56_lcut1400/output_*.h5"
 _NOVD_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_m_novd_f16_fwhm4_lmin56_lcut1400/output_*.h5"
-kids_legacy_experiments["glass_encoder_finetune_nla_z8"] = _encoder_finetune_z8(
-    _NLA_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_8_NLA, repeat_indices=(0, 1, 2, 3, 4))
-kids_legacy_experiments["glass_encoder_finetune_no_vd_z8"] = _encoder_finetune_z8(
+kids_legacy_experiments["glass_encoder_finetune_nla_z8"] = _encoder_finetune_z8(   # nla: a_ia~U[-6,6]
+    _NLA_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_8_NLA, repeat_indices=(0, 1, 2, 3, 4),
+    preset_overrides=_A_IA_NLA_BOX)
+kids_legacy_experiments["glass_encoder_finetune_no_vd_z8"] = _encoder_finetune_z8(   # no_vd=NLA-M box
     _NOVD_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9, repeat_indices=(0, 1, 2, 3, 4))
 
 
