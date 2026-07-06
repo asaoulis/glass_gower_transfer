@@ -26,6 +26,18 @@ def load_partial_weights(
 
     target_state = target_module.state_dict()
 
+    # torch.compile inserts an `._orig_mod.` segment into a wrapped submodule's state_dict keys
+    # (e.g. ...shared_cnn.backbone._orig_mod.patch_embed.weight). The compile decision can differ
+    # between the SAVED source (e.g. a compile-trained hybrid encoder) and the as-yet-UNcompiled
+    # target at load time, so a literal key comparison silently drops the compiled submodule's
+    # weights. Match each source key to the target's ACTUAL key on the `._orig_mod.`-stripped
+    # ("canonical") name — per-key and works whichever side is compiled (mirrors the alignment in
+    # npe.py:load_from_checkpoint).
+    def _canonical(key: str) -> str:
+        return key.replace("._orig_mod.", ".")
+
+    canonical_to_target = {_canonical(tk): tk for tk in target_state.keys()}
+
     loaded_weights: Dict[str, torch.Tensor] = {}
     used_source_keys: set[str] = set()
     skipped_shape: list[tuple[str, tuple[int, ...], tuple[int, ...]]] = []
@@ -39,17 +51,18 @@ def load_partial_weights(
         else:
             local_key = k
 
-        if local_key not in target_state:
+        target_key = canonical_to_target.get(_canonical(local_key))
+        if target_key is None:
             skipped_missing.append(local_key)
             continue
 
-        if v.shape != target_state[local_key].shape:
+        if v.shape != target_state[target_key].shape:
             skipped_shape.append(
-                (local_key, tuple(v.shape), tuple(target_state[local_key].shape))
+                (target_key, tuple(v.shape), tuple(target_state[target_key].shape))
             )
             continue
 
-        loaded_weights[local_key] = v
+        loaded_weights[target_key] = v
         used_source_keys.add(k)
 
     missing, unexpected = target_module.load_state_dict(loaded_weights, strict=False)

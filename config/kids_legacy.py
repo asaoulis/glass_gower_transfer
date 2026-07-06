@@ -279,6 +279,71 @@ def _hybrid_lmin50_z8_smoke():
 kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8_smoke"] = _hybrid_lmin50_z8_smoke()
 
 
+# --- SUB-VARIATE encoder warm-start finetune (production Phase 4) --------------------------------
+# Warm-start the FOUNDATION z8 hybrid ENCODER (band + map, incl. the frozen Stage-I band — loaded as
+# ONE embedding_net via pretrained_embedding_ckpt_path) onto a sub-variate GLASS suite, with a FRESH
+# NDE flow head sized to that variate's parameter space. Train the WHOLE model (encoder unfrozen) with
+# an exp-decay LR from the foundation pretrain LR (2e-4) down to 1/5 (~4e-5) over 100 epochs
+# (exp gamma=0.984 => 0.984^100 ≈ 0.20). The map maths (fwhm4_lmin56_lcut1400) MATCH the foundation so
+# the encoder features transfer; only the IA parameter set changes per variate (master_sim IA_PRIORS):
+#   no_vd -> _COSMO_9 (a_ia, b_ia)   nla -> a_ia only (8-D)   nla_z -> a_ia + b_z (9-D)
+# The compile-trained foundation ckpt's `_orig_mod.` backbone keys are aligned by the canonicalisation
+# in load_partial_weights (so the warm start actually transfers the CNN backbone, not just the head).
+# The sub-variate GLASS mocks live RAW on gpu4 (glass_mocks_{nla_m_novd,nla,nla_z}); prebake each to a
+# gpu5 f16 fwhm4_lmin56_lcut1400 store first: run_remote.py prebake --src-datasets-root gpu4
+#   --src-dir glass_mocks_<S> --out-dir glass_mocks_<S>_f16_fwhm4_lmin56_lcut1400
+#   --eb-variant fwhm4_lmin56_lcut1400 --keep-variant-tag
+_COSMO_9_NLAZ = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_z"]
+_COSMO_8_NLA = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia"]
+_NLA_Z_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_z_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_FOUNDATION_Z8_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints/kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8/"
+
+
+def _encoder_finetune_z8(data_patterns, eb_variant, cosmo_param_names, repeat_indices=(0,)):
+    """Warm-start the foundation z8 hybrid ENCODER (band+map) + a FRESH flow head, then finetune the
+    WHOLE model on a sub-variate GLASS suite. exp-decay LR 2e-4 -> ~4e-5 over 100 epochs."""
+    c = _hybrid_lmin50_z8()                       # exact foundation architecture (hybrid_output_dim=8)
+    c["data_patterns"] = data_patterns
+    c["eb_map_variant"] = eb_variant
+    c["cosmo_param_names"] = list(cosmo_param_names)
+    # Warm-start the WHOLE encoder (band + map) from the foundation; leave the flow head FRESH.
+    c.pop("pretrained_band_ckpt_path", None)      # band arrives inside the loaded embedding_net
+    c.pop("freeze_band", None)
+    c["pretrained_embedding_ckpt_path"] = _FOUNDATION_Z8_CKPT
+    c["freeze_embedding_net"] = False             # finetune the encoder too (train all)
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"gamma": 0.984, "warmup_steps": 0}   # 0.984^100 ≈ 0.20: 2e-4 -> ~4e-5
+    c["lr"] = 0.0002                              # foundation pretrain LR (decays to 1/5)
+    c["epochs"] = 100
+    c.pop("repeats", None)
+    c["repeat_indices"] = list(repeat_indices)
+    c["match_num_cosmo"] = False                  # resolve the embedding ckpt per-repeat as "_{i}"
+    c["project"] = "glass-pretraining"
+    return c
+
+
+# nla_z, repeat 0 — HIGH-PRIORITY first test (check the warm-start training curve).
+kids_legacy_experiments["glass_encoder_finetune_nla_z_z8"] = _encoder_finetune_z8(
+    _NLA_Z_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9_NLAZ, repeat_indices=(0,))
+
+
+def _encoder_finetune_z8_smoke(cosmo_param_names):
+    """LOCAL SMOKE clone: from-scratch encoder (no cluster ckpt) + FRESH flow on the fwhm8 nla_m local
+    fixture, few epochs. Validates BUILD + train + fresh-flow + exp scheduler (the warm-start load path
+    is exercised only on-cluster where the foundation ckpt exists). Uses _COSMO_9 (the local fixture
+    carries a_ia+b_ia) — same 9-D flow head shape as nla_z's (a_ia, b_z)."""
+    c = _encoder_finetune_z8(_NLA_M_DATA, _EB_VARIANT, cosmo_param_names, repeat_indices=(0,))
+    c["pretrained_embedding_ckpt_path"] = None    # de-cluster: no foundation ckpt locally
+    c["epochs"] = 3
+    c["num_workers"] = 2
+    c["prefetch_factor"] = 2
+    c["persistent_workers"] = False
+    return c
+
+
+kids_legacy_experiments["glass_encoder_finetune_nla_z_z8_smoke"] = _encoder_finetune_z8_smoke(_COSMO_9)
+
+
 def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,
                    repeat_indices=None, band_ckpt_dir=_BAND_CKPT_DIR):
     """Stage-II hybrid + VICReg summary regulariser (Williamson DES Y3 arXiv:2606.11309 §3.4).
