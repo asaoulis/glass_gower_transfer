@@ -38,6 +38,29 @@ def load_fixed_test_ids(path: str) -> Set[int]:
     return set(int(i) for i in ids)
 
 
+def load_fixed_test_ids_ordered(path: str) -> List[int]:
+    """Read a lock-file of Gower test sim_ids **preserving the on-file order**.
+
+    Same file format as :func:`load_fixed_test_ids`, but returns a list in the order the
+    ids appear in the JSON (de-duplicated, first occurrence kept) instead of an unordered
+    ``set``. Use this where a *prefix* of the test set is taken (e.g. the master simulator's
+    ``--num-sims N`` cap grabs the first ``N``): the lock-file stores the ids in a
+    maximally-separated (farthest-point) order so any prefix is well-spread across the
+    cosmological parameter space, which sorting would destroy.
+    """
+    with open(path, "r") as f:
+        payload = json.load(f)
+    ids = payload.get("sim_ids", []) if isinstance(payload, dict) else payload
+    seen: Set[int] = set()
+    ordered: List[int] = []
+    for i in ids:
+        v = int(i)
+        if v not in seen:
+            seen.add(v)
+            ordered.append(v)
+    return ordered
+
+
 def resolve_fixed_test_ids(
     spec: Optional[Union[str, Sequence[int]]],
 ) -> Optional[Set[int]]:

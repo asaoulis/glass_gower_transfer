@@ -261,12 +261,17 @@ if __name__ == "__main__":
             # Reduced Gower suite: use exactly the committed 200-id fixed test set instead of the
             # full np.arange(193,782). Reads the repo lock-file (single source of truth; synced to
             # the cluster checkout). Lazy import so the glass/smoke paths don't need the ml stack.
-            from src.ml.data.fixed_test_set import load_fixed_test_ids
+            from src.ml.data.fixed_test_set import load_fixed_test_ids_ordered
             json_path = Path(__file__).resolve().parent / "config" / "fixed_test_sets" / "gower_test_ids.json"
-            fixed_ids = sorted(load_fixed_test_ids(str(json_path)))
+            # Order-preserving load: the lock-file stores the 200 ids in a maximally-separated
+            # (farthest-point) order so a --num-sims N prefix stays well-spread across the param
+            # space (sorting would cluster the prefix at the low sim_ids). The full-set gower runs
+            # (num_sims=None) use all 200 regardless of order; only the prefix cares.
+            fixed_ids = load_fixed_test_ids_ordered(str(json_path))
             sim_samples = np.array(fixed_ids, dtype=np.float64).reshape(-1)
             print(f"[rank 0] --gower-sim-set fixed_test: using {len(fixed_ids)} sim_ids from "
-                  f"{json_path.name} (min {fixed_ids[0]}, max {fixed_ids[-1]}).")
+                  f"{json_path.name} (order-preserving; min {min(fixed_ids)}, max {max(fixed_ids)}, "
+                  f"first {fixed_ids[0]}).")
 
         if args.num_sims is not None:
             n_keep = min(args.num_sims, len(sim_samples))
