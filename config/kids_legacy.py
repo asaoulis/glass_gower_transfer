@@ -591,6 +591,7 @@ def _register_main_nle_z8():
         ft["max_trainval_cosmos"] = [300]
         ft["train_frac"] = 0.8
         ft["val_frac"] = 0.2
+        ft["test_frac"] = 0.0   # test = fixed 200 ids; train+val+test must sum to 1.0 (split_by_cosmology)
         ft["fixed_test_sim_ids"] = "config/fixed_test_sets/gower_test_ids.json"
         kids_legacy_experiments[f"gower_nle_finetune_nla_m_z8_r{r}_ens9"] = _nle_bake_repeat(ft, r)
 
@@ -658,6 +659,7 @@ def _npe_finetune_z8(checkpoint_dir):
     c["max_trainval_cosmos"] = [300]
     c["train_frac"] = 0.8
     c["val_frac"] = 0.2
+    c["test_frac"] = 0.0   # test set comes from the fixed 200 ids; fracs must sum to 1.0 (split_by_cosmology)
     c["fixed_test_sim_ids"] = "config/fixed_test_sets/gower_test_ids.json"
     c["match_num_cosmo"] = False
     c["repeat_indices"] = [0, 1, 2, 3, 4]
