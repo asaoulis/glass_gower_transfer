@@ -343,6 +343,16 @@ def _encoder_finetune_z8_smoke(cosmo_param_names):
 
 kids_legacy_experiments["glass_encoder_finetune_nla_z_z8_smoke"] = _encoder_finetune_z8_smoke(_COSMO_9)
 
+# nla + no_vd sub-variate encoder-finetunes (Phase 4, all 5 repeats). Prebaked to gpu5 (jobs
+# 1315704/1315705). nla -> 8-D params (a_ia only); no_vd -> full _COSMO_9 (a_ia,b_ia, same as main,
+# just variable-depth OFF). Submit one repeat per l40s job via --repeat-indices <i> (like NPE).
+_NLA_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_NOVD_DATA_FWHM4 = "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_nla_m_novd_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+kids_legacy_experiments["glass_encoder_finetune_nla_z8"] = _encoder_finetune_z8(
+    _NLA_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_8_NLA, repeat_indices=(0, 1, 2, 3, 4))
+kids_legacy_experiments["glass_encoder_finetune_no_vd_z8"] = _encoder_finetune_z8(
+    _NOVD_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9, repeat_indices=(0, 1, 2, 3, 4))
+
 
 def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,
                    repeat_indices=None, band_ckpt_dir=_BAND_CKPT_DIR):
