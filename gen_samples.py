@@ -91,13 +91,15 @@ def _build_output_path(base_path, experiment_name, match_string, output_suffix):
 #    variants/cosmology (2 outer x 2 inner, same footprint rotation)
 #  - N_test_cosmologies 40      -> trim the 200 fixed-test cosmologies to the first 40 by sim_id
 #                                  (train/val + scalers stay identical to training) => N = 160
-#  - emb_test_batch_size 8      -> 160/8 = 20 MCMC joblib jobs (one per batch), a single wave
+#  - emb_test_batch_size 6      -> ceil(160/6) = 27 MCMC joblib jobs (one per batch): a single
+#    wave on 30 CPUs with smaller per-job batches (wall ~ batch size for vectorised slice
+#    sampling), ~25% faster than batch 8 / 20 jobs
 CONFIG_OVERRIDES = {
     "test_shape_noise_idx": [0, [0, 1]],
     "N_test_cosmologies": 40,
-    "emb_test_batch_size": 8,
+    "emb_test_batch_size": 6,
 }
-NUM_JOBS = 20
+NUM_JOBS = 27
 
 def _run_generation(output_suffix: str):
     from config.default import get_default_config

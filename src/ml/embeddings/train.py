@@ -120,7 +120,11 @@ def _build_embedding_test_loader_for_cfg(
     pretrained_ckpt_path_or_dir=None,
     repeat_match=None,
 ):
-    """Build scaled embedding test loader (and scalers) for one config instance."""
+    """Build scaled embedding test loader (and scalers) for one config instance.
+
+    Only the TEST embedding loader is consumed downstream, so `test_only=True` lets
+    build_embedding_dataloaders skip the (expensive, otherwise-discarded) train/val encoder
+    passes whenever no embedding-scaler fit is required (e.g. resolved whitener)."""
 
     from .embeddings_utils import build_embedding_dataloaders
 
@@ -137,6 +141,7 @@ def _build_embedding_test_loader_for_cfg(
         is_pretrain_source=is_pretrain_source,
         pretrained_ckpt_path_or_dir=pretrained_ckpt_path_or_dir,
         repeat_match=repeat_match,
+        test_only=True,
     )
     return scalers, test_emb_loader
 

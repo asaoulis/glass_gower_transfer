@@ -448,6 +448,7 @@ def build_embedding_dataloaders(
     is_pretrain_source: bool = False,
     pretrained_ckpt_path_or_dir: Optional[str] = None,
     repeat_match: Optional[str] = None,
+    test_only: bool = False,
 ):
     """Construct *scaled* (or optionally unscaled) embedding dataloaders from existing loaders and models.
 
@@ -459,9 +460,28 @@ def build_embedding_dataloaders(
         and persist it next to the emb cache (`datasets/whitener.pt`).
       - finetune/eval (`is_pretrain_source=False`): RESOLVE and REUSE the pretrain's persisted
         whitener; never refit (Finding C3). Hard-fails if it cannot be resolved.
+
+    When `test_only` (eval-time sampling: only the TEST loader is consumed downstream), the
+    expensive train/val encoder passes are SKIPPED unless the embedding scaler genuinely has to
+    be fit on train embeddings (scale_embeddings without a resolved whitener, or a
+    pretrain-source whitener fit). For the production whitened-NLE configs this cuts the work
+    per ensemble member from ~10k encoder forwards to just the test points.
     """
 
     scale_embeddings = bool(getattr(base_cfg, "scale_embeddings", True))
+    # Train embeddings are only needed to FIT something: a PerDim scaler (scale_embeddings,
+    # no whitener) or a pretrain-source whitener. A resolved (finetune/eval) whitener needs no fit.
+    needs_train_fit = (
+        not test_only
+        or (whiten_cfg is None and scale_embeddings)
+        or (whiten_cfg is not None and is_pretrain_source)
+    )
+    if test_only and not needs_train_fit:
+        print(
+            "[build_embedding_dataloaders] test_only: skipping train/val embedding computes "
+            "(no scaler fit required — whitener resolved or scaling off).",
+            flush=True,
+        )
 
     # Build cosmology preset scaler from config if available
     cosmo_scaler: Optional[BaseScaler] = None
@@ -490,8 +510,10 @@ def build_embedding_dataloaders(
 
     if not cache_used:
         # Compute embeddings from scratch
-        train_z, train_theta = compute_embeddings(models, train_loader)
-        val_z, val_theta = compute_embeddings(models, val_loader)
+        if needs_train_fit:
+            train_z, train_theta = compute_embeddings(models, train_loader)
+        if not test_only:
+            val_z, val_theta = compute_embeddings(models, val_loader)
         test_z, test_theta = compute_embeddings(models, test_loader)
 
         # Global per-variable standard scaler on training embeddings (optional)
@@ -502,7 +524,7 @@ def build_embedding_dataloaders(
             emb_scaler = None
 
         # Save caches if possible
-        if base_cfg is not None and wandb_run_name is not None:
+        if not test_only and base_cfg is not None and wandb_run_name is not None:
             print("Saving embedding caches to disk for future reuse...")
             print("Saving to paths:")
             print(" Train:", train_path)
@@ -564,24 +586,33 @@ def build_embedding_dataloaders(
         scale_embeddings = True
 
     # Build datasets using tensors and scalers
-    train_ds = EmbeddingDataset(
-        train_z,
-        train_theta,
-        emb_scaler=emb_scaler,
-        cosmo_scaler=cosmo_scaler,
-        scale_embeddings=scale_embeddings,
-    )
-    val_ds = EmbeddingDataset(
-        val_z,
-        val_theta,
-        emb_scaler=train_ds.emb_scaler,
-        cosmo_scaler=cosmo_scaler,
-        scale_embeddings=scale_embeddings,
-    )
+    train_ds = val_ds = None
+    if train_z is not None:
+        train_ds = EmbeddingDataset(
+            train_z,
+            train_theta,
+            emb_scaler=emb_scaler,
+            cosmo_scaler=cosmo_scaler,
+            scale_embeddings=scale_embeddings,
+        )
+        emb_scaler = train_ds.emb_scaler
+    elif scale_embeddings and emb_scaler is None:
+        raise RuntimeError(
+            "[build_embedding_dataloaders] test_only skipped the train embeddings but the "
+            "embedding scaler needs a train fit — needs_train_fit logic is out of sync."
+        )
+    if val_z is not None:
+        val_ds = EmbeddingDataset(
+            val_z,
+            val_theta,
+            emb_scaler=emb_scaler,
+            cosmo_scaler=cosmo_scaler,
+            scale_embeddings=scale_embeddings,
+        )
     test_ds = EmbeddingDataset(
         test_z,
         test_theta,
-        emb_scaler=train_ds.emb_scaler,
+        emb_scaler=emb_scaler,
         cosmo_scaler=cosmo_scaler,
         scale_embeddings=scale_embeddings,
     )
@@ -595,6 +626,8 @@ def build_embedding_dataloaders(
     # alignment cannot be trusted.
     if not cache_used:
         for ds, src_loader in ((val_ds, val_loader), (test_ds, test_loader)):
+            if ds is None:
+                continue
             ordered = isinstance(getattr(src_loader, "sampler", None), torch.utils.data.SequentialSampler)
             src_ds = getattr(src_loader, "dataset", None)
             src_paths = getattr(src_ds, "paths", None)
@@ -609,8 +642,14 @@ def build_embedding_dataloaders(
     # opt-in override via config, default = the historical 32.
     test_batch_size = int(getattr(base_cfg, "emb_test_batch_size", None) or 32)
 
-    train_emb_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-    val_emb_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    train_emb_loader = (
+        torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+        if train_ds is not None else None
+    )
+    val_emb_loader = (
+        torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        if val_ds is not None else None
+    )
     test_emb_loader = torch.utils.data.DataLoader(test_ds, batch_size=test_batch_size, shuffle=False, num_workers=num_workers)
 
     return train_emb_loader, val_emb_loader, test_emb_loader
