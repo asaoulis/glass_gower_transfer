@@ -135,8 +135,12 @@ def _resolve_inputs(args):
     return entries
 
 
-def _common_points(entries, max_points, sim_ids_filter, point_files):
-    """Return [(key_basename_or_index, {label: point_index}), ...] for the points to plot."""
+def _common_points(entries, max_points, sim_ids_filter, point_files, select_random=None, seed=0):
+    """Return [(key_basename_or_index, {label: point_index}), ...] for the points to plot.
+
+    Selection precedence: --point-files (exact) > --select-random (seeded, without
+    replacement) > first --max-points of the deterministic ordering.
+    """
     have_files = all("test_files" in d for _, d in entries)
     if not have_files:
         ns = {lab: d["theta0s"].shape[0] for lab, d in entries}
@@ -148,7 +152,15 @@ def _common_points(entries, max_points, sim_ids_filter, point_files):
             "(only valid if all files share the same test split/order).",
             flush=True,
         )
-        idxs = list(range(n))[:max_points]
+        if point_files:
+            raise SystemExit("--point-files requires 'test_files' in every input npz")
+        idxs = list(range(n))
+        if select_random:
+            rng = np.random.default_rng(seed)
+            idxs = sorted(rng.choice(n, size=min(int(select_random), n), replace=False).tolist())
+            print(f"[plot] randomly selected {len(idxs)} of {n} points (seed={seed}): {idxs}", flush=True)
+        elif max_points:
+            idxs = idxs[:max_points]
         return [(f"idx{i}", {lab: i for lab, _ in entries}) for i in idxs]
 
     index_maps = []
@@ -176,7 +188,12 @@ def _common_points(entries, max_points, sim_ids_filter, point_files):
         ordered = [f for f in ordered if sim_of(f) in keep]
         if not ordered:
             raise SystemExit(f"no common points for sim_ids {sorted(keep)}")
-    if max_points and len(ordered) > max_points:
+    if not point_files and select_random:
+        rng = np.random.default_rng(seed)
+        pick = sorted(rng.choice(len(ordered), size=min(int(select_random), len(ordered)), replace=False).tolist())
+        ordered = [ordered[i] for i in pick]
+        print(f"[plot] randomly selected {len(ordered)} of the common test points (seed={seed})", flush=True)
+    elif not point_files and max_points and len(ordered) > max_points:
         print(f"[plot] plotting first {max_points} of {len(ordered)} common test points", flush=True)
         ordered = ordered[:max_points]
     return [(f, {lab: m[f] for lab, m in index_maps}) for f in ordered]
@@ -210,6 +227,9 @@ def main():
                      help="npz basename glob inside each experiment dir")
     sel = ap.add_argument_group("point selection")
     sel.add_argument("--max-points", type=int, default=4, help="max test points to plot (default 4)")
+    sel.add_argument("--select-random", type=int, default=None,
+                     help="pick N test points at random (seeded) instead of the first --max-points")
+    sel.add_argument("--seed", type=int, default=0, help="rng seed for --select-random")
     sel.add_argument("--sim-ids", type=int, nargs="+", help="only points from these cosmologies")
     sel.add_argument("--point-files", nargs="+", help="exact test-file basenames to plot")
     fig = ap.add_argument_group("figure")
@@ -218,7 +238,8 @@ def main():
     fig.add_argument("--param-names", nargs="+", default=PARAM_NAMES,
                      help="parameter order of the D axis (default: the 9-param set)")
     fig.add_argument("--params", nargs="+",
-                     help="subset of display labels to plot (default: all + derived S8)")
+                     help="subset to plot: parameter NAMES (omega_m sigma_8 S8 w0 ...) or "
+                          "display labels (default: all + derived S8)")
     fig.add_argument("--colors", nargs="+", help="per-chain colors")
     fig.add_argument("--alpha", type=float, default=0.8)
     fig.add_argument("--smooth", type=int, default=None, help="chainconsumer smoothing override")
@@ -249,10 +270,27 @@ def main():
             f"data has D={D} params but --param-names lists {len(param_names)}: {param_names}"
         )
 
-    points = _common_points(entries, args.max_points, args.sim_ids, args.point_files)
+    # --params accepts raw parameter names as well as display labels.
+    if args.params:
+        name_to_label = {**LABELS, "S8": S8_LABEL, "s8": S8_LABEL}
+        args.params = [name_to_label.get(p, p) for p in args.params]
+
+    points = _common_points(entries, args.max_points, args.sim_ids, args.point_files,
+                            select_random=args.select_random, seed=args.seed)
     colors = args.colors or DEFAULT_COLORS
     if len(entries) > len(colors):
         raise SystemExit(f"{len(entries)} chains but only {len(colors)} colors; pass --colors")
+
+    # Cross-file truth consistency: the same test point must carry the same theta0 in every
+    # input (catches a silently-diverged split, especially in positional-fallback mode).
+    for key, idx_by_label in points:
+        t0 = entries[0][1]["theta0s"][idx_by_label[entries[0][0]]]
+        for lab, d in entries[1:]:
+            dt = np.max(np.abs(d["theta0s"][idx_by_label[lab]] - t0))
+            if dt > 1e-3:
+                print(f"[plot] WARNING: theta0 mismatch at point {key} between '{entries[0][0]}' and "
+                      f"'{lab}' (max |d(scaled)|={dt:.3g}) — inputs may not share a test split!",
+                      flush=True)
 
     os.makedirs(args.out, exist_ok=True)
     written = []
