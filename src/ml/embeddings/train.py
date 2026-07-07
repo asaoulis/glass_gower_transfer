@@ -255,10 +255,15 @@ def load_embedding_model_with_dataloader(
                 scalers = scalers_j
             member_test_loaders.append(test_emb_loader_j)
 
+        # NB: member checkpoints live in the TARGET experiment's run folders
+        # (…{match_string}_ens{j}…), so search with the target run match. The
+        # "None_"-form (pretrained_models_match_string) is ONLY for resolving the
+        # SOURCE-encoder checkpoints when match_num_cosmo=False — using it here finds
+        # no members (folders are e.g. pretrain_ncosmo300_0_ens0_<source>).
         model = build_ensemble_model_from_checkpoints(
             cfg,
             test_loader=None,
-            match_string=pretrained_models_match_string,
+            match_string=str(match_string),
             member_test_loaders=member_test_loaders,
             model_builder=_build_embeddings_model_from_cfg_checkpoint,
         )
@@ -278,7 +283,9 @@ def load_embedding_model_with_dataloader(
             pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
             repeat_match=whiten_repeat_match,
         )
-        checkpoint_path = _select_best_checkpoint_for_match(cfg, pretrained_models_match_string)
+        # Same as the ensemble branch: the target experiment's own run folders are named
+        # by the full run match string, not the source-encoder "None_" form.
+        checkpoint_path = _select_best_checkpoint_for_match(cfg, str(match_string))
         if checkpoint_path is None:
             raise RuntimeError(
                 f"No checkpoint found for embeddings experiment '{experiment_name}' and match '{match_string}'."
