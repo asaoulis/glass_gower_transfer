@@ -1,8 +1,6 @@
 import argparse
 import os
 
-import torch
-
 param_names = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"]
 FIXED_PARAMS = None
 FIXED_PARAMS_SPACE = "physical"
@@ -46,7 +44,7 @@ def _build_fixed_parameters_list(
 
     return fixed_parameters
 
-PRIOR_MODE = "gower"  # "gower" | "kids_s8_analytic" | "LCDM_fixed_w0"
+PRIOR_MODE = "kids_s8_analytic"  # "gower" | "kids_s8_analytic" | "LCDM_fixed_w0"
 
 def _build_prior():
     from src.ml.embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX, _build_cosmo_preset_scaler
@@ -58,7 +56,10 @@ def _build_prior():
     elif PRIOR_MODE == "kids_s8_analytic":
         print("Using flat analytic prior on S8")
         scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, param_names)
-        prior = build_s8_analytic_prior(param_names, scaler, return_restricted=False)
+        # return_restricted defaults to True when (a_ia, b_ia) are present: the NLA-M IA block
+        # is an unbounded Gaussian in scaled space, and NLE MCMC must stay inside the [0,1]^D
+        # box the flow was trained on.
+        prior = build_s8_analytic_prior(param_names, scaler)
         fixed_parameters = None
         print("prior", prior, type(prior))
     elif PRIOR_MODE == "LCDM_fixed_w0":
@@ -75,48 +76,55 @@ def _build_prior():
 
     return prior, fixed_parameters
 
-def _build_output_path(outpath, config_name, output_suffix):
+def _build_output_path(base_path, experiment_name, match_string, output_suffix):
+    """Sample dump path: under checkpoints/<exp>/ on MODELS_ROOT so `fetch --exp` pulls it.
+    Encodes the prior in the name so different-prior runs coexist (eval npz schema)."""
     suffix = f"_{output_suffix}" if output_suffix else ""
-    return os.path.join(outpath, f"{config_name}{suffix}.tch")
+    return os.path.join(
+        base_path, "checkpoints", experiment_name,
+        f"samples_{PRIOR_MODE}_{match_string}{suffix}.npz",
+    )
+
+# Eval-time loader overrides for the 3-tuple (embeddings) path:
+#  - test_shape_noise_idx [0,0] -> keep only out{0..3}_rot0_0 = 4 shape-noise variants/cosmology
+#  - N_test_cosmologies 40      -> trim the 200 fixed-test cosmologies to the first 40 by sim_id
+#                                  (train/val + scalers stay identical to training) => N = 160
+#  - emb_test_batch_size 8      -> 160/8 = 20 MCMC joblib jobs (one per batch), a single wave
+CONFIG_OVERRIDES = {
+    "test_shape_noise_idx": [0, 0],
+    "N_test_cosmologies": 40,
+    "emb_test_batch_size": 8,
+}
+NUM_JOBS = 20
 
 def _run_generation(output_suffix: str):
     from config.default import get_default_config
     from config.experiments import experiments
+    from config.ablations import ablation_experiments
+    from config.kids_legacy import kids_legacy_experiments
     from src.ml.embeddings.train import load_embedding_model_with_dataloader
     from src.ml.eval.utils import load_best_model_and_build_posterior
     from src.ml.utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_active, prepare_data_parameters
 
+    # Same merge as train_embeddings.py / eval.py: the registry modules share one dict object,
+    # so updating here also makes the KiDS-Legacy names resolvable inside
+    # load_embedding_model_with_dataloader (which imports the same `experiments`).
+    experiments.update(ablation_experiments)
+    experiments.update(kids_legacy_experiments)
+
     prior, fixed_parameters = _build_prior()
-    outpath = "data/saved_samples"
 
     experiment_names = [
-        # 2-tuple: regular/ensemble path
-        # ("hybrid_patches_16_9param", "ncosmo400_"),
-        # ("finetune_hybrid_16_9param", "ncosmo150_"),
-        # ("finetune_hybrid_16_9param_ensemble_stratify", "ncosmo60_0"),
-        # ("finetune_hybrid_16_9param_ensemble_stratify", "ncosmo60_1"),
-        # ("finetune_hybrid_16_9param_ensemble_stratify", "ncosmo60_2"),
-
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo80_0", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_1", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_0", ["glass_hybrid_patches_16_9param"]),
-
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo200_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_0", ["glass_hybrid_patches_16_9param"]),
-        ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_1", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo60_0", ["glass_hybrid_patches_16_9param"]),
-
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo80_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo60_1", ["glass_hybrid_patches_16_9param"]),
-        # ("direct_9param_nle_anaprior_large", "ncosmo400_0", ["hybrid_patches_16_9param"]),
-        # 3-tuple: embeddings path (third element = source_experiments)
-        # ("finetune_direct_embeddings_9param_nle", "ncosmo200_0", ["hybrid_patches_16_9param"]),
+        # 3-tuple: embeddings path (third element = source_experiments).
+        # Production main-variate NLE ensembles (z8, 9 members), repeats 0..4.
+        (f"gower_nle_finetune_nla_m_z8_r{r}_ens9", f"ncosmo300_{r}",
+         ["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"])
+        for r in range(5)
     ]
 
-    model_configs = {}
-    samples_dict = {}
+    from src.ml.eval.utils import _resolve_test_paths, _save_posterior_samples
+
+    base_path = get_default_config().base_path
 
     for experiment_entry in experiment_names:
         if len(experiment_entry) == 3:
@@ -126,12 +134,10 @@ def _run_generation(output_suffix: str):
             source_experiments = None
 
         config_name = f"{experiment_name}_{match_string}"
-        output_path = _build_output_path(outpath, config_name, output_suffix)
+        output_path = _build_output_path(base_path, experiment_name, match_string, output_suffix)
 
         if os.path.exists(output_path):
-            samples, theta0s = torch.load(output_path)
-            print(f"Loaded existing samples from {output_path}")
-            samples_dict[config_name] = (samples, theta0s)
+            print(f"Samples already exist at {output_path}; skipping {config_name}")
             continue
 
         if len(experiment_entry) == 3:
@@ -139,10 +145,7 @@ def _run_generation(output_suffix: str):
                 experiment_name=experiment_name,
                 match_string=match_string,
                 source_experiments=source_experiments,
-                config_overrides={
-                    "test_shape_noise_idx": [0, 0],
-                    "N_extra_test_cosmologies": 130,
-                },
+                config_overrides=dict(CONFIG_OVERRIDES),
             )
 
             model = art.model
@@ -167,15 +170,15 @@ def _run_generation(output_suffix: str):
 
             config = get_default_config()
             config.experiment_name = experiment_name
-            config.test_shape_noise_idx = [0, 0]
             for key, val in experiment_config.items():
                 if key == "max_trainval_cosmos":
                     continue
                 setattr(config, key, val)
 
             config.match_string = match_string
-            config.N_extra_test_cosmologies = 130
             config.max_trainval_cosmos = ncosmo_in_match
+            for key, val in CONFIG_OVERRIDES.items():
+                setattr(config, key, val)
 
             if is_ensemble_eval_active(config):
                 model = build_ensemble_model_from_checkpoints(
@@ -194,33 +197,27 @@ def _run_generation(output_suffix: str):
                 )
                 scalers, _, _, test_loader = prepare_data_parameters(config)
 
-        model_configs[config_name] = {
-            "model": model,
-            "scalers": scalers,
-            "test_loader": test_loader,
-            "inputs": config.dataset_quantities,
-        }
-
         num_samples = 10000
         model.test_dataloader = test_loader
         theta0s, samples = model.generate_samples(
             prior=prior,
             fixed_parameters=fixed_parameters,
             num_samples=num_samples,
-            num_jobs=26,
+            num_jobs=NUM_JOBS,
             num_chains=1,
             show_progress_bars=True,
             warmup_steps=500,
         )
-        samples_dict[config_name] = (samples, theta0s)
-        torch.save((samples, theta0s), output_path)
-        print(f"Saved samples to {output_path}")
+        # Eval npz schema (samples/theta0s/test_files/sim_ids/aug_ids) so downstream
+        # cross-model comparisons can match points by test-file basename.
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        _save_posterior_samples(output_path, theta0s, samples, _resolve_test_paths(test_loader))
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate posterior samples for configured experiments.")
     parser.add_argument(
         "--output-suffix",
-        default="longsamples",
+        default="",
         help="Optional suffix appended to saved sample files. Use an empty string for no suffix.",
     )
     return parser.parse_args()

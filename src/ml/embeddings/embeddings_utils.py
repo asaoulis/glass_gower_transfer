@@ -586,12 +586,32 @@ def build_embedding_dataloaders(
         scale_embeddings=scale_embeddings,
     )
 
+    # Carry the underlying H5 file list onto the embedding datasets so downstream sample
+    # dumps can tag each test point with its sim/aug id (_resolve_test_paths looks for
+    # `.paths`). Embedding row i comes from loader item i (sequential compute, shuffle
+    # irrelevant to the mapping only for the UNSHUFFLED val/test loaders — the train loader
+    # shuffles, so only attach where the loader preserves order). Skip when embeddings came
+    # from the on-disk cache: the cached rows may predate the current split, so positional
+    # alignment cannot be trusted.
+    if not cache_used:
+        for ds, src_loader in ((val_ds, val_loader), (test_ds, test_loader)):
+            ordered = isinstance(getattr(src_loader, "sampler", None), torch.utils.data.SequentialSampler)
+            src_ds = getattr(src_loader, "dataset", None)
+            src_paths = getattr(src_ds, "paths", None)
+            if src_paths is None:
+                src_paths = getattr(getattr(src_ds, "dataset", None), "paths", None)
+            if ordered and src_paths is not None and len(src_paths) == len(ds):
+                ds.paths = list(src_paths)
+
     batch_size = getattr(train_loader, "batch_size", 128)
     num_workers = getattr(train_loader, "num_workers", 0)
+    # Test batch size doubles as the joblib MCMC work unit (one job per batch downstream);
+    # opt-in override via config, default = the historical 32.
+    test_batch_size = int(getattr(base_cfg, "emb_test_batch_size", None) or 32)
 
     train_emb_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
     val_emb_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    test_emb_loader = torch.utils.data.DataLoader(test_ds, batch_size=32, shuffle=False, num_workers=num_workers)
+    test_emb_loader = torch.utils.data.DataLoader(test_ds, batch_size=test_batch_size, shuffle=False, num_workers=num_workers)
 
     return train_emb_loader, val_emb_loader, test_emb_loader
 

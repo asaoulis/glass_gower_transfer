@@ -115,6 +115,7 @@ def build_datasets(
     ensemble_seed: Optional[int] = None,
     N_extra_test_cosmologies: Optional[int] = None,
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
+    N_test_cosmologies: Optional[int] = None,
     return_cosmo_id: bool = False,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     train_paths, val_paths, test_paths = split_by_cosmology(
@@ -131,6 +132,7 @@ def build_datasets(
         ensemble_seed=ensemble_seed,
         N_extra_test_cosmologies=N_extra_test_cosmologies,
         fixed_test_sim_ids=fixed_test_sim_ids,
+        N_test_cosmologies=N_test_cosmologies,
     )
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
@@ -176,6 +178,7 @@ def build_dataloaders(
     ensemble_seed: Optional[int] = None,
     N_extra_test_cosmologies: Optional[int] = None,
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
+    N_test_cosmologies: Optional[int] = None,
     use_cosmo_batch_sampler: bool = False,
     m_per_cosmo: int = 2,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
@@ -214,6 +217,7 @@ def build_dataloaders(
         ensemble_seed=ensemble_seed,
         N_extra_test_cosmologies=N_extra_test_cosmologies,
         fixed_test_sim_ids=fixed_test_sim_ids,
+        N_test_cosmologies=N_test_cosmologies,
         return_cosmo_id=use_cosmo_batch_sampler,
     )
 

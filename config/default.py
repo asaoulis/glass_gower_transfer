@@ -75,6 +75,14 @@ def get_default_config():
     # all experiments) and removed from the train/val pool. Ids absent on disk are ignored;
     # if forcing would empty train/val it falls back to the normal split (with a warning).
     config.fixed_test_sim_ids = None
+    # Eval-time trim of the resolved TEST set to the first N cosmologies by sorted sim_id,
+    # applied AFTER train/val selection so the trainval pool and fitted scalers are
+    # byte-identical to training. None => keep the full test set.
+    config.N_test_cosmologies = None
+    # Batch size of the embeddings TEST loader (build_embedding_dataloaders); the joblib
+    # MCMC sampler parallelises one job per test batch, so smaller batches => more parallel
+    # jobs. None/unset => the historical default of 32.
+    config.emb_test_batch_size = None
     config.shuffle_train = True
     config.num_workers = None
     config.pin_memory = False

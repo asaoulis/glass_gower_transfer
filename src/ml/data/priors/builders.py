@@ -125,7 +125,7 @@ def build_s8_box_known_priors(
 
     cosmo_joint = S8OmegaCH2OmegaBH2HPriorToModelParams(
         s8_low=0.5,
-        s8_high=0.9,
+        s8_high=1.0,
         oc_low=0.051,
         oc_high=0.18,
         ob_low=0.022,

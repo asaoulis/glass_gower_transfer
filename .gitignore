@@ -35,3 +35,4 @@ logs/
 CLAUDE.md
 # validation shell-projection matter_cls disk cache
 .glass_matter_cache/
+*.pt

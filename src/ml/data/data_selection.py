@@ -365,6 +365,7 @@ def split_by_cosmology(
     stratified_bins: StratifiedBins = 5,
     N_extra_test_cosmologies: Optional[int] = None,
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
+    N_test_cosmologies: Optional[int] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
     """Glob files, group by cosmology index, shuffle cosmologies, and split without leakage."""
     print(
@@ -453,6 +454,23 @@ def split_by_cosmology(
 
     train_cosmos = set(trainval_cosmos[:n_train])
     val_cosmos = set(trainval_cosmos[n_train:n_train + n_val])
+
+    # Eval-time sub-selection: trim the TEST set to the first N cosmologies by sorted sim_id,
+    # AFTER train/val are fully resolved. Deliberately applied last so the trainval pool — and
+    # therefore the fitted scalers — stay byte-identical to training regardless of N. (Contrast
+    # with shrinking fixed_test_sim_ids, which would return cosmologies to the trainval pool.)
+    if N_test_cosmologies:
+        n_keep = int(N_test_cosmologies)
+        if n_keep <= 0:
+            raise ValueError("N_test_cosmologies must be positive if provided.")
+        kept = sorted(test_cosmos)[:n_keep]
+        print(
+            f"[split_by_cosmology] N_test_cosmologies={n_keep}: trimmed test set "
+            f"{len(test_cosmos)} -> {len(kept)} cosmologies (first by sorted sim_id).",
+            flush=True,
+        )
+        test_cosmos = set(kept)
+
     print(f"Total cosmologies: {n_total}, Train: {len(train_cosmos)}, Val: {len(val_cosmos)}, Test: {len(test_cosmos)}")
     train_paths: List[str] = []
     val_paths: List[str] = []

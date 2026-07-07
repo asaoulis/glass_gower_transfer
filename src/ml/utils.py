@@ -262,6 +262,7 @@ def prepare_data_parameters(config):
         ensemble_seed=getattr(config, 'ensemble_seed', None),
         N_extra_test_cosmologies=getattr(config, 'N_extra_test_cosmologies', None),
         fixed_test_sim_ids=getattr(config, 'fixed_test_sim_ids', None),
+        N_test_cosmologies=getattr(config, 'N_test_cosmologies', None),
         # VICReg: m-per-cosmology train batches + per-sample cosmo id (gated entirely by
         # use_vicreg_loss; every other mode keeps the plain random loader and 2-tuple batches).
         use_cosmo_batch_sampler=getattr(config, 'use_vicreg_loss', False),
