@@ -19,6 +19,28 @@ from .distributions import (
 )
 
 
+def _accept_within_unit_hypercube(theta):
+    """Module-level accept/reject fn for RestrictedPrior (picklable by reference)."""
+    return torch.all((theta >= 0) & (theta <= 1), dim=-1)
+
+
+if RestrictedPrior is not None:
+    class DeviceMovableRestrictedPrior(RestrictedPrior):
+        """sbi RestrictedPrior + a real ``to(device)`` method.
+
+        Must be a module-level SUBCLASS, not an instance-bound ``types.MethodType``
+        monkey-patch: bound methods stored on the instance pickle as
+        ``getattr(obj, func.__name__)`` and explode on unpickle inside joblib/loky
+        MCMC workers (AttributeError: no attribute 'to_device')."""
+
+        def to(self, device):
+            self._prior.to(device)
+            self._device = torch.device(device)
+            return self
+else:  # pragma: no cover
+    DeviceMovableRestrictedPrior = None
+
+
 mu_AIA = 5.74
 mu_beta = 0.44
 sigma_AIA = 0.29
@@ -219,24 +241,11 @@ def build_flow_with_extras_prior(
     if not return_restricted:
         return joint_prior
 
-    def is_within_unit_hypercube(theta):
-        return torch.all((theta >= 0) & (theta <= 1), dim=-1)
-
-    restricted_prior = RestrictedPrior(
+    return DeviceMovableRestrictedPrior(
         prior=joint_prior,
-        accept_reject_fn=is_within_unit_hypercube,
+        accept_reject_fn=_accept_within_unit_hypercube,
         sample_with="rejection",
     )
-
-    import types
-
-    def to_device(self, device):
-        self._prior.to(device)
-        self._device = torch.device(device)
-        return self
-
-    restricted_prior.to = types.MethodType(to_device, restricted_prior)
-    return restricted_prior
 
 
 def build_analytic_prior(
@@ -345,24 +354,11 @@ def build_analytic_prior(
                 "build_analytic_prior(return_restricted=True) requires 'sbi' (RestrictedPrior)."
             )
 
-        def is_within_unit_hypercube(theta):
-            return torch.all((theta >= 0) & (theta <= 1), dim=-1)
-
-        restricted_prior = RestrictedPrior(
+        base_to_wrap = DeviceMovableRestrictedPrior(
             prior=joint_prior,
-            accept_reject_fn=is_within_unit_hypercube,
+            accept_reject_fn=_accept_within_unit_hypercube,
             sample_with="rejection",
         )
-
-        import types
-
-        def to_device(self, device):
-            self._prior.to(device)
-            self._device = torch.device(device)
-            return self
-
-        restricted_prior.to = types.MethodType(to_device, restricted_prior)
-        base_to_wrap = restricted_prior
 
     return PermutedDistribution(
         base_to_wrap,
