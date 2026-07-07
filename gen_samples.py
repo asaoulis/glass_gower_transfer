@@ -199,7 +199,7 @@ def _run_generation(output_suffix: str):
                 )
                 scalers, _, _, test_loader = prepare_data_parameters(config)
 
-        num_samples = 10000
+        num_samples = 20000
         model.test_dataloader = test_loader
         theta0s, samples = model.generate_samples(
             prior=prior,
