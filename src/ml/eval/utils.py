@@ -232,13 +232,24 @@ def build_cosmo_param_sampler(
 
 def _resolve_test_paths(test_loader):
     """Best-effort recovery of the ordered test-file list backing a loader, so posterior samples can be
-    tagged with the sim/aug id of the test point each came from. Returns None if unavailable."""
-    ds = getattr(test_loader, "dataset", None)
-    for candidate in (ds, getattr(ds, "dataset", None)):
-        paths = getattr(candidate, "paths", None)
+    tagged with the sim/aug id of the test point each came from. Returns None if unavailable.
+
+    Walks common wrapper attributes: DataLoader.dataset, Subset-style ``.dataset`` AND
+    TransformingDataset's ``.base_ds`` (the original blind spot — wrapped H5 loaders never
+    resolved, so eval dumps silently lost their sim/aug ids)."""
+    def _walk(ds, depth=0):
+        if ds is None or depth > 3:
+            return None
+        paths = getattr(ds, "paths", None)
         if paths is not None:
             return list(paths)
-    return None
+        for attr in ("dataset", "base_ds"):
+            found = _walk(getattr(ds, attr, None), depth + 1)
+            if found is not None:
+                return found
+        return None
+
+    return _walk(getattr(test_loader, "dataset", None))
 
 
 def _parse_aug_id(basename: str) -> int:

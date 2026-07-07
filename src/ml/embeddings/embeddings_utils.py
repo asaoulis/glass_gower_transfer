@@ -625,14 +625,14 @@ def build_embedding_dataloaders(
     # from the on-disk cache: the cached rows may predate the current split, so positional
     # alignment cannot be trusted.
     if not cache_used:
+        from ..eval.utils import _resolve_test_paths as _resolve_loader_paths
+
         for ds, src_loader in ((val_ds, val_loader), (test_ds, test_loader)):
             if ds is None:
                 continue
             ordered = isinstance(getattr(src_loader, "sampler", None), torch.utils.data.SequentialSampler)
-            src_ds = getattr(src_loader, "dataset", None)
-            src_paths = getattr(src_ds, "paths", None)
-            if src_paths is None:
-                src_paths = getattr(getattr(src_ds, "dataset", None), "paths", None)
+            # Walks .dataset AND TransformingDataset's .base_ds (the H5 test loader is wrapped).
+            src_paths = _resolve_loader_paths(src_loader)
             if ordered and src_paths is not None and len(src_paths) == len(ds):
                 ds.paths = list(src_paths)
 
