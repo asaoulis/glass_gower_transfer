@@ -86,12 +86,14 @@ def _build_output_path(base_path, experiment_name, match_string, output_suffix):
     )
 
 # Eval-time loader overrides for the 3-tuple (embeddings) path:
-#  - test_shape_noise_idx [0,0] -> keep only out{0..3}_rot0_0 = 4 shape-noise variants/cosmology
+#  - test_shape_noise_idx [0,[0,1]] -> rot0, trailing noise in {0,1}: with the gower store's
+#    out{0,1} x rot{0..4} x _{0..3} layout this keeps out{0,1}_rot0_{0,1} = 4 noise
+#    variants/cosmology (2 outer x 2 inner, same footprint rotation)
 #  - N_test_cosmologies 40      -> trim the 200 fixed-test cosmologies to the first 40 by sim_id
 #                                  (train/val + scalers stay identical to training) => N = 160
 #  - emb_test_batch_size 8      -> 160/8 = 20 MCMC joblib jobs (one per batch), a single wave
 CONFIG_OVERRIDES = {
-    "test_shape_noise_idx": [0, 0],
+    "test_shape_noise_idx": [0, [0, 1]],
     "N_test_cosmologies": 40,
     "emb_test_batch_size": 8,
 }

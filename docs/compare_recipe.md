@@ -14,7 +14,7 @@ Three config knobs, all honoured by `prepare_data_parameters` → `split_by_cosm
 |---|---|---|
 | `fixed_test_sim_ids` | Lock-file of sim_ids forced into the test split (`config/fixed_test_sets/gower_test_ids.json`, 200 ids). **Keep the experiment's own value** — never shrink it: removed ids would re-enter the trainval pool and silently change the fitted scalers → wrong embeddings → garbage inference. | the exp's own lock-file |
 | `N_test_cosmologies` | Eval-time trim of the *resolved* test set to the first N cosmologies **by sorted sim_id**, applied AFTER train/val selection — trainval and scalers stay byte-identical to training. Deterministic, so every model/repeat sees the same N cosmologies. | `40` |
-| `test_shape_noise_idx` | Filename filter on the test files. `[0, 0]` = `rot0` + trailing `_0` ⇒ keeps exactly the 4 outer shape-noise realisations `out{0,1,2,3}_rot0_0` per cosmology. | `[0, 0]` |
+| `test_shape_noise_idx` | Filename filter on the test files, `[rot, shape]`; each slot an int or a **list** of ints. The gower store layout is `out{0,1} × rot{0..4} × _{0..3}`, so `[0, [0, 1]]` keeps `out{0,1}_rot0_{0,1}` = 4 noise variants per cosmology (2 outer × 2 inner, same footprint rotation). | `[0, [0, 1]]` |
 
 40 cosmologies × 4 shape-noise variants = **160 inference points** per model.
 
@@ -53,10 +53,10 @@ Written by `src/ml/eval/utils.py:_save_posterior_samples` (`np.savez_compressed`
 
 Two caveats that matter for matching:
 
-- **`(sim_id, aug_id)` is NOT a unique key**: with `test_shape_noise_idx=[0,0]` all four
-  `out{0..3}_rot0_0` variants of a cosmology share `aug_id = 0`. **Match test points
-  across models by the full `test_files` basename** (what `scripts/plot_posteriors.py`
-  does).
+- **`(sim_id, aug_id)` is NOT a unique key**: `aug_id` is only the trailing noise index,
+  so `out0_rot0_0` and `out1_rot0_0` of one cosmology both carry `aug_id = 0`. **Match
+  test points across models by the full `test_files` basename** (what
+  `scripts/plot_posteriors.py` does).
 - Positional row↔file alignment assumes no corrupt-file skips in the loader (true for the
   clean prebaked stores; `H5CosmoDataset` silently substitutes a neighbour on a corrupt
   read). `_save_posterior_samples` drops the id columns if the path count mismatches —

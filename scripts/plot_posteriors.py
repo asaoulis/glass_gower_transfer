@@ -9,9 +9,10 @@ also written by gen_samples.py):
   sim_ids    [N], aug_ids [N]                                          (optional)
 
 Test points are matched ACROSS input files by the full test-file basename — NOT by
-(sim_id, aug_id): with test_shape_noise_idx=[0,0] all four out{0..3}_rot0_0 variants of a
-cosmology share aug_id=0, so only the basename is unique. Files without `test_files` fall
-back to positional matching (requires equal N everywhere; warned loudly).
+(sim_id, aug_id): aug_id is only the TRAILING noise index, so e.g. out0_rot0_0 and
+out1_rot0_0 of one cosmology both have aug_id=0 — only the basename is unique. Files
+without `test_files` fall back to positional matching (requires equal N everywhere;
+warned loudly).
 
 Samples/truths are inverse-transformed to physical units with the preset Gower box
 (src/ml/data/constants.py:COSMO_PARAM_PRESET_MINMAX — the same box used to scale cosmo

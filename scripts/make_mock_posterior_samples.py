@@ -29,7 +29,8 @@ def main():
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--n-models", type=int, default=3)
     ap.add_argument("--sim-ids", type=int, nargs="+", default=[193, 205])
-    ap.add_argument("--n-outer", type=int, default=4, help="shape-noise variants per cosmology (out0..3_rot0_0)")
+    ap.add_argument("--n-outer", type=int, default=2, help="outer shape-noise variants per cosmology")
+    ap.add_argument("--n-inner", type=int, default=2, help="trailing (inner) noise indices per outer variant")
     ap.add_argument("--n-samples", type=int, default=4000)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
@@ -37,13 +38,17 @@ def main():
     rng = np.random.default_rng(args.seed)
     D = len(PARAM_NAMES)
 
-    test_files, sim_ids = [], []
+    # Mirrors the production selection test_shape_noise_idx=[0,[0,1]] on the gower store
+    # (out{0,1} x rot0 x _{0,1} = 4 files/cosmology).
+    test_files, sim_ids, aug_ids = [], [], []
     for sid in args.sim_ids:
         for o in range(args.n_outer):
-            test_files.append(f"output_{sid}_out{o}_rot0_0.h5")
-            sim_ids.append(sid)
+            for n in range(args.n_inner):
+                test_files.append(f"output_{sid}_out{o}_rot0_{n}.h5")
+                sim_ids.append(sid)
+                aug_ids.append(n)  # trailing index only — NOT unique across out<o> variants
     N = len(test_files)
-    aug_ids = np.zeros(N, dtype=np.int64)  # trailing index is 0 for all out*_rot0_0 files
+    aug_ids = np.asarray(aug_ids, dtype=np.int64)
     sim_ids = np.asarray(sim_ids, dtype=np.int64)
 
     # One truth per cosmology (shared across its augmentations), comfortably inside [0,1].

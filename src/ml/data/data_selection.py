@@ -264,7 +264,14 @@ def _filter_paths_by_shape_noise_idx(paths: List[str], test_shape_noise_idx: Opt
         return paths
 
     if len(test_shape_noise_idx) == 2:
-        rot_idx, shape_idx = (int(v) for v in test_shape_noise_idx)
+        # [rot, shape] with each slot an int OR a list of ints (e.g. [0, [0, 1]] keeps
+        # all out<X> at rot0 with trailing noise index 0 or 1). Int slots behave exactly
+        # as before (singleton match).
+        def _as_set(sel):
+            vals = sel if isinstance(sel, (list, tuple, set)) else [sel]
+            return {int(v) for v in vals}
+
+        rot_set, shape_set = (_as_set(v) for v in test_shape_noise_idx)
         rot_shape_pat = re.compile(r"out(\d+)_rot(\d+)_(\d+)\.h5$")
 
         filtered: List[str] = []
@@ -274,7 +281,7 @@ def _filter_paths_by_shape_noise_idx(paths: List[str], test_shape_noise_idx: Opt
             if m is None:
                 continue
             rot_v, shape_v = int(m.group(2)), int(m.group(3))
-            if rot_v == rot_idx and shape_v == shape_idx:
+            if rot_v in rot_set and shape_v in shape_set:
                 filtered.append(p)
         return filtered
 
