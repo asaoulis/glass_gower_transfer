@@ -24,6 +24,14 @@ class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
         super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
         self.prior = prior
         self.max_sampling_batch_size = 10_000
+        # Bail-out for the prior-support accept/reject loop. sbi's accept_reject_sample gates
+        # progress on the MINIMUM acceptance across the condition batch and accumulates the
+        # other conditions' accepted samples unboundedly — one far-OOD condition with ~zero
+        # acceptance (posterior leaked outside the prior box) stalls the loop forever and OOMs
+        # the GPU (observed on the misspec eval, job 1316341). In-distribution (acceptance
+        # ~O(1)) the loop finishes in a couple of iterations and never hits these caps.
+        self.max_rejection_iters = 100
+        self.min_unique_accepted = 50
 
     def _check_condition_shape(self, condition):
         pass
@@ -60,17 +68,72 @@ class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
         else:
             cond = x
         sampling_func = self.latent_sample if use_latent else self.sample
-        samples = rejection.accept_reject_sample(
-            proposal=sampling_func,
-            accept_reject_fn=lambda theta: within_support(self.prior, theta),
-            num_samples=num_samples,
-            show_progress_bars=False,
-            max_sampling_batch_size=self.max_sampling_batch_size,
-            proposal_sampling_kwargs={"condition": cond},
-            alternative_method="build_posterior(..., sample_with='mcmc')",
-            num_xos=cond.shape[0],
-        )[0]
-        return samples
+        return self._bounded_accept_reject(sampling_func, num_samples, cond)
+
+    @torch.no_grad()
+    def _bounded_accept_reject(self, sampling_func, num_samples, cond):
+        """Prior-support accept/reject with bounded memory and a hard iteration cap.
+
+        Mirrors sbi's accept_reject_sample (same candidate reshape conventions, same
+        [num_samples, num_xos, D] output) with two changes:
+        - per-condition accumulation stops at ``num_samples`` (sbi accumulates without bound
+          while the WORST condition in the batch converges);
+        - after ``max_rejection_iters`` batches, unconverged conditions are filled by
+          resampling their accepted draws with replacement (>= min_unique_accepted uniques)
+          or NaN-filled entirely — callers' non-finite filters then drop and report them.
+        In-distribution behaviour is identical up to RNG (loop exits once all converge).
+        """
+        num_xos = cond.shape[0]
+        sampling_batch_size = min(num_samples, self.max_sampling_batch_size)
+        accepted = [[] for _ in range(num_xos)]
+        counts = torch.zeros(num_xos, dtype=torch.long)
+        event_dim = None
+
+        for _ in range(int(self.max_rejection_iters)):
+            candidates = sampling_func((sampling_batch_size,), condition=cond)
+            are_accepted = within_support(self.prior, candidates)
+            are_accepted = are_accepted.reshape(sampling_batch_size, num_xos)
+            cands = candidates.reshape(
+                sampling_batch_size, num_xos, *candidates.shape[candidates.ndim - 1 :]
+            )
+            event_dim = cands.shape[-1]
+            for i in range(num_xos):
+                need = int(num_samples - counts[i])
+                if need <= 0:
+                    continue
+                acc_i = cands[are_accepted[:, i], i]
+                if acc_i.shape[0]:
+                    take = min(int(acc_i.shape[0]), need)
+                    accepted[i].append(acc_i[:take].clone())
+                    counts[i] += take
+            if bool((counts >= num_samples).all()):
+                break
+
+        n_resampled = n_nanned = 0
+        out = []
+        for i in range(num_xos):
+            got = torch.cat(accepted[i], dim=0) if accepted[i] else None
+            if got is not None and got.shape[0] >= num_samples:
+                out.append(got[:num_samples])
+            elif got is not None and got.shape[0] >= int(self.min_unique_accepted):
+                idx = torch.randint(got.shape[0], (num_samples - got.shape[0],),
+                                    device=got.device)
+                out.append(torch.cat([got, got[idx]], dim=0))
+                n_resampled += 1
+            else:
+                ref = got if got is not None else cond
+                out.append(torch.full((num_samples, event_dim), float("nan"),
+                                      device=ref.device if hasattr(ref, "device") else None))
+                n_nanned += 1
+        if n_resampled or n_nanned:
+            import warnings
+            warnings.warn(
+                f"[gen_samples] prior-support rejection hit the iteration cap "
+                f"({self.max_rejection_iters}x{sampling_batch_size}): "
+                f"{n_resampled}/{num_xos} conditions filled by resampling accepted draws, "
+                f"{n_nanned}/{num_xos} NaN-filled (posterior mass far outside the prior box)."
+            )
+        return torch.stack(out, dim=1)
 
 
 class PatchedLikelihoodEstimator(ConditionalDensityEstimator):

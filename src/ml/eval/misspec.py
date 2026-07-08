@@ -355,6 +355,9 @@ def run_misspecification_eval(
                       flush=True)
                 traceback.print_exc()
                 summary[key] = {"error": f"{type(e).__name__}: {e}"}
+            finally:
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
 
         del model
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
