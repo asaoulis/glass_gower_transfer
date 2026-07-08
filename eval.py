@@ -148,6 +148,11 @@ def main(argv=None):
                         help="misspec mode: the base experiment to evaluate on all variates")
     parser.add_argument("--num-samples", type=int, default=10000,
                         help="misspec mode: posterior samples per test point")
+    parser.add_argument("--variates", default=None, choices=["gower", "glass_pretrain"],
+                        help="misspec mode: which variate-dataset set to evaluate (default gower)")
+    parser.add_argument("--max-test-files", type=int, default=None,
+                        help="misspec mode: cap each variate's test set to ~this many mocks "
+                             "(whole cosmologies, sorted by sim_id)")
     args = parser.parse_args(argv)
 
     mode = args.mode or DEFAULT_MODE
@@ -158,6 +163,8 @@ def main(argv=None):
             base_experiment=args.misspec_base,
             repeat_indices=args.repeat_indices or (0,),
             num_samples=args.num_samples,
+            variate_set=args.variates,
+            max_test_files=args.max_test_files,
         )
     else:
         run_standard_eval(args.experiments or DEFAULT_EXPERIMENTS, args.repeat_indices)

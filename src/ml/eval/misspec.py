@@ -77,6 +77,29 @@ DEFAULT_VARIATES: List[Dict] = [
     {"name": "gb1p5", "patterns": f"{_GPU4}/gower_mocks_gb1p5/output_*.h5", "exclude_params": []},
 ]
 
+# GLASS pre-train variate suites (gpu5 f16 fwhm4_lmin56_lcut1400 prebakes, matching the GLASS
+# z8 foundation's maps). In-dist = the foundation's own lmin50 training store; its test ids
+# are derived from the training split at runtime (no fixed lock for GLASS).
+GLASS_PRETRAIN_VARIATES: List[Dict] = [
+    {"name": "glass_nla_m",
+     "patterns": f"{_GPU5}/glass_mocks_nla_m_lmin50_f16_fwhm4_lmin56_lcut1400/output_*.h5",
+     "exclude_params": [], "in_distribution": True},
+    {"name": "glass_novd",
+     "patterns": f"{_GPU5}/glass_mocks_nla_m_novd_f16_fwhm4_lmin56_lcut1400/output_*.h5",
+     "exclude_params": []},
+    {"name": "glass_nla",
+     "patterns": f"{_GPU5}/glass_mocks_nla_f16_fwhm4_lmin56_lcut1400/output_*.h5",
+     "exclude_params": ["a_ia"]},
+    {"name": "glass_nla_z",
+     "patterns": f"{_GPU5}/glass_mocks_nla_z_f16_fwhm4_lmin56_lcut1400/output_*.h5",
+     "exclude_params": ["a_ia"]},
+]
+
+VARIATE_SETS: Dict[str, List[Dict]] = {
+    "gower": DEFAULT_VARIATES,
+    "glass_pretrain": GLASS_PRETRAIN_VARIATES,
+}
+
 
 def _load_experiment_config(experiment_name: str):
     """Rebuild the experiment config exactly like eval.py's load_config + list-branch handling."""
@@ -143,15 +166,18 @@ def build_variate_test_loader(
     cosmo_param_names: Sequence[str],
     key_scalers: Dict,
     cosmo_scaler,
-    fixed_test_sim_ids,
+    test_id_pool,
     test_shape_noise_idx=(0, (0, 1)),
     batch_size: int = 64,
     num_workers: int = 4,
+    max_test_files: Optional[int] = None,
 ):
     """Variate TEST loader with the ORIGINAL scalers injected (never refit).
 
-    Test cosmologies = (fixed-test lock ids ∩ on-disk ids); falls back to ALL on-disk
-    cosmologies when there is no overlap (e.g. a small gb subset outside the lock range).
+    Test cosmologies = (``test_id_pool`` ∩ on-disk ids); falls back to ALL on-disk
+    cosmologies when there is no overlap (e.g. a small gb subset outside the pool).
+    ``max_test_files`` caps the test set by accumulating whole cosmologies (sorted by
+    sim_id) until the file budget is reached.
     """
     all_paths = collect_paths(patterns)
     by_cosmo: Dict[int, List[str]] = {}
@@ -160,13 +186,13 @@ def build_variate_test_loader(
     for c in by_cosmo:
         by_cosmo[c].sort()
 
-    lock_ids = resolve_fixed_test_ids(fixed_test_sim_ids) or set()
-    test_ids = sorted(set(by_cosmo.keys()) & lock_ids)
+    pool = set(test_id_pool or [])
+    test_ids = sorted(set(by_cosmo.keys()) & pool)
     used_fallback = False
     if not test_ids:
         test_ids = sorted(by_cosmo.keys())
         used_fallback = True
-        print(f"[misspec] WARNING: no overlap with the {len(lock_ids)} fixed test ids; "
+        print(f"[misspec] WARNING: no overlap with the {len(pool)} test-pool ids; "
               f"falling back to ALL {len(test_ids)} on-disk cosmologies (model may have seen "
               "these cosmologies at nla_m physics).", flush=True)
 
@@ -176,6 +202,22 @@ def build_variate_test_loader(
         print(f"[misspec] WARNING: shape-noise filter {test_shape_noise_idx} matched no files; "
               "using all test-cosmology files.", flush=True)
         filtered = test_paths
+
+    if max_test_files is not None and len(filtered) > int(max_test_files):
+        by_id: Dict[int, List[str]] = {}
+        for p in filtered:
+            by_id.setdefault(extract_cosmo_index(p), []).append(p)
+        capped, kept_ids = [], []
+        for c in sorted(by_id):
+            if capped and len(capped) + len(by_id[c]) > int(max_test_files):
+                break
+            capped.extend(by_id[c])
+            kept_ids.append(c)
+        print(f"[misspec] max_test_files={max_test_files}: capped {len(filtered)} -> "
+              f"{len(capped)} files ({len(kept_ids)}/{len(test_ids)} cosmologies, "
+              "first by sorted sim_id).", flush=True)
+        filtered = capped
+        test_ids = kept_ids
 
     ds = H5CosmoDataset(
         filtered,
@@ -274,18 +316,30 @@ def run_misspecification_eval(
     test_shape_noise_idx=(0, (0, 1)),
     out_subdir: str = "misspec",
     repeat_indices: Sequence[int] = (0,),
+    variate_set: Optional[str] = None,
+    max_test_files: Optional[int] = None,
 ):
-    """Evaluate the base experiment's ensemble on every variate, per training repeat.
+    """Evaluate the base experiment's model(s) on every variate, per training repeat.
 
-    ``repeat_indices``: one full pass (scalers + 9-member ensemble + all variates) per repeat.
-    With >1 repeat, per-event CROSS-REPEAT posterior disagreement (mean pairwise symmetric
+    Works for eval-time ensembles (ensemble_repeats>1: the repeat's N members are loaded as
+    one EnsembleNDELightningModule) AND single-model experiments (the repeat's best checkpoint).
+
+    ``repeat_indices``: one full pass (scalers + model + all variates) per repeat. With >1
+    repeat, per-event CROSS-REPEAT posterior disagreement (mean pairwise symmetric
     diag-Gaussian KL, as in ensemble_uncertainty.py) is computed per variate and saved next to
     the calibration results — the OOD statistic to correlate with miscalibration.
     ``repeat_index`` (int) is a legacy alias for a single-repeat run.
+
+    Variate test cosmologies come from ``config.fixed_test_sim_ids`` when the experiment uses a
+    lock file, else from the experiment's own held-out test split (derived at runtime), so no
+    variate is ever evaluated on cosmologies the model trained on. ``max_test_files`` caps each
+    variate's test set (whole cosmologies, sorted by sim_id).
     """
     from ..models.utils import apply_repeat_config
+    from .utils import _resolve_test_paths, load_best_model_and_build_posterior
 
-    variates = DEFAULT_VARIATES if variates is None else variates
+    if variates is None:
+        variates = VARIATE_SETS[variate_set] if variate_set else DEFAULT_VARIATES
     if repeat_index is not None:
         repeat_indices = (int(repeat_index),)
     repeat_indices = [int(r) for r in repeat_indices]
@@ -324,14 +378,33 @@ def run_misspecification_eval(
         print(f"[misspec] repeat {r}: original scalers rebuilt from {cfg.data_patterns} "
               f"(data keys: {sorted(orig_key_scalers)})", flush=True)
 
-        # The repeat's 9-member ensemble, built ONCE (loaders are swapped per variate).
+        # Test-id pool for the variates: the lock file when the experiment pins one, else the
+        # experiment's own held-out test cosmologies (identical across repeats — the test slice
+        # comes from the fixed rng(42) shuffle before the per-repeat trainval reshuffle).
+        lock_spec = getattr(cfg, "fixed_test_sim_ids", None)
+        if lock_spec:
+            test_id_pool = set(resolve_fixed_test_ids(lock_spec) or [])
+        else:
+            held_out = _resolve_test_paths(in_dist_test_loader) or []
+            test_id_pool = {extract_cosmo_index(p) for p in held_out}
+            print(f"[misspec] repeat {r}: derived test-id pool from the training split "
+                  f"({len(test_id_pool)} held-out cosmologies).", flush=True)
+
+        # The repeat's model, built ONCE (loaders are swapped per variate): the N-member
+        # eval-time ensemble when configured, else the repeat's single best checkpoint.
         n_ens = int(getattr(cfg, "ensemble_repeats", 1) or 1)
-        model = build_ensemble_model_from_checkpoints(
-            cfg,
-            in_dist_test_loader,
-            match_string=cfg.match_string,
-            member_test_loaders=[in_dist_test_loader] * n_ens,
-        )
+        if n_ens > 1:
+            model = build_ensemble_model_from_checkpoints(
+                cfg,
+                in_dist_test_loader,
+                match_string=cfg.match_string,
+                member_test_loaders=[in_dist_test_loader] * n_ens,
+            )
+        else:
+            loaded = load_best_model_and_build_posterior(
+                cfg, ds_string_match=cfg.match_string, data_parameters=in_dist_test_loader,
+            )
+            model = loaded[0] if loaded else None
         if model is None:
             # e.g. a repeat whose training jobs haven't finished — skip it, keep the others.
             print(f"[misspec] repeat {r}: no '{base_experiment}' {cfg.match_string} checkpoints "
@@ -350,6 +423,8 @@ def run_misspecification_eval(
                     test_shape_noise_idx=test_shape_noise_idx,
                     out_dir=os.path.join(out_root, name),
                     repeat_index=r,
+                    test_id_pool=test_id_pool,
+                    max_test_files=max_test_files,
                 )
                 per_variate_repeat[name][repeat_match] = result.pop("_per_event")
                 summary[key] = result
@@ -460,6 +535,8 @@ def _eval_one_variate(
     test_shape_noise_idx,
     out_dir: str,
     repeat_index: int = 0,
+    test_id_pool=None,
+    max_test_files: Optional[int] = None,
 ):
     name = variate["name"]
     exclude_params = list(variate.get("exclude_params", []))
@@ -475,10 +552,11 @@ def _eval_one_variate(
         param_names,
         orig_key_scalers,
         orig_cosmo_scaler,
-        fixed_test_sim_ids=getattr(cfg, "fixed_test_sim_ids", None),
+        test_id_pool=test_id_pool,
         test_shape_noise_idx=test_shape_noise_idx,
         # Cap at 64: train batch sizes (100-128) are l40s-sized; eval may land on a smaller GPU.
         batch_size=min(64, int(getattr(cfg, "test_batch_size", None) or getattr(cfg, "batch_size", 64))),
+        max_test_files=max_test_files,
     )
 
     # Fail fast on a wrong eb-variant tag / absent params rather than skip-looping every file.
@@ -499,10 +577,11 @@ def _eval_one_variate(
           f"fixed_lock={meta['test_ids_from_fixed_lock']}) "
           f"missing_params={missing_params} exclude_params={exclude_params}", flush=True)
 
-    # Swap the test set under the prebuilt ensemble: the ensemble-level loader feeds theta0s
-    # and compute_avg_log_prob; each member's loader feeds its own encode+sample pass.
+    # Swap the test set under the prebuilt model. Ensembles: the ensemble-level loader feeds
+    # theta0s and compute_avg_log_prob; each member's loader feeds its own encode+sample pass.
+    # Single models have no .members — the one loader drives everything.
     model.test_dataloader = loader
-    for m in model.members:
+    for m in getattr(model, "members", []):
         m.test_dataloader = loader
 
     theta0s, samples = model.generate_samples(num_samples=num_samples)
