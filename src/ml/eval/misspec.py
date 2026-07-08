@@ -267,81 +267,177 @@ def _compute_misspec_metrics(
 
 def run_misspecification_eval(
     base_experiment: str = "gower_npe_finetune_nla_m_z8",
-    repeat_index: int = 0,
+    repeat_index: Optional[int] = None,
     variates: Optional[List[Dict]] = None,
     num_samples: int = 10000,
     prior_num_samples: int = 20_000,
     test_shape_noise_idx=(0, (0, 1)),
     out_subdir: str = "misspec",
+    repeat_indices: Sequence[int] = (0,),
 ):
+    """Evaluate the base experiment's ensemble on every variate, per training repeat.
+
+    ``repeat_indices``: one full pass (scalers + 9-member ensemble + all variates) per repeat.
+    With >1 repeat, per-event CROSS-REPEAT posterior disagreement (mean pairwise symmetric
+    diag-Gaussian KL, as in ensemble_uncertainty.py) is computed per variate and saved next to
+    the calibration results — the OOD statistic to correlate with miscalibration.
+    ``repeat_index`` (int) is a legacy alias for a single-repeat run.
+    """
     from ..models.utils import apply_repeat_config
 
     variates = DEFAULT_VARIATES if variates is None else variates
+    if repeat_index is not None:
+        repeat_indices = (int(repeat_index),)
+    repeat_indices = [int(r) for r in repeat_indices]
 
-    # --- base config bound to the requested repeat ----------------------------------------
-    cfg = _load_experiment_config(base_experiment)
-    # Same test-point sub-selection for the in-distribution reference as for every variate
-    # (rot0, inner noise {0,1}) so coverage curves are directly comparable.
-    cfg.test_shape_noise_idx = list(test_shape_noise_idx)
-    repeat_match, _ = apply_repeat_config(cfg, repeat_index)
-    cfg.match_string = repeat_match
-    param_names = list(cfg.cosmo_param_names)
-    eb_variant = getattr(cfg, "eb_map_variant", None)
-    nested_keys = build_nested_keys_from_quantities(list(cfg.dataset_quantities), eb_variant)
-    print(f"[misspec] base experiment '{base_experiment}' repeat={repeat_index} "
-          f"match_string={cfg.match_string} params={param_names} eb_variant={eb_variant}",
-          flush=True)
+    cfg0 = _load_experiment_config(base_experiment)
+    param_names = list(cfg0.cosmo_param_names)
+    eb_variant = getattr(cfg0, "eb_map_variant", None)
+    nested_keys = build_nested_keys_from_quantities(list(cfg0.dataset_quantities), eb_variant)
+    out_root = os.path.join(cfg0.base_path, "checkpoints", cfg0.experiment_name, out_subdir)
 
-    # --- ORIGINAL scalers: fit once on the nla_m train+val split (ensemble path) ----------
-    scalers, _, _, in_dist_test_loader = prepare_data_parameters(cfg)
-    orig_key_scalers = scalers["data"]
-    orig_cosmo_scaler = scalers["cosmo"]
-    print(f"[misspec] original scalers rebuilt from {cfg.data_patterns} "
-          f"(data keys: {sorted(orig_key_scalers)})", flush=True)
-
-    # --- r0 ensemble model, built ONCE (loaders are swapped per variate) ------------------
-    n_ens = int(getattr(cfg, "ensemble_repeats", 1) or 1)
-    model = build_ensemble_model_from_checkpoints(
-        cfg,
-        in_dist_test_loader,
-        match_string=cfg.match_string,
-        member_test_loaders=[in_dist_test_loader] * n_ens,
-    )
-    if model is None:
-        raise RuntimeError(f"Could not build the '{base_experiment}' {cfg.match_string} ensemble "
-                           "(no checkpoints found?)")
-
-    # --- base Gower prior + one shared set of prior samples (FoM shrinkage reference) -----
-    prior = build_gower_prior(param_names, preset_overrides=_config_preset_overrides(cfg))
+    # Base Gower prior + one shared set of prior samples (FoM shrinkage reference) — the
+    # prior is repeat-independent.
+    prior = build_gower_prior(param_names, preset_overrides=_config_preset_overrides(cfg0))
     prior_samples_scaled = _sample_from_prior(prior, prior_num_samples, target_dim=len(param_names))
 
-    out_root = os.path.join(cfg.base_path, "checkpoints", cfg.experiment_name, out_subdir)
-    summary = {}
-    for variate in variates:
-        name = variate["name"]
-        try:
-            result = _eval_one_variate(
-                variate, model, cfg, nested_keys, param_names,
-                orig_key_scalers, orig_cosmo_scaler, prior_samples_scaled,
-                num_samples=num_samples,
-                test_shape_noise_idx=test_shape_noise_idx,
-                out_dir=os.path.join(out_root, name),
-            )
-            summary[name] = result
-        except Exception as e:
-            print(f"[misspec] {name}: FAILED — {type(e).__name__}: {e}", flush=True)
-            traceback.print_exc()
-            summary[name] = {"error": f"{type(e).__name__}: {e}"}
+    summary: Dict[str, Dict] = {}
+    per_variate_repeat: Dict[str, Dict[str, Dict]] = {v["name"]: {} for v in variates}
+    match_strings = []
+    for r in repeat_indices:
+        # Fresh config per repeat: apply_repeat_config mutates split_seed in place.
+        cfg = _load_experiment_config(base_experiment)
+        # Same test-point sub-selection for the in-distribution reference as for every
+        # variate (rot0, inner noise {0,1}) so coverage curves are directly comparable.
+        cfg.test_shape_noise_idx = list(test_shape_noise_idx)
+        repeat_match, _ = apply_repeat_config(cfg, r)
+        cfg.match_string = repeat_match
+        match_strings.append(repeat_match)
+        print(f"[misspec] base experiment '{base_experiment}' repeat={r} "
+              f"match_string={cfg.match_string} params={param_names} eb_variant={eb_variant}",
+              flush=True)
+
+        # ORIGINAL scalers for THIS repeat: fit on its nla_m train+val split (ensemble path).
+        scalers, _, _, in_dist_test_loader = prepare_data_parameters(cfg)
+        orig_key_scalers = scalers["data"]
+        orig_cosmo_scaler = scalers["cosmo"]
+        print(f"[misspec] repeat {r}: original scalers rebuilt from {cfg.data_patterns} "
+              f"(data keys: {sorted(orig_key_scalers)})", flush=True)
+
+        # The repeat's 9-member ensemble, built ONCE (loaders are swapped per variate).
+        n_ens = int(getattr(cfg, "ensemble_repeats", 1) or 1)
+        model = build_ensemble_model_from_checkpoints(
+            cfg,
+            in_dist_test_loader,
+            match_string=cfg.match_string,
+            member_test_loaders=[in_dist_test_loader] * n_ens,
+        )
+        if model is None:
+            raise RuntimeError(f"Could not build the '{base_experiment}' {cfg.match_string} "
+                               "ensemble (no checkpoints found?)")
+
+        for variate in variates:
+            name = variate["name"]
+            key = f"{name}@r{r}" if len(repeat_indices) > 1 else name
+            try:
+                result = _eval_one_variate(
+                    variate, model, cfg, nested_keys, param_names,
+                    orig_key_scalers, orig_cosmo_scaler, prior_samples_scaled,
+                    num_samples=num_samples,
+                    test_shape_noise_idx=test_shape_noise_idx,
+                    out_dir=os.path.join(out_root, name),
+                    repeat_index=r,
+                )
+                per_variate_repeat[name][repeat_match] = result.pop("_per_event")
+                summary[key] = result
+            except Exception as e:
+                print(f"[misspec] {name} (repeat {r}): FAILED — {type(e).__name__}: {e}",
+                      flush=True)
+                traceback.print_exc()
+                summary[key] = {"error": f"{type(e).__name__}: {e}"}
+
+        del model
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+    # Cross-repeat posterior disagreement per variate (the ensemble-agreement OOD statistic).
+    if len(repeat_indices) > 1:
+        for variate in variates:
+            name = variate["name"]
+            reps = per_variate_repeat[name]
+            if len(reps) < 2:
+                continue
+            try:
+                dis = _compute_repeat_disagreement(name, reps, os.path.join(out_root, name))
+                for key in list(summary):
+                    if key.startswith(f"{name}@"):
+                        summary[key]["repeat_kl_mean"] = dis["kl_mean"]
+            except Exception as e:
+                print(f"[misspec] {name}: disagreement FAILED — {type(e).__name__}: {e}",
+                      flush=True)
+                traceback.print_exc()
 
     print("\n[misspec] ============ SUMMARY ============", flush=True)
-    for name, res in summary.items():
+    for key, res in summary.items():
         if "error" in res:
-            print(f"[misspec] {name}: ERROR {res['error']}", flush=True)
+            print(f"[misspec] {key}: ERROR {res['error']}", flush=True)
         else:
-            print(f"[misspec] {name}: n_test={res['n_test_files']} "
-                  f"cal_full={res['cal_full']:.4f} cal_om_s8_w0={res['cal_om_s8_w0']:.4f} "
-                  f"available={res['available_params']}", flush=True)
+            extra = (f" repeat_kl_mean={res['repeat_kl_mean']:.4f}"
+                     if "repeat_kl_mean" in res else "")
+            print(f"[misspec] {key}: n_test={res['n_test_files']} "
+                  f"cal_full={res['cal_full']:.4f} cal_om_s8_w0={res['cal_om_s8_w0']:.4f}"
+                  f"{extra} available={res['available_params']}", flush=True)
     return summary
+
+
+def _compute_repeat_disagreement(name: str, per_repeat: Dict[str, Dict], out_dir: str):
+    """Per-event posterior disagreement ACROSS training repeats for one variate.
+
+    Aligns events by test-file basename (robust to per-repeat non-finite drops), stacks the
+    per-repeat posterior moments to [K, N, D], and scores each event with the mean pairwise
+    symmetric diag-Gaussian KL (ensemble_uncertainty.py formulation). Saved next to the
+    per-repeat calibration JSONs so miscalibration and repeat-spread can be correlated
+    directly. Moments are in SCALED space (same space as the TARP calibration)."""
+    from .ensemble_discrepancies import diag_gaussian_symmetric_kl
+
+    matches = sorted(per_repeat)
+    common = set(per_repeat[matches[0]]["test_files"])
+    for m in matches[1:]:
+        common &= set(per_repeat[m]["test_files"])
+    common = sorted(common)
+    if not common:
+        raise RuntimeError("no common test files across repeats")
+
+    mu, var = [], []
+    for m in matches:
+        d = per_repeat[m]
+        idx = {f: i for i, f in enumerate(d["test_files"])}
+        sel = [idx[f] for f in common]
+        mu.append(d["mu"][sel])
+        var.append(d["var"][sel])
+    mu = np.stack(mu, axis=0)    # [K, N, D]
+    var = np.stack(var, axis=0)  # [K, N, D]
+
+    kl = diag_gaussian_symmetric_kl(mu, var)  # [N]
+    payload = {
+        "variate": name,
+        "repeat_match_strings": matches,
+        "n_events": int(len(common)),
+        "kl_mean": float(np.mean(kl)),
+        "kl_median": float(np.median(kl)),
+        "kl_p90": float(np.quantile(kl, 0.90)),
+    }
+    os.makedirs(out_dir, exist_ok=True)
+    tag = "_".join(matches)
+    np.savez_compressed(
+        os.path.join(out_dir, f"misspec_repeat_disagreement_{tag}.npz"),
+        kl_score=kl, mu=mu, var=var,
+        test_files=np.array(common), repeat_match_strings=np.array(matches),
+    )
+    with open(os.path.join(out_dir, f"misspec_repeat_disagreement_{tag}.json"), "w") as f:
+        json.dump(_to_json_compatible(payload), f, indent=4)
+    print(f"[misspec] {name}: repeat disagreement over {len(matches)} repeats, "
+          f"kl_mean={payload['kl_mean']:.4f} kl_median={payload['kl_median']:.4f}", flush=True)
+    return payload
 
 
 def _eval_one_variate(
@@ -357,6 +453,7 @@ def _eval_one_variate(
     num_samples: int,
     test_shape_noise_idx,
     out_dir: str,
+    repeat_index: int = 0,
 ):
     name = variate["name"]
     exclude_params = list(variate.get("exclude_params", []))
@@ -404,6 +501,20 @@ def _eval_one_variate(
 
     theta0s, samples = model.generate_samples(num_samples=num_samples)
 
+    # Drop test points whose posterior samples came out non-finite (far-OOD conditioning can
+    # degenerate the spline inverse even with the clamped discriminant). Keep the analysis on
+    # the finite events and report the count — silent NaNs would poison TARP/FoM wholesale.
+    test_paths = list(meta["test_paths"])
+    event_ok = torch.isfinite(samples).all(dim=2).all(dim=0)  # samples [S, N, D] -> [N]
+    n_bad_events = int((~event_ok).sum())
+    if n_bad_events:
+        print(f"[misspec] {name}: dropping {n_bad_events}/{len(event_ok)} test points with "
+              "non-finite posterior samples (far-OOD sampling degeneracy).", flush=True)
+        keep = event_ok.cpu().numpy().astype(bool)
+        samples = samples[:, event_ok, :]
+        theta0s = theta0s[event_ok, :]
+        test_paths = [p for p, k in zip(test_paths, keep) if k]
+
     theta_np = theta0s.detach().cpu().numpy()
     finite = np.isfinite(theta_np).all(axis=0)
     available_idx = [i for i, p in enumerate(param_names)
@@ -425,9 +536,11 @@ def _eval_one_variate(
         "variate": name,
         "experiment": cfg.experiment_name,
         "match_string": cfg.match_string,
+        "repeat_index": int(repeat_index),
         "data_patterns": variate["patterns"],
-        "n_test_files": meta["n_test_files"],
+        "n_test_files": len(test_paths),
         "n_test_cosmologies": meta["n_test_cosmologies"],
+        "n_dropped_nonfinite": n_bad_events,
         "test_ids_from_fixed_lock": meta["test_ids_from_fixed_lock"],
         "missing_params": missing_params,
         "excluded_params": exclude_params,
@@ -452,7 +565,7 @@ def _eval_one_variate(
             json.dump(_to_json_compatible(intervals_payload), f, indent=4)
     _save_posterior_samples(
         os.path.join(out_dir, f"misspec_posterior_samples_{cfg.match_string}.npz"),
-        theta0s, samples, meta["test_paths"],
+        theta0s, samples, test_paths,
     )
 
     cal_full = metrics["tarp"]["full"]["calibration_error"]
@@ -460,10 +573,20 @@ def _eval_one_variate(
     cal_subset = metrics["tarp"]["subsets"].get(subset_key, {}).get("calibration_error", float("nan"))
     print(f"[misspec] {name}: DONE cal_full={cal_full:.4f} cal_om_s8_w0={cal_subset:.4f} "
           f"fom={metrics.get('fom')} dMI={metrics.get('test_log_prob')}", flush=True)
+    # Per-event posterior moments (scaled space, over the sample axis) for the cross-repeat
+    # disagreement statistic; keyed by test-file basename for alignment across repeats.
+    samp_np = samples.detach().cpu().numpy() if hasattr(samples, "detach") else np.asarray(samples)
+    per_event = {
+        "mu": samp_np.mean(axis=0).astype(np.float32),
+        "var": samp_np.var(axis=0).astype(np.float32),
+        "test_files": [os.path.basename(p) for p in test_paths],
+    }
     return {
-        "n_test_files": meta["n_test_files"],
+        "n_test_files": len(test_paths),
+        "n_dropped_nonfinite": n_bad_events,
         "available_params": [param_names[i] for i in available_idx],
         "cal_full": float(cal_full),
         "cal_om_s8_w0": float(cal_subset),
         "out_dir": out_dir,
+        "_per_event": per_event,
     }

@@ -1,15 +1,50 @@
+"""Checkpoint evaluation entrypoint.
+
+Two modes:
+- ``list``    — the standard evaluation: loop over experiment names, rebuild config/dataloaders
+                exactly as training did (same match_string/repeat logic), and write
+                evaluation_results.json / tarp_credible_intervals.json per run (ensemble
+                variants at the experiment level). This is how the NPE ensembles are evaluated
+                in-distribution.
+- ``misspec`` — the model-misspecification driver (src/ml/eval/misspec.py): ONE trained model
+                evaluated on the TEST split of every Gower variate dataset with the ORIGINAL
+                training scalers injected; outputs under checkpoints/<exp>/misspec/<variate>/.
+
+CLI (all optional):
+    python eval.py [--mode {list,misspec}] [--experiments EXP ...] [--repeat-indices I ...]
+                   [--misspec-base EXP] [--num-samples N]
+
+NOTE: until the gatekeeper's eval-submit passes CLI args through (requires a
+bootstrap_install.sh redeploy), the cluster job runs a bare ``python eval.py`` and DEFAULT_MODE
+below decides what that does. Flip DEFAULT_MODE back to "list" once args flow end-to-end.
+"""
+import argparse
+
 from config.default import get_default_config
 from config.experiments import experiments
 from config.ablations import ablation_experiments
 from config.kids_legacy import kids_legacy_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
-from pathlib import Path
-import numpy as np
-import torch
 from copy import copy
 
 experiments.update(ablation_experiments)  # Combine experiments and ablations into a single dict
 experiments.update(kids_legacy_experiments)  # KiDS-Legacy NLA-M configs
+
+# What a bare `python eval.py` (the currently-deployed eval-submit) runs. Explicit --mode wins.
+DEFAULT_MODE = "misspec"
+
+# Standard-mode default experiment list (used when --experiments is not given).
+DEFAULT_EXPERIMENTS = [
+    # PRODUCTION eval (run on v100 as jobs finish; evaluate_best_checkpoint skips repeats/runs with no
+    # checkpoint yet, so re-running is safe): main-variate Gower NPE ens9 (all 5 repeats) + the GLASS
+    # sub-variate encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
+    # ensemble_evaluation_results_*.json + the P0 posterior_samples.npz / ensemble_posterior_samples_*.npz.
+    "gower_npe_finetune_nla_m_z8",
+    "glass_encoder_finetune_nla_z_z8",
+    "glass_encoder_finetune_nla_z8",
+    "glass_encoder_finetune_no_vd_z8",
+]
+
 
 def load_config(experiment_name: str):
     """Load config in a way consistent with train.py."""
@@ -30,108 +65,101 @@ def load_config(experiment_name: str):
 from src.ml.utils import prepare_data_parameters
 from src.ml.models.utils import apply_repeat_config
 
-# Base config used only for data_parameters
-experiments_to_evaluate = [
-    # "bandpower_mlp_lat8_2param",
-    # "hybrid_patches_16_2param",
-    # "finetune_hybrid_16_2param",
-    # "glass_hybrid_patches_16_9param",
-    # "finetune_hybrid_16_9param",
-    # "finetune_hybrid_16_2param_ensemble_stratify",
-    # "finetune_hybrid_16_9param_ensemble",
-    # "finetune_hybrid_16_9param_ensemble_stratify",
-    # "finetune_hybrid_16_9param_ensemble_kcenter_sampling",
-    # "bandpower_mlp_lat8_9param",
-    # "hybrid_patches_16_9param",
-    # "embeddings_pretrained_flow_9param",
-    # "finetune_ablation_glass_hybrid_OFF",
-    # "finetune_ablation_glass_no_side",
-    # "finetune_ablation_glass_no_GEM",
-    # "finetune_ablation_glass_MAF",
-    # "finetune_hybrid_16_9param",
-    # "finetune_ablation_glass_no_cyclic"
-    # "finetune_ablation_glass_B_modes"
-    # vicreg-nle-first-test (superseded by the z8 production run):
-    # "gower_npe_finetune_nla_m_base",
-    # "gower_npe_finetune_nla_m_vicreg",
-    # PRODUCTION eval (run on v100 as jobs finish; evaluate_best_checkpoint skips repeats/runs with no
-    # checkpoint yet, so re-running is safe): main-variate Gower NPE ens9 (all 5 repeats) + the GLASS
-    # sub-variate encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
-    # ensemble_evaluation_results_*.json + the P0 posterior_samples.npz / ensemble_posterior_samples_*.npz.
-    "gower_npe_finetune_nla_m_z8",
-    "glass_encoder_finetune_nla_z_z8",
-    "glass_encoder_finetune_nla_z8",
-    "glass_encoder_finetune_no_vd_z8",
-]
 
-# --- Model-misspecification eval (one model × many variate datasets) ------------------------
-# When True, eval.py ONLY runs the misspec driver (src/ml/eval/misspec.py): the production NPE
-# r0 ensemble evaluated on the TEST split of every Gower variate dataset with the ORIGINAL
-# nla_m training scalers injected (never refit). Outputs land under
-# checkpoints/<exp>/misspec/<variate>/. Set False to restore the standard list eval above.
-RUN_MISSPEC = True
-if RUN_MISSPEC:
-    from src.ml.eval.misspec import run_misspecification_eval
+def run_standard_eval(experiment_names, repeat_indices_override=None):
+    """The standard experiment-list evaluation (in-distribution, per repeat)."""
+    for experiment_name in experiment_names:
+        if experiment_name not in experiments:
+            print(f"Experiment '{experiment_name}' not found in config.experiments, skipping.")
+            continue
 
-    run_misspecification_eval(base_experiment="gower_npe_finetune_nla_m_z8", repeat_index=0)
-    experiments_to_evaluate = []  # skip the standard loop below
+        config, experiment_config = load_config(experiment_name)
 
-for experiment_name in experiments_to_evaluate:
-    if experiment_name not in experiments:
-        print(f"Experiment '{experiment_name}' not found in config.experiments, skipping.")
-        continue
+        # Handle max_trainval_cosmos similarly to train.py
+        max_tv = experiment_config.get("max_trainval_cosmos", None)
 
-    config, experiment_config = load_config(experiment_name)
+        # Keep evaluation consistent with training: evaluate across repeats. Production configs use
+        # `repeat_indices` (not `repeats`); fall back to range(repeats) for legacy configs.
+        repeats = getattr(config, "repeats", 1)
+        repeat_idxs = list(
+            repeat_indices_override
+            if repeat_indices_override is not None
+            else (getattr(config, "repeat_indices", None) or range(repeats))
+        )
 
-    # Handle max_trainval_cosmos similarly to train.py
-    max_tv = experiment_config.get("max_trainval_cosmos", None)
+        if isinstance(max_tv, (list, tuple)):
+            # Multiple cosmos: evaluate each separately
+            for n_cosmo in max_tv:
+                cfg = get_default_config()
+                cfg.experiment_name = config.experiment_name
+                cfg.test_shape_noise_idx = [0]
 
-    # Keep evaluation consistent with training: evaluate across repeats. Production configs use
-    # `repeat_indices` (not `repeats`); fall back to range(repeats) for legacy configs.
-    repeats = getattr(config, "repeats", 1)
-    repeat_idxs = list(getattr(config, "repeat_indices", None) or range(repeats))
+                for key, val in experiment_config.items():
+                    if key == "max_trainval_cosmos":
+                        continue
+                    setattr(cfg, key, val)
 
-    if isinstance(max_tv, (list, tuple)):
-        # Multiple cosmos: evaluate each separately
-        for n_cosmo in max_tv:
-            cfg = get_default_config()
-            cfg.experiment_name = config.experiment_name
-            cfg.test_shape_noise_idx = [0]
+                cfg.max_trainval_cosmos = int(n_cosmo)
+                cfg.match_num_cosmo = True  # Ensure match_string includes n_cosmo
+                for i in repeat_idxs:
+                    cfg_copy = copy(cfg)  # Avoid mutating cfg across repeats
+                    # Apply the exact repeat match_string logic used by train_model
+                    repeat_match, _ = apply_repeat_config(cfg_copy, i)
+                    cfg_copy.match_string = repeat_match
 
-            for key, val in experiment_config.items():
-                if key == "max_trainval_cosmos":
-                    continue
-                setattr(cfg, key, val)
+                    print(
+                        f"Evaluating '{experiment_name}' ncosmo={n_cosmo} repeat={i} match_string={cfg_copy.match_string}",
+                        flush=True,
+                    )
 
-            cfg.max_trainval_cosmos = int(n_cosmo)
-            cfg.match_num_cosmo = True  # Ensure match_string includes n_cosmo
+                    scalers, _, _, test_loader = prepare_data_parameters(cfg_copy)
+                    evaluate_best_checkpoint(cfg_copy, test_loader, scalers["cosmo"])
+        else:
+            # Single or no max_trainval_cosmos
+            config.test_shape_noise_idx = [0]
+            if max_tv is not None:
+                config.max_trainval_cosmos = int(max_tv)
+
             for i in repeat_idxs:
-                cfg_copy = copy(cfg)  # Avoid mutating cfg across repeats
-                # Apply the exact repeat match_string logic used by train_model
-                repeat_match, _ = apply_repeat_config(cfg_copy, i)
-                cfg_copy.match_string = repeat_match
+                repeat_match, _ = apply_repeat_config(config, i)
+                config.match_string = repeat_match
 
                 print(
-                    f"Evaluating '{experiment_name}' ncosmo={n_cosmo} repeat={i} match_string={cfg_copy.match_string}",
+                    f"Evaluating '{experiment_name}' max_trainval_cosmos={getattr(config, 'max_trainval_cosmos', None)} repeat={i} match_string={config.match_string}",
                     flush=True,
                 )
 
-                scalers, _, _, test_loader = prepare_data_parameters(cfg_copy)
-                evaluate_best_checkpoint(cfg_copy, test_loader, scalers["cosmo"])
+                scalers, _, _, test_loader = prepare_data_parameters(config)
+                evaluate_best_checkpoint(config, test_loader, scalers["cosmo"])
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
+    parser.add_argument("--mode", choices=["list", "misspec"], default=None,
+                        help=f"evaluation mode (default: {DEFAULT_MODE})")
+    parser.add_argument("--experiments", nargs="+", default=None,
+                        help="list mode: experiment names (default: the DEFAULT_EXPERIMENTS list)")
+    parser.add_argument("--repeat-indices", type=int, nargs="+", default=None,
+                        help="restrict to these repeat indices (both modes; misspec >1 repeat "
+                             "also computes the cross-repeat disagreement statistic)")
+    parser.add_argument("--misspec-base", default="gower_npe_finetune_nla_m_z8",
+                        help="misspec mode: the base experiment to evaluate on all variates")
+    parser.add_argument("--num-samples", type=int, default=10000,
+                        help="misspec mode: posterior samples per test point")
+    args = parser.parse_args(argv)
+
+    mode = args.mode or DEFAULT_MODE
+    if mode == "misspec":
+        from src.ml.eval.misspec import run_misspecification_eval
+
+        run_misspecification_eval(
+            base_experiment=args.misspec_base,
+            repeat_indices=args.repeat_indices or (0,),
+            num_samples=args.num_samples,
+        )
     else:
-        # Single or no max_trainval_cosmos
-        config.test_shape_noise_idx = [0]
-        if max_tv is not None:
-            config.max_trainval_cosmos = int(max_tv)
+        run_standard_eval(args.experiments or DEFAULT_EXPERIMENTS, args.repeat_indices)
 
-        for i in repeat_idxs:
-            repeat_match, _ = apply_repeat_config(config, i)
-            config.match_string = repeat_match
 
-            print(
-                f"Evaluating '{experiment_name}' max_trainval_cosmos={getattr(config, 'max_trainval_cosmos', None)} repeat={i} match_string={config.match_string}",
-                flush=True,
-            )
-
-            scalers, _, _, test_loader = prepare_data_parameters(config)
-            evaluate_best_checkpoint(config, test_loader, scalers["cosmo"])
+if __name__ == "__main__":
+    main()

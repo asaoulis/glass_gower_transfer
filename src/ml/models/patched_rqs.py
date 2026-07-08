@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import torch
 from torch.nn import functional as F
@@ -134,7 +136,18 @@ def rational_quadratic_spline(
         c = -input_delta * (inputs - input_cumheights)
 
         discriminant = b.pow(2) - 4 * a * c
-        assert (discriminant >= 0).all()
+        # For a monotone RQS the discriminant is >= 0 analytically, but float roundoff can push
+        # it slightly negative under extreme (e.g. out-of-distribution) conditioning — stock
+        # nflows hard-asserts here and kills the whole sampling run. Clamp to 0 instead: the
+        # clamped root is the analytic double root, and genuinely broken params (inf/NaN) still
+        # surface as non-finite outputs for downstream filtering.
+        n_neg = int((discriminant < 0).sum())
+        if n_neg:
+            warnings.warn(
+                f"[patched_rqs] clamping {n_neg} negative spline discriminant(s) "
+                f"(min={discriminant.min().item():.3e}) — expected only for far-OOD conditioning."
+            )
+            discriminant = discriminant.clamp_min(0.0)
 
         root = (2 * c) / (-b - torch.sqrt(discriminant))
         # root = (- b + torch.sqrt(discriminant)) / (2 * a)
@@ -197,7 +210,9 @@ class DtypePatchedPiecewiseRationalQuadraticCouplingTransform(PiecewiseRationalQ
                 "Inputs to the softmax are not scaled down: initialization might be bad."
             )
 
-        spline_fn = splines.unconstrained_rational_quadratic_spline
+        # Use THIS module's spline (dtype-safe + clamped discriminant), not stock nflows —
+        # the stock inverse hard-asserts discriminant >= 0, which OOD conditioning trips.
+        spline_fn = unconstrained_rational_quadratic_spline
         spline_kwargs = {"tails": self.tails, "tail_bound": self.tail_bound}
 
         return spline_fn(
