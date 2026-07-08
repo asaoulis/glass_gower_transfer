@@ -30,8 +30,10 @@ from copy import copy
 experiments.update(ablation_experiments)  # Combine experiments and ablations into a single dict
 experiments.update(kids_legacy_experiments)  # KiDS-Legacy NLA-M configs
 
-# What a bare `python eval.py` (the currently-deployed eval-submit) runs. Explicit --mode wins.
-DEFAULT_MODE = "misspec"
+# What a bare `python eval.py` runs. Explicit --mode wins. The gatekeeper passes eval.py CLI
+# args through (redeployed 2026-07-08), so submissions should say --mode explicitly:
+#   run_remote.py eval --args "--mode misspec --repeat-indices 0 1 2 3 4"
+DEFAULT_MODE = "list"
 
 # Standard-mode default experiment list (used when --experiments is not given).
 DEFAULT_EXPERIMENTS = [

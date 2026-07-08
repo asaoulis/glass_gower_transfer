@@ -333,8 +333,11 @@ def run_misspecification_eval(
             member_test_loaders=[in_dist_test_loader] * n_ens,
         )
         if model is None:
-            raise RuntimeError(f"Could not build the '{base_experiment}' {cfg.match_string} "
-                               "ensemble (no checkpoints found?)")
+            # e.g. a repeat whose training jobs haven't finished — skip it, keep the others.
+            print(f"[misspec] repeat {r}: no '{base_experiment}' {cfg.match_string} checkpoints "
+                  "yet — skipping this repeat.", flush=True)
+            summary[f"repeat{r}"] = {"error": f"no checkpoints for {cfg.match_string}"}
+            continue
 
         for variate in variates:
             name = variate["name"]

@@ -29,13 +29,19 @@ python eval.py            # bare: runs DEFAULT_MODE (see below)
 ## Cluster submission
 
 ```bash
-# today (deployed gatekeeper passes no args -> bare eval.py -> DEFAULT_MODE):
-python .claude/cluster/run_remote.py eval --gpu v100
-
-# after the gatekeeper redeploy (see one-time setup below):
-python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec --repeat-indices 0 1 2 3 4"
+# standard in-distribution eval (also what a bare eval.py runs: DEFAULT_MODE=list):
 python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode list --experiments gower_npe_finetune_nla_m_z8"
+
+# misspecification eval, single repeat:
+python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec --repeat-indices 0"
+
+# misspec + cross-repeat ensemble-disagreement (the combined OOD statistic run):
+python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec --repeat-indices 0 1 2 3 4"
 ```
+
+(The arg pass-through went live with the gatekeeper redeploy on 2026-07-08; repeats whose
+training hasn't finished are skipped with a warning, so the 5-repeat form is safe to submit
+while later repeats are still in the train queue.)
 
 Logs: the job file is `eval_run_<jobid>.{out,err}`; the gatekeeper's matcher needs
 `logs --name run` (NOT `eval_run`), and that also matches `sample_run`/`plot_run` — filter by
@@ -50,14 +56,13 @@ python .claude/runs/eval-and-viz/first-npe-misspecification/artifacts/plot_missp
     --out misspec_tarp_coverage.png
 ```
 
-## One-time setup for CLI pass-through (manual gate)
+## CLI pass-through plumbing (for reference)
 
 The `eval-submit` arg pass-through (charset-validated tokens after `<mods>`) lives in
-`.claude/cluster/remote/{ssh_glass_gatekeeper.sh,submit_eval.sh}` (local-only, NOT in git).
-It only takes effect after re-running `bash .claude/cluster/remote/bootstrap_install.sh`
-(the gatekeeper is the trust anchor; the currently-deployed one silently drops extra tokens).
-After redeploy, flip `DEFAULT_MODE` in `eval.py` from `"misspec"` back to `"list"` so a bare
-`python eval.py` means the standard eval again.
+`.claude/cluster/remote/{ssh_glass_gatekeeper.sh,submit_eval.sh}` (local-only, NOT in git) and
+was deployed via `bootstrap_install.sh` on 2026-07-08. Any future edit to those files needs
+another bootstrap redeploy (the gatekeeper is the trust anchor). `DEFAULT_MODE` in `eval.py`
+is `"list"`, so a bare `python eval.py` means the standard eval.
 
 ## Design invariants (do not break these)
 
