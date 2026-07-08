@@ -554,8 +554,10 @@ def _eval_one_variate(
         orig_cosmo_scaler,
         test_id_pool=test_id_pool,
         test_shape_noise_idx=test_shape_noise_idx,
-        # Cap at 64: train batch sizes (100-128) are l40s-sized; eval may land on a smaller GPU.
-        batch_size=min(64, int(getattr(cfg, "test_batch_size", None) or getattr(cfg, "batch_size", 64))),
+        # Cap at 16: train batch sizes (100-128) are l40s-sized; the batch-64 encode peak sits
+        # AT the v100 16GB edge (glass foundation encodes OOM'd at 64, job 1316362). Eval wall
+        # time is sampling-dominated, so a small encode batch costs nothing.
+        batch_size=min(16, int(getattr(cfg, "test_batch_size", None) or getattr(cfg, "batch_size", 16))),
         max_test_files=max_test_files,
     )
 
