@@ -37,6 +37,12 @@ python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec --re
 
 # misspec + cross-repeat ensemble-disagreement (the combined OOD statistic run):
 python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec --repeat-indices 0 1 2 3 4"
+
+# GLASS foundation vs the GLASS pre-train variates (single-model experiment, 5 repeats,
+# test sets capped at ~1000 mocks; test ids derived from the foundation's own held-out split):
+python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec \
+    --misspec-base kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8 --variates glass_pretrain \
+    --repeat-indices 0 1 2 3 4 --max-test-files 1000"
 ```
 
 (The arg pass-through went live with the gatekeeper redeploy on 2026-07-08; repeats whose
