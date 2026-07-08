@@ -307,7 +307,12 @@ class NDELightningModule(BaseLightningModule):
         if avg_log_prob is not None:
             self.test_loss_values.append(avg_log_prob)
 
+    @torch.no_grad()
     def compute_avg_log_prob(self):
+        # Eval-only metric; without no_grad a bare call retains the full encoder graph for
+        # every test batch (~15GB on the kids hybrid — OOM'd the GLASS misspec evals). The
+        # ensemble class already carries this decorator; training's usage was safe only
+        # because on_validation_epoch_end wraps the call in torch.no_grad() externally.
         predictions = []
         for batch in self.test_dataloader:
             batch = self.transfer_batch_to_device(batch, self.device, 0)
