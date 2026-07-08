@@ -37,6 +37,8 @@ def load_cosmo_params(
     cosmo_params: Optional[List[str]] = None,
     as_torch: bool = True,
     dtype=np.float32,
+    allow_missing: bool = False,
+    fill_value: float = float("nan"),
 ):
     with h5py.File(file_path, "r") as f:
         grp = f["cosmo_dict"]
@@ -45,7 +47,16 @@ def load_cosmo_params(
         if cosmo_params is None:
             cosmo_params = list(grp.keys())
 
-        vals = [float(np.asarray(grp[p][()])) for p in cosmo_params]
+        if allow_missing:
+            # Cross-variate eval: a dataset may lack some of the model's params (e.g. no b_ia
+            # in NLA/NLA-z mocks). Keep theta at the requested dimensionality; downstream
+            # metrics drop the non-finite columns.
+            vals = [
+                float(np.asarray(grp[p][()])) if p in grp else float(fill_value)
+                for p in cosmo_params
+            ]
+        else:
+            vals = [float(np.asarray(grp[p][()])) for p in cosmo_params]
 
     arr = np.asarray(vals, dtype=dtype)
 
@@ -68,6 +79,8 @@ def unpack_data(
     dtype=np.float32,
     stack_groups: bool = False,  # default: do NOT stack; require explicit patch (e.g., 'north')
     return_names: bool = False,
+    allow_missing_cosmo: bool = False,
+    cosmo_fill_value: float = float("nan"),
 ):
     data = {}
     with h5py.File(file_path, "r") as f:
@@ -86,7 +99,14 @@ def unpack_data(
                 raise TypeError(f"Unsupported HDF5 node type at {'/'.join(path)}: {type(node)}")
             data[out_key] = arr
 
-    cosmo = load_cosmo_params(file_path, cosmo_params, as_torch=as_torch, dtype=dtype)
+    cosmo = load_cosmo_params(
+        file_path,
+        cosmo_params,
+        as_torch=as_torch,
+        dtype=dtype,
+        allow_missing=allow_missing_cosmo,
+        fill_value=cosmo_fill_value,
+    )
 
     if as_torch:
         import torch

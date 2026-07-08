@@ -33,6 +33,7 @@ class H5CosmoDataset(Dataset):
         stack_groups: bool = False,
         transform=None,
         return_cosmo_id: bool = False,
+        allow_missing_cosmo_params: bool = False,
     ):
         self.paths = list(paths)
         self.nested_keys = nested_keys
@@ -41,6 +42,10 @@ class H5CosmoDataset(Dataset):
         self.dtype = dtype
         self.stack_groups = stack_groups
         self.transform = transform
+        # Cross-variate eval: NaN-fill cosmo params absent from a dataset instead of treating
+        # the file as corrupt (a missing cosmo_dict key would otherwise KeyError-skip EVERY
+        # file of an NLA/NLA-z variate). Data-group KeyErrors still skip as before.
+        self.allow_missing_cosmo_params = allow_missing_cosmo_params
         # Opt-in: also return the integer cosmology id as a 3rd batch element. Default OFF so every
         # non-VICReg path keeps the unchanged (data_dict, theta) 2-tuple contract. Used by the VICReg
         # train loader to group same-cosmology samples for the invariance term.
@@ -69,6 +74,7 @@ class H5CosmoDataset(Dataset):
                     as_torch=self.as_torch,
                     dtype=self.dtype,
                     stack_groups=self.stack_groups,
+                    allow_missing_cosmo=self.allow_missing_cosmo_params,
                 )
                 if self.transform is not None:
                     data = self.transform(data)

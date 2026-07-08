@@ -64,6 +64,18 @@ experiments_to_evaluate = [
     "glass_encoder_finetune_no_vd_z8",
 ]
 
+# --- Model-misspecification eval (one model × many variate datasets) ------------------------
+# When True, eval.py ONLY runs the misspec driver (src/ml/eval/misspec.py): the production NPE
+# r0 ensemble evaluated on the TEST split of every Gower variate dataset with the ORIGINAL
+# nla_m training scalers injected (never refit). Outputs land under
+# checkpoints/<exp>/misspec/<variate>/. Set False to restore the standard list eval above.
+RUN_MISSPEC = True
+if RUN_MISSPEC:
+    from src.ml.eval.misspec import run_misspecification_eval
+
+    run_misspecification_eval(base_experiment="gower_npe_finetune_nla_m_z8", repeat_index=0)
+    experiments_to_evaluate = []  # skip the standard loop below
+
 for experiment_name in experiments_to_evaluate:
     if experiment_name not in experiments:
         print(f"Experiment '{experiment_name}' not found in config.experiments, skipping.")
