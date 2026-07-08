@@ -674,7 +674,7 @@ def _npe_finetune_z8(checkpoint_dir):
     c["checkpoint_path"] = checkpoint_dir              # whole-model load, per-repeat "_{i}" (_orig_mod-safe)
     c.pop("pretrained_band_ckpt_path", None)
     c["freeze_band"] = False
-    c["epochs"] = 25
+    c["epochs"] = 10   # was 25; user 2026-07-07 — faster finetune + backfillable (r0 members peaked ep3-24, some capped)
     c["lr"] = 1e-5
     c["batch_size"] = 128
     c["scheduler_type"] = "exp"
