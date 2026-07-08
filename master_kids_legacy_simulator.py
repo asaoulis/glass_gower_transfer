@@ -143,12 +143,16 @@ def parse_args():
                              "outer/inner shape-noise realisations to a single one. For fast "
                              "per-cosmology theory tests (implies no rotations).")
 
-    parser.add_argument("--shear-normalization", type=str, default="mean",
+    parser.add_argument("--shear-normalization", type=str, default="counts",
                         choices=["counts", "mean", "expected"],
                         help="Shear-map normalisation in make_alm_shear_convergence "
-                             "(default 'mean' = global mean counts/pixel, which agrees with the "
-                             "KiDS MCM/theory to ~few %%; 'counts' = per-pixel observed counts, "
-                             "the pre-revert c892fc1 default that inflated pseudo-Cls by ~1.5x).")
+                             "(default 'counts' = per-pixel observed counts, DES-Y3-style: cancels "
+                             "the source-clustering (1+b_g*delta) leakage into the maps at first "
+                             "order — see .claude/runs/eval-and-viz/investigate-galaxy-bias-issue. "
+                             "'mean' = global mean counts/pixel (Hall & Tessore; former default): "
+                             "matches the KiDS MCM/theory to ~few %% for bandpowers but is "
+                             "first-order sensitive to source clustering; the 'counts' pseudo-Cl "
+                             "offset vs the fractional-mask MCM (~1.5x) needs re-validation.)")
 
     parser.add_argument("--use-kids-mask", action="store_true",
                         help="Use KiDS mask")
