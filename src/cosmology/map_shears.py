@@ -151,7 +151,7 @@ def make_alm_shear_convergence(
     mask=None,
     nosh=False,
     return_shear=False,
-    normalization="mean",
+    normalization="counts",
     n_arcmin2=None,
     rng=None,
 ):
@@ -162,8 +162,12 @@ def make_alm_shear_convergence(
 
     Normalization modes
     -------------------
-    - "counts": divide by the *observed* number of galaxies per pixel (per-bin).
-    - "mean": divide by the mean counts per pixel (previous behaviour here).
+    - "counts" (default): divide by the *observed* number of galaxies per pixel (per-bin).
+      DES-Y3-style (Jeffrey+25 Eq. 10); cancels the source-clustering (1+b_g*delta)
+      modulation of the shear signal at first order.
+    - "mean": divide by the mean counts per pixel (former default; Hall & Tessore 2025).
+      First-order sensitive to source clustering — leaks b_g*delta*gamma into the maps
+      (see .claude/runs/eval-and-viz/investigate-galaxy-bias-issue).
     - "expected": divide by n_arcmin2[i] * pixel_area_arcmin2 (legacy `make_alm`).
 
     Notes
