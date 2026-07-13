@@ -91,6 +91,50 @@ kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8"] = _hybrid_c
 kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_smoke"] = _hybrid_lmin50_z8_smoke()
 
 
+# === M2-LR  LR-scheme DEBUG variants of the counts z8 foundation (1 repeat each; TOP PRIORITY) ====
+# The baseline cyclic (lr 2e-4) hybrid plateaus at the 2-pt band level on the counts maps — the CNN
+# is not breaking through. Probe the barrier with 3 LR schemes (user 2026-07-13). 1 repeat each
+# (repeat 0 -> band _0); everything else identical to _hybrid_counts_z8 (counts fwhm4 data, frozen
+# per-repeat band, 100 epochs). Cyclic max_lr = config.lr (base.py CyclicLR max_lr=base_lrs); exp
+# gamma is PER-EPOCH (step_gamma = gamma**(1/steps_per_epoch)).
+def _hybrid_counts_z8_lr(lr=None, scheduler_type=None, scheduler_kwargs=None):
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = [0]
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    return c
+
+
+def _hybrid_counts_z8_smoke_lr(lr=None, scheduler_type=None, scheduler_kwargs=None):
+    """De-clustered fwhm8-local smoke clone with the SAME LR override, for the pre-submit gate."""
+    c = _hybrid_lmin50_z8_smoke()
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    return c
+
+
+# gamma for 2e-4 -> 5e-5 over 100 epochs: 0.25**(1/100) ≈ 0.98623 (per-epoch).
+_EXPDECAY_KW = {"gamma": 0.98623, "warmup_steps": 0}
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3"] = _hybrid_counts_z8_lr(lr=0.001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e4"] = _hybrid_counts_z8_lr(lr=0.0001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_expdecay"] = _hybrid_counts_z8_lr(
+    lr=0.0002, scheduler_type="exp", scheduler_kwargs=_EXPDECAY_KW)
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3_smoke"] = _hybrid_counts_z8_smoke_lr(lr=0.001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e4_smoke"] = _hybrid_counts_z8_smoke_lr(lr=0.0001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_expdecay_smoke"] = _hybrid_counts_z8_smoke_lr(
+    lr=0.0002, scheduler_type="exp", scheduler_kwargs=_EXPDECAY_KW)
+
+
 # === M3  main-variate Gower NPE 9-member ensemble finetune (5 repeats) ==========================
 kids_legacy_counts_experiments["gower_npe_finetune_nla_m_counts_z8"] = _npe_finetune_z8(
     _FOUNDATION_CKPT, data_patterns=_GOWER_NLA_M, eb_variant=_EB_VARIANT)
