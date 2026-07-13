@@ -245,6 +245,48 @@ SIM_TYPE_CONFIGS = {
     },
 }
 
+# Fixed seed for the `--gower-sim-set fixed_test --num-sims N (>200)` random top-up (below): the
+# 200 fixed-test ids are always kept and the extra (N-200) sim_ids are drawn WITHOUT replacement
+# from the Gower complement using this seed, so a resume / re-submit reproduces the SAME cosmology
+# set (the sim resumes by skipping complete sim_ids, so the id list must be stable across runs).
+GOWER_TOPUP_SEED = 20260710
+
+
+def gower_fixed_test_with_topup(fixed_ids, num_sims, full_gower_ids, seed=GOWER_TOPUP_SEED):
+    """Ordered Gower sim_id array for ``--gower-sim-set fixed_test`` (+ optional random top-up).
+
+    The 200 fixed-test ids come FIRST (so the generic ``--num-sims`` prefix cap applied by the
+    caller never drops them). When ``num_sims`` exceeds the fixed count, ``num_sims - len(fixed)``
+    extra ids are drawn WITHOUT replacement from ``full_gower_ids`` minus the fixed set, using a
+    deterministic ``seed`` so a resume / re-submit reproduces the same set. This gives a
+    "200 fixed-test + M random" training suite in one output dir (the fixed ids stay forced into
+    the eval test split via ``config.fixed_test_sim_ids``; the extras become train/val cosmologies).
+
+    Args:
+        fixed_ids: ordered list of the fixed-test sim_ids (farthest-point order preserved).
+        num_sims: the ``--num-sims`` value, or ``None`` (=> just the fixed ids, no top-up).
+        full_gower_ids: the full Gower sim_id array (``np.arange(193, 782)``).
+        seed: RNG seed for the top-up draw.
+
+    Returns:
+        1-D ``float64`` ``np.ndarray`` of sim_ids (fixed first, then the random extras).
+    """
+    base = np.array(fixed_ids, dtype=np.float64).reshape(-1)
+    if num_sims is None or num_sims <= len(fixed_ids):
+        return base
+    fixed_set = set(int(i) for i in fixed_ids)
+    complement = np.array(
+        sorted(int(i) for i in np.asarray(full_gower_ids).reshape(-1).tolist() if int(i) not in fixed_set),
+        dtype=np.int64,
+    )
+    n_extra = min(int(num_sims) - len(fixed_ids), len(complement))
+    if n_extra < int(num_sims) - len(fixed_ids):
+        print(f"[gower-topup] WARNING requested {int(num_sims) - len(fixed_ids)} extra sim_ids but "
+              f"only {len(complement)} non-fixed Gower cosmologies exist; capping at {n_extra}.")
+    rng = np.random.default_rng(seed)
+    extra = rng.choice(complement, size=n_extra, replace=False)
+    return np.concatenate([base, extra.astype(np.float64)])
+
 if __name__ == "__main__":
     comm = MPI.COMM_WORLD
     rank = comm.Get_rank()
@@ -272,10 +314,13 @@ if __name__ == "__main__":
             # space (sorting would cluster the prefix at the low sim_ids). The full-set gower runs
             # (num_sims=None) use all 200 regardless of order; only the prefix cares.
             fixed_ids = load_fixed_test_ids_ordered(str(json_path))
-            sim_samples = np.array(fixed_ids, dtype=np.float64).reshape(-1)
-            print(f"[rank 0] --gower-sim-set fixed_test: using {len(fixed_ids)} sim_ids from "
-                  f"{json_path.name} (order-preserving; min {min(fixed_ids)}, max {max(fixed_ids)}, "
-                  f"first {fixed_ids[0]}).")
+            full_gower_ids = SIM_TYPE_CONFIGS["gower_street"]["get_sim_samples"]()
+            sim_samples = gower_fixed_test_with_topup(fixed_ids, args.num_sims, full_gower_ids)
+            n_extra = len(sim_samples) - len(fixed_ids)
+            print(f"[rank 0] --gower-sim-set fixed_test: {len(fixed_ids)} fixed sim_ids from "
+                  f"{json_path.name} (min {min(fixed_ids)}, max {max(fixed_ids)}, first {fixed_ids[0]})"
+                  + (f" + {n_extra} random top-up (seed {GOWER_TOPUP_SEED}) = {len(sim_samples)} total"
+                     if n_extra > 0 else "."))
 
         if args.num_sims is not None:
             n_keep = min(args.num_sims, len(sim_samples))

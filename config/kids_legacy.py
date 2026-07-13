@@ -475,14 +475,20 @@ _NLE_PRETRAIN_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints/{exp}/"
 
 
 def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT_LMIN50_FWHM4,
-                  whiten_k=None, epochs=250):
+                  whiten_k=None, epochs=250, cosmo_param_names=_COSMO_9, preset_overrides=None):
     """NLE flow pre-trained on the FULL GLASS fwhm4 suite on top of a frozen hybrid-encoder source.
     No max_trainval_cosmos (full suite); run_evaluation=False (skip the post-training MCMC on GLASS).
 
     whiten_k: if set, enable per-source embedding whitening + PCA truncation to k dims. The whitener
     is fit ONCE on THIS pretrain run's train split and persisted (datasets/whitener.pt); the finetune
     + eval RESOLVE and REUSE it (never refit) — the research Finding-C3 fix. k < emb_dim truncates
-    (16-D base encoder), k == emb_dim is pure-whiten (the 6-D z6 encoder)."""
+    (16-D base encoder), k == emb_dim is pure-whiten (the 6-D z6 encoder).
+
+    cosmo_param_names / preset_overrides: sub-variate plumbing (defaults = main NLA-M behaviour). The
+    NLE flow q(t|theta) conditions on theta with dim = len(cosmo_param_names), so a variate with a
+    different theta set (nla: a_ia only 8-D; nla_z: a_ia+b_z) MUST override it; NLA-family variates
+    also use the a_ia~U[-6,6] box (preset_overrides), so the theta scaler box must match the
+    encoder-finetune's — else theta is mis-shaped/mis-scaled in BOTH training and eval."""
     c = {
         "data_patterns": data_patterns,
         "eb_map_variant": eb_variant,
@@ -493,7 +499,7 @@ def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT
         "lr": 0.001,
         "flow_kwargs": {"hidden_features": 64},
         "project": "gower-finetuning",
-        "cosmo_param_names": _COSMO_9,
+        "cosmo_param_names": list(cosmo_param_names),
         "inference_mode": "nle",
         "repeat_indices": [0],
         "match_num_cosmo": False,
@@ -502,10 +508,17 @@ def _nle_pretrain(data_patterns=_NLA_M_DATA_LMIN50_FWHM4, eb_variant=_EB_VARIANT
     }
     if whiten_k:
         c["whiten_embeddings"] = {"k": int(whiten_k)}
+    if preset_overrides:
+        c["scaler_options"] = {
+            "data": {"type": "standard", "keys": None},
+            "cosmo": {"type": "preset", "preset_overrides": dict(preset_overrides)},
+        }
     return c
 
 
-def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None, warmstart_max_gap_nats=None):
+def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None, warmstart_max_gap_nats=None,
+                  gower_data=_GOWER_NLA_M_DATA_FWHM4, gower_eb=_GOWER_EB_VARIANT_FWHM4,
+                  cosmo_param_names=_COSMO_9, preset_overrides=None):
     """NLE flow fine-tuned on the prebaked gower fwhm4 store; loads the Stage-A flow from
     checkpoints/<pretrain_exp>/ via load_pretrained_flow. max_trainval_cosmos=[80] (single point);
     run_evaluation=True (MCMC eval on CORES64). ensemble_repeats>1 trains N flow members
@@ -513,8 +526,13 @@ def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None, warmstart_max
     the train-time deferred eval then writes ensemble_evaluation_results / ensemble_tarp json.
 
     whiten_k MUST match the pretrain_exp's whiten_k (the flow ckpt shapes differ per k). The finetune
-    resolves the whitener from checkpoints/<pretrain_exp>/ (same run folder as the flow ckpt)."""
-    c = _nle_pretrain(_GOWER_NLA_M_DATA_FWHM4, _GOWER_EB_VARIANT_FWHM4, whiten_k=whiten_k)
+    resolves the whitener from checkpoints/<pretrain_exp>/ (same run folder as the flow ckpt).
+
+    gower_data / gower_eb: point the finetune at a different (e.g. counts / sub-variate) prebaked gower
+    store. cosmo_param_names / preset_overrides: MUST match the paired pretrain_exp (theta shape + a_ia
+    box); defaults = main NLA-M."""
+    c = _nle_pretrain(gower_data, gower_eb, whiten_k=whiten_k,
+                      cosmo_param_names=cosmo_param_names, preset_overrides=preset_overrides)
     c["epochs"] = 50
     c["lr"] = 0.00008   # 1/5 of the previous 4e-4 (user 2026-07-06: gentler NLE finetune, ALL variates)
     c["load_pretrained_flow"] = True
@@ -664,13 +682,17 @@ kids_legacy_experiments["gower_npe_finetune_nla_m_vicreg"] = _npe_finetune_lmin5
     _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"))
 
 
-def _npe_finetune_z8(checkpoint_dir):
+def _npe_finetune_z8(checkpoint_dir, data_patterns=_GOWER_NLA_M_DATA_FWHM4,
+                     eb_variant=_GOWER_EB_VARIANT_FWHM4):
     """PRODUCTION NPE 9-member ensemble finetune, MAIN variate — z8 architecture (matches the z8
     foundation ckpt). Whole-model load (encoder + NPE flow) from the foundation, finetune all. Split:
-    300 train/val cosmos (80/20), 200 fixed-test ids held out. ALL 5 repeats (one job per repeat)."""
+    300 train/val cosmos (80/20), 200 fixed-test ids held out. ALL 5 repeats (one job per repeat).
+
+    data_patterns / eb_variant: point the finetune at a different (e.g. counts) prebaked gower store
+    (defaults = the nla_m fwhm4 store)."""
     c = _hybrid_lmin50_z8()                            # z8 arch EXACTLY matches the z8 foundation ckpt
-    c["data_patterns"] = _GOWER_NLA_M_DATA_FWHM4
-    c["eb_map_variant"] = _GOWER_EB_VARIANT_FWHM4
+    c["data_patterns"] = data_patterns
+    c["eb_map_variant"] = eb_variant
     c["checkpoint_path"] = checkpoint_dir              # whole-model load, per-repeat "_{i}" (_orig_mod-safe)
     c.pop("pretrained_band_ckpt_path", None)
     c["freeze_band"] = False

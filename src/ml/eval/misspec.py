@@ -69,12 +69,12 @@ _GPU4 = "/share/gpu4/asaoulis/transfer_datasets"
 # nla_m training suite (its meaning changes between suites — user directive 2026-07-08).
 # nla_m / gb* share the nla_m IA model, so a_ia keeps its meaning there.
 DEFAULT_VARIATES: List[Dict] = [
-    {"name": "nla_m", "patterns": f"{_GPU5}/gower_mocks_nla_m_f16_fwhm4_lmin56_lcut1400/output_*.h5",
+    {"name": "nla_m", "patterns": f"{_GPU5}/gower_mocks_nla_m_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5",
      "exclude_params": [], "in_distribution": True},
-    {"name": "nla", "patterns": f"{_GPU4}/gower_mocks_nla/output_*.h5", "exclude_params": ["a_ia"]},
-    {"name": "nla_z", "patterns": f"{_GPU4}/gower_mocks_nla_z/output_*.h5", "exclude_params": ["a_ia"]},
-    {"name": "gb0p5", "patterns": f"{_GPU4}/gower_mocks_gb0p5/output_*.h5", "exclude_params": []},
-    {"name": "gb1p5", "patterns": f"{_GPU4}/gower_mocks_gb1p5/output_*.h5", "exclude_params": []},
+    {"name": "nla", "patterns": f"{_GPU4}/gower_mocks_nla_counts/output_*.h5", "exclude_params": ["a_ia"]},
+    {"name": "nla_z", "patterns": f"{_GPU4}/gower_mocks_nla_z_counts/output_*.h5", "exclude_params": ["a_ia"]},
+    {"name": "gb0p5", "patterns": f"{_GPU4}/gower_mocks_gb0p5_counts/output_*.h5", "exclude_params": []},
+    {"name": "gb1p5", "patterns": f"{_GPU4}/gower_mocks_gb1p5_counts/output_*.h5", "exclude_params": []},
 ]
 
 # GLASS pre-train variate suites (gpu5 f16 fwhm4_lmin56_lcut1400 prebakes, matching the GLASS
@@ -107,10 +107,12 @@ def _load_experiment_config(experiment_name: str):
     from config.experiments import experiments as base_experiments
     from config.ablations import ablation_experiments
     from config.kids_legacy import kids_legacy_experiments
+    from config.kids_legacy_counts import kids_legacy_counts_experiments
 
     exps = dict(base_experiments)
     exps.update(ablation_experiments)
     exps.update(kids_legacy_experiments)
+    exps.update(kids_legacy_counts_experiments)
     experiment_config = exps[experiment_name]
 
     config = get_default_config()

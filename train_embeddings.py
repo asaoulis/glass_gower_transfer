@@ -3,6 +3,7 @@ import sys
 from config.experiments import experiments
 from config.ablations import ablation_experiments
 from config.kids_legacy import kids_legacy_experiments
+from config.kids_legacy_counts import kids_legacy_counts_experiments
 from src.ml.embeddings.train import EmbeddingTrainArgs, train_embeddings_experiment
 from src.ml.models.custom_sbi import NeuralSplineFlow
 
@@ -13,6 +14,7 @@ from src.ml.models.custom_sbi import NeuralSplineFlow
 # would NOT propagate to the already-imported reference, so use .update().
 experiments.update(ablation_experiments)
 experiments.update(kids_legacy_experiments)
+experiments.update(kids_legacy_counts_experiments)  # counts-normalisation rerun configs
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
