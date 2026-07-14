@@ -205,6 +205,11 @@ _STAB_VARIANTS = {
                dict(mk_extra={"patch_var_reg_coeff": 0.5})),
     "z16": (dict(mk_extra={"hybrid_output_dim": 16}),
             dict(mk_extra={"hybrid_output_dim": 16})),
+    # z64 (user 2026-07-14): EXPANSION head Linear(16->64) — over-complete flow conditioning of
+    # the 16-D concat (z16 showed the 16->8 compression costs ~0.2 nats; test whether a wider
+    # conditioning basis helps the flow further).
+    "z64": (dict(mk_extra={"hybrid_output_dim": 64}),
+            dict(mk_extra={"hybrid_output_dim": 64})),
     "wd05_cycexp1e3": (dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)}, **_CYCEXP_1E3),
                        dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)})),
     # Init-gain + LR-escape combo — the two top-ranked (init / gradient-flow) levers together.
