@@ -426,6 +426,22 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         fusion_hidden: int | None = None,
         patch_scale_init: float = 0.1,
         patch_scale_learnable: bool = True,
+        # Anti-collapse controls (counts-training-performance task, 2026-07-14). All default OFF.
+        # band_dropout_p: per-SAMPLE modality dropout of the (frozen) band branch during training
+        #   — with prob p, band_mu is zeroed so the flow must explain theta from the maps alone,
+        #   keeping gradient flowing into the map CNN even when the band shortcut saturates the
+        #   VMIM loss. Eval/val always sees the full band.
+        # patch_head_init_gain: init-only rescale of the patch encoder head's final Linear. At
+        #   default init patch_mu enters the concat ~18x smaller than the pretrained band_mu
+        #   (measured std 0.012 vs 0.225), leaving the map branch near-invisible to the flow at
+        #   the start of training; a gain ~O(10) restores scale parity. Training remains free to
+        #   shrink it (weights only scaled at construction).
+        # patch_var_reg_coeff: coefficient for a VICReg-style hinge penalty
+        #   mean(relu(1 - std(patch_mu, dim=0))^2) added by the Lightning training step —
+        #   directly forbids the collapsed constant-patch_mu state observed in stuck runs.
+        band_dropout_p: float = 0.0,
+        patch_head_init_gain: float = 1.0,
+        patch_var_reg_coeff: float = 0.0,
         **kwargs,
     ):
         # For the *hybrid* encoder, latent_dim is the dim of mu after concatenation of the
@@ -490,6 +506,27 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         if map_encoder_type not in patch_builders:
             raise ValueError(f"Unknown map_encoder_type '{map_encoder_type}', expected one of {list(patch_builders.keys())}")
         self.patch_encoder = patch_builders[map_encoder_type](latent_dim=dim_patch, **map_kwargs)
+
+        self.band_dropout_p = float(band_dropout_p)
+        self.patch_var_reg_coeff = float(patch_var_reg_coeff)
+        self._last_patch_mu = None
+        if patch_head_init_gain != 1.0:
+            # Init-only rescale of the patch head's final Linear (build_head ends in a Linear).
+            last_linear = None
+            head = getattr(self.patch_encoder, "head", None)
+            if isinstance(head, nn.Sequential):
+                for layer in head:
+                    if isinstance(layer, nn.Linear):
+                        last_linear = layer
+            if last_linear is None:
+                raise ValueError(
+                    "patch_head_init_gain set but the patch encoder head has no final nn.Linear"
+                )
+            with torch.no_grad():
+                last_linear.weight.mul_(float(patch_head_init_gain))
+                if last_linear.bias is not None:
+                    last_linear.bias.mul_(float(patch_head_init_gain))
+            print(f"Applied patch_head_init_gain={patch_head_init_gain} to the patch head final Linear", flush=True)
 
         # -----------------
         # Fusion modules
@@ -646,6 +683,14 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             patch_mu, _ = self._normalise_child_output(patch_out, self.dim_patch)
 
         if not self.use_kl:
+            if self.training and self.band_dropout_p > 0:
+                keep = (
+                    torch.rand(band_mu.shape[0], 1, device=band_mu.device)
+                    >= self.band_dropout_p
+                ).to(band_mu.dtype)
+                band_mu = band_mu * keep
+            if self.patch_var_reg_coeff > 0:
+                self._last_patch_mu = patch_mu
             mu = self._fuse_mu(band_mu, patch_mu)
             if mu.shape[-1] != self.latent_dim:
                 raise ValueError(

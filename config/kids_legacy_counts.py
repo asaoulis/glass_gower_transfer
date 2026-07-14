@@ -25,6 +25,9 @@ from config.kids_legacy import (
     # but keeps eb_map_variant, which must be the fixture's fwhm8 tag)
     _NLA_M_DATA as _SMOKE_DATA,
     _EB_VARIANT as _SMOKE_EB_VARIANT,
+    # mean-norm lmin50 fwhm4 prebaked store (the H1 map-only mean-vs-counts comparison)
+    _NLA_M_DATA_LMIN50_FWHM4 as _MEAN_NLA_M_FWHM4,
+    _EB_VARIANT_LMIN50_FWHM4 as _MEAN_EB_VARIANT_FWHM4,
     # factories to clone
     _band_lmin50, _hybrid_lmin50_z8, _hybrid_lmin50_z8_smoke,
     _encoder_finetune_z8, _encoder_finetune_z8_smoke,
@@ -133,6 +136,133 @@ kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3_smok
 kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e4_smoke"] = _hybrid_counts_z8_smoke_lr(lr=0.0001)
 kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_expdecay_smoke"] = _hybrid_counts_z8_smoke_lr(
     lr=0.0002, scheduler_type="exp", scheduler_kwargs=_EXPDECAY_KW)
+
+
+# === M2-STAB  stability/ceiling DEBUG variants (counts-training-performance task, 2026-07-14) ====
+# Forensics (task .claude/runs/training-runs/counts-training-performance) nailed the failure mode:
+# at lr<=2e-4 on counts the map branch COLLAPSES to a constant output within ~10 epochs (patch_mu
+# batch-std = 0 in every stuck ckpt) because at init patch_mu enters the concat ~18x smaller than
+# the frozen band_mu and receives ~40x less step-0 gradient; at lr=1e-3 it escapes but then
+# memorises noise (train -6.3 / val -3.3 by ep95). These variants test the counter-measures:
+# LR escape+decay (cycexp), band modality-dropout, patch-head init gain, patch-variance hinge,
+# wider summary, weight decay, band-unfreeze, and the map-only H1 upper bounds (counts vs mean).
+def _hybrid_counts_z8_stab(mk_extra=None, repeat_indices=(0,), lr=None, scheduler_type=None,
+                           scheduler_kwargs=None, optimizer_kwargs=None, freeze_band=None,
+                           pretrained_band_lr=None):
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = list(repeat_indices)
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    if optimizer_kwargs is not None:
+        c["optimizer_kwargs"] = optimizer_kwargs
+    if freeze_band is not None:
+        c["freeze_band"] = freeze_band
+    if pretrained_band_lr is not None:
+        c["pretrained_band_lr"] = pretrained_band_lr
+    return c
+
+
+def _hybrid_counts_z8_stab_smoke(mk_extra=None, lr=None, scheduler_type=None,
+                                 scheduler_kwargs=None, optimizer_kwargs=None):
+    """De-clustered fwhm8-local smoke clone exercising the SAME new model kwargs / LR scheme."""
+    c = _hybrid_lmin50_z8_smoke()
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    if optimizer_kwargs is not None:
+        c["optimizer_kwargs"] = optimizer_kwargs
+    return c
+
+
+# Decaying-peak cyclic (base.py 'cyclic_exp'): peaks 1e-3 * 0.98^epoch -> ~1.3e-4 by ep100; keeps
+# the proven 1e-3 escape early while consolidating late (vs flat-peak cyclic that collapses).
+_CYCEXP_1E3 = dict(lr=0.001, scheduler_type="cyclic_exp",
+                   scheduler_kwargs={"gamma": 0.98, "cyclic_period_steps": 6000, "warmup_steps": 1000})
+
+_STAB_VARIANTS = {
+    # name suffix -> (real-config kwargs, smoke-config kwargs)
+    "cycexp1e3": (dict(repeat_indices=(0, 1, 2), **_CYCEXP_1E3),
+                  dict(lr=0.001, scheduler_type="cyclic_exp",
+                       scheduler_kwargs={"gamma": 0.98, "cyclic_period_steps": 60, "warmup_steps": 5})),
+    "banddrop02": (dict(mk_extra={"band_dropout_p": 0.2}),
+                   dict(mk_extra={"band_dropout_p": 0.2})),
+    "pgain16": (dict(mk_extra={"patch_head_init_gain": 16.0}),
+                dict(mk_extra={"patch_head_init_gain": 16.0})),
+    "banddrop02_pgain16": (dict(mk_extra={"band_dropout_p": 0.2, "patch_head_init_gain": 16.0}),
+                           dict(mk_extra={"band_dropout_p": 0.2, "patch_head_init_gain": 16.0})),
+    "pvar05": (dict(mk_extra={"patch_var_reg_coeff": 0.5}),
+               dict(mk_extra={"patch_var_reg_coeff": 0.5})),
+    "z16": (dict(mk_extra={"hybrid_output_dim": 16}),
+            dict(mk_extra={"hybrid_output_dim": 16})),
+    "wd05_cycexp1e3": (dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)}, **_CYCEXP_1E3),
+                       dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)})),
+    # Init-gain + LR-escape combo — the two top-ranked (init / gradient-flow) levers together.
+    "pgain16_cycexp1e3": (dict(mk_extra={"patch_head_init_gain": 16.0}, **_CYCEXP_1E3),
+                          dict(mk_extra={"patch_head_init_gain": 16.0}, lr=0.001)),
+    "bandunfreeze": (dict(freeze_band=False, pretrained_band_lr=1e-5),
+                     dict()),
+}
+
+for _suffix, (_real_kw, _smoke_kw) in _STAB_VARIANTS.items():
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_z8_{_suffix}"] = \
+        _hybrid_counts_z8_stab(**_real_kw)
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_z8_{_suffix}_smoke"] = \
+        _hybrid_counts_z8_stab_smoke(**_smoke_kw)
+
+
+# --- H1 map-only upper bounds: does a band-free CNN beat the band level at all? -----------------
+# Same map encoder/data/l40s tuning as the hybrid but NO band branch: model_type kids_o3_dual on
+# E maps only. Run one on the counts store and one on the MEAN-norm store (same schedule) — the
+# counts-vs-mean map-only gap measures how much standalone map info counts normalisation removed
+# (H1 data ceiling vs fusion/optimisation failure).
+def _maponly(data_patterns, eb_variant):
+    c = _hybrid_counts_z8()               # inherit data/loader/l40s/ml_perf/epochs/project keys
+    c["data_patterns"] = data_patterns
+    c["eb_map_variant"] = eb_variant
+    c["model_type"] = "kids_o3_dual"
+    c["dataset_quantities"] = ["E_north", "E_south"]
+    c["latent_dim"] = 8
+    c["model_kwargs"] = {
+        "encoder_type": "unet_o3",
+        "pool_types": ("avg", "max", "gem"),
+        "patch_conditioning": ("side_info"),
+    }
+    for k in ("pretrained_band_ckpt_path", "freeze_band"):
+        c.pop(k, None)
+    c["repeat_indices"] = [0]
+    c["lr"] = _CYCEXP_1E3["lr"]
+    c["scheduler_type"] = _CYCEXP_1E3["scheduler_type"]
+    c["scheduler_kwargs"] = _CYCEXP_1E3["scheduler_kwargs"]
+    return c
+
+
+def _maponly_smoke():
+    """De-clustered LOCAL smoke of the map-only config (fwhm8 fixture, few epochs)."""
+    c = _maponly(_SMOKE_DATA, _SMOKE_EB_VARIANT)
+    c.pop("repeat_indices", None)
+    c["epochs"] = 3
+    c["num_workers"] = 2
+    c["prefetch_factor"] = 2
+    c["persistent_workers"] = False
+    c["batch_size"] = 8
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_maponly_nla_m_counts"] = _maponly(_NLA_M, _EB_VARIANT)
+kids_legacy_counts_experiments["kids_legacy_maponly_nla_m_mean"] = _maponly(
+    _MEAN_NLA_M_FWHM4, _MEAN_EB_VARIANT_FWHM4)
+kids_legacy_counts_experiments["kids_legacy_maponly_nla_m_counts_smoke"] = _maponly_smoke()
 
 
 # === M3  main-variate Gower NPE 9-member ensemble finetune (5 repeats) ==========================

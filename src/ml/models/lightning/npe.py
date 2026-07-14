@@ -282,6 +282,21 @@ class NDELightningModule(BaseLightningModule):
             prog_bar=True,
             sync_dist=self.is_distributed,
         )
+        # Anti-collapse hinge on the hybrid's map-branch latent (patch_var_reg_coeff > 0 on the
+        # encoder, set via model_kwargs): penalise per-dim batch std of patch_mu falling below 1
+        # in scaled space, forbidding the constant-output collapse seen in stuck runs.
+        enc = getattr(self.model, "embedding_net", None)
+        coeff = float(getattr(enc, "patch_var_reg_coeff", 0.0) or 0.0) if enc is not None else 0.0
+        if coeff > 0.0:
+            patch_mu = getattr(enc, "_last_patch_mu", None)
+            if patch_mu is not None and patch_mu.shape[0] > 1:
+                var_pen = torch.relu(1.0 - patch_mu.float().std(dim=0)).pow(2).mean()
+                loss = loss + coeff * var_pen
+                self.log(
+                    "train_patch_var_pen",
+                    var_pen,
+                    sync_dist=self.is_distributed,
+                )
         return loss
 
     def validation_step(self, batch, batch_idx):
