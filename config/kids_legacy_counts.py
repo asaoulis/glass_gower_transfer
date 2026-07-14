@@ -205,11 +205,6 @@ _STAB_VARIANTS = {
                dict(mk_extra={"patch_var_reg_coeff": 0.5})),
     "z16": (dict(mk_extra={"hybrid_output_dim": 16}),
             dict(mk_extra={"hybrid_output_dim": 16})),
-    # z64 (user 2026-07-14): EXPANSION head Linear(16->64) — over-complete flow conditioning of
-    # the 16-D concat (z16 showed the 16->8 compression costs ~0.2 nats; test whether a wider
-    # conditioning basis helps the flow further).
-    "z64": (dict(mk_extra={"hybrid_output_dim": 64}),
-            dict(mk_extra={"hybrid_output_dim": 64})),
     "wd05_cycexp1e3": (dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)}, **_CYCEXP_1E3),
                        dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)})),
     # Init-gain + LR-escape combo — the two top-ranked (init / gradient-flow) levers together.
@@ -224,6 +219,34 @@ for _suffix, (_real_kw, _smoke_kw) in _STAB_VARIANTS.items():
         _hybrid_counts_z8_stab(**_real_kw)
     kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_z8_{_suffix}_smoke"] = \
         _hybrid_counts_z8_stab_smoke(**_smoke_kw)
+
+
+# --- z64: WIDE latent (user 2026-07-14, corrected spec) ------------------------------------------
+# The whole bottleneck widened to 64: frozen 8-D band (its ckpt must still load — do NOT change
+# bandpower_latent_dim) + 56-D map branch -> 64-D concat fed STRAIGHT to the flow (latent_dim=64,
+# no hybrid_output_dim => head is Linear(64->64), no compression, no expansion). Tests whether the
+# map-side 8-D latent (not just the 16->8 summary head) was the starving constraint.
+def _hybrid_counts_z64():
+    c = _hybrid_counts_z8()
+    c["latent_dim"] = 64                                  # band 8 + patch 56
+    mk = {**c["model_kwargs"]}
+    mk.pop("hybrid_output_dim", None)                     # output = latent_dim = 64
+    c["model_kwargs"] = mk
+    c["repeat_indices"] = [0]
+    return c
+
+
+def _hybrid_counts_z64_smoke():
+    c = _hybrid_lmin50_z8_smoke()
+    c["latent_dim"] = 64
+    mk = {**c["model_kwargs"]}
+    mk.pop("hybrid_output_dim", None)
+    c["model_kwargs"] = mk
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z64wide"] = _hybrid_counts_z64()
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z64wide_smoke"] = _hybrid_counts_z64_smoke()
 
 
 # --- Two-phase escape+consolidate: resume the maxlr1e3 transient optimum, decay from there ------
