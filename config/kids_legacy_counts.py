@@ -221,6 +221,32 @@ for _suffix, (_real_kw, _smoke_kw) in _STAB_VARIANTS.items():
         _hybrid_counts_z8_stab_smoke(**_smoke_kw)
 
 
+# --- Two-phase escape+consolidate: resume the maxlr1e3 transient optimum, decay from there ------
+# Remote wave-1 finding (jobs 1321123/1321124, 2026-07-14): the decaying-peak cyclic (gamma
+# 0.98/ep) NEVER escapes — its peak drops below the ~1e-3 escape threshold within ~15 epochs
+# (bests frozen at the band level through ep 40+), while flat 1e-3 escaped by ep 13 but then
+# memorised noise. Dose-response: escape needs SUSTAINED ~1e-3; consolidation needs decay.
+# So do them in sequence: warm-start from the maxlr1e3 run's best ckpt (-4.8107 @ep27, the
+# transient optimum) and fine-tune with a pure exp decay 3e-4 -> ~5e-6 over 60 epochs.
+def _hybrid_counts_z8_resumedecay():
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = [0]
+    c["checkpoint_path"] = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3/"
+    c["lr"] = 0.0003
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"gamma": 0.97, "warmup_steps": 0}
+    c["epochs"] = 60
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3_resumedecay"] = \
+    _hybrid_counts_z8_resumedecay()
+# Smoke: de-clustered (checkpoint_path is nulled by the smoke harness; proves lr/sched/epochs build).
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3_resumedecay_smoke"] = \
+    _hybrid_counts_z8_stab_smoke(lr=0.0003, scheduler_type="exp",
+                                 scheduler_kwargs={"gamma": 0.97, "warmup_steps": 0})
+
+
 # --- H1 map-only upper bounds: does a band-free CNN beat the band level at all? -----------------
 # Same map encoder/data/l40s tuning as the hybrid but NO band branch: model_type kids_o3_dual on
 # E maps only. Run one on the counts store and one on the MEAN-norm store (same schedule) — the
