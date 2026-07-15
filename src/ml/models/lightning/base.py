@@ -216,6 +216,34 @@ class BaseLightningModule(pl.LightningModule):
             interval = "step"
             milestone = warmup_steps
 
+        elif sched_type in ["cyclic_hold_exp", "hold_exp_cyclic"]:
+            # Like cyclic_exp, but the exponential envelope only starts after `hold_steps`:
+            # cyclic peaks stay at full lr through an escape window, then decay per-epoch by gamma.
+            cyclic_period_steps = int(self.scheduler_kwargs.get("cyclic_period_steps", 2000))
+            min_factor = float(self.scheduler_kwargs.get("cyclic_min_factor", 0.05))
+            gamma = float(self.scheduler_kwargs.get("gamma", 0.98))
+            hold_steps = int(self.scheduler_kwargs.get("hold_steps", 0))
+            step_gamma = gamma ** (1 / steps_per_epoch)
+
+            def held_lambda(global_step: int):
+                exp_factor = step_gamma ** max(0, global_step - hold_steps)
+
+                if cyclic_period_steps <= 0:
+                    cyc = 1.0
+                else:
+                    phase = (global_step % cyclic_period_steps) / cyclic_period_steps
+                    if phase < 0.5:
+                        cyc01 = phase / 0.5
+                    else:
+                        cyc01 = (1.0 - phase) / 0.5
+                    cyc = min_factor + (1.0 - min_factor) * cyc01
+
+                return exp_factor * cyc
+
+            main_sched = LambdaLR(optimizer, lr_lambda=held_lambda)
+            interval = "step"
+            milestone = warmup_steps
+
         else:
             main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
             interval = "step"

@@ -221,6 +221,26 @@ for _suffix, (_real_kw, _smoke_kw) in _STAB_VARIANTS.items():
         _hybrid_counts_z8_stab_smoke(**_smoke_kw)
 
 
+# --- Wave-2 combo (2026-07-15): z16 head + pgain16 init + sustained-escape-then-decay ------------
+# Wave-1 remote verdicts: z16 passed the band barrier at 2e-4 (head de-bottleneck, -4.3977@ep33);
+# pgain16 keeps the map branch alive but 2e-4 alone cannot escape; resume-based consolidation
+# FAILED (the maxlr1e3 optimum is an unstable transient — val degrades even at decayed LR). So do
+# escape+consolidate in ONE run: cyclic peaks HELD at the proven 1e-3 through the escape window
+# (~ep35 > the observed ep27 breakthrough), then per-epoch 0.97 peak decay ('cyclic_hold_exp',
+# base.py). ~970 steps/epoch at B=100 on the full store -> hold_steps 34000.
+_ESC1E3_HOLD = dict(lr=0.001, scheduler_type="cyclic_hold_exp",
+                    scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 6000,
+                                      "warmup_steps": 1000, "hold_steps": 34000})
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z16_pgain16_esc1e3"] = \
+    _hybrid_counts_z8_stab(mk_extra={"hybrid_output_dim": 16, "patch_head_init_gain": 16.0},
+                           **_ESC1E3_HOLD)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z16_pgain16_esc1e3_smoke"] = \
+    _hybrid_counts_z8_stab_smoke(mk_extra={"hybrid_output_dim": 16, "patch_head_init_gain": 16.0},
+                                 lr=0.001, scheduler_type="cyclic_hold_exp",
+                                 scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 60,
+                                                   "warmup_steps": 5, "hold_steps": 100})
+
+
 # --- z64: WIDE latent (user 2026-07-14, corrected spec) ------------------------------------------
 # The whole bottleneck widened to 64: frozen 8-D band (its ckpt must still load — do NOT change
 # bandpower_latent_dim) + 56-D map branch -> 64-D concat fed STRAIGHT to the flow (latent_dim=64,
