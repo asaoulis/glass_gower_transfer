@@ -397,6 +397,12 @@ def build_model(config, test_dataloader=None):
 
     # Choose correct LightningModule based on training mode
     lm_extra_kwargs = {}
+    # Map-only auxiliary VMIM head (NPE-family modules only; default 0 = off).
+    patch_aux_weight = float(getattr(config, 'patch_aux_weight', 0.0) or 0.0)
+    if patch_aux_weight > 0.0:
+        lm_extra_kwargs['patch_aux_weight'] = patch_aux_weight
+        lm_extra_kwargs['patch_aux_flow_kwargs'] = dict(
+            getattr(config, 'patch_aux_flow_kwargs', {}) or {})
     if training_mode == 'regression':
         LightningModule = RegressionLightningModule
     elif is_joint:

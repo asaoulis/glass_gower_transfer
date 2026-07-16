@@ -117,6 +117,52 @@ class NeuralSplineFlow(Flow):
         # 3. Initialize the base Flow class
         super().__init__(transform=transform, distribution=distribution)
 
+class _DeviceSafeMADEMoGWrapper(MADEMoGWrapper):
+    """sbi's MADEMoGWrapper creates its dummy input on the CPU (unlike MADEWrapper, which passes
+    device=inputs.device) — crashes on CUDA. Override _log_prob with the device/dtype fix only."""
+
+    def _log_prob(self, inputs, context=None):
+        import numpy as np
+        import torch.nn.functional as F
+        dummy_input = torch.zeros(
+            inputs.shape[:-1] + (1,), device=inputs.device, dtype=inputs.dtype
+        )
+        concat_inputs = torch.cat((dummy_input, inputs), dim=-1)
+
+        outputs = self._made.forward(concat_inputs, context=context)
+        outputs = outputs.reshape(
+            *concat_inputs.shape, self._made.num_mixture_components, 3
+        )
+
+        logits, means, unconstrained_stds = (
+            outputs[..., 0],
+            outputs[..., 1],
+            outputs[..., 2],
+        )
+        logits = logits[..., 1:, :]
+        means = means[..., 1:, :]
+        unconstrained_stds = unconstrained_stds[..., 1:, :]
+
+        log_mixture_coefficients = torch.log_softmax(logits, dim=-1)
+        stds = F.softplus(unconstrained_stds) + self._made.epsilon
+
+        log_prob = torch.sum(
+            torch.logsumexp(
+                log_mixture_coefficients
+                - 0.5
+                * (
+                    np.log(2 * np.pi)
+                    + 2 * torch.log(stds)
+                    + ((inputs[..., None] - means) / stds) ** 2
+                ),
+                dim=-1,
+            ),
+            dim=-1,
+        )
+        return log_prob
+
+
+
 def build_made(
     batch_x: Tensor,
     batch_y: Tensor,
@@ -166,7 +212,7 @@ def build_made(
 
     embedding_net = _prepare_y_embedding(z_score_y, batch_y, embedding_net)
 
-    distribution = MADEMoGWrapper(
+    distribution = _DeviceSafeMADEMoGWrapper(
         features=x_numel,
         hidden_features=hidden_features,
         context_features=y_numel,

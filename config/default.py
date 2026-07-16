@@ -29,6 +29,10 @@ def get_default_config():
     }
     config.freeze_cnn = False
     config.flow_kwargs = {}
+    # Map-only auxiliary VMIM head (counts-extended task): weight of the aux NLL on the
+    # hybrid's patch_mu; 0 = off. Kwargs: {hidden_features, num_transforms, ...} for the aux NSF.
+    config.patch_aux_weight = 0.0
+    config.patch_aux_flow_kwargs = {}
 
     # Training-speed options (all default-OFF => byte-identical to before when unset).
     # Applied by src/ml/utils.py:_apply_ml_perf + fit_model. Measured on A6000 for

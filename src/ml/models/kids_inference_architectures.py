@@ -203,10 +203,12 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
                 image_size=MAX_INPUT_HW[0],  # assume roughly square-ish height scale
                 in_channels=in_channels,
                 num_outputs=cnn_out_dim,
-                model_channels=32,
-                num_res_blocks=2,
-                attention_resolutions=(3,),
-                channel_mult=channel_mult,
+                # Backbone depth/width are overridable via map_kwargs (counts-extended task);
+                # defaults preserve the historical architecture exactly.
+                model_channels=kwargs.pop("model_channels", 32),
+                num_res_blocks=kwargs.pop("num_res_blocks", 2),
+                attention_resolutions=kwargs.pop("attention_resolutions", (3,)),
+                channel_mult=kwargs.pop("channel_mult", channel_mult),
                 enable_patch_conditioning=enable_patch,
                 side_conditioning=False,
                 **kwargs,
@@ -442,6 +444,12 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         band_dropout_p: float = 0.0,
         patch_head_init_gain: float = 1.0,
         patch_var_reg_coeff: float = 0.0,
+        # patch_norm (counts-extended task, 2026-07-16): normalisation barrier on patch_mu
+        # before fusion. 'layernorm' = non-affine LayerNorm per sample — structurally removes
+        # the measured DC-blowup/amplitude-explosion failure mode (patch_mu means grow to O(10)
+        # while stds collapse) and fixes the ~280x band/patch scale imbalance at ALL times, not
+        # just at init (cf. patch_head_init_gain). Applied in train AND eval (deterministic).
+        patch_norm: str | None = None,
         **kwargs,
     ):
         # For the *hybrid* encoder, latent_dim is the dim of mu after concatenation of the
@@ -510,6 +518,13 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         self.band_dropout_p = float(band_dropout_p)
         self.patch_var_reg_coeff = float(patch_var_reg_coeff)
         self._last_patch_mu = None
+        self.cache_patch_mu = False  # set True by the Lightning module when the aux head is on
+        if patch_norm is None:
+            self.patch_norm_layer = None
+        elif patch_norm == "layernorm":
+            self.patch_norm_layer = nn.LayerNorm(self.dim_patch, elementwise_affine=False)
+        else:
+            raise ValueError(f"Unknown patch_norm '{patch_norm}', expected None or 'layernorm'")
         if patch_head_init_gain != 1.0:
             # Init-only rescale of the patch head's final Linear (build_head ends in a Linear).
             last_linear = None
@@ -683,13 +698,15 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             patch_mu, _ = self._normalise_child_output(patch_out, self.dim_patch)
 
         if not self.use_kl:
+            if self.patch_norm_layer is not None:
+                patch_mu = self.patch_norm_layer(patch_mu)
             if self.training and self.band_dropout_p > 0:
                 keep = (
                     torch.rand(band_mu.shape[0], 1, device=band_mu.device)
                     >= self.band_dropout_p
                 ).to(band_mu.dtype)
                 band_mu = band_mu * keep
-            if self.patch_var_reg_coeff > 0:
+            if self.patch_var_reg_coeff > 0 or self.cache_patch_mu:
                 self._last_patch_mu = patch_mu
             mu = self._fuse_mu(band_mu, patch_mu)
             if mu.shape[-1] != self.latent_dim:

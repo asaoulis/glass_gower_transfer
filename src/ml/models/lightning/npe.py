@@ -7,7 +7,7 @@ from tqdm import tqdm
 from sbi import utils as sbi_utils
 from sbi.neural_nets.net_builders import build_maf, build_zuko_nsf
 
-from src.ml.models.custom_sbi import build_maf_rqs, build_nsf
+from src.ml.models.custom_sbi import build_made, build_maf_rqs, build_nsf
 
 from .base import BaseLightningModule
 from .estimators import PatchedConditionalDensityEstimator
@@ -22,6 +22,9 @@ class NDELightningModule(BaseLightningModule):
         "maf": build_maf,
         "rqs": build_maf_rqs,
         "zuko_nsf": build_zuko_nsf,
+        # MADE mixture-of-Gaussians (MDN/GMM head): smoother conditioning gradients than the
+        # spline flows when the encoder is trained through the head.
+        "mdn": build_made,
     }
 
     def __init__(
@@ -36,9 +39,19 @@ class NDELightningModule(BaseLightningModule):
         flow_type="nsf",
         num_extra_blocks=None,
         flow_kwargs=None,
+        # Map-only auxiliary VMIM head (counts-extended task, 2026-07-16): when weight > 0 a
+        # second small flow is trained on the hybrid's patch_mu alone (loss += w * aux_nll),
+        # giving the map CNN a first-class gradient path that the frozen band branch cannot
+        # satisfy. Validation logs val_patch_aux for diagnostics; model selection stays on the
+        # main val_log_prob. Requires the encoder to expose dim_patch/_last_patch_mu
+        # (KidsHybridBandpowersMaps).
+        patch_aux_weight=0.0,
+        patch_aux_flow_kwargs=None,
         **kwargs,
     ):
         super().__init__(model, loss_fn=None, lr=lr, scheduler_type=scheduler_type, **kwargs)
+        self.patch_aux_weight = float(patch_aux_weight or 0.0)
+        self.patch_aux_flow_kwargs = dict(patch_aux_flow_kwargs or {})
         self.embedding_net = model if model is not None else nn.Identity()
         self.conditioning_dim = conditioning_dim
         self.inference_dim = inference_dim
@@ -77,6 +90,35 @@ class NDELightningModule(BaseLightningModule):
         )
         self.flow = flow
         self.model = _CondEmbeddingFlow(self.embedding_net, self.flow)
+
+        self.patch_aux_flow = None
+        if self.patch_aux_weight > 0.0:
+            enc = self.embedding_net
+            dim_patch = getattr(enc, "dim_patch", None)
+            if dim_patch is None:
+                raise ValueError(
+                    "patch_aux_weight > 0 requires a hybrid encoder exposing dim_patch "
+                    "(KidsHybridBandpowersMaps)"
+                )
+            aux_kwargs = dict(self.patch_aux_flow_kwargs)
+            aux_hidden = aux_kwargs.pop("hidden_features", 32)
+            aux_transforms = aux_kwargs.pop("num_transforms", 5)
+            self.patch_aux_flow = build_nsf(
+                torch.randn(10, self.inference_dim),
+                torch.randn(10, dim_patch),
+                num_transforms=aux_transforms,
+                z_score_x=None,
+                z_score_y=None,
+                embedding_net=nn.Identity(),
+                hidden_features=aux_hidden,
+                conditional_dim=dim_patch,
+                use_batch_norm=False,
+                **aux_kwargs,
+            )
+            # Make the encoder cache patch_mu on every get_representation call (train AND val).
+            enc.cache_patch_mu = True
+            print(f"Built map-only auxiliary VMIM head (w={self.patch_aux_weight}, "
+                  f"dim_patch={dim_patch}, hidden={aux_hidden})", flush=True)
 
     def compress(self, data_dict):
         return self.model.encode(data_dict)
@@ -297,7 +339,27 @@ class NDELightningModule(BaseLightningModule):
                     var_pen,
                     sync_dist=self.is_distributed,
                 )
+        aux = self._patch_aux_loss(theta)
+        if aux is not None:
+            loss = loss + self.patch_aux_weight * aux
+            self.log("train_patch_aux", aux, sync_dist=self.is_distributed)
         return loss
+
+    def _patch_aux_loss(self, theta):
+        """NLL of theta under the map-only auxiliary flow (None when disabled/unavailable)."""
+        if self.patch_aux_flow is None:
+            return None
+        enc = getattr(self.model, "embedding_net", None)
+        patch_mu = getattr(enc, "_last_patch_mu", None) if enc is not None else None
+        if patch_mu is None:
+            return None
+        # The nflows spline stack is not autocast-safe (bf16/float mat mismatch): run the aux
+        # head in full precision outside any autocast region.
+        with torch.autocast(device_type=theta.device.type, enabled=False):
+            lp = self.patch_aux_flow.log_prob(
+                theta.float().unsqueeze(0), patch_mu.float()
+            )
+        return -lp.mean()
 
     def validation_step(self, batch, batch_idx):
         data_dict, theta = batch
@@ -309,6 +371,9 @@ class NDELightningModule(BaseLightningModule):
             prog_bar=True,
             sync_dist=self.is_distributed,
         )
+        aux = self._patch_aux_loss(theta)
+        if aux is not None:
+            self.log("val_patch_aux", aux, sync_dist=self.is_distributed)
         self.log_custom_evals(preds, theta)
         return loss
 

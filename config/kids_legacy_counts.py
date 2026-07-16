@@ -485,3 +485,57 @@ for _S, (_g, _gow, _cos, _pre, _smk) in _SUB_VARIATES.items():
 # TODO Section C conservative (fwhm8) stack — mirror M2-M6 with `_cons` names + fwhm8 stores
 # (_EB_VARIANT_CONS="fwhm8_lmin56_lcut1024", *_fwhm8 map stores, _FOUNDATION_CONS_CKPT). Band M1 is
 # REUSED (bandpowers are smoothing-independent). Deliberately deferred (LATER pass).
+
+
+# =================================================================================================
+# counts-training-performance-EXTENDED (2026-07-16): anti-starvation + head/architecture waves.
+# Diagnosis (task artifacts/diagnosis.md): VMIM loss is minimised without the CNN (gradient
+# starvation); the zero-init scale-shift UNet degenerates to a rank-1, DC-exploding representation.
+# Levers here: patch_norm (LayerNorm barrier on patch_mu), patch_aux (map-only auxiliary VMIM
+# head), mdn (mixture head), deep (backbone depth/width). All on the default z8 base (user).
+# =================================================================================================
+
+def _counts_ext(name, mk_extra=None, top_extra=None, smoke_mk=None, smoke_top=None,
+                repeat_indices=(0,), **stab_kw):
+    """Register a counts-extended variant + its _smoke clone (fwhm8 single-cosmo fixture)."""
+    c = _hybrid_counts_z8_stab(mk_extra=mk_extra, repeat_indices=repeat_indices, **stab_kw)
+    for k, v in (top_extra or {}).items():
+        c[k] = v
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_{name}"] = c
+    s = _hybrid_counts_z8_stab_smoke(mk_extra=(smoke_mk if smoke_mk is not None else mk_extra))
+    for k, v in ((smoke_top if smoke_top is not None else top_extra) or {}).items():
+        s[k] = v
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_{name}_smoke"] = s
+
+
+def _deep_mapkw(base_mk, **kw):
+    mk = dict(base_mk or {})
+    mk["map_kwargs"] = {**mk.get("map_kwargs", {}), **kw}
+    return mk
+
+
+_BASE_MK = _hybrid_counts_z8()["model_kwargs"]
+
+# LayerNorm barrier on patch_mu: kills the DC/amplitude pathology + scale imbalance structurally.
+_counts_ext("z8_pnorm", mk_extra={"patch_norm": "layernorm"})
+# Map-only auxiliary VMIM head: first-class gradient into the CNN that the band cannot satisfy.
+_counts_ext("z8_mapaux05", top_extra={"patch_aux_weight": 0.5,
+                                      "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# The mechanistically-complete combo: barrier + aux gradient (+ known-good banddrop reserve below).
+_counts_ext("z8_pnorm_mapaux05", mk_extra={"patch_norm": "layernorm"},
+            top_extra={"patch_aux_weight": 0.5,
+                       "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# MDN/GMM head (build_made): smoother conditioning gradients than the spline flow.
+_counts_ext("z8_mdn", top_extra={"flow_type": "mdn",
+                                 "flow_kwargs": {"num_mixture_components": 12,
+                                                 "hidden_features": 64}})
+# Depth/width control: does capacity alone change anything? (prediction from diagnosis: no)
+# 64ch = 2x the historical 32ch width; 96ch at full 1000x100 res risks OOM at batch 100.
+_counts_ext("z8_deep", mk_extra=_deep_mapkw(_BASE_MK, model_channels=64, num_res_blocks=3))
+# Wider NSF head on the z8 base (flow-capacity axis).
+_counts_ext("z8_flowbig", top_extra={"flow_kwargs": {"hidden_features": 64}})
+# Combo + banddrop02 (strongest known anti-collapse) as the belt-and-braces variant.
+_counts_ext("z8_pnorm_mapaux05_banddrop02",
+            mk_extra={"patch_norm": "layernorm", "band_dropout_p": 0.2},
+            top_extra={"patch_aux_weight": 0.5,
+                       "patch_aux_flow_kwargs": {"hidden_features": 32}})
