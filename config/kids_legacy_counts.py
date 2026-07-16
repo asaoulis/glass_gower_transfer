@@ -546,3 +546,15 @@ _counts_ext("z8_pnorm_mapaux05_banddrop02",
 _counts_ext("z8_bnorm_mapaux05", mk_extra={"patch_norm": "batchnorm"},
             top_extra={"patch_aux_weight": 0.5,
                        "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# === PROMOTED (user 2026-07-16): clean pre-activation ResNet map encoder ========================
+# Replace the degenerating diffusion-UNet with a boring, alive-at-init deep ResNet (15 blocks,
+# GN, GeM head, symmetric downsampling). Highest-priority wave; aux-head/barrier variants are
+# fallback companions, not the lead.
+_RESNET_MAPKW = {"encoder_type": "preact_resnet", "patch_conditioning": None,
+                 "pool_types": ("avg", "gem"),
+                 "stage_channels": (32, 64, 128, 256, 256), "blocks_per_stage": 3}
+_counts_ext("z8_resnet", mk_extra={"map_kwargs": _RESNET_MAPKW})
+# Belt-and-braces companion: ResNet + the strongest known anti-collapse lever, in case starvation
+# still bites a healthy encoder.
+_counts_ext("z8_resnet_banddrop02",
+            mk_extra={"map_kwargs": _RESNET_MAPKW, "band_dropout_p": 0.2})

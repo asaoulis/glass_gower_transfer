@@ -213,9 +213,19 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
                 side_conditioning=False,
                 **kwargs,
             )
+        elif encoder_type == "preact_resnet":
+            from .resnet_encoder import PreActResNetEncoder
+            print("Using PreActResNetEncoder as shared CNN", flush=True)
+            # Plain call path (no side_info/FiLM); 'channel' conditioning still works upstream.
+            self.shared_cnn = PreActResNetEncoder(
+                in_channels=in_channels,
+                num_outputs=cnn_out_dim,
+                **kwargs,
+            )
         else:
             raise ValueError(
-                f"Unknown encoder_type '{encoder_type}', expected 'flex_o3' or 'unet_o3'"
+                f"Unknown encoder_type '{encoder_type}', expected 'flex_o3', 'unet_o3' "
+                "or 'preact_resnet'"
             )
 
         # Shallow head after concatenation of north/south embeddings
