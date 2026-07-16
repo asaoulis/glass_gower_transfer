@@ -539,3 +539,10 @@ _counts_ext("z8_pnorm_mapaux05_banddrop02",
             mk_extra={"patch_norm": "layernorm", "band_dropout_p": 0.2},
             top_extra={"patch_aux_weight": 0.5,
                        "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# BatchNorm barrier variant (2026-07-16, post-probe): the LayerNorm barrier + aux head still
+# collapses cross-sample (LN is per-sample; early training prefers constant conditioning for BOTH
+# flows). Non-affine BatchNorm on patch_mu forbids that state structurally; the aux head then
+# shapes WHICH forced variance is informative.
+_counts_ext("z8_bnorm_mapaux05", mk_extra={"patch_norm": "batchnorm"},
+            top_extra={"patch_aux_weight": 0.5,
+                       "patch_aux_flow_kwargs": {"hidden_features": 32}})

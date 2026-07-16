@@ -523,8 +523,15 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
             self.patch_norm_layer = None
         elif patch_norm == "layernorm":
             self.patch_norm_layer = nn.LayerNorm(self.dim_patch, elementwise_affine=False)
+        elif patch_norm == "batchnorm":
+            # Non-affine BatchNorm1d: forces per-dim batch std ~1 in training, making the
+            # cross-sample constant-output collapse structurally impossible (LayerNorm cannot:
+            # it normalises per sample). Eval uses running stats. Single-GPU runs only (no
+            # SyncBN wiring) — our counts runs train on one GPU.
+            self.patch_norm_layer = nn.BatchNorm1d(self.dim_patch, affine=False)
         else:
-            raise ValueError(f"Unknown patch_norm '{patch_norm}', expected None or 'layernorm'")
+            raise ValueError(
+                f"Unknown patch_norm '{patch_norm}', expected None, 'layernorm' or 'batchnorm'")
         if patch_head_init_gain != 1.0:
             # Init-only rescale of the patch head's final Linear (build_head ends in a Linear).
             last_linear = None
