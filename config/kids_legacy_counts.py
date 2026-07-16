@@ -234,6 +234,20 @@ _ESC1E3_HOLD = dict(lr=0.001, scheduler_type="cyclic_hold_exp",
 kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z16_pgain16_esc1e3"] = \
     _hybrid_counts_z8_stab(mk_extra={"hybrid_output_dim": 16, "patch_head_init_gain": 16.0},
                            **_ESC1E3_HOLD)
+# Wave-2c: exact maxlr1e3 replica (z8, NO init gain) + hold-then-decay. Both combo variants
+# (p6000 AND p2000) failed to escape, so the remaining suspects are (a) z16/pgain16 interfering
+# with the escape, (b) subtle cyclic_hold_exp-vs-CyclicLR difference, (c) the maxlr1e3 escape was
+# seed-luck. This run tests (a)+(b) together; a plain maxlr1e3 repeat-1 resubmit tests (c).
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_esc1e3_p2000"] = \
+    _hybrid_counts_z8_lr(lr=0.001, scheduler_type="cyclic_hold_exp",
+                         scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 2000,
+                                           "warmup_steps": 1000, "hold_steps": 34000})
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_esc1e3_p2000_smoke"] = \
+    _hybrid_counts_z8_smoke_lr(lr=0.001, scheduler_type="cyclic_hold_exp",
+                               scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 20,
+                                                 "warmup_steps": 5, "hold_steps": 100})
+
+
 # p2000 variant: identical combo but cyclic_period_steps=2000 — the DEFAULT period the one
 # escaping run (maxlr1e3) actually used. Period 6000 gives peaks only every ~6 epochs (~3x less
 # dwell near 1e-3); both stuck-slow cycexp runs and (if it fails) the esc1e3 combo share the 6000
