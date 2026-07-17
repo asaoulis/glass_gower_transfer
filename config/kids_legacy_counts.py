@@ -653,3 +653,11 @@ _RESNET_DEEP_MAPKW = {**_RESNET_MAPKW, "blocks_per_stage": 4}
 _counts_ext("z8_resnetdeep_flowbig",
             mk_extra={"map_kwargs": _RESNET_DEEP_MAPKW},
             top_extra={"flow_kwargs": {"hidden_features": 64}})
+# COMPOSITION run (2026-07-17 late): the -5.5 attempt = winning encoder (base resnet) +
+# dim_patch 16 end-to-end (T2's one positive, retrained unfrozen) + flow 64 + LONGER budget
+# (150 ep; r2's best came at ep85/100 with a productive tail).
+_counts_ext("z8_resnet_dp16_flowbig_ep150",
+            mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"latent_dim": 24,
+                       "flow_kwargs": {"hidden_features": 64},
+                       "epochs": 150})
