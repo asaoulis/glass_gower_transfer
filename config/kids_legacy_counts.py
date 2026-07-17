@@ -641,3 +641,15 @@ _fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_dp16",
        head_kwargs={"dim_patch": 16})
 _fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_pnorm",
        head_kwargs={"patch_norm": "layernorm"})
+# Phase 2b follow-ups (2026-07-17 evening): 1e-3 exp too hot (peak -4.27@5 then degrade);
+# ConvNeXt-T failed to break through (A/B loser vs resnet). Next: 3e-4 middle-point schedule +
+# within-family ResNet scaling (20 blocks — still "a pre-activation ResNet" in a paper sentence).
+_counts_ext("z8_resnet_flowbig_exp3e4",
+            mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}},
+            lr=0.0003, scheduler_type="exp",
+            scheduler_kwargs={"gamma": 0.977, "warmup_steps": 1000})
+_RESNET_DEEP_MAPKW = {**_RESNET_MAPKW, "blocks_per_stage": 4}
+_counts_ext("z8_resnetdeep_flowbig",
+            mk_extra={"map_kwargs": _RESNET_DEEP_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}})
