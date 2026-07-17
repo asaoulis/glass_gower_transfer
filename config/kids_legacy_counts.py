@@ -579,3 +579,35 @@ _CONVNEXT_MAPKW = {"encoder_type": "convnext", "patch_conditioning": None,
 _counts_ext("z8_convnext_flowbig",
             mk_extra={"map_kwargs": _CONVNEXT_MAPKW},
             top_extra={"flow_kwargs": {"hidden_features": 64}})
+# T2: frozen-trunk head-stack retrains (v100; artifacts/head_analysis.md R-series).
+# CRITICAL: backbone_prefix MUST be the full shared_cnn path (default 'shared_cnn.backbone.'
+# silently no-matches a resnet ckpt -> random trunk); freeze_backbone freezes poolproj/fc too,
+# so _RESNET_MAPKW must stay byte-identical to the pretrained run.
+_RESNET_CKPT_DIR = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_resnet/"
+
+def _resnet_frozen(name, mk_extra=None, top_extra=None):
+    mk = {"map_kwargs": _RESNET_MAPKW, **(mk_extra or {})}
+    top = {"pretrained_backbone_ckpt_path": _RESNET_CKPT_DIR,
+           "freeze_backbone": True,
+           "backbone_prefix": "model.embedding_net.patch_encoder.shared_cnn.",
+           **(top_extra or {})}
+    _counts_ext(name, mk_extra=mk, top_extra=top)
+
+# R3: widen the map channel to 16 pre-fusion (latent 24 = band 8 + patch 16, z8 kept) + big flow.
+_resnet_frozen("z8_resnetfz_dp16_flow128",
+               mk_extra={},
+               top_extra={"latent_dim": 24,
+                          "flow_kwargs": {"hidden_features": 128, "num_blocks": 3,
+                                          "num_bins": 12}})
+# R5-combo: nonlinear fusion (MLP hybrid head) + big flow.
+_resnet_frozen("z8_resnetfz_mlphead_flow128",
+               mk_extra={"hybrid_head_hidden": 32},
+               top_extra={"flow_kwargs": {"hidden_features": 128, "num_blocks": 3,
+                                          "num_bins": 12}})
+# R2 solo: map channel 16, baseline flow (attribution control for R3).
+_resnet_frozen("z8_resnetfz_dp16",
+               top_extra={"latent_dim": 24, "flow_kwargs": {"hidden_features": 64}})
+# R4: LayerNorm scale barrier at fusion (cheap, orthogonal).
+_resnet_frozen("z8_resnetfz_pnorm",
+               mk_extra={"patch_norm": "layernorm"},
+               top_extra={"flow_kwargs": {"hidden_features": 64}})

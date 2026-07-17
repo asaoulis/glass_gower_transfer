@@ -620,8 +620,18 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
 
         # Head maps concatenated mu (and optionally logvar) to final output.
         # When self.use_kl is True, self.model_output_dim == 2 * latent_dim.
+        # hybrid_head_hidden (Phase 2b, default None = historical single Linear): when set, use a
+        # small MLP so the fusion can model band x map interactions (a single Linear cannot).
         in_features = self.latent_dim if not self.use_kl else 2 * self.latent_dim
-        self.hybrid_head = nn.Linear(in_features, self.model_output_dim)
+        hybrid_head_hidden = kwargs.get("hybrid_head_hidden", None)
+        if hybrid_head_hidden:
+            self.hybrid_head = nn.Sequential(
+                nn.Linear(in_features, int(hybrid_head_hidden)),
+                nn.GELU(),
+                nn.Linear(int(hybrid_head_hidden), self.model_output_dim),
+            )
+        else:
+            self.hybrid_head = nn.Linear(in_features, self.model_output_dim)
         self.freeze_band = False
 
     def _normalise_child_output(self, out: torch.Tensor | tuple[torch.Tensor, torch.Tensor], expected_mu_dim: int) -> tuple[torch.Tensor, torch.Tensor]:

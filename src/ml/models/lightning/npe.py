@@ -77,11 +77,12 @@ class NDELightningModule(BaseLightningModule):
         y_dataset = torch.randn(10, self.conditioning_dim)
         x_dataset = torch.randn(10, self.inference_dim)
         hidden_features = self.flow_kwargs.pop("hidden_features", self.conditioning_dim)
+        num_transforms = self.flow_kwargs.pop("num_transforms", 5)
 
         flow = self.build_flow(
             x_dataset,
             y_dataset,
-            num_transforms=5,
+            num_transforms=num_transforms,
             z_score_x=None,
             z_score_y=None,
             embedding_net=nn.Identity(),
