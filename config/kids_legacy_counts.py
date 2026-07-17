@@ -558,3 +558,8 @@ _counts_ext("z8_resnet", mk_extra={"map_kwargs": _RESNET_MAPKW})
 # still bites a healthy encoder.
 _counts_ext("z8_resnet_banddrop02",
             mk_extra={"map_kwargs": _RESNET_MAPKW, "band_dropout_p": 0.2})
+# ResNet + wider NSF head (2026-07-17): with the encoder finally delivering map information into
+# the 8-D summary, the hidden=32 flow may be the next bottleneck (lit-review flag). Low-hanging
+# fruit push toward the -5.2..-5.5 floor target.
+_counts_ext("z8_resnet_flowbig", mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}})
