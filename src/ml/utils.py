@@ -512,6 +512,12 @@ def build_model(config, test_dataloader=None):
         freeze_backbone = getattr(config, 'freeze_backbone', False)
         backbone_prefix = getattr(config, 'backbone_prefix', 'shared_cnn.backbone.')
         target_prefix = getattr(config, 'target_backbone_prefix', '')
+        if os.path.isdir(pretrained_backbone_ckpt):
+            # Resolve a checkpoint DIRECTORY like the band loader does (repeat-aware best-val),
+            # so configs can point at the experiment folder instead of a hardcoded filename.
+            backbone_ckpts, _ = get_best_checkpoint(
+                pretrained_backbone_ckpt, config.pretrained_band_match_string)
+            pretrained_backbone_ckpt = backbone_ckpts[0]
         pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
         backbone_module_name = model._load_pretrained_cnn_backbone(
             pretrained_backbone_ckpt,
