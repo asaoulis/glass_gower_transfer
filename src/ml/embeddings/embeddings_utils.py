@@ -259,8 +259,13 @@ def compute_embeddings(models: List[torch.nn.Module], loader: torch.utils.data.D
         theta_ref = None
         for m in models:
             encoder = m.embedding_net
-            encoder.only_return_mu = True
-            z_m = encoder(data_dict_dev)
+            # Phase 2b: optional alternative cut point (e.g. 'hybrid_pre_head' caches the frozen
+            # band_mu ++ pre-head map features instead of the final z). Default unchanged.
+            if getattr(encoder, "embedding_cut", None) == "hybrid_pre_head":
+                z_m = encoder.get_frozen_features(data_dict_dev)
+            else:
+                encoder.only_return_mu = True
+                z_m = encoder(data_dict_dev)
             zs_batch.append(z_m.detach())
 
             # Extract cosmology from this model for sanity check
@@ -655,6 +660,62 @@ def build_embedding_dataloaders(
     return train_emb_loader, val_emb_loader, test_emb_loader
 
 
+class HybridFeaturesHead(torch.nn.Module):
+    """Trainable head over cached frozen hybrid features (Phase 2b T2).
+
+    Input vector layout = [band_mu(band_dim) ++ N/S pre-head map features] as produced by
+    KidsHybridBandpowersMaps.get_frozen_features (embedding_cut='hybrid_pre_head'). Reproduces
+    the trainable hybrid head stack: map head MLP -> optional patch LayerNorm -> fusion head.
+    """
+
+    def __init__(
+        self,
+        emb_dim: int,
+        band_dim: int = 8,
+        dim_patch: int = 8,
+        head_hidden: int = 256,
+        hybrid_output_dim: int = 8,
+        hybrid_head_hidden: Optional[int] = None,
+        patch_norm: Optional[str] = None,
+    ):
+        super().__init__()
+        self.band_dim = int(band_dim)
+        feat_dim = int(emb_dim) - self.band_dim
+        if feat_dim <= 0:
+            raise ValueError(f"emb_dim {emb_dim} too small for band_dim {band_dim}")
+        self.head = torch.nn.Sequential(
+            torch.nn.Linear(feat_dim, head_hidden),
+            torch.nn.LeakyReLU(),
+            torch.nn.Linear(head_hidden, dim_patch),
+        )
+        if patch_norm is None:
+            self.patch_norm_layer = None
+        elif patch_norm == "layernorm":
+            self.patch_norm_layer = torch.nn.LayerNorm(dim_patch, elementwise_affine=False)
+        else:
+            raise ValueError(f"Unknown patch_norm '{patch_norm}'")
+        fusion_in = self.band_dim + int(dim_patch)
+        if hybrid_head_hidden:
+            self.hybrid_head = torch.nn.Sequential(
+                torch.nn.Linear(fusion_in, int(hybrid_head_hidden)),
+                torch.nn.GELU(),
+                torch.nn.Linear(int(hybrid_head_hidden), hybrid_output_dim),
+            )
+        else:
+            self.hybrid_head = torch.nn.Linear(fusion_in, hybrid_output_dim)
+        self.output_dim = int(hybrid_output_dim)
+
+    def forward(self, x):
+        band_mu = x[..., : self.band_dim]
+        patch_mu = self.head(x[..., self.band_dim:])
+        if self.patch_norm_layer is not None:
+            patch_mu = self.patch_norm_layer(patch_mu)
+        return self.hybrid_head(torch.cat([band_mu, patch_mu], dim=-1))
+
+    def compress(self, x):
+        return self.forward(x)
+
+
 def build_nde_on_embeddings(
     *,
     emb_dim: int,
@@ -683,7 +744,14 @@ def build_nde_on_embeddings(
     conditioning_dim = emb_dim
     inference_dim = len(base_cfg.cosmo_param_names)
 
-    embedding_net = IdentityEmbedding(emb_dim).to(device)
+    # Phase 2b: optionally train a small head over the cached features instead of feeding the
+    # raw embedding vector straight into the flow. Default (None) preserves prior behaviour.
+    if getattr(base_cfg, "embedding_head_type", None) == "hybrid_features":
+        head_kwargs = dict(getattr(base_cfg, "embedding_head_kwargs", {}) or {})
+        embedding_net = HybridFeaturesHead(emb_dim=emb_dim, **head_kwargs).to(device)
+        conditioning_dim = embedding_net.output_dim
+    else:
+        embedding_net = IdentityEmbedding(emb_dim).to(device)
 
     inference_mode = getattr(base_cfg, "inference_mode", "npe").lower()
     if inference_mode not in {"npe", "nle"}:

@@ -611,3 +611,33 @@ _resnet_frozen("z8_resnetfz_dp16",
 _resnet_frozen("z8_resnetfz_pnorm",
                mk_extra={"patch_norm": "layernorm"},
                top_extra={"flow_kwargs": {"hidden_features": 64}})
+# T2-fast (2026-07-17): cached-embedding head training (user: v100 full-forward runs were
+# ~15 min/ep). One embed run precomputes the frozen band+pre-head features to
+# checkpoints/embcache_frozenfeat_z8_resnet/datasets/ (shared via embedding_cache_name +
+# reuse_embedding_cache); head variants then train on cached 520-D vectors in seconds/epoch.
+# Run via: run_remote.py embed --target <name> --sources kids_legacy_hybrid_nla_m_counts_z8_resnet
+# NOTE: cached features are augmentation-free (one fixed view) — mild regularisation loss noted.
+
+def _fzemb(name, head_kwargs=None, flow_kwargs=None):
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = [0]
+    c["pretrained_band_ckpt_path"] = None      # band info lives inside the cached vector
+    c["load_pretrained_flow"] = False
+    c["embedding_cut"] = "hybrid_pre_head"
+    c["reuse_embedding_cache"] = True
+    c["embedding_cache_name"] = "embcache_frozenfeat_z8_resnet"
+    c["embedding_head_type"] = "hybrid_features"
+    c["embedding_head_kwargs"] = {"band_dim": 8, **(head_kwargs or {})}
+    c["flow_kwargs"] = dict(flow_kwargs or {"hidden_features": 64})
+    kids_legacy_counts_experiments[name] = c
+
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_dp16_flow128",
+       head_kwargs={"dim_patch": 16},
+       flow_kwargs={"hidden_features": 128, "num_blocks": 3, "num_bins": 12})
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_mlphead_flow128",
+       head_kwargs={"hybrid_head_hidden": 32},
+       flow_kwargs={"hidden_features": 128, "num_blocks": 3, "num_bins": 12})
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_dp16",
+       head_kwargs={"dim_patch": 16})
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_pnorm",
+       head_kwargs={"patch_norm": "layernorm"})

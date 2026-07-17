@@ -765,6 +765,16 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
 
         return torch.cat([mu, logvar], dim=-1)
 
+    @torch.no_grad()
+    def get_frozen_features(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """Pre-head cut for frozen-trunk embedding caching (Phase 2b): band_mu ++ the patch
+        encoder's pre-head N/S features (KidsO3 get_representation, i.e. BEFORE its head MLP).
+        Eval-mode semantics (no band dropout); used via embedding_cut='hybrid_pre_head'."""
+        band_out = self.band_encoder.compress(data)
+        band_mu = band_out[0] if isinstance(band_out, tuple) else band_out
+        feats = self.patch_encoder.get_representation(data)
+        return torch.cat([band_mu, feats], dim=-1)
+
     def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         head_input = self.get_representation(data)
         return self.hybrid_head(head_input)

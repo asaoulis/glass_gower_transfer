@@ -36,6 +36,12 @@ def get_default_config():
     # Frozen-trunk head-retrain runs (Phase 2b): mirror utils.py getattr fallbacks.
     config.freeze_backbone = False
     config.backbone_prefix = 'shared_cnn.backbone.'
+    # Phase 2b cached-embedding head training (src/ml/embeddings): all default-off.
+    config.embedding_cut = None            # e.g. 'hybrid_pre_head'
+    config.reuse_embedding_cache = False   # reuse the emb cache during TRAINING runs too
+    config.embedding_cache_name = None     # share one cache dir across head-variant targets
+    config.embedding_head_type = None      # e.g. 'hybrid_features'
+    config.embedding_head_kwargs = {}
 
     # Training-speed options (all default-OFF => byte-identical to before when unset).
     # Applied by src/ml/utils.py:_apply_ml_perf + fit_model. Measured on A6000 for

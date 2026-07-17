@@ -353,6 +353,13 @@ def train_embedding_run(
         match_num_cosmo=getattr(target_cfg, "match_num_cosmo", False),
     )
 
+    # Phase 2b: optional non-default embedding cut point, tagged onto the source encoders so
+    # compute_embeddings picks it up (see embeddings_utils.compute_embeddings).
+    _embedding_cut = getattr(target_cfg, "embedding_cut", None)
+    if _embedding_cut:
+        for _m in models:
+            _m.embedding_net.embedding_cut = _embedding_cut
+
     # Ensure downstream code has the dataset quantities from sources.
     target_cfg.dataset_quantities = dataset_quantities
     target_cfg.test_shape_noise_idx = [0]
@@ -383,8 +390,12 @@ def train_embedding_run(
         test_loader,
         models,
         base_cfg=target_cfg,
-        wandb_run_name=source_run_name,
-        use_cache_if_exists= (not do_run_training),  # Only skip if we're not training (i.e. if we're just evaluating with existing embeddings
+        # Phase 2b: embedding_cache_name lets several head-variant targets SHARE one cache
+        # (frozen-trunk features are variant-independent); reuse_embedding_cache opts into
+        # reusing it during training runs. Defaults preserve prior behaviour.
+        wandb_run_name=(getattr(target_cfg, "embedding_cache_name", None) or source_run_name),
+        use_cache_if_exists=((not do_run_training)
+                             or bool(getattr(target_cfg, "reuse_embedding_cache", False))),
         whiten_cfg=whiten_cfg,
         is_pretrain_source=whiten_is_pretrain_source,
         pretrained_ckpt_path_or_dir=target_cfg.pretrained_band_ckpt_path,
