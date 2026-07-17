@@ -661,3 +661,10 @@ _counts_ext("z8_resnet_dp16_flowbig_ep150",
             top_extra={"latent_dim": 24,
                        "flow_kwargs": {"hidden_features": 64},
                        "epochs": 150})
+# Width axis (2026-07-18): 1.5x-wide preact ResNet (still 15 blocks) — the capacity axis
+# orthogonal to resnetdeep's depth test. Schedule verdict: exp decay FAILED at 1e-3 AND 3e-4;
+# cyclic 2e-4 is the recipe.
+_RESNET_WIDE_MAPKW = {**_RESNET_MAPKW, "stage_channels": (48, 96, 192, 384, 384)}
+_counts_ext("z8_resnetwide_flowbig",
+            mk_extra={"map_kwargs": _RESNET_WIDE_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}})
