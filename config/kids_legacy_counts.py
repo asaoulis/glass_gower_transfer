@@ -571,3 +571,11 @@ _counts_ext("z8_resnet_flowbig_exp1e3",
             top_extra={"flow_kwargs": {"hidden_features": 64}},
             lr=0.001, scheduler_type="exp",
             scheduler_kwargs={"gamma": 0.977, "warmup_steps": 1000})
+# T3: ConvNeXt-T-style encoder (Liu+22) — modern, common, one-sentence-defensible drop-in.
+_CONVNEXT_MAPKW = {"encoder_type": "convnext", "patch_conditioning": None,
+                   "pool_types": ("avg", "gem"),
+                   "dims": (64, 128, 256, 512), "depths": (3, 3, 9, 3),
+                   "drop_path_rate": 0.1}
+_counts_ext("z8_convnext_flowbig",
+            mk_extra={"map_kwargs": _CONVNEXT_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}})

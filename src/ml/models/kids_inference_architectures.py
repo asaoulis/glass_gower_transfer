@@ -222,6 +222,14 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
                 num_outputs=cnn_out_dim,
                 **kwargs,
             )
+        elif encoder_type == "convnext":
+            from .convnext_encoder import ConvNeXtEncoder
+            print("Using ConvNeXtEncoder as shared CNN", flush=True)
+            self.shared_cnn = ConvNeXtEncoder(
+                in_channels=in_channels,
+                num_outputs=cnn_out_dim,
+                **kwargs,
+            )
         else:
             raise ValueError(
                 f"Unknown encoder_type '{encoder_type}', expected 'flex_o3', 'unet_o3' "
