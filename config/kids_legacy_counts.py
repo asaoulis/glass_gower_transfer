@@ -563,3 +563,11 @@ _counts_ext("z8_resnet_banddrop02",
 # fruit push toward the -5.2..-5.5 floor target.
 _counts_ext("z8_resnet_flowbig", mk_extra={"map_kwargs": _RESNET_MAPKW},
             top_extra={"flow_kwargs": {"hidden_features": 64}})
+# === Phase 2b (2026-07-17): build on the ResNet breakthrough, target -5.5 =======================
+# T1: higher LR + standard exponential decay on the resnet+wide-flow base. gamma is PER-EPOCH
+# (base.py exp scheduler): 0.977**100 ~= 0.098 -> lr 1e-3 -> ~1e-4 over the run.
+_counts_ext("z8_resnet_flowbig_exp1e3",
+            mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}},
+            lr=0.001, scheduler_type="exp",
+            scheduler_kwargs={"gamma": 0.977, "warmup_steps": 1000})
