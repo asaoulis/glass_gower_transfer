@@ -665,6 +665,7 @@ _counts_ext("z8_resnet_dp16_flowbig_ep150",
 # orthogonal to resnetdeep's depth test. Schedule verdict: exp decay FAILED at 1e-3 AND 3e-4;
 # cyclic 2e-4 is the recipe.
 _RESNET_WIDE_MAPKW = {**_RESNET_MAPKW, "stage_channels": (48, 96, 192, 384, 384)}
+# batch 64: 1.5x channels at full res OOMs a 40GB a100 at batch 100 (measured).
 _counts_ext("z8_resnetwide_flowbig",
             mk_extra={"map_kwargs": _RESNET_WIDE_MAPKW},
-            top_extra={"flow_kwargs": {"hidden_features": 64}})
+            top_extra={"flow_kwargs": {"hidden_features": 64}, "batch_size": 64})
