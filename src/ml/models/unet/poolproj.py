@@ -134,7 +134,7 @@ class PoolProj(nn.Module):
 
         concat_dim = 0
         for t in self.pool_types:
-            if t in ("avg", "max", "gem", "attn", "trans", "transformer"):
+            if t in ("avg", "max", "gem", "attn", "trans", "transformer", "std"):
                 concat_dim += in_channels
             elif t == "spp":
                 concat_dim += in_channels * sum([s * s for s in self.spp_sizes])
@@ -159,6 +159,10 @@ class PoolProj(nn.Module):
                 parts.append(F.adaptive_max_pool2d(x, 1).view(B, C))
             elif t == "gem":
                 parts.append(self.gem(x).view(B, C))
+            elif t == "std":
+                # second-moment (spatial std) pooling: captures the spatial variance of learned
+                # local statistics that mean-style pools discard (counts-ext phase 4, R2)
+                parts.append(torch.sqrt(x.float().var(dim=(-2, -1), unbiased=False) + 1e-6).to(x.dtype))
             elif t == "spp":
                 parts.append(self.spp(x))
             elif t == "attn":

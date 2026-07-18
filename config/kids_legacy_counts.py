@@ -669,3 +669,38 @@ _RESNET_WIDE_MAPKW = {**_RESNET_MAPKW, "stage_channels": (48, 96, 192, 384, 384)
 _counts_ext("z8_resnetwide_flowbig",
             mk_extra={"map_kwargs": _RESNET_WIDE_MAPKW},
             top_extra={"flow_kwargs": {"hidden_features": 64}, "batch_size": 64})
+
+
+# === Phase 4 (2026-07-18): final push -5.2 -> -5.5 on the winning plain-resnet recipe ===========
+# Forensics (task artifacts/plateau_forensics.md): every escaped model carries exactly ONE
+# effective map dimension (patch_mu PR ~= 1.00/8); stalled variants are dead-branch failures.
+# Levers here target (A) richer pooled statistics at the source (stdpool), (B) representation
+# rank (covreg), (C) seed rescue via readout decoupling (sdband), (D) anti-aliased downsampling
+# (blurpool), (E) trough capture via a late anneal (anneal). See artifacts/phase4_experiments.md.
+
+# E1: cyclic until ep70, then linear morph of amplitude+envelope to 0.05x lr by ep100 — parks
+# the run at its oscillation trough instead of relying on best-checkpoint luck.
+_counts_ext("z8_resnet_anneal", mk_extra={"map_kwargs": _RESNET_MAPKW},
+            scheduler_type="cyclic_anneal",
+            scheduler_kwargs={"cyclic_period_steps": 6000, "anneal_start_epoch": 70,
+                              "final_factor": 0.05})
+# E2: second-moment (spatial std) pooling + penultimate-stage tap (ECAPA-MFA style): pool the
+# spatial VARIANCE of learned local statistics (peak-count-like info that mean pools discard).
+_STDPOOL_MAPKW = {**_RESNET_MAPKW, "pool_types": ("avg", "gem", "std"),
+                  "tap_penultimate": True}
+_counts_ext("z8_resnet_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
+# E3: off-diagonal covariance (decorrelation) penalty on patch_mu — direct anti-rank-1 pressure.
+# PAIRED with the per-dim variance hinge (VICReg needs both: cov alone is satisfied by
+# axis-aligning the one live direction — zero off-diag, PR still 1). Weights ~VICReg 25:1.
+_counts_ext("z8_resnet_covreg", mk_extra={"map_kwargs": _RESNET_MAPKW,
+                                          "patch_var_reg_coeff": 1.0,
+                                          "patch_cov_reg_coeff": 3e-2})
+# E4: asymmetric spectral decoupling (L2 on the band-only readout component), on the STUCK seed
+# (repeat 1) — a seed-rescue test: does readout decoupling free the collapsed basin?
+_counts_ext("z8_resnet_sdband", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+            repeat_indices=(1,))
+# E5: anti-aliased (Tri-3 blur) downsampling on stages 3-5 (stem + stages 1-2 keep the raw
+# small-scale path): stop aliasing corrupting the high-l content that carries the non-Gaussian
+# signal. Symmetric kernel -> flip/rot augmentation safe.
+_BLUR_MAPKW = {**_RESNET_MAPKW, "blur_stages": (2, 3, 4)}
+_counts_ext("z8_resnet_blurpool", mk_extra={"map_kwargs": _BLUR_MAPKW})

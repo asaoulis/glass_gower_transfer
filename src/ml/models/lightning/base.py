@@ -244,6 +244,37 @@ class BaseLightningModule(pl.LightningModule):
             interval = "step"
             milestone = warmup_steps
 
+        elif sched_type in ["cyclic_anneal", "anneal_cyclic"]:
+            # counts-ext phase 4 E1: plain cyclic triangle until `anneal_start_epoch`, then
+            # linearly morph the whole factor toward `final_factor` by the end of training —
+            # amplitude AND envelope decay together, parking the run at its oscillation trough
+            # instead of relying on best-checkpoint luck.
+            cyclic_period_steps = int(self.scheduler_kwargs.get("cyclic_period_steps", 2000))
+            min_factor = float(self.scheduler_kwargs.get("cyclic_min_factor", 0.05))
+            final_factor = float(self.scheduler_kwargs.get("final_factor", 0.05))
+            anneal_start_epoch = float(self.scheduler_kwargs.get("anneal_start_epoch", 0.75 * max_epochs))
+            anneal_start_step = int(anneal_start_epoch * steps_per_epoch)
+
+            def anneal_lambda(global_step: int):
+                if cyclic_period_steps <= 0:
+                    cyc = 1.0
+                else:
+                    phase = (global_step % cyclic_period_steps) / cyclic_period_steps
+                    cyc01 = phase / 0.5 if phase < 0.5 else (1.0 - phase) / 0.5
+                    cyc = min_factor + (1.0 - min_factor) * cyc01
+                if global_step <= anneal_start_step:
+                    return cyc
+                frac = min(
+                    1.0,
+                    (global_step - anneal_start_step)
+                    / max(1, total_steps - anneal_start_step),
+                )
+                return (1.0 - frac) * cyc + frac * final_factor
+
+            main_sched = LambdaLR(optimizer, lr_lambda=anneal_lambda)
+            interval = "step"
+            milestone = warmup_steps
+
         else:
             main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
             interval = "step"

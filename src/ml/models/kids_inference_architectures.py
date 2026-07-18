@@ -462,6 +462,8 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         band_dropout_p: float = 0.0,
         patch_head_init_gain: float = 1.0,
         patch_var_reg_coeff: float = 0.0,
+        patch_cov_reg_coeff: float = 0.0,
+        sd_band_coeff: float = 0.0,
         # patch_norm (counts-extended task, 2026-07-16): normalisation barrier on patch_mu
         # before fusion. 'layernorm' = non-affine LayerNorm per sample — structurally removes
         # the measured DC-blowup/amplitude-explosion failure mode (patch_mu means grow to O(10)
@@ -535,7 +537,14 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
 
         self.band_dropout_p = float(band_dropout_p)
         self.patch_var_reg_coeff = float(patch_var_reg_coeff)
+        # counts-ext phase 4: patch_cov_reg_coeff = off-diagonal covariance (decorrelation)
+        # penalty on patch_mu (anti-rank-1 pressure); sd_band_coeff = asymmetric spectral-
+        # decoupling L2 on the band-only component of the fused latent (Pezeshki-style).
+        # Both are read by the Lightning training step; the encoder just stores/caches.
+        self.patch_cov_reg_coeff = float(patch_cov_reg_coeff)
+        self.sd_band_coeff = float(sd_band_coeff)
         self._last_patch_mu = None
+        self._last_band_mu = None
         self.cache_patch_mu = False  # set True by the Lightning module when the aux head is on
         if patch_norm is None:
             self.patch_norm_layer = None
@@ -741,8 +750,14 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
                     >= self.band_dropout_p
                 ).to(band_mu.dtype)
                 band_mu = band_mu * keep
-            if self.patch_var_reg_coeff > 0 or self.cache_patch_mu:
+            if (
+                self.patch_var_reg_coeff > 0
+                or self.patch_cov_reg_coeff > 0
+                or self.sd_band_coeff > 0
+                or self.cache_patch_mu
+            ):
                 self._last_patch_mu = patch_mu
+                self._last_band_mu = band_mu
             mu = self._fuse_mu(band_mu, patch_mu)
             if mu.shape[-1] != self.latent_dim:
                 raise ValueError(

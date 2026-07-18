@@ -340,6 +340,32 @@ class NDELightningModule(BaseLightningModule):
                     var_pen,
                     sync_dist=self.is_distributed,
                 )
+        # counts-ext phase 4 E3: off-diagonal covariance (decorrelation) penalty on patch_mu —
+        # anti-rank-1 pressure (all escaped models carry a single effective map dimension).
+        cov_coeff = float(getattr(enc, "patch_cov_reg_coeff", 0.0) or 0.0) if enc is not None else 0.0
+        if cov_coeff > 0.0:
+            patch_mu = getattr(enc, "_last_patch_mu", None)
+            if patch_mu is not None and patch_mu.shape[0] > 2:
+                pm = patch_mu.float()
+                pm = pm - pm.mean(dim=0, keepdim=True)
+                cov = (pm.T @ pm) / (pm.shape[0] - 1)
+                d = cov.shape[0]
+                cov_pen = (cov.pow(2).sum() - torch.diagonal(cov).pow(2).sum()) / d
+                loss = loss + cov_coeff * cov_pen
+                self.log("train_patch_cov_pen", cov_pen, sync_dist=self.is_distributed)
+        # counts-ext phase 4 E4: asymmetric spectral decoupling — L2 on the BAND-only component
+        # of the fused latent (shrinks the readout's band reliance; Pezeshki-style SD).
+        sd_coeff = float(getattr(enc, "sd_band_coeff", 0.0) or 0.0) if enc is not None else 0.0
+        if sd_coeff > 0.0:
+            band_mu = getattr(enc, "_last_band_mu", None)
+            patch_mu = getattr(enc, "_last_patch_mu", None)
+            if band_mu is not None and patch_mu is not None:
+                z_band = enc.hybrid_head(
+                    enc._fuse_mu(band_mu.float(), torch.zeros_like(patch_mu).float())
+                )
+                sd_pen = 0.5 * z_band.pow(2).sum(dim=-1).mean()
+                loss = loss + sd_coeff * sd_pen
+                self.log("train_sd_band_pen", sd_pen, sync_dist=self.is_distributed)
         aux = self._patch_aux_loss(theta)
         if aux is not None:
             loss = loss + self.patch_aux_weight * aux
@@ -375,10 +401,55 @@ class NDELightningModule(BaseLightningModule):
         aux = self._patch_aux_loss(theta)
         if aux is not None:
             self.log("val_patch_aux", aux, sync_dist=self.is_distributed)
+        self._hybrid_val_monitor(theta)
         self.log_custom_evals(preds, theta)
         return loss
 
+    def _hybrid_val_monitor(self, theta):
+        """counts-ext phase 4 L3: per-val-epoch zero-out information split + patch_mu rank.
+
+        For hybrid encoders, logs val NLL with the map slice zeroed (band-only) and the band
+        slice zeroed (map-only), and accumulates patch_mu for a participation-ratio (effective
+        rank) log at epoch end. Catches dead branches AND false escapes (alive-but-uninformative
+        map branch) by ~ep20 instead of ep50. Self-arming: first val batch enables the encoder's
+        mu caching; costs two flow evals per val batch (encoder forward is NOT repeated).
+        """
+        enc = getattr(self.model, "embedding_net", None)
+        if enc is None or not hasattr(enc, "_fuse_mu") or not hasattr(enc, "hybrid_head"):
+            return
+        if not getattr(enc, "cache_patch_mu", False):
+            enc.cache_patch_mu = True  # arms caching from the next forward on
+        band_mu = getattr(enc, "_last_band_mu", None)
+        patch_mu = getattr(enc, "_last_patch_mu", None)
+        if band_mu is None or patch_mu is None or band_mu.shape[0] != theta.shape[0]:
+            return
+        with torch.no_grad(), torch.autocast(device_type=theta.device.type, enabled=False):
+            band_mu = band_mu.float()
+            patch_mu = patch_mu.float()
+            z_band = enc.hybrid_head(enc._fuse_mu(band_mu, torch.zeros_like(patch_mu)))
+            z_map = enc.hybrid_head(enc._fuse_mu(torch.zeros_like(band_mu), patch_mu))
+            lq_band = self.flow.log_prob(theta.float().unsqueeze(0), z_band).mean()
+            lq_map = self.flow.log_prob(theta.float().unsqueeze(0), z_map).mean()
+        self.log("val_nll_bandonly", -lq_band, sync_dist=self.is_distributed)
+        self.log("val_nll_maponly", -lq_map, sync_dist=self.is_distributed)
+        if not hasattr(self, "_val_patch_mus"):
+            self._val_patch_mus = []
+        self._val_patch_mus.append(patch_mu.detach().cpu())
+
     def on_validation_epoch_end(self):
+        mus = getattr(self, "_val_patch_mus", None)
+        if mus:
+            pm = torch.cat(mus, dim=0)
+            self._val_patch_mus = []
+            if pm.shape[0] > pm.shape[1]:
+                pm = pm - pm.mean(dim=0, keepdim=True)
+                cov = (pm.T @ pm) / (pm.shape[0] - 1)
+                ev = torch.linalg.eigvalsh(cov).clamp(min=0)
+                p_ratio = (ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12)).item()
+                self.log("val_patch_pr", p_ratio, sync_dist=self.is_distributed)
+                self.log(
+                    "val_patch_std", pm.std(dim=0).mean().item(), sync_dist=self.is_distributed
+                )
         if self.test_dataloader is None:
             return
 
