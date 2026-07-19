@@ -708,3 +708,12 @@ _counts_ext("z8_resnet_blurpool", mk_extra={"map_kwargs": _BLUR_MAPKW})
 # CNN's spectral bias (user prior: beyond-2pt info lives at small scales). No data-side work.
 _HIPASS_MAPKW = {**_RESNET_MAPKW, "input_highpass": True}
 _counts_ext("z8_resnet_hipass", mk_extra={"map_kwargs": _HIPASS_MAPKW})
+# E12a: sdband + late anneal on the STRONG seed (rep 2, plain best -5.2062): tests (a) sdband on
+# a would-be-deep seed (does the penalty tax good seeds?), (b) the anneal on a run that actually
+# escapes (E1's seed never escaped, so it cannot test the anneal). The -5.5 combo attempt v1.
+_counts_ext("z8_resnet_sdband_anneal",
+            mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+            repeat_indices=(2,),
+            scheduler_type="cyclic_anneal",
+            scheduler_kwargs={"cyclic_period_steps": 6000, "anneal_start_epoch": 70,
+                              "final_factor": 0.05})
