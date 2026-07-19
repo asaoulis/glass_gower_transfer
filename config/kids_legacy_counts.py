@@ -717,3 +717,65 @@ _counts_ext("z8_resnet_sdband_anneal",
             scheduler_type="cyclic_anneal",
             scheduler_kwargs={"cyclic_period_steps": 6000, "anneal_start_epoch": 70,
                               "final_factor": 0.05})
+
+
+# === Phase 4.6 (2026-07-19): GOWER DOWNSTREAM ARCHITECTURE BENCHMARK ============================
+# User: the new benchmark is Gower downstream performance. Fine-tune each phase-4 architecture
+# variant (whole-model load: encoder + NPE flow) on the ~300-complete gower counts nla_m store
+# (prebaked f16 fwhm4_lmin56, job 1327723), 300 trainval 80/20 + fixed-test lock, 10 ep lr 1e-5
+# (the production _npe_finetune_z8 recipe) but ensemble_repeats=1 — this is an architecture
+# comparison, not the production ensemble. One finetuned repeat r loads source repeat r.
+
+def _gower_ft_arch(name, src_exp, mk_extra=None, top_extra=None, repeat_indices=(0,)):
+    c = _npe_finetune_z8(f"{_CKPT}/{src_exp}/", data_patterns=_GOWER_NLA_M,
+                         eb_variant=_EB_VARIANT)
+    c["ensemble_repeats"] = 1
+    c["repeat_indices"] = list(repeat_indices)
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    for k, v in (top_extra or {}).items():
+        c[k] = v
+    kids_legacy_counts_experiments[f"gower_ft_counts_{name}"] = c
+    return c
+
+
+# plain ResNet recipe, the 3 deep seeds (r0 -5.148, r2 -5.206, r4 -5.282)
+_gower_ft_arch("resnet", "kids_legacy_hybrid_nla_m_counts_z8_resnet",
+               mk_extra={"map_kwargs": _RESNET_MAPKW}, repeat_indices=(0, 2, 4))
+# SD band penalty variant (E4 rep1 -5.2124; rep0 pending E4c) — keep the penalty during finetune
+_gower_ft_arch("sdband", "kids_legacy_hybrid_nla_m_counts_z8_resnet_sdband",
+               mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+               repeat_indices=(1,))
+# wider-flow variant (-5.137)
+_gower_ft_arch("flowbig", "kids_legacy_hybrid_nla_m_counts_z8_resnet_flowbig",
+               mk_extra={"map_kwargs": _RESNET_MAPKW},
+               top_extra={"flow_kwargs": {"hidden_features": 64}}, repeat_indices=(0,))
+# blurpool variant (-5.082)
+_gower_ft_arch("blurpool", "kids_legacy_hybrid_nla_m_counts_z8_resnet_blurpool",
+               mk_extra={"map_kwargs": _BLUR_MAPKW}, repeat_indices=(0,))
+# UNet z8 counts foundation control (the pre-phase-4 baseline, ~-4.4 on GLASS)
+_gower_ft_arch("unet", "kids_legacy_hybrid_nla_m_counts_z8", repeat_indices=(0,))
+# sdband+anneal (E12a rep2) — registered now; submit once E12a finishes
+_gower_ft_arch("sdband_anneal", "kids_legacy_hybrid_nla_m_counts_z8_resnet_sdband_anneal",
+               mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+               repeat_indices=(2,))
+
+
+def _gower_ft_smoke(name, mk_extra=None, top_extra=None):
+    """De-clustered local smoke: from-scratch, fwhm8 fixture, tiny; proves BUILD + finite loss
+    for each finetune arch override."""
+    c = _npe_finetune_counts_z8_smoke()
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    for k, v in (top_extra or {}).items():
+        c[k] = v
+    kids_legacy_counts_experiments[f"gower_ft_counts_{name}_smoke"] = c
+
+
+_gower_ft_smoke("resnet", mk_extra={"map_kwargs": _RESNET_MAPKW})
+_gower_ft_smoke("sdband", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2})
+_gower_ft_smoke("flowbig", mk_extra={"map_kwargs": _RESNET_MAPKW},
+                top_extra={"flow_kwargs": {"hidden_features": 64}})
+_gower_ft_smoke("blurpool", mk_extra={"map_kwargs": _BLUR_MAPKW})
+_gower_ft_smoke("unet")
+_gower_ft_smoke("sdband_anneal", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2})
