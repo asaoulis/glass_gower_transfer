@@ -247,8 +247,20 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         else:
             head_in_dim = 2 * cnn_out_dim
 
-        hidden_head = max(self.model_output_dim, head_in_dim // 2)
-        self.head = self.build_head(head_in_dim, hidden_head=hidden_head)
+        # head_hidden_dims (counts-ext P4.7, 2026-07-19): optional gradual-taper N/S head, e.g.
+        # (256, 64, 16) -> Linear 512-256-64-16-latent with GELU between, replacing the historical
+        # 2-layer 512-256-8 cliff. None => exact historical head (build_head).
+        head_hidden_dims = kwargs.get("head_hidden_dims", None)
+        if head_hidden_dims:
+            dims = [head_in_dim, *[int(d) for d in head_hidden_dims]]
+            layers = []
+            for a, b in zip(dims[:-1], dims[1:]):
+                layers += [nn.Linear(a, b), nn.GELU()]
+            layers.append(nn.Linear(dims[-1], self.model_output_dim))
+            self.head = nn.Sequential(*layers)
+        else:
+            hidden_head = max(self.model_output_dim, head_in_dim // 2)
+            self.head = self.build_head(head_in_dim, hidden_head=hidden_head)
 
     @staticmethod
     def _pad_to_size(x: torch.Tensor, target_hw: Tuple[int, int]) -> torch.Tensor:

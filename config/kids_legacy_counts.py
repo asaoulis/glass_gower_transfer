@@ -779,3 +779,42 @@ _gower_ft_smoke("flowbig", mk_extra={"map_kwargs": _RESNET_MAPKW},
 _gower_ft_smoke("blurpool", mk_extra={"map_kwargs": _BLUR_MAPKW})
 _gower_ft_smoke("unet")
 _gower_ft_smoke("sdband_anneal", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2})
+
+
+# === Phase 4.7 (2026-07-19): END-TO-END POST-CNN HEAD REDESIGN (warm-start trunk) ===============
+# User hypothesis: all breakthrough architectures land in the same -5.1..-5.3 band => the CNN is
+# not the bottleneck; the 512->256->8 post-CNN funnel might be. Grey area: END-TO-END head
+# redesign with a WARM-STARTED trunk (dodges the escape-fragility confound that killed the cold
+# E2/E3/dp16 attempts; frozen-trunk sweeps could not co-adapt the CNN). Trunk = r4's escaped
+# ResNet (-5.2816, repeat 4 => split-consistent), backbone LR 2e-5, fresh head/fusion/flow at
+# 2e-4 cyclic, 60 ep. Cold-start reinit of any winner comes after identification (user).
+_WS_TRUNK = {
+    "pretrained_backbone_ckpt_path": f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_resnet/",
+    "backbone_prefix": "model.embedding_net.patch_encoder.shared_cnn.",
+    "freeze_backbone": False,
+    "pretrained_backbone_lr": 2e-5,
+    "epochs": 60,
+}
+_WS_SMOKE_TOP = {"pretrained_backbone_ckpt_path": None}  # de-cluster the smoke clone
+
+
+def _ws_head(name, mk_extra=None, top_extra=None):
+    top = {**_WS_TRUNK, **(top_extra or {})}
+    smoke_top = {k: v for k, v in (top_extra or {}).items()}
+    smoke_top.update(_WS_SMOKE_TOP)
+    _counts_ext(name, mk_extra=mk_extra, top_extra=top, smoke_top=smoke_top,
+                repeat_indices=(4,))
+
+
+# W1: gradual-taper N/S head 512->256->64->16->8 (replaces the 256->8 cliff)
+_ws_head("z8_resnet_ws_headdeep",
+         mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}})
+# W2: wider patch summary (dim_patch 16) + MLP fusion — the frozen-sweep winner, now end-to-end
+_ws_head("z8_resnet_ws_dp16mlp",
+         mk_extra={"map_kwargs": _RESNET_MAPKW, "hybrid_head_hidden": 32},
+         top_extra={"latent_dim": 24})
+# W3: richer pooled statistics (avg+gem+std, penultimate tap) — E2 retried without the escape
+_ws_head("z8_resnet_ws_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
+# W4: wide-not-deep funnel (hidden 512 head) — capacity control vs W1's taper
+_ws_head("z8_resnet_ws_bighead",
+         mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (512,)}})
