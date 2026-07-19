@@ -704,3 +704,7 @@ _counts_ext("z8_resnet_sdband", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_
 # signal. Symmetric kernel -> flip/rot augmentation safe.
 _BLUR_MAPKW = {**_RESNET_MAPKW, "blur_stages": (2, 3, 4)}
 _counts_ext("z8_resnet_blurpool", mk_extra={"map_kwargs": _BLUR_MAPKW})
+# E6: in-model high-pass input channels [x, x-blur5(x)] — explicit small-scale content past the
+# CNN's spectral bias (user prior: beyond-2pt info lives at small scales). No data-side work.
+_HIPASS_MAPKW = {**_RESNET_MAPKW, "input_highpass": True}
+_counts_ext("z8_resnet_hipass", mk_extra={"map_kwargs": _HIPASS_MAPKW})

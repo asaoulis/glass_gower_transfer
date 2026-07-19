@@ -93,11 +93,25 @@ class PreActResNetEncoder(nn.Module):
         dropout: float = 0.0,
         blur_stages: Sequence[int] = (),
         tap_penultimate: bool = False,
+        input_highpass: bool = False,
         **kwargs,  # tolerate unused map_kwargs (e.g. conditioning flags) for config compat
     ):
         super().__init__()
         stage_channels = tuple(stage_channels)
         blur_stages = tuple(blur_stages)
+        # input_highpass (counts-ext phase 4, E6/R6): feed [x, x - blur5(x)] — an explicit
+        # small-scale channel per tomo bin handed past the CNN's spectral bias. Fixed symmetric
+        # 5x5 Gaussian (sigma~1px) -> flip/rot augmentation safe; doubles the stem's input.
+        self.input_highpass = bool(input_highpass)
+        if self.input_highpass:
+            g = torch.tensor([1.0, 4.0, 6.0, 4.0, 1.0])
+            k = torch.outer(g, g)
+            k = k / k.sum()
+            self.register_buffer(
+                "hp_kernel", k.expand(in_channels, 1, 5, 5).clone(), persistent=False
+            )
+            self._hp_groups = in_channels
+            in_channels = in_channels * 2
         self.stem = nn.Conv2d(in_channels, stage_channels[0], 3, padding=1, bias=False)
         stages = []
         cin = stage_channels[0]
@@ -143,6 +157,11 @@ class PreActResNetEncoder(nn.Module):
         self.num_outputs = num_outputs
 
     def forward(self, x, **_ignored):
+        if self.input_highpass:
+            blur = nn.functional.conv2d(
+                x, self.hp_kernel.to(x.dtype), padding=2, groups=self._hp_groups
+            )
+            x = torch.cat([x, x - blur], dim=1)
         h = self.stem(x)
         if self.tap_penultimate:
             h_pen = self.stages[: self._penult_end](h)
