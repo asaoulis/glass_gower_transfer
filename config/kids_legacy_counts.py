@@ -826,3 +826,9 @@ _gower_ft_arch("ws_stdpool", "kids_legacy_hybrid_nla_m_counts_z8_resnet_ws_stdpo
                mk_extra={"map_kwargs": _STDPOOL_MAPKW}, repeat_indices=(4,))
 _gower_ft_smoke("headdeep", mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}})
 _gower_ft_smoke("ws_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
+# P4.7 endgame: COLD-START reinit of the identified winner (taper head) — no warm trunk, plain
+# recipe otherwise. If it escapes and matches ~-5.29, the prescription is self-contained;
+# if it fails the escape (cf. cold E2/stdpool), production = plain-escape + head-swap 2-stage.
+_counts_ext("z8_resnet_headdeep_cold",
+            mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}},
+            repeat_indices=(4,))
