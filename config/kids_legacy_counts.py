@@ -818,3 +818,11 @@ _ws_head("z8_resnet_ws_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
 # W4: wide-not-deep funnel (hidden 512 head) — capacity control vs W1's taper
 _ws_head("z8_resnet_ws_bighead",
          mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (512,)}})
+# P4.7 winners onto the downstream benchmark (rep 4 trunk lineage)
+_gower_ft_arch("headdeep", "kids_legacy_hybrid_nla_m_counts_z8_resnet_ws_headdeep",
+               mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}},
+               repeat_indices=(4,))
+_gower_ft_arch("ws_stdpool", "kids_legacy_hybrid_nla_m_counts_z8_resnet_ws_stdpool",
+               mk_extra={"map_kwargs": _STDPOOL_MAPKW}, repeat_indices=(4,))
+_gower_ft_smoke("headdeep", mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}})
+_gower_ft_smoke("ws_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
