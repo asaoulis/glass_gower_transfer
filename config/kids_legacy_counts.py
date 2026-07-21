@@ -56,7 +56,10 @@ _GOWER_NOVD  = f"{_GPU5}/gower_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400
 
 # Checkpoint dirs (written by M1 band / M2 foundation; consumed by M2/M3/M4/M5).
 _BAND_CKPT_DIR   = f"{_CKPT}/kids_legacy_band_nla_m_counts/"
-_FOUNDATION_CKPT = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8/"
+# PRODUCTION FOUNDATION = the PreActResNet hybrid (z8_resnet). All downstream (M3 NPE-finetune, M4 NLE
+# pretrain source, M5 encoder-finetune) default to this. Repeats run 0->4; the clean foundation seeds
+# will be renamed into 0..4 slots by the user once everything lands (do NOT rename here).
+_FOUNDATION_CKPT = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_resnet/"
 
 _GOWER_TEST_IDS = "config/fixed_test_sets/gower_test_ids.json"
 
@@ -404,7 +407,8 @@ kids_legacy_counts_experiments["gower_npe_finetune_nla_m_counts_z8_smoke"] = _np
 # === M4  main-variate NLE chain: 5x (GLASS pretrain -> Gower ens9 finetune), z8 pure-whiten k=8 =
 # Per repeat r: GLASS pretrain (glass_nle_pretrain_nla_m_counts_z8_r{r}, v100) -> Gower ens9 finetune
 # (gower_nle_finetune_nla_m_counts_z8_r{r}_ens9, CORES64 MCMC eval). MAIN split: 300 train/val (80/20),
-# 200 fixed-test ids held out. Source encoder on the embed CLI: --sources kids_legacy_hybrid_nla_m_counts_z8.
+# 200 fixed-test ids held out. Source encoder on the embed CLI (PRODUCTION = resnet foundation):
+# --sources kids_legacy_hybrid_nla_m_counts_z8_resnet.
 def _register_main_nle_counts_z8():
     for r in range(5):
         kids_legacy_counts_experiments[f"glass_nle_pretrain_nla_m_counts_z8_r{r}"] = _nle_bake_repeat(
@@ -421,6 +425,12 @@ def _register_main_nle_counts_z8():
 
 
 _register_main_nle_counts_z8()
+
+# Extra NLE-pretrain target for foundation seed r7 (a clean re-run escape used in the production
+# 5-set {0,1,2,4,7} before the user renames the clean seeds into 0..4). Pretrain only (source the
+# resnet foundation ncosmoNone_7); the finetune/rename is handled once everything lands.
+kids_legacy_counts_experiments["glass_nle_pretrain_nla_m_counts_z8_r7"] = _nle_bake_repeat(
+    _nle_pretrain(_NLA_M, _EB_VARIANT, whiten_k=8, epochs=150), 7)
 
 
 # === M5  sub-variate chains {nla, nla_z, no_vd}: encoder-finetune (M5a) + NLE chain (M5b/M5c) ====
