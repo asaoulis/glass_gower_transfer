@@ -57,9 +57,18 @@ _GOWER_NOVD  = f"{_GPU5}/gower_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400
 # Checkpoint dirs (written by M1 band / M2 foundation; consumed by M2/M3/M4/M5).
 _BAND_CKPT_DIR   = f"{_CKPT}/kids_legacy_band_nla_m_counts/"
 # PRODUCTION FOUNDATION = the PreActResNet hybrid (z8_resnet). All downstream (M3 NPE-finetune, M4 NLE
-# pretrain source, M5 encoder-finetune) default to this. Repeats run 0->4; the clean foundation seeds
-# will be renamed into 0..4 slots by the user once everything lands (do NOT rename here).
+# pretrain source, M5 encoder-finetune) default to this. Repeats run 0->4 (the clean foundation seed
+# formerly in slot 7 was renamed by the user into slot 3, so all of ncosmoNone_{0..4} are clean seeds).
 _FOUNDATION_CKPT = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_resnet/"
+
+# Production map-encoder kwargs — the PreActResNet backbone the foundation (z8_resnet) was trained
+# with. Any config that REBUILDS the foundation arch to load its weights (M3 NPE whole-model load,
+# M5a encoder warm-start) MUST set model_kwargs['map_kwargs']=_RESNET_MAPKW, or the state-dict load
+# silently mismatches the map encoder (default arch is the old UNet). Defined once here; the
+# counts-ext foundation variants further down reuse this same object.
+_RESNET_MAPKW = {"encoder_type": "preact_resnet", "patch_conditioning": None,
+                 "pool_types": ("avg", "gem"),
+                 "stage_channels": (32, 64, 128, 256, 256), "blocks_per_stage": 3}
 
 _GOWER_TEST_IDS = "config/fixed_test_sets/gower_test_ids.json"
 
@@ -371,8 +380,13 @@ kids_legacy_counts_experiments["kids_legacy_maponly_nla_m_counts_smoke"] = _mapo
 
 
 # === M3  main-variate Gower NPE 9-member ensemble finetune (5 repeats) ==========================
-kids_legacy_counts_experiments["gower_npe_finetune_nla_m_counts_z8"] = _npe_finetune_z8(
-    _FOUNDATION_CKPT, data_patterns=_GOWER_NLA_M, eb_variant=_EB_VARIANT)
+# WHOLE-MODEL load (encoder + NPE flow) from the resnet foundation, so the map encoder MUST be
+# rebuilt as the resnet backbone (map_kwargs=_RESNET_MAPKW) or the state-dict load mismatches. This is
+# exactly the recipe the gower_ft_counts_resnet arch-benchmark validated (vals -5.15/-5.21/-5.28);
+# here it is the production ensemble (ensemble_repeats=9, repeat_indices 0..4 from _npe_finetune_z8).
+_gower_npe_ft_counts = _npe_finetune_z8(_FOUNDATION_CKPT, data_patterns=_GOWER_NLA_M, eb_variant=_EB_VARIANT)
+_gower_npe_ft_counts["model_kwargs"] = {**_gower_npe_ft_counts["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
+kids_legacy_counts_experiments["gower_npe_finetune_nla_m_counts_z8"] = _gower_npe_ft_counts
 
 
 def _npe_finetune_counts_z8_smoke():
@@ -381,6 +395,7 @@ def _npe_finetune_counts_z8_smoke():
     from-scratch band), fwhm8 local fixture, single-cosmology-safe (no cosmo cap / fixed-test lock,
     ensemble_repeats=1), few epochs -> proves the z8 NPE-finetune config BUILDS + finite loss."""
     c = _npe_finetune_z8(_FOUNDATION_CKPT, data_patterns=_SMOKE_DATA, eb_variant=_SMOKE_EB_VARIANT)
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}  # exercise the real resnet arch
     c["checkpoint_path"] = None
     c.pop("pretrained_band_ckpt_path", None)
     c["freeze_band"] = False
@@ -426,11 +441,9 @@ def _register_main_nle_counts_z8():
 
 _register_main_nle_counts_z8()
 
-# Extra NLE-pretrain target for foundation seed r7 (a clean re-run escape used in the production
-# 5-set {0,1,2,4,7} before the user renames the clean seeds into 0..4). Pretrain only (source the
-# resnet foundation ncosmoNone_7); the finetune/rename is handled once everything lands.
-kids_legacy_counts_experiments["glass_nle_pretrain_nla_m_counts_z8_r7"] = _nle_bake_repeat(
-    _nle_pretrain(_NLA_M, _EB_VARIANT, whiten_k=8, epochs=150), 7)
+# (The old r7 escape-seed NLE-pretrain target has been removed: the user renamed foundation seed 7
+# into slot 3 and the r7 pretrain checkpoint dir into glass_nle_pretrain_nla_m_counts_z8_r3, so the
+# production set is cleanly r0..r4 — all registered by _register_main_nle_counts_z8() above.)
 
 
 # === M5  sub-variate chains {nla, nla_z, no_vd}: encoder-finetune (M5a) + NLE chain (M5b/M5c) ====
@@ -455,6 +468,9 @@ def _encoder_finetune_counts(glass_data, cosmo, preset):
     c = _encoder_finetune_z8(glass_data, _EB_VARIANT, cosmo, repeat_indices=(0, 1, 2, 3, 4),
                              preset_overrides=preset)
     c["pretrained_embedding_ckpt_path"] = _FOUNDATION_CKPT   # the COUNTS foundation (not the lmin50 one)
+    # Warm-start LOADS the resnet foundation encoder -> rebuild the resnet map backbone or the partial
+    # load silently skips it (leaving a random UNet map encoder). Same fix as M3.
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
     return c
 
 
@@ -462,8 +478,9 @@ def _register_sub_variate(S, glass_data, gower_data, cosmo, preset, smoke_cosmo)
     # M5a: encoder finetune (+ de-clustered smoke via the kids_legacy encoder-smoke factory).
     kids_legacy_counts_experiments[f"glass_encoder_finetune_{S}_counts_z8"] = _encoder_finetune_counts(
         glass_data, cosmo, preset)
-    kids_legacy_counts_experiments[f"glass_encoder_finetune_{S}_counts_z8_smoke"] = _encoder_finetune_z8_smoke(
-        smoke_cosmo)
+    _enc_smoke = _encoder_finetune_z8_smoke(smoke_cosmo)
+    _enc_smoke["model_kwargs"] = {**_enc_smoke["model_kwargs"], "map_kwargs": _RESNET_MAPKW}  # match real resnet arch
+    kids_legacy_counts_experiments[f"glass_encoder_finetune_{S}_counts_z8_smoke"] = _enc_smoke
     # M5b/M5c: NLE pretrain -> Gower ens9 finetune per repeat. SUB split: 100 cosmos, 70/30.
     for r in range(5):
         kids_legacy_counts_experiments[f"glass_nle_pretrain_{S}_counts_z8_r{r}"] = _nle_bake_repeat(
@@ -559,10 +576,8 @@ _counts_ext("z8_bnorm_mapaux05", mk_extra={"patch_norm": "batchnorm"},
 # === PROMOTED (user 2026-07-16): clean pre-activation ResNet map encoder ========================
 # Replace the degenerating diffusion-UNet with a boring, alive-at-init deep ResNet (15 blocks,
 # GN, GeM head, symmetric downsampling). Highest-priority wave; aux-head/barrier variants are
-# fallback companions, not the lead.
-_RESNET_MAPKW = {"encoder_type": "preact_resnet", "patch_conditioning": None,
-                 "pool_types": ("avg", "gem"),
-                 "stage_channels": (32, 64, 128, 256, 256), "blocks_per_stage": 3}
+# fallback companions, not the lead. _RESNET_MAPKW is defined once at the top of this module (the
+# production foundation arch) and reused here + by M3/M5a.
 _counts_ext("z8_resnet", mk_extra={"map_kwargs": _RESNET_MAPKW})
 # Belt-and-braces companion: ResNet + the strongest known anti-collapse lever, in case starvation
 # still bites a healthy encoder.
