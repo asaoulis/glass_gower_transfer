@@ -327,8 +327,13 @@ def run_evaluation_on_samples(
     bias = scaled_samples_first.mean(axis=0) - scaled_theta0s
 
     std_devs = scaled_samples_first.std(axis=0)
-    width_68 = torch.quantile(scaled_samples_first, 0.84, dim=0) - torch.quantile(scaled_samples_first, 0.16, dim=0)
-    width_95 = torch.quantile(scaled_samples_first, 0.975, dim=0) - torch.quantile(scaled_samples_first, 0.025, dim=0)
+    # torch.quantile allocates a large sort buffer; on the big (n_samples, n_sims, d) ensemble tensor
+    # this OOMs a 16 GiB v100 at the ens9 FoM step. Compute the credible-interval widths on CPU
+    # (system RAM) — identical result, no GPU-memory pressure. This is a results-only path (not
+    # perf-critical); std_devs stays on GPU (cheap, no sort buffer).
+    _ssf_cpu = scaled_samples_first.cpu()
+    width_68 = torch.quantile(_ssf_cpu, 0.84, dim=0) - torch.quantile(_ssf_cpu, 0.16, dim=0)
+    width_95 = torch.quantile(_ssf_cpu, 0.975, dim=0) - torch.quantile(_ssf_cpu, 0.025, dim=0)
 
     prior_samples_scaled = _sample_from_prior(prior, prior_num_samples, target_dim=samples.shape[-1])
     prior_samples_unscaled = (
@@ -379,18 +384,19 @@ def run_evaluation_on_samples(
         )
 
         s8_mean = s8_samples.mean(dim=0)
+        s8_samples_cpu = s8_samples.cpu()  # quantile on CPU (see width_68/95 note above)
 
         eval_metrics["s8"] = {}
         eval_metrics["s8"]["mse"] = torch.mean((s8_mean - s8_theta0s) ** 2).item()
         eval_metrics["s8"]["bias"] = (s8_mean - s8_theta0s).mean().item()
         eval_metrics["s8"]["std_dev"] = s8_samples.std(dim=0).mean().item()
         eval_metrics["s8"]["width_68"] = (
-            torch.quantile(s8_samples, 0.84, dim=0)
-            - torch.quantile(s8_samples, 0.16, dim=0)
+            torch.quantile(s8_samples_cpu, 0.84, dim=0)
+            - torch.quantile(s8_samples_cpu, 0.16, dim=0)
         ).mean().item()
         eval_metrics["s8"]["width_95"] = (
-            torch.quantile(s8_samples, 0.975, dim=0)
-            - torch.quantile(s8_samples, 0.025, dim=0)
+            torch.quantile(s8_samples_cpu, 0.975, dim=0)
+            - torch.quantile(s8_samples_cpu, 0.025, dim=0)
         ).mean().item()
 
     if bias.shape[0] != n_sims:
