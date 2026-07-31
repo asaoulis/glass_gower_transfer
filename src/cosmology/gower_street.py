@@ -14,6 +14,7 @@ class GowerStCosmologies:
         "Omega_b little_h^2": "ombh2",
         "sigma_8": "sigma_8",
         "w": "w0",
+        "wa": "wa",
         "n_s": "ns",
         "m_nu": "mnu",
         "Omega_m": "omega_m"

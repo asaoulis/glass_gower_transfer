@@ -1,6 +1,48 @@
 import numpy as np
 import healpy as hp
 
+from .simulators import Rotator, generate_rotation_specs
+
+
+def get_recentred_patch_values(map_data_bins, center_dec_deg, patch_halfwidth_deg, nside, lmax, sample="nearest"):
+    """
+    Rotate a Dec-band of HEALPix maps so that its declination center lands on
+    the celestial equator, then crop the (now centered) full-RA strip into a
+    flat Cartesian grid via get_patch_values.
+
+    Unlike KiDS's named_patches (fixed lon/lat crop boxes, never actually
+    recentred - see src/KiDS/simulation_config.py), this performs a genuine
+    per-patch equatorial recentring rotation before cropping, to minimize
+    flat-sky projection error for patches away from Dec=0.
+
+    Parameters
+    ----------
+    map_data_bins : array-like, shape (nbins, npix)
+        HEALPix maps per tomographic bin, at resolution `nside`.
+    center_dec_deg : float
+        Declination (deg) of the patch's center before recentring.
+    patch_halfwidth_deg : float
+        Half the patch's total Dec extent (deg); the cropped box spans
+        [-patch_halfwidth_deg, +patch_halfwidth_deg] around the equator
+        after recentring, and the full 360 deg in RA.
+    nside : int
+        HEALPix nside of map_data_bins.
+    lmax : int
+        Bandlimit to use for the spherical-harmonic-based rotation (should
+        match the bandlimit the maps were actually synthesized at).
+    sample : {"nearest","interp"}
+        Passed through to get_patch_values.
+    """
+    rotator = Rotator(nside, lmax)
+    spec = generate_rotation_specs(
+        delta_deg=0.0, recenter_deg=-center_dec_deg, flips=(False,), base_angles=(0,), backend="alm",
+    )[0]
+    rotated = np.array([rotator.rotate_map_alm(m, spec["rot"], spec["flip"]) for m in map_data_bins])
+
+    patch = (180.0, 0.0, 360.0, 2 * patch_halfwidth_deg)
+    return get_patch_values(rotated, [patch], nside, rot_angle=0, sample=sample)[0]
+
+
 def get_patch_values(map_data_bins, patches, nside, rot_angle, sample="nearest"):
     """
     Extract Cartesian patches from HEALPix maps.

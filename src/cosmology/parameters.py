@@ -82,7 +82,9 @@ def s8_to_As(params):
     p.Transfer.PK_redshifts = np.array([0.0])
     
     p.set_cosmology(H0=h * 100, ombh2=ombh2, omch2=omch2, omk=omega_k, mnu=mnu)
-    p.set_dark_energy(w=w0, wa=wa)
+    # PPF (not CAMB's default "fluid") supports wa != 0 combinations where
+    # w(z) = w0 + wa*z/(1+z) crosses the phantom divide (w=-1).
+    p.set_dark_energy(w=w0, wa=wa, dark_energy_model='ppf')
     p.set_initial_power(camb.initialpower.InitialPowerLaw(As=fid_As, ns=ns))
     p.Reion = camb.reionization.TanhReionization()
     p.Reion.Reionization = False
@@ -114,6 +116,9 @@ def build_cosmology(params, include_baryons=False):
         ns=params["ns"],
         w=params["w0"],
         wa=params["wa"],
+        # PPF (not CAMB's default "fluid") supports wa != 0 combinations where
+        # w(z) = w0 + wa*z/(1+z) crosses the phantom divide (w=-1).
+        dark_energy_model='ppf',
         halofit_version=halofit_version,
         neutrino_hierarchy="normal",
         NonLinear=camb.model.NonLinear_both,

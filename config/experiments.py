@@ -818,4 +818,21 @@ experiments = {
         "nle_weighting": 0.1,
         "accumulate_grad_batches": 4,
     },
+    # Euclid DR3 forecast: infer only omega_m, sigma_8, w0, wa; h, ns, ombh2,
+    # mnu, a_ia, b_ia are simulated (master_euclid_simulator.py) but marginalized
+    # by omission (see src/ml/data/data_loading.py:load_cosmo_params).
+    "euclid_4param": {
+        "data_patterns": "/share/gpu5/asaoulis/transfer_datasets/euclid_mocks/output_*.h5",
+        "model_type": "kids_bandpowers_mlp",
+        "dataset_quantities": ["mixed_bandpowers"],
+        "batch_size": 128,
+        "latent_dim": 8,
+        "flow_kwargs": {"hidden_features": 32, "dropout": 0.0},
+        "model_kwargs": {
+            "hidden_multiple": 32,
+            "dropout": 0.0,
+        },
+        "epochs": 40,
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "wa"],
+    },
 }
