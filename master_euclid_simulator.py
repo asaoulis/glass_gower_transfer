@@ -232,6 +232,12 @@ if __name__ == "__main__":
                 matter = backend["matter"]
                 cosmo = backend["cosmo"]
 
+                ##########
+                # Here we have removed the treatment of systematics
+                # present in the KiDS simulation code,
+                # as we are not including systematics in this Euclid simulation.
+                ##########
+
                 zb = glass.shells.distance_grid(cosmo, ZMIN, ZMAX, dx=DX)
                 los_z_integration = np.linspace(zb[0], zb[-1], N_LOS_CHI)
                 tomo_nz = build_tomo_nz(nz_path, N_LOS_CHI, los_z_integration, N_ARCMIN2_TOTAL)
@@ -281,9 +287,6 @@ if __name__ == "__main__":
                         catalogue, m_bias, NBINS, NSIDE, lmax_maps, nosh=False, mask=footprint.astype(float)
                     )
                     mixed_cls = denoise_shear_cls(NBINS, alm, alm_rand, lmax_maps)
-                    # LOWER_LSCALE/UPPER_LSCALE are only valid as-is at production
-                    # nside=1024 (lmax~2048); clamp upper so a low --nside smoke
-                    # test doesn't index past lmax_maps.
                     lower_lscale = LOWER_LSCALE
                     upper_lscale = min(UPPER_LSCALE, lmax_maps - 1)
                     mixed_cut = mixed_cls[:, :, :, lower_lscale:upper_lscale + 1]
