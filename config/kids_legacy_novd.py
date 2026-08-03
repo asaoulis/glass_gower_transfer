@@ -70,6 +70,12 @@ _RESNET_MAPKW = {"encoder_type": "preact_resnet", "patch_conditioning": None,
                  "stage_channels": (32, 64, 128, 256, 256), "blocks_per_stage": 3}
 
 _GOWER_TEST_IDS = "config/fixed_test_sets/gower_test_ids.json"
+# Sub-variate (M5c) split of the SAME 200 fixed-test ids: first-100 = train/val pool,
+# last-100 = held-out test. Halves are taken in FILE ORDER (the parent lock is stored in a
+# maximally-separated order) and are verified balanced in omega_m/sigma_8/w. Only the last-100
+# file is wired in: the sub-variate Gower stores hold exactly the 200 parent ids, so forcing the
+# last-100 into test leaves precisely the first-100 for train/val.
+_GOWER_TEST_IDS_LAST100 = "config/fixed_test_sets/gower_test_ids_last100.json"
 
 kids_legacy_novd_experiments = {}
 
@@ -259,14 +265,14 @@ def _register_sub_variate(S, glass_data, gower_data, cosmo, preset, smoke_cosmo)
         ft["train_frac"] = 0.7
         ft["val_frac"] = 0.3
         ft["test_frac"] = 0.0
-        # TODO(BLOCKER before M5c runs) sub-variate first-100/last-100 lock files. The sub-variate
-        # Gower stores (S2/S3) are `--gower-sim-set fixed_test` = EXACTLY the 200 gower_test_ids, so
-        # this placeholder would force ALL 200 into the test split and leave 0 train/val — it WILL
-        # break M5c as-is (NOT a graceful fallback: the overlap is complete, not empty). Before M5c:
-        # create gower_test_ids_first100.json (train/val pool) + gower_test_ids_last100.json (held-out
-        # test), set fixed_test_sim_ids=last-100, and restrict train/val to the first-100. Placeholder
-        # kept only so the module imports; M5c is far downstream (blocked on S2/S3 + M5a/M5b).
-        ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+        # Sub-variate split: the S2/S3 Gower stores are `--gower-sim-set fixed_test` = EXACTLY the
+        # 200 parent gower_test_ids. Locking the PARENT file here would force all 200 into test,
+        # leaving 0 train/val — and `_resolve_forced_test_cosmos` then hits its
+        # `n_present - forced < 1` guard and SILENTLY FALLS BACK TO A NORMAL RANDOM SPLIT, i.e. the
+        # "held-out" test would not be held out at all and would share cosmologies with train/val.
+        # So M5c locks the LAST-100 as test, which leaves exactly the first-100 for train/val
+        # (max_trainval_cosmos=[100], 70/30). Halves verified balanced in omega_m/sigma_8/w.
+        ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS_LAST100
         kids_legacy_novd_experiments[f"gower_nle_finetune_{S}_novd_z8_r{r}_ens9"] = _nle_bake_repeat(ft, r)
 
 
