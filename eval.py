@@ -40,10 +40,15 @@ experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite confi
 DEFAULT_MODE = "list"
 
 # Standard-mode default experiment list (used when --experiments is not given).
+#
+# ⚠️ Run eval on **a100 or l40s — NEVER v100**: the FoM credible-interval step OOMs a 16 GiB v100 at
+# ens9 even after 72ec561 moved the quantile computation to CPU. (An earlier version of this comment
+# said "run on v100"; that is wrong and will kill the job.)
+# evaluate_best_checkpoint skips repeats/runs with no checkpoint yet, so re-running is safe and
+# entries may be listed before their models exist.
 DEFAULT_EXPERIMENTS = [
-    # PRODUCTION eval (run on v100 as jobs finish; evaluate_best_checkpoint skips repeats/runs with no
-    # checkpoint yet, so re-running is safe): main-variate Gower NPE ens9 (all 5 repeats) + the GLASS
-    # sub-variate encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
+    # PRODUCTION eval: main-variate Gower NPE ens9 (all 5 repeats) + the GLASS sub-variate
+    # encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
     # ensemble_evaluation_results_*.json + the P0 posterior_samples.npz / ensemble_posterior_samples_*.npz.
     "gower_npe_finetune_nla_m_z8",
     "glass_encoder_finetune_nla_z_z8",
@@ -51,6 +56,11 @@ DEFAULT_EXPERIMENTS = [
     "glass_encoder_finetune_no_vd_z8",
     # counts-normalisation rerun (M3e): main-variate Gower NPE ens9 (all 5 repeats).
     "gower_npe_finetune_nla_m_counts_z8",
+    # === NO-VD production suite (the current MAIN analysis variate) =============================
+    # M3e: main-variate Gower NPE ens9. M5a: the two GLASS sub-variate encoder-finetunes.
+    "gower_npe_finetune_nla_m_novd_z8",
+    "glass_encoder_finetune_nla_novd_z8",
+    "glass_encoder_finetune_nla_z_novd_z8",
 ]
 
 

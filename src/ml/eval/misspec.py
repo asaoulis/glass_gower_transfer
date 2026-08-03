@@ -95,9 +95,46 @@ GLASS_PRETRAIN_VARIATES: List[Dict] = [
      "exclude_params": ["a_ia"]},
 ]
 
+# --- NO-VD suite (2026-07-29 variate switch; the MAIN analysis variate) -------------------------
+# Added ALONGSIDE the VD-on sets above rather than repointing them: the counts-era misspec bases
+# (e.g. gower_npe_finetune_nla_m_counts_z8) still resolve, and repointing in place would have made
+# any such re-run silently evaluate a VD-on model against VD-off data — different forward physics,
+# no error raised. Select these with `--variates gower_novd` / `glass_pretrain_novd`.
+#
+# Store provenance (datasets_checklist.md): S1 nla_m + G1 glass nla_m are consumed from the gpu5 f16
+# fwhm4 PREBAKES; the misspec test sets (S2/S3 nla,nla_z and S4/S5 + G2/G3 gb0p5,gb1p5) are consumed
+# RAW off gpu4 — bake optional, same as the VD-on sets do.
+NOVD_GOWER_VARIATES: List[Dict] = [
+    {"name": "nla_m", "patterns": f"{_GPU5}/gower_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5",
+     "exclude_params": [], "in_distribution": True},
+    {"name": "nla", "patterns": f"{_GPU4}/gower_mocks_nla_novd_counts/output_*.h5", "exclude_params": ["a_ia"]},
+    {"name": "nla_z", "patterns": f"{_GPU4}/gower_mocks_nla_z_novd_counts/output_*.h5", "exclude_params": ["a_ia"]},
+    {"name": "gb0p5", "patterns": f"{_GPU4}/gower_mocks_gb0p5_novd_counts/output_*.h5", "exclude_params": []},
+    {"name": "gb1p5", "patterns": f"{_GPU4}/gower_mocks_gb1p5_novd_counts/output_*.h5", "exclude_params": []},
+]
+
+# Foundation-level (pre-Gower-finetune) misspec check — user 2026-07-29: run the gb0p5/gb1p5 GLASS
+# sets against the 5 pre-trained foundations, i.e. BEFORE any Gower finetune. This is why G2/G3
+# exist and launched early. NB the VD-on GLASS set above carries no gb variates; this one does.
+NOVD_GLASS_PRETRAIN_VARIATES: List[Dict] = [
+    {"name": "glass_nla_m",
+     "patterns": f"{_GPU5}/glass_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5",
+     "exclude_params": [], "in_distribution": True},
+    {"name": "glass_gb0p5", "patterns": f"{_GPU4}/glass_mocks_gb0p5_novd_counts/output_*.h5",
+     "exclude_params": []},
+    {"name": "glass_gb1p5", "patterns": f"{_GPU4}/glass_mocks_gb1p5_novd_counts/output_*.h5",
+     "exclude_params": []},
+    {"name": "glass_nla", "patterns": f"{_GPU4}/glass_mocks_nla_novd_counts/output_*.h5",
+     "exclude_params": ["a_ia"]},
+    {"name": "glass_nla_z", "patterns": f"{_GPU4}/glass_mocks_nla_z_novd_counts/output_*.h5",
+     "exclude_params": ["a_ia"]},
+]
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
     "gower": DEFAULT_VARIATES,
     "glass_pretrain": GLASS_PRETRAIN_VARIATES,
+    "gower_novd": NOVD_GOWER_VARIATES,
+    "glass_pretrain_novd": NOVD_GLASS_PRETRAIN_VARIATES,
 }
 
 
