@@ -25,12 +25,14 @@ from config.experiments import experiments
 from config.ablations import ablation_experiments
 from config.kids_legacy import kids_legacy_experiments
 from config.kids_legacy_counts import kids_legacy_counts_experiments
+from config.kids_legacy_novd import kids_legacy_novd_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
 from copy import copy
 
 experiments.update(ablation_experiments)  # Combine experiments and ablations into a single dict
 experiments.update(kids_legacy_experiments)  # KiDS-Legacy NLA-M configs
 experiments.update(kids_legacy_counts_experiments)  # counts-normalisation rerun configs
+experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
 
 # What a bare `python eval.py` runs. Explicit --mode wins. The gatekeeper passes eval.py CLI
 # args through (redeployed 2026-07-08), so submissions should say --mode explicitly:

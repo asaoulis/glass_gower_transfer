@@ -108,11 +108,13 @@ def _load_experiment_config(experiment_name: str):
     from config.ablations import ablation_experiments
     from config.kids_legacy import kids_legacy_experiments
     from config.kids_legacy_counts import kids_legacy_counts_experiments
+    from config.kids_legacy_novd import kids_legacy_novd_experiments
 
     exps = dict(base_experiments)
     exps.update(ablation_experiments)
     exps.update(kids_legacy_experiments)
     exps.update(kids_legacy_counts_experiments)
+    exps.update(kids_legacy_novd_experiments)
     experiment_config = exps[experiment_name]
 
     config = get_default_config()
