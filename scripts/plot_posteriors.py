@@ -270,10 +270,23 @@ def main():
             f"data has D={D} params but --param-names lists {len(param_names)}: {param_names}"
         )
 
-    # --params accepts raw parameter names as well as display labels.
+    # --params accepts raw parameter names as well as display labels, space- OR comma-separated
+    # (the cluster `plot` verb documents a CSV subset and its submit script splits on commas, so
+    # accepting both here means the same string works locally and remotely).
     if args.params:
         name_to_label = {**LABELS, "S8": S8_LABEL, "s8": S8_LABEL}
-        args.params = [name_to_label.get(p, p) for p in args.params]
+        requested = [p for tok in args.params for p in tok.split(",") if p]
+        args.params = [name_to_label.get(p, p) for p in requested]
+        # Fail loudly on a name that matches no column. Without this the subset silently selects
+        # nothing and chainconsumer dies on an opaque "Your chain is empty" pydantic assertion —
+        # which reads like a data problem rather than the typo it actually is.
+        _, _all_cols = _to_display(np.zeros((1, len(param_names))), param_names)
+        _unknown = [p for p in args.params if p not in set(_all_cols)]
+        if _unknown:
+            raise SystemExit(
+                f"--params: no such parameter(s) {_unknown}. Available: "
+                f"{sorted(set(param_names) | {'S8'})} (or their display labels {_all_cols})"
+            )
 
     points = _common_points(entries, args.max_points, args.sim_ids, args.point_files,
                             select_random=args.select_random, seed=args.seed)
