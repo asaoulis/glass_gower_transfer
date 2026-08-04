@@ -76,13 +76,21 @@ def _build_prior():
 
     return prior, fixed_parameters
 
-def _build_output_path(base_path, experiment_name, match_string, output_suffix):
+def _build_output_path(base_path, experiment_name, match_string, output_suffix,
+                       prior_tag=None):
     """Sample dump path: under checkpoints/<exp>/ on MODELS_ROOT so `fetch --exp` pulls it.
-    Encodes the prior in the name so different-prior runs coexist (eval npz schema)."""
+    Encodes the prior in the name so different-prior runs coexist (eval npz schema).
+
+    prior_tag overrides PRIOR_MODE in the filename. It exists because NOT every model class
+    honours `prior`: NLE samples by MCMC against the explicit prior, but
+    NPELightningModule.generate_samples builds its posterior with no prior and draws straight from
+    q(theta|x) — i.e. NPE dumps are under the SIMULATION prior whatever PRIOR_MODE says. Tagging
+    those `trainprior` keeps the filename from asserting a prior that was never applied."""
     suffix = f"_{output_suffix}" if output_suffix else ""
+    tag = prior_tag or PRIOR_MODE
     return os.path.join(
         base_path, "checkpoints", experiment_name,
-        f"samples_{PRIOR_MODE}_{match_string}{suffix}.npz",
+        f"samples_{tag}_{match_string}{suffix}.npz",
     )
 
 # Eval-time loader overrides for the 3-tuple (embeddings) path:
@@ -133,11 +141,17 @@ def _run_generation(output_suffix: str):
         # production runs below.
         ("gower_nle_finetune_nla_m_novd_z8_r4_ens5_early", "ncosmoNone_4",
          ["kids_legacy_hybrid_nla_m_novd_z8_resnet"]),
+        # M3-EARLY preview: the 5-member NPE ensemble on the SAME store + foundation. 2-tuple =
+        # direct (non-embeddings) path. NPE ignores `prior` (see _build_output_path), so this dump
+        # is under the SIMULATION prior and is tagged `trainprior`, not `kids_s8_analytic`.
+        ("gower_npe_finetune_nla_m_novd_z8_r4_ens5_early", "ncosmoNone_4"),
         # Previous (VD-era) production main-variate NLE ensembles (z8, 9 members), repeats 0..4 —
         # already sampled 2026-07-08; kept for reference, skipped automatically when the npz exists.
         # *[(f"gower_nle_finetune_nla_m_z8_r{r}_ens9", f"ncosmo300_{r}",
         #    ["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"]) for r in range(5)],
     ]
+    # Model classes that do NOT honour an explicit prior -> tag their dumps `trainprior`.
+    NO_PRIOR_SUPPORT = {"gower_npe_finetune_nla_m_novd_z8_r4_ens5_early"}
 
     from src.ml.eval.utils import _resolve_test_paths, _save_posterior_samples
 
@@ -151,7 +165,10 @@ def _run_generation(output_suffix: str):
             source_experiments = None
 
         config_name = f"{experiment_name}_{match_string}"
-        output_path = _build_output_path(base_path, experiment_name, match_string, output_suffix)
+        output_path = _build_output_path(
+            base_path, experiment_name, match_string, output_suffix,
+            prior_tag="trainprior" if experiment_name in NO_PRIOR_SUPPORT else None,
+        )
 
         if os.path.exists(output_path):
             print(f"Samples already exist at {output_path}; skipping {config_name}")

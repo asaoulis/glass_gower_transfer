@@ -169,6 +169,28 @@ _gower_npe_ft_novd["model_kwargs"] = {**_gower_npe_ft_novd["model_kwargs"], "map
 kids_legacy_novd_experiments["gower_npe_finetune_nla_m_novd_z8"] = _gower_npe_ft_novd
 
 
+# === M3-EARLY  premature 5-member NPE preview on the r4 foundation (user request 2026-08-04) =====
+# GPU-side twin of the M4b-EARLY NLE preview: same store, same r4 foundation, same "use whatever has
+# landed" split policy, but a `train.py` job on an l40s instead of a CORES64 embeddings job — so it
+# does not queue behind our own sims. Only 10 epochs x 5 members, so it is cheap.
+#
+# ⚠️ PRIOR CAVEAT: NPE learns p(theta|x) UNDER THE SIMULATION PRIOR. NPELightningModule.generate_samples
+# builds its posterior with no prior argument, so these samples are NOT reweightable to the KiDS
+# analytic-S8 prior the way the NLE ensemble's MCMC is — NPE corner plots from this run are under the
+# Gower training prior. Reweighting would need a p_target/p_train importance step that does not exist
+# in the codebase today.
+def _register_early_npe_ens5_preview_r4():
+    c = _npe_finetune_z8(_FOUNDATION_CKPT, data_patterns=_GOWER_NLA_M, eb_variant=_EB_VARIANT)
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
+    c["ensemble_repeats"] = 5            # preview size (production is 9)
+    c.pop("max_trainval_cosmos", None)   # default None => all on-disk non-test cosmologies
+    c["repeat_indices"] = [4]            # the ONE finished foundation repeat, as for M4b-EARLY
+    kids_legacy_novd_experiments["gower_npe_finetune_nla_m_novd_z8_r4_ens5_early"] = c
+
+
+_register_early_npe_ens5_preview_r4()
+
+
 def _npe_finetune_novd_z8_smoke():
     """De-clustered LOCAL smoke of gower_npe_finetune_nla_m_novd_z8: from-scratch
     (checkpoint_path=None, from-scratch band), fwhm8 local fixture, single-cosmology-safe (no cosmo
