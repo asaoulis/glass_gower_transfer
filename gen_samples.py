@@ -94,18 +94,24 @@ def _build_output_path(base_path, experiment_name, match_string, output_suffix):
 #  - emb_test_batch_size 6      -> ceil(160/6) = 27 MCMC joblib jobs (one per batch): a single
 #    wave on 30 CPUs with smaller per-job batches (wall ~ batch size for vectorised slice
 #    sampling), ~25% faster than batch 8 / 20 jobs
+#
+# 2026-08-04 (M4b-EARLY preview): trimmed to 15 cosmologies x 4 noise = 60 inference points and
+# batch 2 => 30 joblib jobs = EXACTLY one wave on the sample job's 30 CPUs. Wall is set by the
+# BATCH size (each job samples its batch serially), not the point count, so 60 points at batch 2
+# costs ~1/3 the wall of 160 points at batch 6 while still giving 60 representative posteriors.
 CONFIG_OVERRIDES = {
     "test_shape_noise_idx": [0, [0, 1]],
-    "N_test_cosmologies": 40,
-    "emb_test_batch_size": 6,
+    "N_test_cosmologies": 15,
+    "emb_test_batch_size": 2,
 }
-NUM_JOBS = 27
+NUM_JOBS = 30
 
 def _run_generation(output_suffix: str):
     from config.default import get_default_config
     from config.experiments import experiments
     from config.ablations import ablation_experiments
     from config.kids_legacy import kids_legacy_experiments
+    from config.kids_legacy_novd import kids_legacy_novd_experiments
     from src.ml.embeddings.train import load_embedding_model_with_dataloader
     from src.ml.eval.utils import load_best_model_and_build_posterior
     from src.ml.utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_active, prepare_data_parameters
@@ -115,15 +121,22 @@ def _run_generation(output_suffix: str):
     # load_embedding_model_with_dataloader (which imports the same `experiments`).
     experiments.update(ablation_experiments)
     experiments.update(kids_legacy_experiments)
+    experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
 
     prior, fixed_parameters = _build_prior()
 
     experiment_names = [
         # 3-tuple: embeddings path (third element = source_experiments).
-        # Production main-variate NLE ensembles (z8, 9 members), repeats 0..4.
-        (f"gower_nle_finetune_nla_m_z8_r{r}_ens9", f"ncosmo300_{r}",
-         ["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"])
-        for r in range(5)
+        # M4b-EARLY preview: the 5-member no-VD NLE ensemble on the r4 foundation. The match
+        # string is `ncosmoNone_4` because that config leaves max_trainval_cosmos at the default
+        # None (run_string = f"ncosmo{max_trainval_cosmos}_{repeat}"), unlike the ncosmo300_*
+        # production runs below.
+        ("gower_nle_finetune_nla_m_novd_z8_r4_ens5_early", "ncosmoNone_4",
+         ["kids_legacy_hybrid_nla_m_novd_z8_resnet"]),
+        # Previous (VD-era) production main-variate NLE ensembles (z8, 9 members), repeats 0..4 —
+        # already sampled 2026-07-08; kept for reference, skipped automatically when the npz exists.
+        # *[(f"gower_nle_finetune_nla_m_z8_r{r}_ens9", f"ncosmo300_{r}",
+        #    ["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"]) for r in range(5)],
     ]
 
     from src.ml.eval.utils import _resolve_test_paths, _save_posterior_samples

@@ -221,6 +221,38 @@ def _register_main_nle_novd_z8():
 _register_main_nle_novd_z8()
 
 
+# === M4b-EARLY  premature 5-member preview of the r4 NLE chain (user request 2026-08-04) ========
+# PURPOSE: get end-to-end downstream numbers (ensemble eval + TARP + KiDS-prior posterior samples)
+# out of the ONE M4a head that has finished (r4, best val -5.6765) BEFORE the Gower store and the
+# other four heads are ready. It is a PREVIEW, not production: production stays
+# `gower_nle_finetune_nla_m_novd_z8_r4_ens9` at max_trainval_cosmos=[300].
+#
+# Two deliberate differences from the production entry, both forced by the incomplete store:
+#  1. ensemble_repeats=5 (not 9) — cheaper, and enough members for a meaningful ensemble spread.
+#  2. max_trainval_cosmos is left at the default None = "every on-disk cosmology that is not in the
+#     locked 200-id test set". A hard [300] would trip split_by_cosmology's
+#     `Requested max_trainval_cosmos=300 but only N available` ValueError the moment the store has
+#     fewer than 300 non-test cosmologies — which is exactly the situation while S1 is still
+#     filling. None can never hard-fail and uses whatever has landed.
+# The 200-id test lock is UNCHANGED from production, so the held-out set is the same one the
+# production chain will use (intersected with what is on disk) and the preview's numbers stay
+# comparable to the eventual production run.
+def _register_early_nle_ens5_preview_r4():
+    ft = _nle_finetune("glass_nle_pretrain_nla_m_novd_z8_r4", ensemble_repeats=5,
+                       whiten_k=8, warmstart_max_gap_nats=22.0,
+                       gower_data=_GOWER_NLA_M, gower_eb=_EB_VARIANT)
+    ft.pop("max_trainval_cosmos", None)   # default None => all on-disk non-test cosmologies
+    ft["train_frac"] = 0.8
+    ft["val_frac"] = 0.2
+    ft["test_frac"] = 0.0   # test = fixed 200 ids; fracs must sum to 1.0 (split_by_cosmology)
+    ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    kids_legacy_novd_experiments["gower_nle_finetune_nla_m_novd_z8_r4_ens5_early"] = \
+        _nle_bake_repeat(ft, 4)
+
+
+_register_early_nle_ens5_preview_r4()
+
+
 # === M5  sub-variate chains {nla, nla_z}: encoder-finetune (M5a) + NLE chain (M5b/M5c) ==========
 # Per S: warm-start the no-VD foundation ENCODER onto the sub-variate GLASS suite (M5a), then the
 # NLE chain (M5b pretrain -> M5c Gower ens9 finetune). Both carry the a_ia~U[-6,6] box at EVERY
