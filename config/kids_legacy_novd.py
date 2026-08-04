@@ -50,6 +50,10 @@ _NLA       = f"{_GPU5}/glass_mocks_nla_novd_counts_f16_fwhm4_lmin56_lcut1400/out
 _NLA_Z     = f"{_GPU5}/glass_mocks_nla_z_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
 
 # Gower fine-tuning stores (prebaked f16 gpu5, fwhm4).
+# _GOWER_NLA_M_RAW is the UNBAKED gpu4 source. Map training off it is ~4.5x slower (non-local NFS,
+# f64, all smoothing variants on the wire) so it is NOT for production — it exists so a preview can
+# run while the prebake is stuck behind our own sims in the CORES64 queue.
+_GOWER_NLA_M_RAW = f"{_GPU4}/gower_mocks_nla_m_novd_counts/output_*.h5"
 _GOWER_NLA_M = f"{_GPU5}/gower_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
 _GOWER_NLA   = f"{_GPU5}/gower_mocks_nla_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
 _GOWER_NLA_Z = f"{_GPU5}/gower_mocks_nla_z_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
@@ -189,6 +193,26 @@ def _register_early_npe_ens5_preview_r4():
 
 
 _register_early_npe_ens5_preview_r4()
+
+
+# === M3-EARLY-RAW  bake-independent twin: identical preview, reading the UNBAKED gpu4 store ======
+# Insurance against the prebake staying queued. Both prebake submits (CORES64 + CORES40) sat at
+# PENDING(Priority) — our own two Gower sims hold 16 CORES64 nodes and depress our fairshare — so a
+# preview that needs NO bake can start immediately on a GPU node, where we do get scheduled.
+# Cost of skipping the bake: ~4.5x slower map reads (measured 30 vs 135 smp/s), so the cosmology
+# budget is cut to 175 to keep 5 members x 10 epochs inside the deadline. Everything else — r4
+# foundation, resnet arch, 200-id test lock — is identical to the baked twin, so the two runs are
+# directly comparable and whichever finishes first is a usable answer.
+def _register_early_npe_ens5_preview_r4_raw():
+    c = _npe_finetune_z8(_FOUNDATION_CKPT, data_patterns=_GOWER_NLA_M_RAW, eb_variant=_EB_VARIANT)
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
+    c["ensemble_repeats"] = 5
+    c["max_trainval_cosmos"] = [175]   # I/O-bound on raw gpu4 => smaller pool, not the full set
+    c["repeat_indices"] = [4]
+    kids_legacy_novd_experiments["gower_npe_finetune_nla_m_novd_z8_r4_ens5_early_raw"] = c
+
+
+_register_early_npe_ens5_preview_r4_raw()
 
 
 def _npe_finetune_novd_z8_smoke():
