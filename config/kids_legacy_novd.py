@@ -145,18 +145,6 @@ kids_legacy_novd_experiments["kids_legacy_hybrid_nla_m_novd_z8_smoke"] = _hybrid
 kids_legacy_novd_experiments["kids_legacy_hybrid_nla_m_novd_z8_resnet"] = _hybrid_novd_z8_variant(
     mk_extra={"map_kwargs": _RESNET_MAPKW})
 
-# ============================================================================================
-# ⚠️⚠️ TEMPORARY — WARM-START CONTINUATION OF REPEAT 3 ONLY. REVERT IMMEDIATELY AFTER SUBMIT. ⚠️⚠️
-# `checkpoint_path` is an EXPERIMENT-level key, so while this line is present EVERY repeat of
-# this experiment warm-starts. Submit ONLY `--repeat-indices 3`, verify the log, then DELETE
-# this block and re-sync BEFORE launching any other repeat.
-# Resolved to repeat 3's BEST ckpt by maybe_resolve_repeat_checkpoint(); the band stays FROZEN
-# via the build_model fix (4413c5b). Expect in the log:
-#   Will try to use checkpoint: .../pretrain_ncosmoNone_3/checkpoint-epoch=98-val_log_prob=-4.9489.ckpt
-#   Loaded full model state from checkpoint: ...
-#   Froze band encoder embedding_net.band_encoder (14 param tensors, requires_grad=False)
-kids_legacy_novd_experiments["kids_legacy_hybrid_nla_m_novd_z8_resnet"]["checkpoint_path"] = _FOUNDATION_CKPT
-# ============================================================================================
 
 kids_legacy_novd_experiments["kids_legacy_hybrid_nla_m_novd_z8_resnet_smoke"] = \
     _hybrid_novd_z8_variant_smoke(mk_extra={"map_kwargs": _RESNET_MAPKW})
