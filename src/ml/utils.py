@@ -460,6 +460,14 @@ def build_model(config, test_dataloader=None):
     if checkpoint_path:
         model.load_from_checkpoint(checkpoint_path)
         print("Loaded full model state from checkpoint:", checkpoint_path)
+        # A whole-model load supplies the band weights too, so the band-load branch below is
+        # skipped — but `freeze_band` used to be read ONLY inside that branch, so a config asking
+        # for a frozen band got a TRAINABLE one with no warning. Honour it here as well; without
+        # this a warm-start/continuation silently becomes a band-unfreeze experiment.
+        # No-op for callers that set freeze_band=False (e.g. the M3 NPE finetune, which
+        # deliberately finetunes everything).
+        if getattr(config, 'freeze_band', False):
+            band_module_name = model._freeze_band_encoder()
     else:
         if pretrained_band_ckpt_folder is not None:
             pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist

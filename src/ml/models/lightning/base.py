@@ -297,6 +297,39 @@ class BaseLightningModule(pl.LightningModule):
             },
         }
 
+    def _find_band_module(self):
+        """Locate the band-encoder submodule on the embedding net. Returns (module, name) or
+        (None, None). Shared by the load path and the freeze-only path so both agree on which
+        submodule counts as 'the band'."""
+        for attr in ("band_encoder", "band_model"):
+            if hasattr(self.embedding_net, attr):
+                return getattr(self.embedding_net, attr), f"embedding_net.{attr}"
+        return None, None
+
+    def _freeze_band_encoder(self) -> str | None:
+        """Freeze the band encoder IN PLACE, without loading any weights.
+
+        Needed by the warm-start path: when ``config.checkpoint_path`` is set the whole model
+        (band included) comes from that checkpoint, so ``_load_pretrained_band_encoder`` is not
+        called — and with it the ``freeze=freeze_band`` that used to be its only caller. Without
+        this, a config asking for ``freeze_band=True`` would silently train the band UNFROZEN,
+        which is a different experiment (band-unfreeze overfits and gains nothing, per the
+        counts-era ablations). Returns the module name, or None if there is no band submodule.
+        """
+        band_module, band_module_name = self._find_band_module()
+        if band_module is None:
+            print("[NDELightningModule] Warning: embedding_net has no band encoder submodule; "
+                  "nothing to freeze.")
+            return None
+        n = 0
+        for p in band_module.parameters():
+            p.requires_grad = False
+            n += 1
+        self.embedding_net.freeze_band = True
+        print(f"[NDELightningModule] Froze band encoder {band_module_name} "
+              f"({n} param tensors, requires_grad=False) after whole-model checkpoint load.")
+        return band_module_name
+
     def _load_pretrained_band_encoder(
         self,
         ckpt_path: str,
@@ -307,14 +340,9 @@ class BaseLightningModule(pl.LightningModule):
         checkpoint = torch.load(ckpt_path, map_location="cpu")
         src_state = checkpoint.get("state_dict", checkpoint)
 
-        band_module = None
-        band_module_name = None
-        for attr in ("band_encoder", "band_model"):
-            if hasattr(self.embedding_net, attr):
-                band_module = getattr(self.embedding_net, attr)
-                band_module_name = f"embedding_net.{attr}"
-                print(f"[NDELightningModule] Using {band_module_name} as band encoder target.")
-                break
+        band_module, band_module_name = self._find_band_module()
+        if band_module is not None:
+            print(f"[NDELightningModule] Using {band_module_name} as band encoder target.")
 
         if band_module is None:
             print(
