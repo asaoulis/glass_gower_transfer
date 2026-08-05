@@ -86,7 +86,7 @@ def _build_output_path(base_path, experiment_name, match_string, output_suffix,
     NPELightningModule.generate_samples builds its posterior with no prior and draws straight from
     q(theta|x) — i.e. NPE dumps are under the SIMULATION prior whatever PRIOR_MODE says. Tagging
     those `trainprior` keeps the filename from asserting a prior that was never applied."""
-    suffix = f"_{output_suffix}" if output_suffix else ""
+    suffix = f"_{output_suffix or SAMPLE_SUFFIX}" if (output_suffix or SAMPLE_SUFFIX) else ""
     tag = prior_tag or PRIOR_MODE
     return os.path.join(
         base_path, "checkpoints", experiment_name,
@@ -109,10 +109,21 @@ def _build_output_path(base_path, experiment_name, match_string, output_suffix,
 # costs ~1/3 the wall of 160 points at batch 6 while still giving 60 representative posteriors.
 CONFIG_OVERRIDES = {
     "test_shape_noise_idx": [0, [0, 1]],
-    "N_test_cosmologies": 15,
+    "N_test_cosmologies": 7,
     "emb_test_batch_size": 2,
 }
 NUM_JOBS = 30
+
+# ⏱️ FAST-PREVIEW SIZING (2026-08-05). The wall of an NLE sampling job is set by the MCMC CHAIN
+# LENGTH, not the number of test points: each joblib task runs ~(num_samples + warmup) * num_chains
+# steps at ~4.4 it/s, so 20 000 samples = 41 100 steps ≈ 2 h 36 m PER TASK, and tasks beyond
+# NUM_JOBS queue into a second wave. Measured live on job 1341694.
+#   20k samples, 15 cosmologies (120 pts / 2 = 60 tasks over 30 workers = 2 waves) ⇒ ~5 h 15 m
+#    4k samples,  7 cosmologies ( 56 pts / 2 = 28 tasks over 30 workers = 1 wave)  ⇒ ~35 min
+# 4 000 samples is ample for corner plots. Dumps carry the SAMPLE_SUFFIX below so a fast run and a
+# full run coexist instead of one clobbering the other.
+NUM_SAMPLES = 4000
+SAMPLE_SUFFIX = "n4k"
 
 def _run_generation(output_suffix: str):
     from config.default import get_default_config
@@ -239,7 +250,7 @@ def _run_generation(output_suffix: str):
                 )
                 scalers, _, _, test_loader = prepare_data_parameters(config)
 
-        num_samples = 20000
+        num_samples = NUM_SAMPLES
         model.test_dataloader = test_loader
         theta0s, samples = model.generate_samples(
             prior=prior,
