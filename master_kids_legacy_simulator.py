@@ -1,5 +1,6 @@
 import numpy as np
 import healpy as hp
+import h5py
 from pathlib import Path
 from collections import deque
 import gc
@@ -198,6 +199,15 @@ def parse_args():
              "identical when b_g differs (positions_from_delta draws a different number of "
              "galaxies) — only the fields and the nuisance realisation are shared.")
 
+    parser.add_argument(
+        "--save-catalogues", action="store_true",
+        help="ALSO dump each mock's raw galaxy catalogue (RA, DEC, Z_TRUE, ZBIN, E1, E2) to "
+             "<output-dir>/catalogues/catalogue_<sim>_out<o>_rot<r>_<i>.h5, so alternative shear "
+             "estimators can be replayed offline (e.g. testing which normalisation is hardened "
+             "against source clustering). Columns are downcast to float32/int8 (~21 B/galaxy). "
+             "EXPENSIVE: a production KiDS-Legacy footprint has ~4e7 galaxies => ~0.9 GB PER MOCK, "
+             "so pair this with a small --num-sims and --no-augmentation 1.")
+
     parser.add_argument("--outer-reps", type=int, default=None,
                         help="Override the per-sim OUTER shape-noise realisation count (default: the "
                              "OUTER_NUM_SHAPE_NOISE_REALISATIONS[simulator] config value; glass=4, "
@@ -316,6 +326,53 @@ def build_block_rngs(seed, sim_num, outer_idx, rot_idx):
         np.random.default_rng(children[RNG_STREAM_BACKEND]),
         np.random.default_rng(children[RNG_STREAM_POSTPROC]),
     )
+
+
+# --- Raw galaxy-catalogue dumps --------------------------------------------------------------
+# Column dtypes for --save-catalogues. The catalogue is the LARGEST object in the pipeline
+# (~4e7 galaxies for a KiDS-Legacy footprint at the production n_eff), so the float64 working
+# array is downcast on write: 48 B/galaxy -> 21 B/galaxy, i.e. ~0.9 GB per mock instead of ~2 GB.
+# float32 keeps ~7 significant digits, far beyond the precision of any of these quantities
+# (positions are degrees, ellipticities are O(0.3) with O(1e-3) shear on top).
+CATALOGUE_DTYPES = {
+    "RA": np.float32, "DEC": np.float32, "Z_TRUE": np.float32,
+    "ZBIN": np.int8, "E1": np.float32, "E2": np.float32,
+}
+
+
+def save_catalogue_h5(path, catalogue, cosmo_dict, extra_attrs=None):
+    """Write ONE mock's raw galaxy catalogue next to (not inside) its output_*.h5.
+
+    Rationale: the per-mock shear maps are already the *output* of a particular estimator
+    (counts-normalised pseudo-Cl / pixelised E-B). To ask whether a DIFFERENT estimator is
+    hardened against source clustering, you need the galaxies themselves — position, tomographic
+    bin and observed ellipticity — so the map-making can be replayed offline at will.
+
+    Written to a ``catalogues/`` SUBDIR of the output dir so the ``output_*.h5`` globs that drive
+    every dataset config are untouched, and so a catalogue run can be deleted independently.
+
+    ``extra_attrs`` records what the catalogue cannot: the realised multiplicative shear bias
+    (``make_alm_shear_convergence`` applies the 1/(1+m) de-bias, so replaying the maps needs it),
+    the galaxy bias in force, the shear normalisation, and the fixed-RNG seed if any.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(path, "w") as f:
+        g = f.create_group("catalogue")
+        for col, dt in CATALOGUE_DTYPES.items():
+            g.create_dataset(col, data=np.asarray(catalogue[col]).astype(dt, copy=False))
+        g.attrs["n_galaxies"] = int(catalogue.shape[0])
+        for k, v in (extra_attrs or {}).items():
+            if v is None:
+                continue
+            f.attrs[k] = v
+        cg = f.create_group("cosmo_dict")
+        for k, v in (cosmo_dict or {}).items():
+            if isinstance(v, str):
+                cg.create_dataset(k, data=v, dtype=h5py.string_dtype(encoding="utf-8"))
+            else:
+                cg.create_dataset(k, data=np.asarray(v))
+    return path
 
 
 def gower_fixed_test_with_topup(fixed_ids, num_sims, full_gower_ids, seed=GOWER_TOPUP_SEED):
@@ -493,6 +550,10 @@ if __name__ == "__main__":
     COSMO_BASE_SEED_VAL = args.cosmo_base_seed
     # None => unseeded (production default). An int switches on paired/reproducible generation.
     RNG_SEED = args.rng_seed
+    SAVE_CATALOGUES = args.save_catalogues
+    if rank == 0 and SAVE_CATALOGUES:
+        print(f"[rank 0] --save-catalogues: raw galaxy catalogues -> {OUTPUT_DIR}/catalogues/ "
+              f"(~0.9 GB per mock at production n_eff — keep --num-sims small).", flush=True)
     if rank == 0 and RNG_SEED is not None:
         print(f"[rank 0] FIXED-RNG mode: --rng-seed {RNG_SEED}. Per-(sim,outer,rot) streams are "
               f"deterministic and split (matter fields independent of galaxy sampling), so runs "
@@ -838,6 +899,31 @@ if __name__ == "__main__":
                         cll_bands, mixed_bandpowers = compute_cl_bandpowers(
                             mixed_cut, nbins, lower_lscale, upper_lscale, nbands
                         )
+
+                        # Optional raw-catalogue dump. MUST happen before the `del` below: the
+                        # catalogue is the largest object in the pipeline and is freed here so the
+                        # map-building peak stays bounded. Written alongside (not inside) the mock,
+                        # so the output_*.h5 globs used by every dataset config are unaffected.
+                        if SAVE_CATALOGUES:
+                            cat_path = save_catalogue_h5(
+                                OUTPUT_DIR / "catalogues"
+                                / f"catalogue_{sim_num}_out{outer_idx}_rot{rot_idx}_{cat_idx}.h5",
+                                catalogue, param_dict,
+                                extra_attrs={
+                                    "sim_id": int(sim_num), "outer_idx": int(outer_idx),
+                                    "rot_idx": int(rot_idx), "cat_idx": int(cat_idx),
+                                    "galaxy_bias": float(galaxy_bias_sim),
+                                    "shear_normalization": SHEAR_NORMALIZATION,
+                                    "systematics_model": SYSTEMATICS_MODEL,
+                                    "nside": int(nside), "nside_out": int(nside_out),
+                                    # make_alm_shear_convergence de-biases by 1/(1+m); replaying
+                                    # the maps offline needs the m actually used.
+                                    "m_bias_for_shear": np.asarray(m_bias_for_shear, dtype=float),
+                                    "rng_seed": (-1 if RNG_SEED is None else int(RNG_SEED)),
+                                },
+                            )
+                            print(f"[rank {rank}] wrote catalogue {cat_path.name} "
+                                  f"({catalogue.shape[0]:,} galaxies)", flush=True)
 
                         del catalogue
                         gc.collect()
