@@ -360,6 +360,7 @@ def run_misspecification_eval(
     variate_set: Optional[str] = None,
     variate_names: Optional[Sequence[str]] = None,
     max_test_files: Optional[int] = None,
+    test_id_source: str = "heldout",
 ):
     """Evaluate the base experiment's model(s) on every variate, per training repeat.
 
@@ -401,6 +402,10 @@ def run_misspecification_eval(
     # Flushed step markers: this setup block runs before any per-repeat print, so without them a
     # hard crash here (a SIGILL/OOM leaves no traceback and loses block-buffered stdout) is
     # unlocalisable in the SLURM log.
+    # A shared-cosmology run must never overwrite the strict held-out run's results.
+    if test_id_source == "shared" and out_subdir == "misspec":
+        out_subdir = "misspec_shared"
+
     print(f"[misspec] setup 1/4: loading config for '{base_experiment}'", flush=True)
     cfg0 = _load_experiment_config(base_experiment)
     param_names = list(cfg0.cosmo_param_names)
@@ -417,6 +422,38 @@ def run_misspecification_eval(
     prior_samples_scaled = _sample_from_prior(prior, prior_num_samples, target_dim=len(param_names))
     print(f"[misspec] setup 4/4: drew {prior_num_samples} prior samples "
           f"{tuple(prior_samples_scaled.shape)}", flush=True)
+
+    # ``test_id_source='shared'``: evaluate EVERY variate — the in-distribution reference
+    # included — on the cosmologies the OOD variates actually have on disk.
+    #
+    # Why this mode exists: a variate suite is usually simulated over a small sim_id range
+    # (e.g. 0..199), while the in-distribution experiment's held-out test split is a random
+    # ~10% of thousands of cosmologies, so the strict intersection can collapse to a handful
+    # (14 cosmologies / 28 events for the GLASS gb sets). 'shared' trades the held-out
+    # guarantee for ~14x the statistics, and because the SAME cosmologies are used for the
+    # reference curve, "the model trained on this cosmology (at the in-distribution physics)"
+    # applies equally to every variate — so a difference between them is still attributable to
+    # the physics shift, not to memorisation. Report it as a matched-cosmology companion to the
+    # strict held-out run, never as a replacement.
+    shared_pool = None
+    if test_id_source == "shared":
+        ood = [v for v in variates if not v.get("in_distribution")] or variates
+        per_variate_ids = []
+        for v in ood:
+            ids = {extract_cosmo_index(p) for p in collect_paths(v["patterns"])}
+            per_variate_ids.append(ids)
+            print(f"[misspec] shared-pool: {v['name']} has {len(ids)} cosmologies on disk",
+                  flush=True)
+        shared_pool = set.intersection(*per_variate_ids) if per_variate_ids else set()
+        if not shared_pool:
+            raise RuntimeError(
+                "test_id_source='shared' but the out-of-distribution variates share no sim_ids: "
+                f"{[len(s) for s in per_variate_ids]}"
+            )
+        print(f"[misspec] shared-pool: {len(shared_pool)} cosmologies common to "
+              f"{[v['name'] for v in ood]}", flush=True)
+    elif test_id_source != "heldout":
+        raise ValueError(f"test_id_source must be 'heldout' or 'shared', got {test_id_source!r}")
 
     summary: Dict[str, Dict] = {}
     per_variate_repeat: Dict[str, Dict[str, Dict]] = {v["name"]: {} for v in variates}
@@ -452,6 +489,12 @@ def run_misspecification_eval(
             test_id_pool = {extract_cosmo_index(p) for p in held_out}
             print(f"[misspec] repeat {r}: derived test-id pool from the training split "
                   f"({len(test_id_pool)} held-out cosmologies).", flush=True)
+
+        if test_id_source == "shared":
+            test_id_pool = shared_pool
+            print(f"[misspec] repeat {r}: test-id-source=shared -> every variate (including the "
+                  f"in-distribution reference) uses the SAME {len(test_id_pool)} cosmologies.",
+                  flush=True)
 
         # The repeat's model, built ONCE (loaders are swapped per variate): the N-member
         # eval-time ensemble when configured, else the repeat's single best checkpoint.

@@ -177,6 +177,12 @@ def main(argv=None):
     parser.add_argument("--max-test-files", type=int, default=None,
                         help="misspec mode: cap each variate's test set to ~this many mocks "
                              "(whole cosmologies, sorted by sim_id)")
+    parser.add_argument("--test-id-source", choices=["heldout", "shared"], default="heldout",
+                        help="misspec mode: 'heldout' (default) evaluates each variate on the "
+                             "model's held-out test cosmologies only; 'shared' evaluates EVERY "
+                             "variate (reference included) on the cosmologies the OOD variates "
+                             "have on disk — many more events, matched across variates, but no "
+                             "held-out guarantee. Writes to misspec_shared/ so both can coexist.")
     args = parser.parse_args(argv)
 
     mode = args.mode or DEFAULT_MODE
@@ -190,6 +196,7 @@ def main(argv=None):
             variate_set=args.variates,
             variate_names=args.variate_names,
             max_test_files=args.max_test_files,
+            test_id_source=args.test_id_source,
         )
     else:
         run_standard_eval(args.experiments or DEFAULT_EXPERIMENTS, args.repeat_indices)
