@@ -671,6 +671,83 @@ def _summarise_variate_inputs(name: str, test_paths: Sequence[str], loader, n_ra
     except Exception as e:  # diagnostics must never take the run down
         print(f"[misspec-inputs] {name}: raw bandpower summary failed: {e}", flush=True)
 
+    # --- PER-FILE map shape statistics ------------------------------------------------------
+    # The point of these: mean/std alone cannot distinguish "the lensing amplitude moved" from
+    # "the pixel occupancy / noise structure moved". Peak fractions and skew/kurtosis are
+    # computed against EACH MOCK'S OWN std, so they are scale-free — cosmic variance in the
+    # overall amplitude divides out and what is left is the SHAPE of the one-point distribution.
+    # zero_frac tracks empty (unobserved) pixels, the channel a counts normalisation cannot
+    # cancel: pixels with no galaxies are left at zero and their pattern depends on b_g.
+    #
+    # Paired with per-file raw bandpower amplitude (b_g-invariant to 0.3%, measured), the ratio
+    # map_std / sqrt(bandpower) is a per-mock cosmic-variance-free amplitude probe — which is
+    # what lets this run substitute for a fixed-seed paired simulation (the simulator's per-block
+    # rng is UNSEEDED, master_kids_legacy_simulator.py:521, so realisations cannot be paired).
+    try:
+        per_file: Dict[str, list] = {}
+        for batch in loader:
+            data = batch[0] if isinstance(batch, (list, tuple)) else batch
+            if not isinstance(data, dict):
+                break
+            for k, v in data.items():
+                if v.dim() < 3:            # bandpowers etc. — amplitude handled above
+                    continue
+                x = v.float().flatten(1)   # [B, ...] -> per-sample vector
+                mu = x.mean(dim=1)
+                sd = x.std(dim=1)
+                c = x - mu[:, None]
+                sdc = sd.clamp_min(1e-12)[:, None]
+                zc = c / sdc
+                rows = per_file.setdefault(k, [])
+                for j in range(x.shape[0]):
+                    zj = zc[j]
+                    rows.append({
+                        "mean": float(mu[j]), "std": float(sd[j]),
+                        "skew": float((zj ** 3).mean()), "kurtosis": float((zj ** 4).mean() - 3.0),
+                        "zero_frac": float((x[j] == 0).float().mean()),
+                        "peak_2sig": float((zj > 2).float().mean()),
+                        "peak_3sig": float((zj > 3).float().mean()),
+                        "peak_4sig": float((zj > 4).float().mean()),
+                        "void_2sig": float((zj < -2).float().mean()),
+                        "void_3sig": float((zj < -3).float().mean()),
+                    })
+        for k, rows in per_file.items():
+            if not rows:
+                continue
+            agg = {f: float(np.mean([r[f] for r in rows])) for f in rows[0]}
+            sem = {f: float(np.std([r[f] for r in rows]) / max(1, np.sqrt(len(rows))))
+                   for f in rows[0]}
+            stats.setdefault("per_file_map_stats", {})[k] = {
+                "n_files": len(rows), "mean": agg, "sem": sem,
+                "raw": {f: [r[f] for r in rows] for f in rows[0]},
+            }
+            print(f"[misspec-inputs] {name}: {k} SHAPE over {len(rows)} files — "
+                  f"std={agg['std']:.4f}+-{sem['std']:.4f} skew={agg['skew']:+.4f} "
+                  f"kurt={agg['kurtosis']:+.4f} zero_frac={agg['zero_frac']:.5f} "
+                  f"peak2={agg['peak_2sig']:.5f} peak3={agg['peak_3sig']:.5f} "
+                  f"peak4={agg['peak_4sig']:.6f} void2={agg['void_2sig']:.5f}", flush=True)
+    except Exception as e:
+        print(f"[misspec-inputs] {name}: per-file map stats failed: {e}", flush=True)
+
+    # --- per-file RAW bandpower amplitude (the cosmic-variance reference) ---------------------
+    try:
+        amps = []
+        for p in list(test_paths):
+            try:
+                with h5py.File(p, "r") as f:
+                    amps.append(float(np.nanmean(
+                        np.asarray(f["cls_results"]["full"]["mixed_bandpowers"][()],
+                                   dtype=np.float64))))
+            except (OSError, KeyError):
+                amps.append(float("nan"))
+        stats["per_file_bandpower_amp"] = amps
+        good = np.asarray([a for a in amps if np.isfinite(a)])
+        if good.size:
+            print(f"[misspec-inputs] {name}: per-file bandpower amplitude over {good.size} files "
+                  f"mean={good.mean():.6e} std={good.std():.6e}", flush=True)
+    except Exception as e:
+        print(f"[misspec-inputs] {name}: per-file bandpower amplitude failed: {e}", flush=True)
+
     try:
         acc: Dict[str, list] = {}
         for i, batch in enumerate(loader):
