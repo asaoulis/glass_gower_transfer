@@ -120,6 +120,14 @@ NOVD_GLASS_PRETRAIN_VARIATES: List[Dict] = [
     {"name": "glass_nla_m",
      "patterns": f"{_GPU5}/glass_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5",
      "exclude_params": [], "in_distribution": True},
+    # Same in-distribution physics, read from the UNBAKED gpu4 source instead of the gpu5 f16
+    # prebake. A control: the gb variates are read raw off gpu4, so if raw-vs-prebake ever
+    # mattered (f16 downcast, wrong extracted variant) this entry would diverge from
+    # 'glass_nla_m' and the OOD comparison would be confounded. Also the correct reference for
+    # bandpower-only models, which train off the raw store.
+    {"name": "glass_nla_m_raw",
+     "patterns": f"{_GPU4}/glass_mocks_nla_m_novd_counts/output_*.h5",
+     "exclude_params": []},
     {"name": "glass_gb0p5", "patterns": f"{_GPU4}/glass_mocks_gb0p5_novd_counts/output_*.h5",
      "exclude_params": []},
     {"name": "glass_gb1p5", "patterns": f"{_GPU4}/glass_mocks_gb1p5_novd_counts/output_*.h5",
@@ -627,6 +635,66 @@ def _compute_repeat_disagreement(name: str, per_repeat: Dict[str, Dict], out_dir
     return payload
 
 
+def _summarise_variate_inputs(name: str, test_paths: Sequence[str], loader, n_raw_files: int = 32):
+    """Data-level provenance check: is this variate on the same footing as the training set?
+
+    Answers two questions that a calibration number alone cannot separate — "did the physics
+    shift?" vs "is this store preprocessed differently (e.g. mean- instead of counts-normalised
+    shear, wrong smoothing variant)?":
+
+    - RAW ``mixed_bandpowers`` mean per band, straight off disk, no scaler. A different shear
+      normalisation moves these by a large factor; a physics variate at the same normalisation
+      moves them by a few percent.
+    - The SAME tensors after the ORIGINAL training scalers. In-distribution inputs land at
+      mean~0 / std~1 (maps) and O(1) (log-scaled bandpowers); a normalisation mismatch shows up
+      as a large offset, i.e. inputs the encoder has never seen.
+    """
+    stats: Dict = {"name": name}
+    try:
+        raws = []
+        for p in list(test_paths)[:n_raw_files]:
+            try:
+                with h5py.File(p, "r") as f:
+                    raws.append(np.asarray(f["cls_results"]["full"]["mixed_bandpowers"][()],
+                                           dtype=np.float64))
+            except (OSError, KeyError):
+                continue
+        if raws:
+            arr = np.stack(raws)                       # [F, 21, nbands]
+            per_band = np.nanmean(arr, axis=(0, 1))    # mean over files and spectra
+            stats["raw_bandpowers_per_band"] = per_band.tolist()
+            stats["raw_bandpowers_mean"] = float(np.nanmean(arr))
+            stats["raw_bandpowers_n_files"] = len(raws)
+            print(f"[misspec-inputs] {name}: RAW mixed_bandpowers over {len(raws)} files "
+                  f"mean={np.nanmean(arr):.6e} per-band="
+                  f"[{', '.join(f'{v:.4e}' for v in per_band)}]", flush=True)
+    except Exception as e:  # diagnostics must never take the run down
+        print(f"[misspec-inputs] {name}: raw bandpower summary failed: {e}", flush=True)
+
+    try:
+        acc: Dict[str, list] = {}
+        for i, batch in enumerate(loader):
+            data = batch[0] if isinstance(batch, (list, tuple)) else batch
+            if not isinstance(data, dict):
+                break
+            for k, v in data.items():
+                acc.setdefault(k, []).append(
+                    (float(v.float().mean()), float(v.float().std()), v.numel())
+                )
+            if i >= 7:  # a handful of batches is plenty for a distribution check
+                break
+        for k, rows in acc.items():
+            n = sum(r[2] for r in rows)
+            mean = sum(r[0] * r[2] for r in rows) / n
+            std = sum(r[1] * r[2] for r in rows) / n
+            stats.setdefault("scaled", {})[k] = {"mean": mean, "std": std}
+            print(f"[misspec-inputs] {name}: SCALED {k}: mean={mean:+.4f} std={std:.4f}",
+                  flush=True)
+    except Exception as e:
+        print(f"[misspec-inputs] {name}: scaled input summary failed: {e}", flush=True)
+    return stats
+
+
 def _eval_one_variate(
     variate: Dict,
     model,
@@ -685,6 +753,8 @@ def _eval_one_variate(
           f"fixed_lock={meta['test_ids_from_fixed_lock']}) "
           f"missing_params={missing_params} exclude_params={exclude_params}", flush=True)
 
+    input_stats = _summarise_variate_inputs(name, meta["test_paths"], loader)
+
     # Swap the test set under the prebuilt model. Ensembles: the ensemble-level loader feeds
     # theta0s and compute_avg_log_prob; each member's loader feeds its own encode+sample pass.
     # Single models have no .members — the one loader drives everything.
@@ -739,6 +809,7 @@ def _eval_one_variate(
         "excluded_params": exclude_params,
         "dropped_from_calibration": dropped,
         "num_posterior_samples": int(num_samples),
+        "input_stats": input_stats,
         "metrics": metrics,
     }
     tarp_intervals = _pop_credible_intervals(payload["metrics"])
