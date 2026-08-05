@@ -185,6 +185,19 @@ def parse_args():
              "theory-test path (systematics OFF) always uses galaxy_bias=0. Use to generate "
              "clustering variates, e.g. --galaxy-bias 1.5 (strong) / 0.7 (weak).")
 
+    parser.add_argument(
+        "--rng-seed", type=int, default=None,
+        help="FIXED-RNG (paired-catalogue) mode. Default None = today's behaviour: one fresh, "
+             "UNSEEDED generator per (sim, outer, rot) block. When set, every random stream is "
+             "derived deterministically from (this seed, sim_id, outer_idx, rot_idx) AND the "
+             "matter-field stream is split from the galaxy-sampling stream (see build_block_rngs). "
+             "Two runs sharing --rng-seed then produce the SAME matter fields and the SAME "
+             "nuisance draws, so a variate that only changes the galaxy sampling (e.g. "
+             "--galaxy-bias 0.5 vs 1.5) is PAIRED with its reference: cosmic variance and "
+             "nuisance scatter cancel exactly. Note the galaxy catalogues themselves cannot be "
+             "identical when b_g differs (positions_from_delta draws a different number of "
+             "galaxies) — only the fields and the nuisance realisation are shared.")
+
     parser.add_argument("--outer-reps", type=int, default=None,
                         help="Override the per-sim OUTER shape-noise realisation count (default: the "
                              "OUTER_NUM_SHAPE_NOISE_REALISATIONS[simulator] config value; glass=4, "
@@ -250,6 +263,59 @@ SIM_TYPE_CONFIGS = {
 # from the Gower complement using this seed, so a resume / re-submit reproduces the SAME cosmology
 # set (the sim resumes by skipping complete sim_ids, so the id list must be stable across runs).
 GOWER_TOPUP_SEED = 20260710
+
+
+# --- FIXED-RNG (paired-catalogue) mode -------------------------------------------------------
+# Stream tags spawned off the per-block SeedSequence. Order/identity is part of the on-disk
+# contract: changing them changes every mock generated with a given --rng-seed.
+RNG_STREAM_SAMPLE = 0   # nuisance draws + galaxy sampling / shape noise (Simulator rng)
+RNG_STREAM_BACKEND = 1  # IA-prior draws + the GLASS log-normal matter fields
+RNG_STREAM_POSTPROC = 2  # random ellipticity rotation for the noise-only alm (map_shears)
+RNG_STREAM_LEGACY = 3   # seeds the GLOBAL numpy RNG (see build_block_rngs)
+
+
+def build_block_rngs(seed, sim_num, outer_idx, rot_idx):
+    """Return ``(sample_rng, backend_rng, postproc_rng)`` for one (sim, outer, rot) block.
+
+    With ``seed is None`` (the default) all three are INDEPENDENT UNSEEDED generators, which
+    reproduces the historical behaviour bit-for-bit *in distribution* — the old code used one
+    shared unseeded generator, but with no seed there is nothing to preserve, and splitting the
+    streams is what makes the fixed-seed path meaningful.
+
+    With an integer ``seed`` the three streams are spawned from
+    ``SeedSequence([seed, sim_num, outer_idx, rot_idx])``, so they are:
+
+    * **reproducible** — re-running the same block reproduces the same mock byte-for-byte;
+    * **independent** — crucially, the matter-field stream (``backend_rng``, consumed lazily by
+      ``glass.generate`` inside the shell loop) no longer shares a generator with the galaxy
+      sampling (``sample_rng``, consumed by ``positions_from_delta`` / ``redshifts`` /
+      ``sample_ellipticity``). The galaxy draws depend on ``galaxy_bias``, so under the old
+      single-generator scheme the stream de-synchronised after the first shell and every later
+      shell's delta differed between b_g variants. Split, the delta shells are IDENTICAL across
+      variants that only change the galaxy sampling => a paired (cosmic-variance-free) test.
+
+    Note ``prepare_glass_backend`` draws the IA nuisance params from ``backend_rng`` *before*
+    generating the fields, but only on an in-memory cache MISS. The caller therefore hands it a
+    fresh per-block cache in fixed-RNG mode so every block consumes the identical sequence
+    (IA draws -> field draws) regardless of resume state or rank layout.
+
+    SIDE EFFECT (seeded mode only): also seeds the **global** legacy numpy RNG from a fourth
+    spawned stream. Some physics draws are not reachable through any ``rng`` argument — notably
+    the per-mock photo-z shift ``np.random.multivariate_normal`` in ``src/KiDS/tomo.py`` (protected
+    code, so it is seeded rather than re-plumbed). That draw perturbs ``tomo_nz`` and therefore
+    EVERY downstream product, so leaving it unseeded makes two same-seed runs fully uncorrelated.
+    Seeding it here also covers any future global-RNG use on the sim path.
+    """
+    if seed is None:
+        return (np.random.default_rng(), np.random.default_rng(), np.random.default_rng())
+    ss = np.random.SeedSequence([int(seed), int(sim_num), int(outer_idx), int(rot_idx)])
+    children = ss.spawn(4)
+    np.random.seed(int(children[RNG_STREAM_LEGACY].generate_state(1, dtype=np.uint32)[0]))
+    return (
+        np.random.default_rng(children[RNG_STREAM_SAMPLE]),
+        np.random.default_rng(children[RNG_STREAM_BACKEND]),
+        np.random.default_rng(children[RNG_STREAM_POSTPROC]),
+    )
 
 
 def gower_fixed_test_with_topup(fixed_ids, num_sims, full_gower_ids, seed=GOWER_TOPUP_SEED):
@@ -425,6 +491,14 @@ if __name__ == "__main__":
     OUTPUT_DIR = args.output_dir
     CAMB_CACHE_DIR = args.camb_cache_dir
     COSMO_BASE_SEED_VAL = args.cosmo_base_seed
+    # None => unseeded (production default). An int switches on paired/reproducible generation.
+    RNG_SEED = args.rng_seed
+    if rank == 0 and RNG_SEED is not None:
+        print(f"[rank 0] FIXED-RNG mode: --rng-seed {RNG_SEED}. Per-(sim,outer,rot) streams are "
+              f"deterministic and split (matter fields independent of galaxy sampling), so runs "
+              f"differing only in --galaxy-bias are PAIRED on the matter fields and nuisance "
+              f"draws. The per-sim backend cache is bypassed to keep the stream position "
+              f"resume-independent.", flush=True)
     # Create the output / CAMB-cache dirs on rank 0 ONLY, then barrier. Running
     # Path.mkdir(parents=True) concurrently from every rank races on the shared
     # /share filesystem: the losers get a transient FileNotFoundError (ENOENT)
@@ -518,7 +592,17 @@ if __name__ == "__main__":
                         if removed:
                             print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx}: "
                                   f"removed {removed} partial files; recomputing.")
-                    rng = np.random.default_rng()
+                    # Per-block random streams. In fixed-RNG mode (--rng-seed) these are
+                    # deterministic in (seed, sim, outer, rot) AND mutually independent, so the
+                    # matter fields + nuisance draws are shared across galaxy-bias variates while
+                    # the galaxy sampling is free to diverge. See build_block_rngs.
+                    rng, backend_rng, postproc_rng = build_block_rngs(
+                        RNG_SEED, sim_num, outer_idx, rot_idx
+                    )
+                    if RNG_SEED is not None:
+                        print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx}: "
+                              f"fixed-RNG seed={RNG_SEED} (streams split: sample/backend/postproc)",
+                              flush=True)
                     log10_M_eff = rng.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
                     if USE_KIDS_MASK:
                         mask = load_kids_mask(data_dir).copy()
@@ -540,12 +624,18 @@ if __name__ == "__main__":
                     s_catalogue = time.time()
                     print("Setting up simulator...")
 
+                    # Fixed-RNG: hand the backend a FRESH cache so the in-memory sim-level cache
+                    # cannot make the backend stream depend on which block happened to miss first.
+                    # The cache only guards the IA draw + the (disk-cached) CAMB Cls load, so the
+                    # extra cost is one cheap re-load per block — CAMB itself is never re-run.
+                    glass_cache = ({} if RNG_SEED is not None
+                                   else backend_states["glass"]["cache"])
                     if SMOKE:
-                        backend = prepare_smoke_backend(rng, SMOKE_CONFIG, ia_prior_spec=ia_prior_spec)
+                        backend = prepare_smoke_backend(backend_rng, SMOKE_CONFIG, ia_prior_spec=ia_prior_spec)
                     elif SIMULATOR_TYPE == "glass":
                         backend = prepare_glass_backend(
                             sim_num,
-                            rng=rng,
+                            rng=backend_rng,
                             cosmo_sampler=backend_states["glass"]["cosmo_sampler"],
                             cosmo_base_seed=backend_states["glass"]["cosmo_base_seed"],
                             cls_cache_dir=backend_states["glass"]["cls_cache_dir"],
@@ -553,12 +643,12 @@ if __name__ == "__main__":
                             sim_grid=SIM_GRID,
                             los_grid=LOS_GRID,
                             camb_limits=CAMB_LIMITS,
-                            cache=backend_states["glass"]["cache"],
+                            cache=glass_cache,
                         )
                     else:
                         backend = prepare_gower_backend(
                             sim_num,
-                            rng=rng,
+                            rng=backend_rng,
                             loader=backend_states["gower_street"]["loader"],
                             prior_ranges=ia_prior_spec,
                             sim_grid=SIM_GRID,
@@ -736,6 +826,10 @@ if __name__ == "__main__":
                         alm, alm_rand = make_alm_shear_convergence(
                             catalogue, m_bias_for_shear, nbins, nside, lmax, nosh=False, mask=mask,
                             normalization=SHEAR_NORMALIZATION,
+                            # Noise-only (random-rotation) alm: pass the block's dedicated stream
+                            # instead of letting it fall back to the GLOBAL numpy RNG, which no
+                            # seed can control. Unseeded mode is statistically unchanged.
+                            rng=postproc_rng,
                         )
                         # mask_cls = unmixing_mask_cls(catalogue, nbins, nside, lmax, lmin, mask=mask)
 
