@@ -43,7 +43,19 @@ python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec --re
 python .claude/cluster/run_remote.py eval --gpu v100 --args "--mode misspec \
     --misspec-base kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8 --variates glass_pretrain \
     --repeat-indices 0 1 2 3 4 --max-test-files 1000"
+
+# NO-VD suite, foundation-level galaxy-bias misspec (models_checklist M6, foundation half):
+# the 5 counts-normalised no-VD foundations vs in-dist nla_m + the b_g=0.5/1.5 GLASS sets.
+# --variate-names selects a subset of the set (here: skip nla / nla_z).
+python .claude/cluster/run_remote.py eval --gpu a100 --args "--mode misspec \
+    --misspec-base kids_legacy_hybrid_nla_m_novd_z8_resnet --variates glass_pretrain_novd \
+    --variate-names glass_nla_m glass_gb0p5 glass_gb1p5 \
+    --repeat-indices 0 1 2 3 4 --max-test-files 1000"
 ```
+
+`--variates` accepts any key of `misspec.py:VARIATE_SETS` — `gower` / `glass_pretrain` (VD-on
+era) and `gower_novd` / `glass_pretrain_novd` (the NO-VD production suite). `--variate-names`
+restricts the chosen set and raises with the valid names if one is misspelt.
 
 (The arg pass-through went live with the gatekeeper redeploy on 2026-07-08; repeats whose
 training hasn't finished are skipped with a warning, so the 5-repeat form is safe to submit

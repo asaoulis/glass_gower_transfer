@@ -358,6 +358,7 @@ def run_misspecification_eval(
     out_subdir: str = "misspec",
     repeat_indices: Sequence[int] = (0,),
     variate_set: Optional[str] = None,
+    variate_names: Optional[Sequence[str]] = None,
     max_test_files: Optional[int] = None,
 ):
     """Evaluate the base experiment's model(s) on every variate, per training repeat.
@@ -381,6 +382,18 @@ def run_misspecification_eval(
 
     if variates is None:
         variates = VARIATE_SETS[variate_set] if variate_set else DEFAULT_VARIATES
+    if variate_names:
+        wanted = list(dict.fromkeys(variate_names))
+        available = [v["name"] for v in variates]
+        missing = [n for n in wanted if n not in available]
+        if missing:
+            raise KeyError(
+                f"variate name(s) {missing} not in set '{variate_set or 'gower'}'; "
+                f"available: {available}"
+            )
+        variates = [v for v in variates if v["name"] in set(wanted)]
+        print(f"[misspec] variate filter: {available} -> {[v['name'] for v in variates]}",
+              flush=True)
     if repeat_index is not None:
         repeat_indices = (int(repeat_index),)
     repeat_indices = [int(r) for r in repeat_indices]

@@ -27,7 +27,12 @@ from config.kids_legacy import kids_legacy_experiments
 from config.kids_legacy_counts import kids_legacy_counts_experiments
 from config.kids_legacy_novd import kids_legacy_novd_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
+from src.ml.eval.misspec import VARIATE_SETS
 from copy import copy
+
+# Selectable variate-dataset sets for --mode misspec (defined in src/ml/eval/misspec.py):
+# gower / glass_pretrain (VD-on era) and gower_novd / glass_pretrain_novd (the NO-VD suite).
+_VARIATE_SET_NAMES = sorted(VARIATE_SETS)
 
 experiments.update(ablation_experiments)  # Combine experiments and ablations into a single dict
 experiments.update(kids_legacy_experiments)  # KiDS-Legacy NLA-M configs
@@ -164,8 +169,11 @@ def main(argv=None):
                         help="misspec mode: the base experiment to evaluate on all variates")
     parser.add_argument("--num-samples", type=int, default=10000,
                         help="misspec mode: posterior samples per test point")
-    parser.add_argument("--variates", default=None, choices=["gower", "glass_pretrain"],
+    parser.add_argument("--variates", default=None, choices=_VARIATE_SET_NAMES,
                         help="misspec mode: which variate-dataset set to evaluate (default gower)")
+    parser.add_argument("--variate-names", nargs="+", default=None,
+                        help="misspec mode: restrict the chosen set to these variate names "
+                             "(e.g. glass_nla_m glass_gb0p5 glass_gb1p5)")
     parser.add_argument("--max-test-files", type=int, default=None,
                         help="misspec mode: cap each variate's test set to ~this many mocks "
                              "(whole cosmologies, sorted by sim_id)")
@@ -180,6 +188,7 @@ def main(argv=None):
             repeat_indices=args.repeat_indices or (0,),
             num_samples=args.num_samples,
             variate_set=args.variates,
+            variate_names=args.variate_names,
             max_test_files=args.max_test_files,
         )
     else:
