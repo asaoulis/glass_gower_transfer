@@ -208,6 +208,14 @@ def parse_args():
              "EXPENSIVE: a production KiDS-Legacy footprint has ~4e7 galaxies => ~0.9 GB PER MOCK, "
              "so pair this with a small --num-sims and --no-augmentation 1.")
 
+    parser.add_argument(
+        "--smoke-n-eff-scale", type=float, default=None,
+        help="SMOKE ONLY: override SMOKE_CONFIG['n_eff_scale'] (default None = keep the config "
+             "value, 1e-3). The default smoke is pure-shape-noise (~30k galaxies, lambda<<1), so "
+             "counts-normalisation physics (1/N convexity, b_g clustering modulation) is absent; "
+             "~0.0625 matches nside-256 pixel occupancy to production's ~13-21 gal/pixel "
+             "(~1.9M galaxies, ~2 min/mock). No effect on non-smoke runs.")
+
     parser.add_argument("--outer-reps", type=int, default=None,
                         help="Override the per-sim OUTER shape-noise realisation count (default: the "
                              "OUTER_NUM_SHAPE_NOISE_REALISATIONS[simulator] config value; glass=4, "
@@ -506,6 +514,11 @@ if __name__ == "__main__":
         rotation_specs = rotation_specs[:1]
         mask_rotation_angles = [0]
         USE_KIDS_MASK = True
+        if args.smoke_n_eff_scale is not None:
+            # Mutating the module-level dict propagates to every SMOKE_CONFIG consumer
+            # (tomo_nz scaling, VD dndz_scale, prepare_smoke_backend). Default None keeps
+            # the config value — the sim smoke gate stays byte-identical.
+            SMOKE_CONFIG["n_eff_scale"] = float(args.smoke_n_eff_scale)
         nside = SMOKE_CONFIG["nside"]
         lmax = SMOKE_CONFIG["lmax"]
         zmax = SMOKE_CONFIG["zmax"]
