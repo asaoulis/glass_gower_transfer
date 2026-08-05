@@ -144,7 +144,15 @@ def _run_generation(output_suffix: str):
         # M3-EARLY preview: the 5-member NPE ensemble on the SAME store + foundation. 2-tuple =
         # direct (non-embeddings) path. NPE ignores `prior` (see _build_output_path), so this dump
         # is under the SIMULATION prior and is tagged `trainprior`, not `kids_s8_analytic`.
-        ("gower_npe_finetune_nla_m_novd_z8_r4_ens5_early", "ncosmoNone_4"),
+        #
+        # ⚠️ GATED OFF UNTIL ITS TRAINING FINISHES — re-enable then. This is NOT cosmetic:
+        # build_ensemble_model_from_checkpoints (src/ml/utils.py) `continue`s past a member whose
+        # checkpoint is missing and only returns None when ZERO members load. So sampling this
+        # entry mid-training would silently build a 1- or 2-member "ensemble", write it under the
+        # 5-member filename, and then the os.path.exists skip above would stop the correct
+        # 5-member dump from ever being generated. Uncomment once all five
+        # finetune_ncosmoNone_4_ens{0..4} checkpoints exist.
+        # ("gower_npe_finetune_nla_m_novd_z8_r4_ens5_early", "ncosmoNone_4"),
         # Previous (VD-era) production main-variate NLE ensembles (z8, 9 members), repeats 0..4 —
         # already sampled 2026-07-08; kept for reference, skipped automatically when the npz exists.
         # *[(f"gower_nle_finetune_nla_m_z8_r{r}_ens9", f"ncosmo300_{r}",
