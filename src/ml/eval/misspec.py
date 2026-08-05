@@ -398,16 +398,25 @@ def run_misspecification_eval(
         repeat_indices = (int(repeat_index),)
     repeat_indices = [int(r) for r in repeat_indices]
 
+    # Flushed step markers: this setup block runs before any per-repeat print, so without them a
+    # hard crash here (a SIGILL/OOM leaves no traceback and loses block-buffered stdout) is
+    # unlocalisable in the SLURM log.
+    print(f"[misspec] setup 1/4: loading config for '{base_experiment}'", flush=True)
     cfg0 = _load_experiment_config(base_experiment)
     param_names = list(cfg0.cosmo_param_names)
     eb_variant = getattr(cfg0, "eb_map_variant", None)
     nested_keys = build_nested_keys_from_quantities(list(cfg0.dataset_quantities), eb_variant)
     out_root = os.path.join(cfg0.base_path, "checkpoints", cfg0.experiment_name, out_subdir)
+    print(f"[misspec] setup 2/4: config OK — params={param_names} eb_variant={eb_variant} "
+          f"out_root={out_root}", flush=True)
 
     # Base Gower prior + one shared set of prior samples (FoM shrinkage reference) — the
     # prior is repeat-independent.
     prior = build_gower_prior(param_names, preset_overrides=_config_preset_overrides(cfg0))
+    print("[misspec] setup 3/4: Gower prior built", flush=True)
     prior_samples_scaled = _sample_from_prior(prior, prior_num_samples, target_dim=len(param_names))
+    print(f"[misspec] setup 4/4: drew {prior_num_samples} prior samples "
+          f"{tuple(prior_samples_scaled.shape)}", flush=True)
 
     summary: Dict[str, Dict] = {}
     per_variate_repeat: Dict[str, Dict[str, Dict]] = {v["name"]: {} for v in variates}
