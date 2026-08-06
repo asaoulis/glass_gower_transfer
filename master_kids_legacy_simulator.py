@@ -261,9 +261,21 @@ EB_SMOOTHING_VARIANTS = [(4.0, 56, 1400,), (8.0, 56, 1400), (8.0, 56, 1024)]
 #   B1_selfstd  E_<tag> standardised per bin at load time                (eb_noise_norm='self')
 #   A3s8        the stored E_sc8_<tag> maps, unmodified
 #   A3s8_A1     E_sc8_<tag> / noise_std_sc8_<tag>
-# A1/B1 are post-hoc functions of the A0 maps, so they are free. A3s8 is NOT: it replaces the
-# per-pixel DENOMINATOR before the spin-2 SHT, so it is a genuinely second map product and the
-# only way to have it later is to write it now. It is carried for robustness option value
+# What each arm actually costs, so nobody re-derives this the hard way:
+#   B1 is the ONLY arm that is genuinely retrofittable. It is a pure function of the stored E
+#      maps (a per-bin standardisation applied by the loader), so it runs on ANY existing store
+#      with no regeneration at all -- config knob eb_noise_norm='self'.
+#   A1 is NOT retrofittable, despite reading "E / scalar". The scalar is the std of the matched
+#      RANDOM-ROTATION noise map -- an independent realisation that is not recoverable from the
+#      stored E maps. It costs a regeneration; what it does NOT cost is a second map product.
+#   A3s8 is not retrofittable either, and is the expensive one: it replaces the per-pixel
+#      DENOMINATOR before the spin-2 SHT.
+# Measured per-mock map-stage cost at production geometry (2026-08-06, jobs 1342042/1342078):
+#   baseline 120 s | + A1 scalars (1 variant) ~49 s | + the other 2 variants ~98 s
+#   | + the whole A3s8 branch ~215 s  =>  480 s as configured here.
+# Against ~728 s/mock of amortised shell time that is +6 % (A1 alone) vs +42 % (full store).
+# The A3s8 share buys ONE thing: a hedge against SPATIALLY STRUCTURED misspecification (variable
+# depth), which a single per-mock scalar cannot absorb. Kept deliberately (user, 2026-08-06). It is carried for robustness option value
 # against SPATIALLY STRUCTURED misspecification (variable depth), which a single per-mock
 # scalar cannot absorb -- see artifacts/DUAL_STORE_A3S8.md.
 #
