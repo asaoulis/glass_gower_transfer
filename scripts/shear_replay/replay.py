@@ -53,17 +53,33 @@ def effective_nside_bin(cand, nside_native):
                or nside_native // int(cand.get("nside_bin_factor", 1)))
 
 
+def norm_key(cand, eb_variant, nside_native):
+    """Products before map_post depend only on (normalisation config, variant, nside_bin).
+
+    Candidates differing only in `map_post` (e.g. A0_counts / A1_wht_rand / B1 / B2) share the
+    expensive alms + filtered maps + bandpowers — the sweep memoises on this key (~33 % of the
+    per-triplet SHT cost with the v1 register).
+    """
+    items = {k: v for k, v in cand.items() if k not in ("id", "map_post", "nside_bin_factor")}
+    items["nside_bin"] = effective_nside_bin(cand, nside_native)
+    return (tuple(sorted(items.items())), tuple(eb_variant))
+
+
 def _alm_pair(m, lmax):
     almE, almB = hp.sphtfunc.map2alm_spin([np.ascontiguousarray(m.real),
                                            np.ascontiguousarray(m.imag)], spin=2, lmax=lmax)
     return almE, almB
 
 
-def build_arm(cache, cand, eb_variant, rng=None, n_rand=1, bp_baseline=None):
+def build_arm(cache, cand, eb_variant, rng=None, n_rand=1, bp_baseline=None,
+              base_products=None):
     """Run one candidate over one mock's cache. Returns the full per-arm product dict.
 
     bp_baseline: optional precomputed baseline (alm, alm_rand) at native nside for the
     two-branch design (bandpowers stay at native counts when the candidate bins coarser).
+    base_products: optional per-arm memo dict — pre-map_post products (alms, filtered maps,
+    bandpowers) are cached under norm_key() so candidates differing only in map_post share
+    the expensive SHTs. Deterministic apart from `levelled`'s rng draw (which shares no key).
     """
     attrs = cache["attrs"]
     geom = resolve_geometry(attrs)
@@ -75,36 +91,69 @@ def build_arm(cache, cand, eb_variant, rng=None, n_rand=1, bp_baseline=None):
     if rng is None:
         rng = np.random.default_rng(12345)
 
-    alm, alm_rand, aux_bins, counts_out = [], [], [], []
-    alm_size = hp.Alm.getsize(lmax)
-    for i in range(nbins):
-        cb = cache["bins"][i]
-        if int(cb.get("n_gal", 0)) == 0 or "pix" not in cb:
-            z = np.zeros(alm_size, dtype=complex)
-            alm.append((z, z.copy()))
-            alm_rand.append((z.copy(), z.copy()))
-            aux_bins.append({})
-            counts_out.append(np.zeros(hp.nside2npix(geom["nside_out"])))
-            continue
-        dm = estimators.dense_maps(cb, nside_native, nside_bin, n_rand=n_rand, want_q=True)
-        m, aux = estimators.normalise(dm["S"], dm["N"], cand, cache_bin=cb,
-                                      nside_bin=nside_bin, rng=rng)
-        r, _ = estimators.normalise(dm["R0"], dm["N"], cand, cache_bin=cb,
-                                    nside_bin=nside_bin, rng=rng)
-        alm.append(_alm_pair(m, lmax))
-        alm_rand.append(_alm_pair(r, lmax))
-        aux_bins.append(aux)
-        counts_out.append(hp.ud_grade(dm["N"], geom["nside_out"], power=-2))
+    key = norm_key(cand, eb_variant, nside_native)
+    base = base_products.get(key) if base_products is not None else None
+    if base is None:
+        alm, alm_rand, aux_bins, counts_out = [], [], [], []
+        alm_size = hp.Alm.getsize(lmax)
+        for i in range(nbins):
+            cb = cache["bins"][i]
+            if int(cb.get("n_gal", 0)) == 0 or "pix" not in cb:
+                z = np.zeros(alm_size, dtype=complex)
+                alm.append((z, z.copy()))
+                alm_rand.append((z.copy(), z.copy()))
+                aux_bins.append({})
+                counts_out.append(np.zeros(hp.nside2npix(geom["nside_out"])))
+                continue
+            dm = estimators.dense_maps(cb, nside_native, nside_bin, n_rand=n_rand, want_q=True)
+            m, aux = estimators.normalise(dm["S"], dm["N"], cand, cache_bin=cb,
+                                          nside_bin=nside_bin, rng=rng)
+            r, _ = estimators.normalise(dm["R0"], dm["N"], cand, cache_bin=cb,
+                                        nside_bin=nside_bin, rng=rng)
+            alm.append(_alm_pair(m, lmax))
+            alm_rand.append(_alm_pair(r, lmax))
+            aux_bins.append(aux)
+            counts_out.append(hp.ud_grade(dm["N"], geom["nside_out"], power=-2))
 
-    E_maps, B_maps = filter_EB_alms_and_make_maps(
-        alm_list=alm, nside_out=geom["nside_out"], lmax_out=None,
-        fwhm_arcmin=fwhm, taper_start_frac=0.95, lmin=lmin, lcut=lcut)
-    randE_maps, randB_maps = filter_EB_alms_and_make_maps(
-        alm_list=alm_rand, nside_out=geom["nside_out"], lmax_out=None,
-        fwhm_arcmin=fwhm, taper_start_frac=0.95, lmin=lmin, lcut=lcut)
+        E_maps, B_maps = filter_EB_alms_and_make_maps(
+            alm_list=alm, nside_out=geom["nside_out"], lmax_out=None,
+            fwhm_arcmin=fwhm, taper_start_frac=0.95, lmin=lmin, lcut=lcut)
+        randE_maps, randB_maps = filter_EB_alms_and_make_maps(
+            alm_list=alm_rand, nside_out=geom["nside_out"], lmax_out=None,
+            fwhm_arcmin=fwhm, taper_start_frac=0.95, lmin=lmin, lcut=lcut)
 
-    counts_out = np.stack(counts_out)
-    foot = counts_out > 0
+        counts_out = np.stack(counts_out)
+        foot = counts_out > 0
+
+        if bp_baseline is not None:
+            bp_alm, bp_alm_rand, bp_lmax = bp_baseline
+        else:
+            bp_alm, bp_alm_rand, bp_lmax = alm, alm_rand, lmax
+        mixed_cls = denoise_shear_cls(nbins, bp_alm, bp_alm_rand, bp_lmax)
+        lo, up, nb = geom["lower_lscale"], geom["upper_lscale"], geom["nbands"]
+        up = min(up, bp_lmax)
+        mixed_cut = mixed_cls[:, :, :, lo:up + 1]
+        cll_bands, bandpowers = compute_cl_bandpowers(mixed_cut, nbins, lo, up, nb)
+
+        # NOTE: raw alms are deliberately NOT memoised (24 x ~34 MB each at production would
+        # blow worker memory); the discriminators only need their auto-cls, cached here.
+        base = {"aux_bins": aux_bins, "counts_out": counts_out, "foot": foot,
+                "E_maps": E_maps, "B_maps": B_maps,
+                "randE_maps": randE_maps, "randB_maps": randB_maps,
+                "clE": [hp.alm2cl(a[0]) for a in alm],
+                "clR": [hp.alm2cl(a[0]) for a in alm_rand],
+                "bandpowers": bandpowers, "bandpower_ls": cll_bands, "mixed_cls": mixed_cls}
+        if base_products is not None:
+            base_products[key] = base
+            alm = alm_rand = None    # memoised path: do not carry the heavy alms out
+    else:
+        alm = alm_rand = None
+
+    E_maps = base["E_maps"].copy()      # map_post mutates: always work on a copy
+    B_maps = base["B_maps"]
+    randE_maps = base["randE_maps"]
+    counts_out = base["counts_out"]
+    foot = base["foot"]
 
     # --- map post-processing (Track B stages), applied to the E channel -----------------------
     post = cand.get("map_post")
@@ -140,26 +189,17 @@ def build_arm(cache, cand, eb_variant, rng=None, n_rand=1, bp_baseline=None):
     E_patches = {name: E_p[j] for j, name in enumerate(patch_names)}
     B_patches = {name: B_p[j] for j, name in enumerate(patch_names)}
 
-    # --- bandpower branch ---------------------------------------------------------------------
-    if bp_baseline is not None:
-        bp_alm, bp_alm_rand, bp_lmax = bp_baseline
-    else:
-        bp_alm, bp_alm_rand, bp_lmax = alm, alm_rand, lmax
-    mixed_cls = denoise_shear_cls(nbins, bp_alm, bp_alm_rand, bp_lmax)
-    lo, up, nb = geom["lower_lscale"], geom["upper_lscale"], geom["nbands"]
-    up = min(up, bp_lmax)
-    mixed_cut = mixed_cls[:, :, :, lo:up + 1]
-    cll_bands, bandpowers = compute_cl_bandpowers(mixed_cut, nbins, lo, up, nb)
-
     return {
         "geom": geom, "candidate": dict(cand), "eb_variant": tuple(eb_variant),
-        "alm": alm, "alm_rand": alm_rand, "lmax": lmax,
-        "E_maps": E_maps, "B_maps": B_maps, "randE_maps": randE_maps, "randB_maps": randB_maps,
+        "alm": alm, "alm_rand": alm_rand, "lmax": lmax,     # None when served from the memo
+        "clE": base["clE"], "clR": base["clR"],
+        "E_maps": E_maps, "B_maps": B_maps,
+        "randE_maps": randE_maps, "randB_maps": base["randB_maps"],
         "counts_out": counts_out, "footprint": foot,
         "E_patches": E_patches, "B_patches": B_patches,
-        "post_factors": post_factors, "aux_bins": aux_bins,
-        "bandpowers": bandpowers, "bandpower_ls": cll_bands,
-        "mixed_cls": mixed_cls,
+        "post_factors": post_factors, "aux_bins": base["aux_bins"],
+        "bandpowers": base["bandpowers"], "bandpower_ls": base["bandpower_ls"],
+        "mixed_cls": base["mixed_cls"],
     }
 
 

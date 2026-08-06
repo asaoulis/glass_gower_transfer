@@ -107,6 +107,73 @@ class RandomEBPatchAugment:
         return data
 
 
+class EBNoiseNormTransform:
+    """Per-sample E/B map noise normalisation (shear-estimator hardening, Track B).
+
+    Removes the source-clustering-modulated noise-amplitude channel from the map branch
+    (the b_g leakage measured in .claude/runs/kids-preparation/improved-shear-processing):
+
+    - mode='self'  (B1_selfstd): each E/B map bin is standardised over its own footprint
+      ((v - mean)/std on pixels != 0; zeros outside the footprint stay 0). The map branch
+      carries no per-mock amplitude; the bandpower branch (noise-debiased) keeps it.
+
+    Mirrors scripts/shear_replay/replay.py map_post 'self_std', validated on the paired
+    b_g catalogues (residual < 0.2 sigma vs baseline 7-9 sigma). Stats are per
+    (bin, patch-side) here — the loader never sees the joint N+S footprint.
+    (A 'divB' mode — divide E by the B-map std — also passed the paired test but is
+    deliberately NOT implemented: B-modes are poorly modelled on real data and the main
+    analysis must not rely on them; user decision 2026-08-05.)
+    """
+
+    def __init__(self, mode: str, eps: float = 1e-12):
+        if mode != "self":
+            raise ValueError(f"eb_noise_norm mode must be 'self', got {mode!r}")
+        self.mode = mode
+        self.eps = eps
+
+    @staticmethod
+    def _bin_stats(x):
+        """Footprint (nonzero-pixel) mean/std per bin for an (nbins, H, W) array/tensor."""
+        if torch.is_tensor(x):
+            flat = x.reshape(x.shape[0], -1)
+            mask = flat != 0
+            n = mask.sum(dim=1).clamp(min=1).to(flat.dtype)
+            mean = (flat * mask).sum(dim=1) / n
+            var = (((flat - mean[:, None]) * mask) ** 2).sum(dim=1) / n
+            return mean, torch.sqrt(var)
+        flat = np.asarray(x).reshape(x.shape[0], -1)
+        mask = flat != 0
+        n = np.maximum(mask.sum(axis=1), 1).astype(flat.dtype)
+        mean = (flat * mask).sum(axis=1) / n
+        var = (((flat - mean[:, None]) * mask) ** 2).sum(axis=1) / n
+        return mean, np.sqrt(var)
+
+    def __call__(self, data: Dict[str, Union[np.ndarray, torch.Tensor]]):
+        eb_keys = [k for k in data if _EB_QUANTITY_RE.match(k)]
+        if not eb_keys:
+            return data
+        out = dict(data)
+        for k in eb_keys:
+            x = out[k]
+            mask = x != 0
+            mean, sd = self._bin_stats(x)
+            sd = sd + self.eps
+            out[k] = (x - mean[:, None, None]) / sd[:, None, None] * mask
+        return out
+
+
+class ChainedDataTransform:
+    """Apply a sequence of data-dict transforms in order (picklable, DataLoader-worker safe)."""
+
+    def __init__(self, transforms):
+        self.transforms = list(transforms)
+
+    def __call__(self, data):
+        for t in self.transforms:
+            data = t(data)
+        return data
+
+
 def build_nested_keys_from_quantities(
     quantities: Sequence[str], eb_variant: Optional[str] = None
 ) -> Dict[str, Tuple[str, ...]]:

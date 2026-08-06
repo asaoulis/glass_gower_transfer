@@ -857,3 +857,20 @@ _gower_ft_smoke("ws_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
 _counts_ext("z8_resnet_headdeep_cold",
             mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}},
             repeat_indices=(4,))
+
+
+# === Shear-estimator hardening, Track B (2026-08-05, improved-shear-processing task) ============
+# B1_selfstd deployed as a data-loader transform (eb_noise_norm='self'): per-mock/bin footprint
+# standardisation of the E maps at load time. Kills the b_g noise-amplitude leakage (paired-replay
+# residual +0.15σ vs baseline +6.9σ; leaderboard in the task's RESULTS.md) with zero regeneration;
+# the bandpower branch keeps the amplitude. Identical to the z8_resnet foundation otherwise —
+# a direct FoM/ΔMI price measurement vs kids_legacy_hybrid_nla_m_counts_z8_resnet.
+# (B2 divB variant deliberately not built: real-data B-modes are poorly modelled; user 2026-08-05.)
+_EB_SELFSTD_TOP = {
+    "eb_noise_norm": "self",
+    # the transform already standardises the maps — scale only the bandpowers
+    "scaler_options": {"data": {"type": "standard", "keys": ["mixed_bandpowers"]},
+                       "cosmo": {"type": "preset"}},
+}
+_counts_ext("z8_resnet_ebselfstd", mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra=_EB_SELFSTD_TOP)

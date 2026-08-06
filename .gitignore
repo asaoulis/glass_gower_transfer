@@ -36,3 +36,7 @@ CLAUDE.md
 # validation shell-projection matter_cls disk cache
 .glass_matter_cache/
 *.pt
+# local analysis working state (shear-replay sweeps, fetched checkpoints, rank dumps)
+ml-checkpoints/
+steps_*.jsonl
+rank_table.txt

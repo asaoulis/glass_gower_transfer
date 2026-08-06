@@ -315,6 +315,15 @@ def prepare_data_parameters(config):
 
     # Build transforms and wrap loaders
     data_transform = DataDictScalerTransform(key_scalers)
+    # Optional per-sample E/B noise normalisation (shear-estimator hardening, Track B):
+    # applied BEFORE the key scalers. Configs using it should normally exclude the map keys
+    # from scaler_options['data']['keys'] — the transform already standardises them.
+    eb_noise_norm = getattr(config, 'eb_noise_norm', None)
+    if eb_noise_norm:
+        from .data.data_augmentations import EBNoiseNormTransform, ChainedDataTransform
+        data_transform = ChainedDataTransform(
+            [EBNoiseNormTransform(eb_noise_norm), data_transform])
+
     train_loader = _wrap_loader_with_transforms(train_loader, data_transform, cosmo_scaler)
     val_loader = _wrap_loader_with_transforms(val_loader, data_transform, cosmo_scaler, shuffle=False)
     test_loader = _wrap_loader_with_transforms(test_loader, data_transform, cosmo_scaler, shuffle=False)

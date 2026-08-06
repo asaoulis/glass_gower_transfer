@@ -101,6 +101,12 @@ def get_default_config():
     config.pin_memory = False
     config.stack_groups = False
     config.augment_eb_patches = True
+    # Per-sample E/B map noise normalisation (shear-estimator hardening, Track B).
+    # None => off (legacy). 'self' => per-bin footprint standardisation of every E/B map
+    # quantity at load time (EBNoiseNormTransform), removing the source-clustering-modulated
+    # noise-amplitude channel from the map branch. Configs using it should scale only the
+    # bandpower keys in scaler_options['data']['keys'].
+    config.eb_noise_norm = None
 
     # Optional: limit training dataset size (None => no trimming)
     config.dataset_size = None

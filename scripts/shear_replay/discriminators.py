@@ -49,9 +49,7 @@ def harmonic_stats(replay_out):
     lo_band = (ell >= 56) & (ell <= 300)
     hi_band = (ell >= 800) & (ell <= min(1400, lmax))
     out = {}
-    for i, ((almE, _), (almE_r, _)) in enumerate(zip(replay_out["alm"], replay_out["alm_rand"])):
-        clE = hp.alm2cl(almE)
-        clR = hp.alm2cl(almE_r)
+    for i, (clE, clR) in enumerate(zip(replay_out["clE"], replay_out["clR"])):
         v_lo = float(np.sum((w * clE)[lo_band]) / (4 * np.pi))
         v_hi = float(np.sum((w * clE)[hi_band]) / (4 * np.pi))
         out[f"D4_varlo_b{i}"] = v_lo

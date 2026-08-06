@@ -17,6 +17,7 @@ import json
 import re
 import sys
 import traceback
+import zlib
 from multiprocessing import get_context
 from pathlib import Path
 
@@ -98,20 +99,31 @@ def _sweep_triplet(task):
             caches[bg] = cache_mod.load_cache(cp)
         rows = []
         baselines = {}
+        base_prods = {bg: {} for bg in caches}   # per-arm norm_key memo (shared SHTs)
+        nside0 = int(next(iter(caches.values()))["attrs"]["nside"])
+        # Group same-normalisation candidates adjacently so the single-slot memo hits;
+        # the slot is cleared on every key change to bound worker memory.
+        cand_names = sorted(cand_names, key=lambda c: str(
+            replay_mod.norm_key(estimators.get_candidate(c), variant, nside0)))
         for cname in cand_names:
             cand = estimators.get_candidate(cname)
             rep_by_bg = {}
             for bg, cache in caches.items():
                 rng = np.random.default_rng([seed, int(key[0]), int(key[3]),
-                                             int(round(bg * 1000)), hash(cname) & 0xFFFF])
+                                             int(round(bg * 1000)),
+                                             zlib.crc32(cname.encode()) & 0xFFFF])
                 nside_native = int(cache["attrs"]["nside"])
+                cur_key = replay_mod.norm_key(cand, variant, nside_native)
+                if cur_key not in base_prods[bg]:
+                    base_prods[bg].clear()
                 bp_baseline = None
                 if replay_mod.effective_nside_bin(cand, nside_native) != nside_native:
                     if bg not in baselines:
                         baselines[bg] = replay_mod.baseline_alms(cache, rng=rng)
                     bp_baseline = baselines[bg]
                 rep_by_bg[bg] = replay_mod.build_arm(cache, cand, variant, rng=rng,
-                                                     bp_baseline=bp_baseline)
+                                                     bp_baseline=bp_baseline,
+                                                     base_products=base_prods[bg])
             arms = {f"{bg:g}": disc.arm_row(caches[bg], rep_by_bg[bg]) for bg in rep_by_bg}
             paired = disc.triplet_stats(rep_by_bg, caches)
             rows.append(json.dumps({
