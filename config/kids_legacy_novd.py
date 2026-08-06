@@ -363,3 +363,82 @@ for _S, (_g, _gow, _cos, _pre, _smk) in _SUB_VARIATES.items():
 # TODO Section C conservative (fwhm8) stack — mirror M2-M6 with `_cons` names + fwhm8 stores
 # (_EB_VARIANT_CONS="fwhm8_lmin56_lcut1024", *_fwhm8 map stores, _FOUNDATION_CONS_CKPT). Band M1 is
 # REUSED (bandpowers are smoothing-independent). Deliberately deferred (LATER pass).
+
+
+# === SCRATCH (task training-runs/scratch-gower-runs) — GOWER-ONLY single-fidelity probe =========
+# WHY. The production stack shows a persistent model misspecification: the foundation is extremely
+# sensitive to var(E) (the per-pixel std of the E-mode maps) as a function of cosmology, and a ~1 %
+# map-variance offset under a galaxy-bias shift moves the posterior by several sigma. That may be
+# real physics — or it may be an artefact of the LOG-NORMAL GLASS mocks, which plausibly carry
+# little information beyond the 2-pt function, forcing the CNN onto such extreme statistics.
+# This probe removes GLASS entirely: the SAME two-stage recipe (Stage-I band -> frozen band +
+# PreActResNet map encoder) trained single-fidelity on the Gower Street N-body mocks. If the
+# Gower-trained hybrid shows the same var(E) reliance, the effect is not a log-normal artefact.
+#
+# DIAGNOSTIC, NOT PRODUCTION. These deliberately read the SUPERSEDED `_novd_counts` Gower store
+# (not the dual-norm regeneration, which has produced GLASS rows only): holding the normalisation
+# fixed at what the GLASS-trained models saw is exactly what makes the comparison like-for-like.
+# No production conclusion may rest on these checkpoints.
+#
+# SPLIT (user-specified 2026-08-06): 450 train / 50 val, "0 test". test_frac=0.0 is NOT usable
+# without fixed_test_sim_ids (prepare_data_parameters always builds a test loader, and
+# npe.py compute_avg_log_prob then does torch.cat([]) -> RuntimeError in the sanity check), so the
+# 5 test cosmologies are taken from the 11 SURPLUS to the requested 500. Arithmetic on the store's
+# 511 distinct cosmologies: n_test = round(511*0.01) = 5 -> 506 remain -> max_trainval_cosmos=500
+# -> rel_train_frac = 0.891/0.99 = 0.9 exactly -> n_train = 450, n_val = 50. Nothing the user asked
+# to train on is withheld. Verified against src/ml/data/data_selection.py:split_by_cosmology.
+#
+# NB max_trainval_cosmos=[500] (not None) makes match_num_cosmo emit `ncosmo500_{i}`, so the run
+# dirs are pretrain_ncosmo500_{0,1,2} for BOTH stages and the hybrid's per-repeat band lookup
+# resolves cleanly. Both stages MUST keep identical data_patterns + split keys or the frozen band
+# would have been fitted on a different cosmology split than the hybrid it is frozen into.
+_GOWER_ONLY_BAND_CKPT_DIR = f"{_CKPT}/gower_only_band_nla_m_novd/"
+_GOWER_ONLY_SPLIT = {"max_trainval_cosmos": [500], "train_frac": 0.891,
+                     "val_frac": 0.099, "test_frac": 0.01}
+
+
+def _gower_only_band():
+    """Stage-I bandpower MLP trained on GOWER (not GLASS). Reads the same prebaked gpu5 Gower store
+    as Stage II — it carries cls_results/full/mixed_bandpowers — so both stages see an IDENTICAL
+    cosmology split. 3 repeats -> checkpoints/gower_only_band_nla_m_novd/pretrain_ncosmo500_{0,1,2}/.
+    Bandpowers only (no maps) => runs on v100.
+      train --exp gower_only_band_nla_m_novd --gpu v100 --repeat-indices 0   (then 1, then 2)"""
+    c = _band_lmin50()
+    c["data_patterns"] = _GOWER_NLA_M
+    c.update(_GOWER_ONLY_SPLIT)
+    c.pop("repeats", None)
+    c["repeat_indices"] = [0, 1, 2]
+    return c
+
+
+def _gower_only_hybrid_z8_resnet():
+    """Stage-II hybrid: FROZEN per-repeat Gower Stage-I band + the PRODUCTION PreActResNet map
+    encoder, trained single-fidelity on Gower. Identical architecture/optimiser to the production
+    foundation `kids_legacy_hybrid_nla_m_novd_z8_resnet`; the ONLY differences are the data store
+    (Gower, not GLASS), the 450/50/5 split, 3 repeats, and the band checkpoint dir.
+    No checkpoint_path: this is a from-scratch pretrain, so the run dirs stay `pretrain_*` and
+    cannot collide with a `finetune_*` sibling. v100 OOMs on the maps -> l40s (or a100), NEVER v100.
+      train --exp gower_only_hybrid_nla_m_novd_z8_resnet --gpu l40s --ncpu 10 --mem-gb 28 \\
+            --skip-smoke --repeat-indices 0   (then 1, then 2)"""
+    c = _hybrid_lmin50_z8()
+    c["data_patterns"] = _GOWER_NLA_M
+    c["eb_map_variant"] = _EB_VARIANT
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
+    c["pretrained_band_ckpt_path"] = _GOWER_ONLY_BAND_CKPT_DIR
+    c.update(_GOWER_ONLY_SPLIT)
+    c.pop("repeats", None)
+    c["repeat_indices"] = [0, 1, 2]
+    return c
+
+
+kids_legacy_novd_experiments["gower_only_band_nla_m_novd"] = _gower_only_band()
+kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_resnet"] = _gower_only_hybrid_z8_resnet()
+
+# De-clustered LOCAL smoke clone (fwhm8 fixture, from-scratch band). Carries OUR fracs so the split
+# arithmetic is gated too: the 8-cosmology fixture gives round(8*0.01)->max(1,..)=1 test, 7 trainval,
+# int(7*0.9)=6 train / 1 val. max_trainval_cosmos is dropped (7 < 500 would raise).
+kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_resnet_smoke"] = \
+    _hybrid_novd_z8_variant_smoke(
+        mk_extra={"map_kwargs": _RESNET_MAPKW},
+        top_extra={"train_frac": 0.891, "val_frac": 0.099, "test_frac": 0.01,
+                   "repeat_indices": [0]})
