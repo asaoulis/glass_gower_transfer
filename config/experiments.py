@@ -3602,4 +3602,84 @@ experiments = {
         "nle_weighting": 0.1,
         "accumulate_grad_batches": 4,
     },
+
+    # =================================================================================================
+    # WHITENED multifidelity NLE chain — paper revision (review stage).
+    #
+    # Fixes the NLE overconfidence of the published chain (5-member ensemble subset-TARP z = +23.7,
+    # ~13% width deficit): the 16-D VMIM summary's within-cosmology noise is only ~4-dimensional
+    # (cond ~5e5), so q(z|theta) fits a near-singular density and the GLASS->Gower shift is
+    # mis-corrected. WhitenPCAScaler standardises -> PCA-rotates -> keeps the top k=8 PCs -> unit
+    # variance per PC, fit ONCE on the GLASS pre-train train split and REUSED unchanged downstream.
+    #
+    # k=8 chosen from the local prototype sweep on exactly this 16-D embedding: k=8 restores
+    # calibration (dirPIT 0.069/0.067 vs 0.083/0.056 raw) at +3.6% sigma_8 width, where k=6 costs
+    # +14%. These two entries are clones of `glass_embeddings_9param_noscale_nle` and
+    # `finetune_9param_nle_anaprior_ensemble_stratify` with whitening as the ONLY substantive change.
+    # =================================================================================================
+    "glass_embeddings_9param_nle_white8": {
+        # Clone of `glass_embeddings_9param_noscale_nle`. Source: glass_hybrid_patches_16_9param.
+        "data_patterns": "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_prior/output_*.h5",
+        "dataset_quantities": [],
+        "latent_dim": 8,
+        "epochs": 400,
+        "batch_size": 128,
+        "lr": 0.001,
+        "flow_kwargs": {"hidden_features": 64},
+        "project": "gower-finetuning",
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"],
+        "inference_mode": "nle",
+        "repeats": 3,
+        "repeat_indices": [0, 1, 2],
+        "scale_embeddings": False,
+        "scheduler_type": "exp",
+        "scheduler_kwargs": {'warmup': 500, "gamma": 0.99},
+        # --- the only substantive change vs the published pre-train ---
+        "whiten_embeddings": {"k": 8},
+        # Fits + persists datasets/whitener.pt per repeat; the fine-tune resolves and reuses it.
+        "run_evaluation": False,  # a multi-hour MCMC eval on the GLASS suite tells us nothing
+    },
+    "finetune_9param_nle_ensemble_white8": {
+        # Clone of `finetune_9param_nle_anaprior_ensemble_stratify`, warm-started from the WHITENED
+        # pre-train. Trains from the published run's cached raw-z embeddings (gower_mocks was deleted
+        # from the cluster), which also pins the splits to the published baseline for a clean A/B.
+        "data_patterns": "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",  # unused: cache-only
+        "dataset_quantities": [],
+        "latent_dim": 8,
+        "epochs": 50,
+        "batch_size": 128,
+        "lr": 0.0004,
+        "flow_kwargs": {"hidden_features": 64},
+        "project": "gower-finetuning",
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"],
+        "inference_mode": "nle",
+        "match_num_cosmo": False,
+        "load_pretrained_flow": True,
+        # MUST point at the WHITENED pre-train: whitening changes the flow event dim 16 -> 8, so the
+        # published un-whitened checkpoints are unusable here (guard (a) raises if they are used).
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_embeddings_9param_nle_white8/",
+        # Full cached grid. N=30 is absent from the cache and cannot be regenerated (gower_mocks gone).
+        "max_trainval_cosmos": [10, 15, 20, 40, 60, 80, 100, 120],
+        # train_frac / val_frac / selection strategy MUST match the published entry: the cached
+        # emb_*.pt files ARE those splits.
+        "train_frac": 0.6,
+        "val_frac": 0.3,
+        "scale_embeddings": False,
+        "repeats": 3,
+        "repeat_indices": [0, 1, 2],
+        "ensemble_repeats": 9,
+        "run_training": True,
+        "train_val_selection_strategy": "stratified",
+        "train_val_selection_cosmo_params": ["omega_m", "sigma_8", "w0"],
+        # --- whitening (reuses the pre-train's persisted whitener; never refits) ---
+        "whiten_embeddings": {"k": 8},
+        # Guard-(c) headroom: at N=10/15/20 the ep0 val NLL is computed on a tiny Gower val split and
+        # is noisy, so the default 12 nats risks aborting a healthy run. Guards (a)/(b) still cover
+        # the real failure modes (wrong-k warm start, unresolvable whitener).
+        "whiten_warmstart_max_gap_nats": 25.0,
+        # --- cached-embedding reuse (raw gower_mocks no longer exists) ---
+        "reuse_embedding_cache": True,
+        "embedding_cache_experiment": "finetune_9param_nle_anaprior_ensemble_stratify",
+        "embeddings_cache_only": True,
+    },
 }
