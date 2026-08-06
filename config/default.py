@@ -106,6 +106,10 @@ def get_default_config():
     # (the from-scratch / mis-framed-input signature is >=15 nats; genuine warm starts land ~2-5).
     # Set to None (or <=0) to disable the guard.
     config.whiten_warmstart_max_gap_nats = 12.0
+    # Embeddings pipeline: set False to skip the post-training (MCMC) evaluation. Default True keeps
+    # every existing experiment's behaviour unchanged; the GLASS NLE pre-train sets it False because
+    # a multi-hour posterior sampling pass on the low-fidelity suite tells us nothing.
+    config.run_evaluation = True
     config.accumulate_grad_batches = 1
     config.inference_mode = "npe"
 
