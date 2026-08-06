@@ -153,6 +153,7 @@ def make_alm_shear_convergence(
     return_shear=False,
     normalization="counts",
     n_arcmin2=None,
+    smoothed_counts_fwhm_arcmin=None,
     rng=None,
 ):
     """Compute spin-2 shear alms (E/B) per tomographic bin.
@@ -169,6 +170,16 @@ def make_alm_shear_convergence(
       First-order sensitive to source clustering — leaks b_g*delta*gamma into the maps
       (see .claude/runs/eval-and-viz/investigate-galaxy-bias-issue).
     - "expected": divide by n_arcmin2[i] * pixel_area_arcmin2 (legacy `make_alm`).
+    - "smoothed_counts": divide by the observed count map SMOOTHED with a Gaussian of
+      `smoothed_counts_fwhm_arcmin` (floored at 5 % of the mean occupied count). Like "counts"
+      it cancels the source-clustering modulation of the signal, but because the denominator no
+      longer carries the pixel-level Poisson fluctuation it also removes the 1/N convexity that
+      makes the *noise* amplitude depend on b_g -- the leakage channel a single per-mock rescale
+      cannot fix when the misspecification is spatially structured (e.g. variable depth).
+      Arithmetic mirrors the validated offline harness candidate `A3_smooth8`
+      (scripts/shear_replay/estimators.py, mode "smoothed_counts"); see
+      .claude/runs/kids-preparation/improved-shear-processing/artifacts/DUAL_STORE_A3S8.md.
+      Used ONLY for the second (map-branch) product; bandpowers stay on "counts".
 
     Notes
     -----
@@ -190,6 +201,28 @@ def make_alm_shear_convergence(
     ell, emm = hp.Alm.getlm(lmax=lmax)
     alm_size = hp.Alm.getsize(lmax)
 
+    # Denominator memo for normalization="smoothed_counts". The signal map and the
+    # random-rotation map of a tomographic bin are built from the SAME galaxies at the SAME
+    # positions, so their count maps are identical and the (~17 s at nside 1024) smoothing is
+    # done once per bin instead of twice. ONE slot only: an nside-1024 float64 denominator is
+    # ~100 MB, so caching all six bins would cost 600 MB. Keyed by bin, validated on the total.
+    _sc_denom = {}
+
+    def _smoothed_count_denominator(count_map, bin_idx):
+        if smoothed_counts_fwhm_arcmin is None:
+            raise ValueError("smoothed_counts_fwhm_arcmin must be provided when "
+                             "normalization='smoothed_counts'")
+        total = int(np.sum(count_map))
+        if _sc_denom.get("bin") == bin_idx and _sc_denom.get("total") == total:
+            return _sc_denom["denom"]
+        valid = count_map > 0
+        smoothed = hp.smoothing(count_map.astype(np.float64),
+                                fwhm=np.deg2rad(float(smoothed_counts_fwhm_arcmin) / 60.0))
+        floor = 0.05 * count_map[valid].mean() if np.any(valid) else 1.0
+        _sc_denom.clear()
+        _sc_denom.update(bin=bin_idx, total=total, denom=np.maximum(smoothed, floor))
+        return _sc_denom["denom"]
+
     def _apply_normalization(field_map, count_map, bin_idx):
         if normalization == "counts":
             valid = count_map > 0
@@ -203,6 +236,12 @@ def make_alm_shear_convergence(
                 field_map[valid] = field_map[valid] / denom
             else:
                 field_map[:] = 0.0
+            return
+
+        if normalization == "smoothed_counts":
+            valid = count_map > 0
+            denom = _smoothed_count_denominator(count_map, bin_idx)
+            field_map[valid] = field_map[valid] / denom[valid]
             return
 
         if normalization == "expected":

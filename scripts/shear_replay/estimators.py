@@ -153,6 +153,15 @@ CANDIDATES = {
     # combinations
     "A3s8_A1":          {"norm": "smoothed_counts", "fwhm_arcmin": 8.0, "map_post": "div_rand_std"},
     "A8_B2":            {"norm": "global_rescale", "map_post": "div_B_std"},
+    # --- DEPLOYED forms -----------------------------------------------------------------------
+    # The simulator's stored noise_std scalar is the std over ALL pixels of the extracted patch
+    # grids (both patches pooled), because that is the only footprint reproducible from the
+    # stored patches alone. `div_rand_std` above restricts to the full-sky galaxy-occupied
+    # footprint. These two candidates are the AS-SHIPPED estimators; they exist so the paired
+    # b_g sweep verifies the geometric difference is inert before the 100k generation.
+    "A1_patch":         {"norm": "counts", "map_post": "div_rand_std_patch"},
+    "A3s8_A1_patch":    {"norm": "smoothed_counts", "fwhm_arcmin": 8.0,
+                         "map_post": "div_rand_std_patch"},
 }
 
 

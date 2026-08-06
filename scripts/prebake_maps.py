@@ -22,6 +22,18 @@ Usage:
   /data/alex/glass/env/bin/python scripts/prebake_maps.py \
       --src-glob '/data/alex/glass_mocks/*.h5' --out-dir /data/alex/glass_mocks_f16 \
       --eb-variant fwhm8 --dtype float16 [--limit-cosmos N] [--workers 8]
+
+Shear-estimator arms (dual-normalisation stores only). Which arm a training run sees is decided
+HERE -- by which prebaked store `data_patterns` points at -- not by the model config:
+
+  A0_counts   --eb-variant <tag>                             (baseline; default, unchanged)
+  A1_wht_rand --eb-variant <tag>      --noise-norm rand      (DEPLOYED)
+  A3s8        --eb-variant sc8_<tag>
+  A3s8_A1     --eb-variant sc8_<tag>  --noise-norm rand
+  B1_selfstd  any of the above + the loader-side config knob eb_noise_norm='self'
+
+The per-(variant, bin, patch) `noise_std*` scalar groups are always carried through verbatim, so
+an arm can be re-baked later without touching the raw store.
 """
 from __future__ import annotations
 
@@ -49,7 +61,7 @@ def _simid(path):
 
 
 def _bake_one(args):
-    src, out_dir, eb_variant, dtype, fmt, compression, clevel, keep_tag = args
+    src, out_dir, eb_variant, dtype, fmt, compression, clevel, keep_tag, noise_norm = args
     base = os.path.basename(src)
     dst = os.path.join(out_dir, base)
     if os.path.exists(dst):
@@ -57,11 +69,31 @@ def _bake_one(args):
     t0 = time.perf_counter()
     npdt = np.dtype(dtype)
     e_group = f"E_{eb_variant}" if eb_variant else "E"
+    ns_group = f"noise_std_{eb_variant}" if eb_variant else "noise_std"
     try:
         with h5py.File(src, "r") as f:
+            pix = f["pixelised_results"]
+            # Noise-meter scalars (~288 B) for the A1 rescale. Carried through verbatim so the
+            # estimator stays ablatable from the compact store; absent in pre-dual-norm mocks.
+            noise_std = {}
+            for g in pix.keys():
+                if g.startswith("noise_std"):
+                    noise_std[g] = {k: pix[g][k][()] for k in pix[g].keys()}
             maps = {}
             for side in MAP_SIDES:
-                maps[side] = f["pixelised_results"][e_group][side][()].astype(npdt)
+                m = pix[e_group][side][()]
+                if noise_norm != "none":
+                    # A1_wht_rand: divide each tomographic bin by the std of its matched
+                    # random-rotation noise map. Applied BEFORE the cast so float16 sees an
+                    # O(1) map rather than the raw shear amplitude.
+                    if ns_group not in noise_std:
+                        raise KeyError(f"--noise-norm {noise_norm} needs {ns_group}")
+                    key = "all" if noise_norm == "rand" else side
+                    sd = np.asarray(noise_std[ns_group][key], dtype=np.float64)
+                    if sd.shape[0] != m.shape[0] or not np.all(sd > 0):
+                        raise ValueError(f"bad {ns_group}/{key}: shape={sd.shape} min={sd.min()}")
+                    m = m.astype(np.float64) / sd[:, None, None]
+                maps[side] = m.astype(npdt)
             bp = f["cls_results"]["full"]["mixed_bandpowers"][()].astype(np.float32)
             cosmo = {k: f["cosmo_dict"][k][()] for k in f["cosmo_dict"].keys()}
     except Exception as ex:  # truncated / corrupt / missing group
@@ -82,6 +114,14 @@ def _bake_one(args):
                 if kw:
                     kw["chunks"] = (1,) + arr.shape[1:]  # chunk per tomo-bin channel
                 pe.create_dataset(side, data=arr, **kw)
+            for gname, members in noise_std.items():
+                ng = g["pixelised_results"].create_group(gname)
+                for k, v in members.items():
+                    ng.create_dataset(k, data=v)
+            if noise_norm != "none":
+                g["pixelised_results"].create_dataset(
+                    "prebake_noise_norm", data=f"{noise_norm}:{ns_group}",
+                    dtype=h5py.string_dtype(encoding="utf-8"))
             cf = g.create_group("cls_results").create_group("full")
             cf.create_dataset("mixed_bandpowers", data=bp)
             cg = g.create_group("cosmo_dict")
@@ -108,6 +148,12 @@ def main():
     ap.add_argument("--keep-variant-tag", action="store_true",
                     help="write the tagged group E_<variant> (for smoke data matching a config "
                          "with eb_map_variant set) instead of the bare 'E' group")
+    ap.add_argument("--noise-norm", default="none", choices=["none", "rand", "rand_patch"],
+                    help="shear estimator arm. 'none' (default) = A0_counts, byte-identical to "
+                         "the legacy output. 'rand' = A1_wht_rand: divide each tomographic bin by "
+                         "noise_std_<variant>/all (both patches pooled). 'rand_patch' = the same "
+                         "with the per-patch (north/south) std. Combine with "
+                         "--eb-variant sc8_<tag> for the A3s8 / A3s8_A1 arms.")
     ap.add_argument("--workers", type=int, default=8)
     args = ap.parse_args()
 
@@ -123,7 +169,8 @@ def main():
           f"format={args.format} compression={args.compression}")
 
     work = [(p, args.out_dir, args.eb_variant, args.dtype, args.format,
-             args.compression, args.clevel, args.keep_variant_tag) for p in files]
+             args.compression, args.clevel, args.keep_variant_tag, args.noise_norm)
+            for p in files]
     t0 = time.perf_counter()
     ok = bad = skip = 0
     total_bytes = 0

@@ -248,6 +248,77 @@ COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 # [(8.0, None, None), (6.0, None, 1024), (6.0, 56, 1024)].
 EB_SMOOTHING_VARIANTS = [(4.0, 56, 1400,), (8.0, 56, 1400), (8.0, 56, 1024)]
 
+# --- Shear-estimator hardening: the dual-normalisation SUPERSET store -------------------------
+# Source-galaxy clustering (b_g) modulates the per-pixel galaxy count N_p, and the counts
+# normalisation S_p/N_p therefore leaks it into the map branch as a noise-AMPLITUDE channel
+# (a b_g 1.0 -> 1.5 change moves the stored E amplitude by ~+7 sigma). See the measured
+# leaderboard in .claude/runs/kids-preparation/improved-shear-processing/artifacts/RESULTS.md.
+#
+# One generation run writes a superset from which FIVE estimators can be trained with no
+# re-simulation:
+#   A0_counts   the stored E_<tag> maps, unmodified                      (baseline)
+#   A1_wht_rand E_<tag> / noise_std_<tag>                                (DEPLOYED)
+#   B1_selfstd  E_<tag> standardised per bin at load time                (eb_noise_norm='self')
+#   A3s8        the stored E_sc8_<tag> maps, unmodified
+#   A3s8_A1     E_sc8_<tag> / noise_std_sc8_<tag>
+# A1/B1 are post-hoc functions of the A0 maps, so they are free. A3s8 is NOT: it replaces the
+# per-pixel DENOMINATOR before the spin-2 SHT, so it is a genuinely second map product and the
+# only way to have it later is to write it now. It is carried for robustness option value
+# against SPATIALLY STRUCTURED misspecification (variable depth), which a single per-mock
+# scalar cannot absorb -- see artifacts/DUAL_STORE_A3S8.md.
+#
+# The BANDPOWER branch is deliberately untouched: it keeps consuming the primary `counts` alms,
+# so the MCM/mask convention and src/validation/ are unaffected (per-observable normalisation).
+
+# EB variant the A3s8 branch is built for, as a (fwhm_arcmin, lmin, lcut) triple that MUST be one
+# of EB_SMOOTHING_VARIANTS -- training reads exactly one variant, so only that one is worth the
+# +2 MB/mock. None disables the whole second branch (byte-identical legacy output).
+A3S8_VARIANT = (4.0, 56, 1400)
+# FWHM (arcmin) the count map is smoothed at before being used as the denominator. 8' is harness
+# candidate A3_smooth8 / A3s8_A1; do NOT change it without re-running the replay harness.
+A3S8_FWHM_ARCMIN = 8.0
+# The A3s8 maps are an ML-only derived product (never a science archive) and the loader casts on
+# read anyway, so float16 halves the on-disk delta to ~+1.95 MB/mock (+8 %).
+A3S8_MAP_DTYPE = np.float16
+
+# Per-(variant, bin, patch) standard deviations of the RANDOM-ROTATION noise map, stored as
+# scalars (~288 B/mock) so the A1 rescale is a loader/prebake-side division and stays ablatable.
+#   None  -> compute for every EB_SMOOTHING_VARIANTS entry (full optionality, ~+12.5 s/variant)
+#   list  -> compute only for these (fwhm, lmin, lcut) triples
+#   ()    -> disable (no noise_std groups written; the A1 arm becomes untrainable)
+NOISE_STD_VARIANTS = None
+
+
+def eb_variant_tag(fwhm_v, lmin_v, lcut_v):
+    """HDF5 key suffix for one (fwhm, lmin, lcut) smoothing variant."""
+    return (f"fwhm{fwhm_v:g}"
+            + ("" if lmin_v is None else f"_lmin{int(lmin_v)}")
+            + ("" if lcut_v is None else f"_lcut{int(lcut_v)}"))
+
+
+def patch_noise_std(rand_E_maps, patches, nside_out, ang, patch_names):
+    """Per-(patch, bin) std of the filtered random-rotation E map, + the pooled 'all'.
+
+    The random-rotation map is a pure shape-noise realisation of the SAME galaxies with the
+    SAME per-pixel counts, so its std is a per-mock meter of the noise amplitude that the
+    counts normalisation makes b_g-dependent. Dividing the stored E map by it is the deployed
+    A1_wht_rand estimator.
+
+    The std is taken over ALL pixels of each stored patch grid (not the galaxy-occupied
+    footprint the offline harness uses) so that it is reproducible from the stored patches
+    alone. The two differ by a geometric factor that is fixed across mocks because the mask
+    and patch geometry are fixed -- harness candidates A1_patch / A3s8_A1_patch verify this.
+    """
+    per_patch = get_patch_values(rand_E_maps, patches, nside_out, ang)
+    out = {}
+    flat = []
+    for patch_idx, patch_name in enumerate(patch_names):
+        p = np.asarray(per_patch[patch_idx], dtype=np.float64)   # (nbins, H, W)
+        out[patch_name] = p.reshape(p.shape[0], -1).std(axis=1)
+        flat.append(p.reshape(p.shape[0], -1))
+    out["all"] = np.concatenate(flat, axis=1).std(axis=1)
+    return out
+
 # Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
 # ("uniform", lo, hi) or ("normal", mu, sigma); sampled per mock by sim_utils.sample_ia_params.
 # nla_m: Fortuna et al. 2025 / Wright et al. 2025 (covers their posterior at 5 sigma).
@@ -913,6 +984,28 @@ if __name__ == "__main__":
                             mixed_cut, nbins, lower_lscale, upper_lscale, nbands
                         )
 
+                        # --- second (A3s8) map product ----------------------------------------
+                        # Built AFTER the bandpowers so the 2-pt branch is provably untouched,
+                        # and BEFORE `del catalogue` because it re-reads the galaxies. Its alms
+                        # feed ONLY the map branch.
+                        #
+                        # RNG: a SPAWNED child stream, never `postproc_rng` itself. Drawing the
+                        # random rotations from the parent would advance it and change every
+                        # subsequent catalogue in this block, breaking byte-identity with the
+                        # legacy output. Spawning leaves the parent's stream bit-identical
+                        # (verified on numpy 2.2.6) at the cost of the two branches' noise
+                        # references being independent realisations -- statistically fine, the
+                        # random map is only a noise meter.
+                        alm_sc8 = alm_rand_sc8 = None
+                        if A3S8_VARIANT is not None:
+                            sc8_rng = postproc_rng.spawn(1)[0]
+                            alm_sc8, alm_rand_sc8 = make_alm_shear_convergence(
+                                catalogue, m_bias_for_shear, nbins, nside, lmax, nosh=False,
+                                mask=mask, normalization="smoothed_counts",
+                                smoothed_counts_fwhm_arcmin=A3S8_FWHM_ARCMIN,
+                                rng=sc8_rng,
+                            )
+
                         # Optional raw-catalogue dump. MUST happen before the `del` below: the
                         # catalogue is the largest object in the pipeline and is freed here so the
                         # map-building peak stays bounded. Written alongside (not inside) the mock,
@@ -946,29 +1039,107 @@ if __name__ == "__main__":
                         # (E_fwhm{f}[_lmin{lo}][_lcut{hi}] / B_...; both lmin & lcut None ->
                         # smoothing-only, keyed E_fwhm{f}).
                         map_types = {}
+                        # tag -> {patch_name: (nbins,) f64, 'all': (nbins,)}; see patch_noise_std
+                        noise_std = {}
+                        want_noise_std = (list(EB_SMOOTHING_VARIANTS)
+                                          if NOISE_STD_VARIANTS is None
+                                          else [tuple(v) for v in NOISE_STD_VARIANTS])
+                        patch_names = list(named_patches.keys())
+
+                        # --- A3s8 branch: E only, one variant, float16 -------------------------
+                        # Done FIRST so its alms (~0.8 GB) are released before the three counts
+                        # variants allocate their nside_out maps -- this bounds the peak RSS.
+                        sc8_tag = None
+                        if alm_sc8 is not None:
+                            fwhm_v, lmin_v, lcut_v = A3S8_VARIANT
+                            sc8_tag = f"sc8_{eb_variant_tag(fwhm_v, lmin_v, lcut_v)}"
+                            E_s, _ = filter_EB_alms_and_make_maps(
+                                alm_list=alm_sc8, nside_out=nside_out, lmax_out=None,
+                                fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
+                                lmin=lmin_v, lcut=lcut_v,
+                            )
+                            map_types[f"E_{sc8_tag}"] = E_s
+                            Er_s, _ = filter_EB_alms_and_make_maps(
+                                alm_list=alm_rand_sc8, nside_out=nside_out, lmax_out=None,
+                                fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
+                                lmin=lmin_v, lcut=lcut_v,
+                            )
+                            noise_std[sc8_tag] = patch_noise_std(
+                                Er_s, patches, nside_out, ang, patch_names)
+                            del Er_s
+                            alm_sc8 = alm_rand_sc8 = None
+                            gc.collect()
+
                         for fwhm_v, lmin_v, lcut_v in EB_SMOOTHING_VARIANTS:
                             E_v, B_v = filter_EB_alms_and_make_maps(
                                 alm_list=alm, nside_out=nside_out, lmax_out=None,
                                 fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
                                 lmin=lmin_v, lcut=lcut_v,
                             )
-                            tag = (f"fwhm{fwhm_v:g}"
-                                   + ("" if lmin_v is None else f"_lmin{int(lmin_v)}")
-                                   + ("" if lcut_v is None else f"_lcut{int(lcut_v)}"))
+                            tag = eb_variant_tag(fwhm_v, lmin_v, lcut_v)
                             map_types[f"E_{tag}"] = E_v
                             map_types[f"B_{tag}"] = B_v
+
+                            # Noise meter for the A1 rescale: filter the random-rotation alms
+                            # through the SAME variant filter, reduce to scalars, discard maps.
+                            if (fwhm_v, lmin_v, lcut_v) in want_noise_std:
+                                Er_v, _ = filter_EB_alms_and_make_maps(
+                                    alm_list=alm_rand, nside_out=nside_out, lmax_out=None,
+                                    fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
+                                    lmin=lmin_v, lcut=lcut_v,
+                                )
+                                noise_std[tag] = patch_noise_std(
+                                    Er_v, patches, nside_out, ang, patch_names)
+                                del Er_v
 
                         pixelised_results = {name:{} for name in map_types.keys()}
                         for name, cat_data in map_types.items():
                             pixelised_tomobin_patches = get_patch_values(cat_data, patches, nside_out, ang)
-                            for patch_idx, patch_name in enumerate(named_patches.keys()):
+                            # The A3s8 branch is an ML-only derived product, so it is stored at
+                            # A3S8_MAP_DTYPE (float16) -- half the delta on disk, and the prebake
+                            # becomes a pass-through. The primary maps stay float32.
+                            out_dtype = (A3S8_MAP_DTYPE if name.startswith("E_sc8_")
+                                         else np.float32)
+                            for patch_idx, patch_name in enumerate(patch_names):
                                 # Store the pixelised E/B maps as float32: halves on-disk size, and
                                 # the ML loader casts them to float32 on read anyway
                                 # (src/ml/data/data_loading.py), so no analysis precision is lost.
                                 # Only the maps are downcast; cls/bandpowers/cosmo stay float64.
-                                pixelised_results[name][patch_name] = (
-                                    pixelised_tomobin_patches[patch_idx].astype(np.float32, copy=False)
+                                arr = pixelised_tomobin_patches[patch_idx].astype(
+                                    out_dtype, copy=False)
+                                if out_dtype is not np.float32 and not np.isfinite(arr).all():
+                                    print(f"[rank {rank}] WARNING non-finite values in {name}"
+                                          f"/{patch_name} after the {np.dtype(out_dtype).name} "
+                                          f"cast (max|x| before cast = "
+                                          f"{np.abs(pixelised_tomobin_patches[patch_idx]).max():.3e})",
+                                          flush=True)
+                                pixelised_results[name][patch_name] = arr
+
+                        # Noise-meter scalars (~288 B total) + provenance. Both are additive:
+                        # every existing key is byte-identical to the legacy output.
+                        for tag, per_patch in noise_std.items():
+                            pixelised_results[f"noise_std_{tag}"] = per_patch
+                        if noise_std:
+                            pixelised_results["_provenance"] = {
+                                "noise_std": (
+                                    "std of the filtered random-rotation E map over ALL pixels of "
+                                    "each stored patch grid, per tomographic bin; 'all' pools both "
+                                    "patches. A1_wht_rand = E_<tag> / noise_std_<tag>. Differs from "
+                                    "the offline harness (which restricts to the galaxy-occupied "
+                                    "footprint) by a geometric factor that is fixed across mocks."
+                                ),
+                            }
+                            if sc8_tag is not None:
+                                pixelised_results["_provenance"]["a3s8"] = (
+                                    f"E_sc8_* built by a SECOND make_alm_shear_convergence call with "
+                                    f"normalization='smoothed_counts', "
+                                    f"smoothed_counts_fwhm_arcmin={A3S8_FWHM_ARCMIN:g}. Its "
+                                    "random-rotation noise reference is an INDEPENDENT realisation "
+                                    "of the counts branch's (spawned RNG stream) -- the random map "
+                                    "is a noise meter only. Bandpowers are NOT affected: they are "
+                                    "computed from the primary counts-normalised alms."
                                 )
+                                pixelised_results["_provenance"]["a3s8_variant"] = sc8_tag
 
                         # cls_results['full'] = {"cls": mixed_cls, "mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands}
                         cls_results['full'] = {"mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands, "cls": mixed_cls[:, :, :2, :]}  # only save EE and BB
@@ -979,6 +1150,7 @@ if __name__ == "__main__":
 
                         # free per-catalogue heavy products
                         del cls_results, pixelised_results, cll_bands, map_types, alm, alm_rand
+                        del noise_std
                         gc.collect()
 
                         cat_idx += 1
