@@ -425,6 +425,19 @@ def _gower_only_hybrid_z8_resnet():
     c["eb_map_variant"] = _EB_VARIANT
     c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
     c["pretrained_band_ckpt_path"] = _GOWER_ONLY_BAND_CKPT_DIR
+    # STEP-MATCHED to the GLASS foundation (user directive 2026-08-06). Gower has 450 cosmologies
+    # x 80 mocks = 36 000 train samples/epoch = 360 steps at batch 100, vs GLASS's ~81 000/epoch
+    # (810 steps). At the inherited 100 epochs this run would see 36 000 optimiser steps against
+    # GLASS's 81 000 — a different budget AND a different LR trajectory, since the cyclic schedule
+    # is ABSOLUTE-step based (cyclic_period_steps=6000) while warmup is a FRACTION of the total
+    # (base.py:151 warmup_frac=0.05; note the config's "warmup"/"min_factor" keys are dead — the
+    # code reads warmup_frac/warmup_steps and cyclic_min_factor. Left as-is deliberately: matching
+    # the production recipe matters more than fixing an inherited no-op key).
+    # 225 epochs x 360 steps = 81 000 steps => IDENTICAL total steps, identical 4 050-step warmup,
+    # and 13.5 cyclic cycles, exactly as GLASS. Also necessary, not just tidy: GLASS escape occurs
+    # at ep16-32 = 13k-26k steps, which lands at Gower epochs 36-72, so a 100-epoch run would only
+    # just be entering the escape window and a null result would be unreadable.
+    c["epochs"] = 225
     c.update(_GOWER_ONLY_SPLIT)
     c.pop("repeats", None)
     c["repeat_indices"] = [0, 1, 2]
