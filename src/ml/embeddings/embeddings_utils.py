@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 from typing import Dict, List, Optional, Tuple
 
@@ -11,9 +12,13 @@ from config.experiments import experiments
 
 from ..models.lightning_modules import NDELightningModule, LikelihoodNDELightningModule
 from ..eval.utils import load_best_model_and_build_posterior
-from ..data.scaling import BaseScaler, PerDimStandardScaler
+from ..eval.loading_model import get_best_checkpoint
+from ..data.scaling import BaseScaler, PerDimStandardScaler, WhitenPCAScaler
 from ..utils import _build_cosmo_preset_scaler
 from ..data.constants import COSMO_PARAM_PRESET_MINMAX
+
+# Filename for the persisted per-source whitener, colocated with a run's emb_{train,val,test}.pt.
+WHITENER_FILENAME = "whitener.pt"
 
 
 class IdentityEmbedding(torch.nn.Module):
@@ -356,6 +361,80 @@ def _load_embedding_cache(path: str) -> Tuple[torch.Tensor, torch.Tensor, Option
     return z, theta, emb_scaler, cosmo_scaler
 
 
+def resolve_whitener_path(
+    pretrained_ckpt_path_or_dir: Optional[str],
+    repeat_match: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve the persisted `whitener.pt` for a pretrain run, for reuse at finetune/eval.
+
+    - If `pretrained_ckpt_path_or_dir` is a checkpoint FILE (as resolved by `train_embedding_run`),
+      the whitener lives at `<dirname>/datasets/whitener.pt` (same run folder as the flow ckpt).
+    - If it is a DIRECTORY (as passed by the eval-only loader), locate the best matching checkpoint
+      via `get_best_checkpoint(dir, repeat_match)` — the SAME machinery used to resolve the flow —
+      then take that run folder's `datasets/whitener.pt`.
+
+    Returns None if nothing resolves (the caller decides whether that is fatal).
+    """
+    if not pretrained_ckpt_path_or_dir:
+        return None
+    p = str(pretrained_ckpt_path_or_dir)
+
+    if os.path.isfile(p):
+        run_dir = os.path.dirname(p)
+    elif os.path.isdir(p):
+        best, _ = get_best_checkpoint(p, repeat_match or "")
+        if not best:
+            return None
+        run_dir = os.path.dirname(best[0])
+    else:
+        # Non-existent path string: best-effort treat as a file path and use its parent.
+        run_dir = os.path.dirname(p)
+
+    candidate = os.path.join(run_dir, "datasets", WHITENER_FILENAME)
+    return candidate if os.path.exists(candidate) else None
+
+
+def fit_and_persist_whitener(
+    z_train: torch.Tensor,
+    k: int,
+    save_path: str,
+    *,
+    fit_source_experiment: Optional[str] = None,
+    fit_repeat_match: Optional[str] = None,
+) -> WhitenPCAScaler:
+    """Fit a WhitenPCAScaler on the pretrain train split and persist it (idempotent: fit ONCE).
+
+    If `save_path` already exists it is loaded, not refit (the pretrain split is deterministic, so a
+    re-run reproduces identical stats; not refitting is the stronger, cheaper guarantee). This is the
+    single place a whitener is ever *fit* — finetune/eval only ever load it (Finding C3).
+    """
+    k = int(k)
+    if os.path.exists(save_path):
+        wh = WhitenPCAScaler.load(save_path)
+        if int(wh.k) != k:
+            raise RuntimeError(
+                f"[whiten] Existing whitener at {save_path} has k={wh.k} but config asks k={k}. "
+                "Refusing to overwrite; use a distinct pretrain experiment for a different k."
+            )
+        print(f"[whiten] Reusing existing (fit-once) whitener k={wh.k} from {save_path}")
+        return wh
+
+    wh = WhitenPCAScaler(k=k)
+    wh.fit(z_train, k=k)
+    wh.fit_source_experiment = fit_source_experiment
+    wh.fit_repeat_match = fit_repeat_match
+    wh.save(save_path)
+    print(
+        f"[whiten] Fit whitener k={k} on {wh.fit_n_train_samples} rows (input_dim={wh.input_dim}), "
+        f"source={fit_source_experiment} match={fit_repeat_match} -> {save_path}"
+    )
+    print(
+        "[whiten] explained-variance ratio (top-k): "
+        f"{[round(float(v), 4) for v in wh.explained_variance_ratio]}"
+    )
+    return wh
+
+
 def build_embedding_dataloaders(
     train_loader,
     val_loader,
@@ -364,10 +443,22 @@ def build_embedding_dataloaders(
     base_cfg=None,
     wandb_run_name: Optional[str] = None,
     use_cache_if_exists=False,
+    *,
+    whiten_cfg: Optional[dict] = None,
+    is_pretrain_source: bool = False,
+    pretrained_ckpt_path_or_dir: Optional[str] = None,
+    repeat_match: Optional[str] = None,
 ):
     """Construct *scaled* (or optionally unscaled) embedding dataloaders from existing loaders and models.
 
     Embeddings scaling is controlled by config flag `scale_embeddings` (default True).
+
+    When `whiten_cfg` (e.g. {"k": 6}) is provided, per-source whitening + optional PCA truncation
+    REPLACES `scale_embeddings` for the embedding scaler:
+      - pretrain source (`is_pretrain_source=True`): fit the whitener ONCE on this run's train split
+        and persist it next to the emb cache (`datasets/whitener.pt`).
+      - finetune/eval (`is_pretrain_source=False`): RESOLVE and REUSE the pretrain's persisted
+        whitener; never refit (Finding C3). Hard-fails if it cannot be resolved.
     """
 
     scale_embeddings = bool(getattr(base_cfg, "scale_embeddings", True))
@@ -420,6 +511,57 @@ def build_embedding_dataloaders(
             _save_embedding_cache(train_path, train_z, train_theta, emb_scaler, cosmo_scaler)
             _save_embedding_cache(val_path, val_z, val_theta, emb_scaler, cosmo_scaler)
             _save_embedding_cache(test_path, test_z, test_theta, emb_scaler, cosmo_scaler)
+
+    # --- Per-source whitening / PCA truncation (research Finding C3 fix) ------------------------
+    # Both the cache-hit and fresh-compute paths converge here with raw train_z/val_z/test_z, so a
+    # single insertion point covers pretrain (fit+persist) and finetune/eval (resolve+reuse).
+    if whiten_cfg is not None:
+        if "k" not in whiten_cfg:
+            raise ValueError(f"whiten_embeddings must contain 'k'; got {whiten_cfg!r}.")
+        k = int(whiten_cfg["k"])
+        if scale_embeddings:
+            print(
+                "[whiten] NOTE: scale_embeddings=True is IGNORED because whiten_embeddings is set "
+                "(the whitener already standardises per-dim)."
+            )
+
+        if is_pretrain_source:
+            if wandb_run_name is None:
+                raise RuntimeError(
+                    "[whiten] pretrain-source whitening requires wandb_run_name to derive the "
+                    "persist path (datasets/whitener.pt)."
+                )
+            w_train_path, _, _ = _get_embedding_cache_paths(base_cfg, wandb_run_name)
+            whitener_path = os.path.join(os.path.dirname(w_train_path), WHITENER_FILENAME)
+            emb_scaler = fit_and_persist_whitener(
+                train_z,
+                k,
+                whitener_path,
+                fit_source_experiment=getattr(base_cfg, "experiment_name", None),
+                fit_repeat_match=repeat_match,
+            )
+        else:
+            whitener_path = resolve_whitener_path(pretrained_ckpt_path_or_dir, repeat_match)
+            if whitener_path is None:
+                raise RuntimeError(
+                    "[whiten] whiten_embeddings is enabled for a finetune/eval run but no persisted "
+                    f"whitener.pt could be resolved from '{pretrained_ckpt_path_or_dir}' "
+                    f"(repeat_match={repeat_match!r}). Refusing to refit downstream (Finding C3) — "
+                    "ensure the matching *pretrain* run persisted datasets/whitener.pt."
+                )
+            emb_scaler = WhitenPCAScaler.load(whitener_path)
+            if int(emb_scaler.k) != k:
+                raise RuntimeError(
+                    f"[whiten] resolved whitener k={emb_scaler.k} != config k={k} at {whitener_path}."
+                )
+            print(
+                f"[whiten] Reusing pretrain whitener k={emb_scaler.k} (fit on "
+                f"{emb_scaler.fit_n_train_samples} rows, source={emb_scaler.fit_source_experiment}) "
+                f"from {whitener_path}"
+            )
+        # Force the EmbeddingDataset to APPLY the whitener regardless of the scale_embeddings flag
+        # (which the production NLE configs leave False).
+        scale_embeddings = True
 
     # Build datasets using tensors and scalers
     train_ds = EmbeddingDataset(
@@ -513,6 +655,68 @@ def build_nde_on_embeddings(
     return model
 
 
+def _parse_best_val_from_ckpt_name(ckpt_path: Optional[str]) -> Optional[float]:
+    """Extract the recorded best val_log_prob (NLL) from a checkpoint filename."""
+    if not ckpt_path:
+        return None
+    m = re.search(r"val_log_prob=(-?\d+(?:\.\d+)?)", os.path.basename(str(ckpt_path)))
+    return float(m.group(1)) if m else None
+
+
+@torch.no_grad()
+def _compute_val_nll(model, val_loader) -> float:
+    """Mean validation NLL of `model` on `val_loader` (matches the module's validation_step loss)."""
+    model.eval()
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = torch.device("cpu")
+    total, n = 0.0, 0
+    for batch in val_loader:
+        x, theta = batch
+        x = x.to(device)
+        theta = theta.to(device)
+        preds = model.forward(x, cond=theta)
+        loss = model.compute_loss(preds, theta)
+        bs = int(x.shape[0])
+        total += float(loss) * bs
+        n += bs
+    return total / max(n, 1)
+
+
+def _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_ckpt_path: str):
+    """Guard (c): abort if the finetune ep0 val NLL is a scratch-level gap above the pretrain best.
+
+    Local calibration (research task): genuine warm starts land ~2-5 nats above the pretrain best;
+    scratch / mis-framed-input runs land >=15 nats above. Threshold defaults to ~12 nats.
+    """
+    max_gap = getattr(base_cfg, "whiten_warmstart_max_gap_nats", 12.0)
+    if max_gap is None or max_gap <= 0:
+        print("[whiten][guard-c] warm-start regression guard disabled (whiten_warmstart_max_gap_nats).")
+        return
+    pretrain_best = _parse_best_val_from_ckpt_name(pretrained_ckpt_path)
+    ep0 = _compute_val_nll(model, val_loader)
+    if pretrain_best is None:
+        print(
+            f"[whiten][guard-c] could not parse pretrain best val from '{pretrained_ckpt_path}'; "
+            f"skipping guard (finetune ep0 val NLL={ep0:.3f})."
+        )
+        return
+    gap = ep0 - pretrain_best
+    print(
+        f"[whiten][guard-c] finetune ep0 val NLL={ep0:.3f}, pretrain best val={pretrain_best:.3f}, "
+        f"gap={gap:.3f} nats (threshold {max_gap})."
+    )
+    if gap > max_gap:
+        raise RuntimeError(
+            f"[whiten][guard-c] Warm-start regression: finetune ep0 val NLL ({ep0:.3f}) is {gap:.3f} "
+            f"nats above the pretrain best ({pretrain_best:.3f}), exceeding the scratch-signature "
+            f"threshold of {max_gap} nats. The warm start is NOT taking effect (likely a "
+            "mis-resolved/mismatched whitener or flow). Raise whiten_warmstart_max_gap_nats to "
+            "override if this gap is genuinely expected."
+        )
+
+
 def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, base_cfg, run_name):
     """Build and train an NDE Lightning module on precomputed embeddings.
 
@@ -527,11 +731,17 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
 
     model = build_nde_on_embeddings(emb_dim=emb_dim, base_cfg=base_cfg, test_loader=test_loader)
 
+    whiten_on = getattr(base_cfg, "whiten_embeddings", None) is not None
     if getattr(base_cfg, 'load_pretrained_flow', False):
         pretrained_band_ckpt = getattr(base_cfg, 'pretrained_band_ckpt_path', None)
         if pretrained_band_ckpt is None:
             raise ValueError("Config flag 'load_pretrained_flow' is True but 'pretrained_band_ckpt_path' is not set.")
-        model._load_pretrained_flow(pretrained_band_ckpt, freeze=False)
+        # Guard (a): when whitening is on, a shape-mismatched (wrong-k) flow must fail HARD rather
+        # than silently leave layers randomly initialised.
+        model._load_pretrained_flow(pretrained_band_ckpt, freeze=False, error_on_mismatch=whiten_on)
+        # Guard (c): warm-start regression check (whitening runs only).
+        if whiten_on:
+            _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_band_ckpt)
 
     # Standard Lightning trainer setup (similar to fit_model)
     num_gpus = torch.cuda.device_count()

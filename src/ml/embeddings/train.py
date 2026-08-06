@@ -111,7 +111,15 @@ def _try_parse_repeat_idx(match_string: str) -> Optional[int]:
         return None
 
 
-def _build_embedding_test_loader_for_cfg(cfg, source_models):
+def _build_embedding_test_loader_for_cfg(
+    cfg,
+    source_models,
+    *,
+    whiten_cfg=None,
+    is_pretrain_source: bool = False,
+    pretrained_ckpt_path_or_dir=None,
+    repeat_match=None,
+):
     """Build scaled embedding test loader (and scalers) for one config instance."""
 
     from .embeddings_utils import build_embedding_dataloaders
@@ -125,6 +133,10 @@ def _build_embedding_test_loader_for_cfg(cfg, source_models):
         base_cfg=cfg,
         wandb_run_name=None,
         use_cache_if_exists=True,
+        whiten_cfg=whiten_cfg,
+        is_pretrain_source=is_pretrain_source,
+        pretrained_ckpt_path_or_dir=pretrained_ckpt_path_or_dir,
+        repeat_match=repeat_match,
     )
     return scalers, test_emb_loader
 
@@ -186,6 +198,14 @@ def load_embedding_model_with_dataloader(
     repeat_idx = _try_parse_repeat_idx(match_string)
     source_cfg_overrides = build_source_cfg_overrides(source_experiments, n_cosmo=n_cosmo)
 
+    # Whitening context (Finding C3): resolve+reuse the pretrain's persisted whitener at eval time.
+    # cfg.pretrained_band_ckpt_path is the (unresolved) pretrain checkpoint ROOT dir here — the
+    # dir-branch of resolve_whitener_path handles that via get_best_checkpoint(dir, repeat_match).
+    whiten_cfg = getattr(cfg, "whiten_embeddings", None)
+    whiten_is_pretrain_source = (exp_dict.get("pretrained_band_ckpt_path") is None)
+    whiten_ckpt_dir = getattr(cfg, "pretrained_band_ckpt_path", None)
+    whiten_repeat_match = f"None_{repeat_idx}" if repeat_idx is not None else None
+
     from .embeddings_utils import load_pretrained_models
     match_num_cosmo = getattr(cfg, "match_num_cosmo", False)
     if not match_num_cosmo:
@@ -223,7 +243,14 @@ def load_embedding_model_with_dataloader(
             cfg_j.split_seed = 42
             set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat_idx, ensemble_idx=j)
 
-            scalers_j, test_emb_loader_j = _build_embedding_test_loader_for_cfg(cfg_j, source_models)
+            scalers_j, test_emb_loader_j = _build_embedding_test_loader_for_cfg(
+                cfg_j,
+                source_models,
+                whiten_cfg=whiten_cfg,
+                is_pretrain_source=whiten_is_pretrain_source,
+                pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
+                repeat_match=whiten_repeat_match,
+            )
             if scalers is None:
                 scalers = scalers_j
             member_test_loaders.append(test_emb_loader_j)
@@ -243,7 +270,14 @@ def load_embedding_model_with_dataloader(
         checkpoint_path = None
         test_emb_loader = member_test_loaders[0]
     else:
-        scalers, test_emb_loader = _build_embedding_test_loader_for_cfg(cfg, source_models)
+        scalers, test_emb_loader = _build_embedding_test_loader_for_cfg(
+            cfg,
+            source_models,
+            whiten_cfg=whiten_cfg,
+            is_pretrain_source=whiten_is_pretrain_source,
+            pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
+            repeat_match=whiten_repeat_match,
+        )
         checkpoint_path = _select_best_checkpoint_for_match(cfg, pretrained_models_match_string)
         if checkpoint_path is None:
             raise RuntimeError(
@@ -313,12 +347,20 @@ def train_embedding_run(
 
     do_run_training = getattr(target_cfg, "run_training", True)
 
+    # Whitening context (Finding C3). Capture pretrain-vs-finetune BEFORE the resolution below
+    # mutates pretrained_band_ckpt_path in place: a pretrain source has it None here (it then gets
+    # pointed at the source-encoder ckpt, which is NOT a flow warm start); a finetune has it set to
+    # the pretrain checkpoint dir (resolved to a file below).
+    whiten_cfg = getattr(target_cfg, "whiten_embeddings", None)
+    whiten_is_pretrain_source = target_cfg.pretrained_band_ckpt_path is None
+    whiten_repeat_match = f"None_{repeat_idx}"
+
     # Default pretrained flow checkpoint path to the first source checkpoint.
     if target_cfg.pretrained_band_ckpt_path is None:
         target_cfg.pretrained_band_ckpt_path = checkpoint_paths[0]
     else:
         # get best checkpoint for this repeat based on match_string logic
-        repeat_match = f"None_{repeat_idx}"
+        repeat_match = whiten_repeat_match
         best_checkpoint, _ = get_best_checkpoint(target_cfg.pretrained_band_ckpt_path, repeat_match)
         target_cfg.pretrained_band_ckpt_path = best_checkpoint[0] if best_checkpoint else None
     scalers, train_loader, val_loader, test_loader = prepare_data_parameters(target_cfg)
@@ -331,6 +373,10 @@ def train_embedding_run(
         base_cfg=target_cfg,
         wandb_run_name=source_run_name,
         use_cache_if_exists= (not do_run_training),  # Only skip if we're not training (i.e. if we're just evaluating with existing embeddings
+        whiten_cfg=whiten_cfg,
+        is_pretrain_source=whiten_is_pretrain_source,
+        pretrained_ckpt_path_or_dir=target_cfg.pretrained_band_ckpt_path,
+        repeat_match=whiten_repeat_match,
     )
 
 
