@@ -110,6 +110,17 @@ def get_default_config():
     # every existing experiment's behaviour unchanged; the GLASS NLE pre-train sets it False because
     # a multi-hour posterior sampling pass on the low-fidelity suite tells us nothing.
     config.run_evaluation = True
+    # --- Embedding-cache reuse ------------------------------------------------------------------
+    # Normally the emb cache is only read back when run_training is False (pure eval). These three
+    # flags let a TRAINING run be driven off an existing cache instead. They exist because the raw
+    # `gower_mocks` store was deleted from the cluster: the cached raw-z tensors written by the
+    # published fine-tune runs are now the only surviving copy of those embeddings. Reading them is
+    # exact — the compressor is frozen and the cache stores raw z (pre-scaler) — and it additionally
+    # guarantees the whitened arm gets splits IDENTICAL to the published baseline.
+    # All three default off => byte-identical behaviour for every existing experiment.
+    config.reuse_embedding_cache = False      # read the emb cache even when training
+    config.embedding_cache_experiment = None  # read the cache from ANOTHER experiment's checkpoint dir
+    config.embeddings_cache_only = False      # skip raw-data loading + source encoding entirely
     config.accumulate_grad_batches = 1
     config.inference_mode = "npe"
 
