@@ -496,9 +496,108 @@ def _gower_only_hybrid_z8_unet():
     return c
 
 
+def _gower_only_hybrid_z8_resnet_banddrop():
+    """ANTI-COLLAPSE variant: band dropout + patch-head scale parity (user directive 2026-08-07).
+
+    WHY, in order of evidence:
+      1. The resnet run never escaped (+0.30/+0.06/+0.18 nats vs the >=0.5 criterion).
+      2. The UNet + extra-regularisation run tested the OVERFITTING hypothesis and REFUTED it:
+         no escape in the step-matched window either, a head-to-head WASH vs the resnet (2/3
+         seeds slightly worse), and the BEST-to-val_last gap was 0.52 vs the resnet's 0.54 —
+         i.e. dropout 0.1 + wd 0.05 + a 2.4x smaller trunk did not slow overfitting at all.
+         => capacity/overfitting is NOT the binding constraint.
+      3. UNet r1 then showed a CONFIRMED dead map branch: val_patch_pr 0.06 -> 0.01 on two
+         consecutive readings (the production protocol requires two — a single 0.00 is a known
+         transient). So the map branch is collapsing, which is the gradient-starvation failure
+         mode, not an overfitting one.
+
+    THE INTERVENTION — the two knobs are paired deliberately (repo precedent: the
+    `banddrop02_pgain16` variant in config/kids_legacy_counts.py:214):
+      * band_dropout_p=0.2 — per-sample modality dropout of the FROZEN band branch during
+        training; with prob 0.2 band_mu is zeroed so the flow must explain theta from the maps
+        alone, keeping gradient flowing into the map CNN even when the band shortcut saturates
+        the VMIM loss. Eval/val always see the full band.
+      * patch_head_init_gain=16.0 — init-only rescale of the patch encoder head's final Linear.
+        At default init patch_mu enters the concat ~18x SMALLER than the pretrained band_mu
+        (measured std 0.012 vs 0.225), so the map branch is near-invisible to the flow at the
+        start of training. Band dropout WITHOUT this would zero the band and hand the flow a
+        near-invisible map signal — which is why the repo pairs them.
+
+    Everything else is the PRODUCTION resnet recipe unchanged (backbone, 225-epoch GLASS
+    step-match, split, frozen per-repeat band, default dropout/weight_decay). The UNet's extra
+    regularisation is deliberately NOT carried over: it did not help, and reverting keeps this
+    directly comparable to the original resnet run so only the anti-collapse knobs move.
+
+    CONTEXT (user, 2026-08-07): a single-fidelity Gower model failing to escape is EXPECTED —
+    the DES Y3 authors anticipated these models would fail on data of this size, and that is
+    precisely the motivation for multifidelity pre-training. This variant tests whether the
+    failure is *merely* gradient starvation (fixable in-fidelity) or genuinely a data-volume
+    limit (fixable only by pre-training on the cheap GLASS suite).
+      train --exp gower_only_hybrid_nla_m_novd_z8_resnet_banddrop --gpu l40s --ncpu 10 \\
+            --mem-gb 28 --skip-smoke --repeat-indices 0   (then 1, then 2)"""
+    c = _gower_only_hybrid_z8_resnet()
+    c["model_kwargs"] = {**c["model_kwargs"],
+                         "band_dropout_p": 0.2, "patch_head_init_gain": 16.0}
+    return c
+
+
 kids_legacy_novd_experiments["gower_only_band_nla_m_novd"] = _gower_only_band()
 kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_resnet"] = _gower_only_hybrid_z8_resnet()
 kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_unet"] = _gower_only_hybrid_z8_unet()
+def _gower_only_warmstart_glass_z8():
+    """GLASS warm-start at FULL training LR — 'does Gower contain structurally new features?'
+    (user directive 2026-08-07).
+
+    THE QUESTION. Every from-scratch Gower run plateaus at the 2-pt level. This asks the
+    complementary question: start from a GLASS foundation that ALREADY escaped (val ~-5.2, i.e.
+    it demonstrably uses map-level information) and continue training on Gower with the SAME
+    aggressive schedule we use for from-scratch runs — NOT the gentle production finetune.
+    Two outcomes, both informative:
+      * val improves materially beyond the warm-start point  => Gower carries structurally NEW
+        features the GLASS model had not learned, and they ARE learnable at 450 cosmologies.
+      * val sits at ~its starting log_prob and no new channels appear (val_patch_pr / maponly
+        flat) => Gower adds no new learnable structure at this data volume; the value of the
+        N-body suite is calibration, not new features.
+
+    WHY THE HIGH LR MATTERS. The production finetune (_npe_finetune_z8) uses lr=1e-5 + 'exp',
+    which is deliberately too gentle to restructure features — it would answer "can it adapt?"
+    not "can it learn something new?". Here we keep the from-scratch recipe verbatim: lr=2e-4
+    (20x the production finetune), cyclic with warmup, 225 epochs. If the model does not move
+    off the GLASS solution UNDER THIS SCHEDULE, that is strong evidence there is nothing new to
+    move to, rather than an optimisation artefact.
+
+    WIRING. checkpoint_path = the GLASS foundation dir => WHOLE-MODEL load (encoder + flow),
+    resolved per repeat by maybe_resolve_repeat_checkpoint via get_best_checkpoint(dir,
+    repeat_match). match_num_cosmo=False is REQUIRED: our split would otherwise make
+    repeat_match 'ncosmo500_{i}', which cannot match the foundation's 'pretrain_ncosmoNone_{i}'
+    dirs; False gives '_{i}' which does (same mechanism as the production finetune).
+    pretrained_band_ckpt_path is popped and freeze_band=False because the band arrives INSIDE
+    the whole-model checkpoint — this warm-starts the entire GLASS model, band included.
+    Because checkpoint_path is set, run dirs are written as finetune_* and cannot collide with
+    the from-scratch pretrain_* dirs.
+
+    REPEATS. repeat_indices=[0, 2] = two DIFFERENT GLASS foundations, both of which escaped
+    (r0 -5.1868, r2 -5.2604 final W&B best), so neither starts from a plateaued trunk.
+      train --exp gower_only_warmstart_glass_z8 --gpu l40s --ncpu 10 --mem-gb 28 \\
+            --skip-smoke --repeat-indices 0   (then 2)"""
+    c = _gower_only_hybrid_z8_resnet()          # from-scratch recipe: resnet, lr 2e-4, cyclic, 225 ep
+    c["checkpoint_path"] = _FOUNDATION_CKPT     # whole-model GLASS load, per-repeat
+    c.pop("pretrained_band_ckpt_path", None)    # band comes in with the whole-model checkpoint
+    c["freeze_band"] = False
+    c["match_num_cosmo"] = False                # '_{i}' so it matches pretrain_ncosmoNone_{i}
+    c["repeat_indices"] = [0, 2]
+    return c
+
+
+kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_resnet_banddrop"] = \
+    _gower_only_hybrid_z8_resnet_banddrop()
+kids_legacy_novd_experiments["gower_only_warmstart_glass_z8"] = _gower_only_warmstart_glass_z8()
+kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_resnet_banddrop_smoke"] = \
+    _hybrid_novd_z8_variant_smoke(
+        mk_extra={"map_kwargs": _RESNET_MAPKW,
+                  "band_dropout_p": 0.2, "patch_head_init_gain": 16.0},
+        top_extra={"train_frac": 0.891, "val_frac": 0.099, "test_frac": 0.01,
+                   "repeat_indices": [0]})
 
 # De-clustered LOCAL smoke clone (fwhm8 fixture, from-scratch band). Carries OUR fracs so the split
 # arithmetic is gated too: the 8-cosmology fixture gives round(8*0.01)->max(1,..)=1 test, 7 trainval,
