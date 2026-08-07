@@ -444,8 +444,61 @@ def _gower_only_hybrid_z8_resnet():
     return c
 
 
+def _gower_only_hybrid_z8_unet():
+    """UNet-backbone + extra-regularisation variant (user directive 2026-08-07).
+
+    WHY. The resnet run above never escaped its band (+0.30/+0.06/+0.18 nats vs the >=0.5
+    criterion) and overfit hard: band bests landed at ep15/09/13 of 40 and hybrid bests at
+    ep19/24/17, after which val degraded ~1-1.5 nats. On 450 cosmologies the 8.5 M-param
+    PreActResNet has far more capacity than the data supports, so the hypothesis is that a
+    LOWER-capacity backbone plus stronger regularisation delays overfitting long enough for the
+    map branch to break through.
+
+    ⚠️ TENSION, recorded deliberately: on GLASS the UNet was the CONTROL that plateaued at the
+    2-pt level (~-4.4) and the PreActResNet is what broke that wall; the recorded failure mode
+    there was rank-1 degeneration / gradient starvation, NOT overfitting (memory
+    `counts-hybrid-plateau-mechanism`). So on GLASS-like data this swap would be a step
+    backwards. It is justified HERE only because the binding constraint at 450 cosmologies is
+    overfitting rather than trunk capacity. If this also plateaus, the next lever is
+    `band_dropout_p` (per-sample modality dropout of the frozen band branch,
+    kids_inference_architectures.py:474) which attacks gradient starvation directly rather
+    than overfitting — deliberately NOT enabled here to keep one variable moving at a time.
+
+    REGULARISATION (all config-only, no src changes):
+      * UNet backbone instead of PreActResNet  — just don't override map_kwargs with
+        _RESNET_MAPKW; the _hybrid() factory's default map_kwargs is already encoder_type
+        'unet_o3'. Keeps FiLM side_info patch conditioning (which flex_o3/resnet lack).
+      * map_kwargs['dropout'] = 0.1  — ResBlock dropout inside the UNet (default 0.0);
+        forwarded through the builder's **kwargs (kids_inference_architectures.py:213).
+      * optimizer_kwargs weight_decay 0.01 -> 0.05.
+      * flow_kwargs['dropout'] = 0.1 on the density head.
+      * augment_eb_patches stays True (flips/rotations, on by default).
+    model_channels/num_res_blocks left at their defaults (32/2): the backbone swap is already
+    a large capacity cut, and shrinking the trunk too would confound the comparison.
+
+    Reuses the SAME frozen Stage-I bands (bandpowers are independent of the map encoder), so no
+    Stage-I re-run: pretrained_band_ckpt_path still resolves pretrain_ncosmo500_{0,1,2}.
+    Epochs stay 225 = the GLASS step-match (see _gower_only_hybrid_z8_resnet).
+      train --exp gower_only_hybrid_nla_m_novd_z8_unet --gpu l40s --ncpu 10 --mem-gb 28 \\
+            --skip-smoke --repeat-indices 0   (then 1, then 2)"""
+    c = _hybrid_lmin50_z8()                       # default map_kwargs = unet_o3 (NOT resnet)
+    c["data_patterns"] = _GOWER_NLA_M
+    c["eb_map_variant"] = _EB_VARIANT
+    c["model_kwargs"] = {**c["model_kwargs"],
+                         "map_kwargs": {**c["model_kwargs"]["map_kwargs"], "dropout": 0.1}}
+    c["optimizer_kwargs"] = {"weight_decay": 0.05, "betas": (0.9, 0.999)}
+    c["flow_kwargs"] = {**c.get("flow_kwargs", {}), "dropout": 0.1}
+    c["pretrained_band_ckpt_path"] = _GOWER_ONLY_BAND_CKPT_DIR
+    c.update(_GOWER_ONLY_SPLIT)
+    c.pop("repeats", None)
+    c["repeat_indices"] = [0, 1, 2]
+    c["epochs"] = 225
+    return c
+
+
 kids_legacy_novd_experiments["gower_only_band_nla_m_novd"] = _gower_only_band()
 kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_resnet"] = _gower_only_hybrid_z8_resnet()
+kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_unet"] = _gower_only_hybrid_z8_unet()
 
 # De-clustered LOCAL smoke clone (fwhm8 fixture, from-scratch band). Carries OUR fracs so the split
 # arithmetic is gated too: the 8-cosmology fixture gives round(8*0.01)->max(1,..)=1 test, 7 trainval,
@@ -455,3 +508,16 @@ kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_resnet_smoke"] = \
         mk_extra={"map_kwargs": _RESNET_MAPKW},
         top_extra={"train_frac": 0.891, "val_frac": 0.099, "test_frac": 0.01,
                    "repeat_indices": [0]})
+
+# Smoke clone for the UNet variant: same de-clustered fwhm8 fixture, but exercising the UNet
+# backbone + the new regularisation kwargs so a bad dropout/weight_decay key fails LOCALLY.
+_gower_only_unet_smoke = _hybrid_lmin50_z8_smoke()
+_gower_only_unet_smoke["model_kwargs"] = {
+    **_gower_only_unet_smoke["model_kwargs"],
+    "map_kwargs": {**_gower_only_unet_smoke["model_kwargs"]["map_kwargs"], "dropout": 0.1}}
+_gower_only_unet_smoke["optimizer_kwargs"] = {"weight_decay": 0.05, "betas": (0.9, 0.999)}
+_gower_only_unet_smoke["flow_kwargs"] = {**_gower_only_unet_smoke.get("flow_kwargs", {}),
+                                        "dropout": 0.1}
+_gower_only_unet_smoke.update({"train_frac": 0.891, "val_frac": 0.099, "test_frac": 0.01,
+                               "repeat_indices": [0]})
+kids_legacy_novd_experiments["gower_only_hybrid_nla_m_novd_z8_unet_smoke"] = _gower_only_unet_smoke
