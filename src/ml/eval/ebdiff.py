@@ -43,7 +43,7 @@ _E_GROUP = ("pixelised_results", "E")
 
 def _key(path: str):
     """(sim_id, aug_id) pairing key, using the same parsers as the misspec sample dumps."""
-    from src.ml.data.data_loaders import extract_cosmo_index
+    from src.ml.data.data_selection import extract_cosmo_index
     from .utils import _parse_aug_id
     return int(extract_cosmo_index(path)), int(_parse_aug_id(path))
 
@@ -91,7 +91,7 @@ def run_ebdiff_analysis(variate_set: str, eb_variant: Optional[str] = None,
     if REF_VARIATE not in spec:
         raise KeyError(f"{variate_set} has no {REF_VARIATE} reference arm")
 
-    from src.ml.data.data_loaders import collect_paths
+    from src.ml.data.data_selection import collect_paths
 
     def index(patterns):
         out = {}
