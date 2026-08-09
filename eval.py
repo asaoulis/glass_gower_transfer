@@ -18,6 +18,7 @@ NOTE: until the gatekeeper's eval-submit passes CLI args through (requires a
 bootstrap_install.sh redeploy), the cluster job runs a bare ``python eval.py`` and DEFAULT_MODE
 below decides what that does. Flip DEFAULT_MODE back to "list" once args flow end-to-end.
 """
+import os
 import argparse
 
 from config.default import get_default_config
@@ -160,7 +161,7 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
-    parser.add_argument("--mode", choices=["list", "misspec"], default=None,
+    parser.add_argument("--mode", choices=["list", "misspec", "ebdiff"], default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
                         help="list mode: experiment names (default: the DEFAULT_EXPERIMENTS list)")
@@ -179,6 +180,8 @@ def main(argv=None):
     parser.add_argument("--max-test-files", type=int, default=None,
                         help="misspec mode: cap each variate's test set to ~this many mocks "
                              "(whole cosmologies, sorted by sim_id)")
+    parser.add_argument("--eb-variant", default=None,
+                        help="E/B group tag for --mode ebdiff (omit for bare-E pre-baked stores)")
     parser.add_argument("--test-id-source", choices=["heldout", "shared"], default="heldout",
                         help="misspec mode: 'heldout' (default) evaluates each variate on the "
                              "model's held-out test cosmologies only; 'shared' evaluates EVERY "
@@ -188,7 +191,22 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     mode = args.mode or DEFAULT_MODE
-    if mode == "misspec":
+    if mode == "ebdiff":
+        # Difference-map forensics on the paired b_g stores: no model, no training. Decides
+        # whether the surviving b_g channel is signal-sector (red, coherent with the map) or
+        # noise-sector (white). Writes under MODELS_ROOT so `fetch` can pull the JSON.
+        from src.ml.eval.ebdiff import run_ebdiff_analysis
+        from config.default import get_default_config
+
+        out_root = os.path.join(get_default_config().base_path, "checkpoints",
+                                "ebdiff_analysis", args.variates or "unknown")
+        run_ebdiff_analysis(
+            variate_set=args.variates,
+            eb_variant=args.eb_variant,
+            max_files=args.max_test_files or 120,
+            out_root=out_root,
+        )
+    elif mode == "misspec":
         from src.ml.eval.misspec import run_misspecification_eval
 
         run_misspecification_eval(
