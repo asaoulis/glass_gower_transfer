@@ -6,9 +6,18 @@ b_g while the bandpower model does not. The leading hypothesis is that the resid
 per-pixel shape-noise variance `v_p = σ_e²/2N_p`, whose fluctuation is `δ_v ≈ −b_g δ` — i.e. the
 map's local noise amplitude is itself a galaxy-clustering map, which a CNN can read.
 
-This module tests that WITHOUT training anything, using the paired b_g stores (they share
-``--rng-seed``, so differencing two events with the same ``(sim_id, aug_id)`` isolates the b_g
-response rather than noise-realisation scatter).
+This module tests that WITHOUT training anything, from the b_g stores directly.
+
+⚠️ **Per-event differencing does not work here, and the run that showed it is kept as a guard.**
+Matching on ``(sim_id, aug_id)`` pairs the *cosmology, shells and footprint rotation* but NOT the
+galaxy realisation: changing b_g changes how many galaxies are drawn, which desynchronises the RNG
+stream, so the two maps carry independent shape noise. Measured on glass_dn_a0: ``var(Δ)/var(ref)``
+= 1.93–1.98 and ``corr(Δ, ref)`` = −0.70, i.e. exactly the 2 and −1/√2 of two independent draws.
+The b_g effect (a ~1.5 % change in map RMS) is invisible under that.
+
+So the primary statistic is the **ensemble-mean power spectrum per b_g store**, which needs no
+pairing at all: the b_g response is a coherent few-% change in ⟨P(k)⟩, and averaging over ~150
+events per bin per patch beats the realisation scatter down far enough to see it.
 
 The discriminator is the SHAPE of the difference map's power spectrum:
 
@@ -17,8 +26,9 @@ The discriminator is the SHAPE of the difference map's power spectrum:
 
 So for `Δm = m(b_g) − m(1.0)`:
 
-  * `P_Δ(k)` flat (tracking the beam, NOT the signal shape)  ⇒ the b_g response is noise-sector;
-  * `P_Δ(k) ∝ P_ref(k)` (red, and Δm coherent with the reference map) ⇒ signal-sector.
+  * the RATIO ⟨P_bg(k)⟩ / ⟨P_1.0(k)⟩ flat across k ⇒ the extra power is WHITE ⇒ noise-sector;
+  * the ratio elevated only at low k, where the red signal lives, and → 1 at high k where shape
+    noise dominates ⇒ signal-sector.
 
 Reported per tomographic bin and patch: `var(Δm)/var(m_ref)`, the Pearson correlation
 `corr(Δm, m_ref)` (a signal-level multiplicative modulation is coherent with the signal; a noise
@@ -119,6 +129,8 @@ def run_ebdiff_analysis(variate_set: str, eb_variant: Optional[str] = None,
 
         acc = defaultdict(list)
         kc = None
+        spec_ood = defaultdict(list)
+        spec_ref = defaultdict(list)
         for k in keys:
             a = _read_e(ref_idx[k], eb_variant)
             b = _read_e(ood_idx[k], eb_variant)
@@ -139,8 +151,12 @@ def run_ebdiff_analysis(variate_set: str, eb_variant: Optional[str] = None,
                                                    else np.nan)
                     kc, pd_ = _radial_power(dd, nbins_k)
                     _, pr_ = _radial_power(r, nbins_k)
+                    _, po_ = _radial_power(eb_[i], nbins_k)     # the OOD map itself, not Δ
                     acc[f"P_delta/{side}/{i}"].append(pd_)
                     acc[f"P_ref/{side}/{i}"].append(pr_)
+                    # ⭐ the pairing-free statistic: ensemble-mean spectra per store
+                    spec_ood[f"{side}/{i}"].append(po_)
+                    spec_ref[f"{side}/{i}"].append(pr_)
 
         if kc is None:
             print(f"[ebdiff] {name}: every paired read failed — skipped")
@@ -171,6 +187,20 @@ def run_ebdiff_analysis(variate_set: str, eb_variant: Optional[str] = None,
             [s["P_delta_slope"] for s in entry["per_bin"].values()]))
         entry["mean_slope_ref"] = float(np.nanmean(
             [s["P_ref_slope"] for s in entry["per_bin"].values()]))
+        # ---- ⭐ ensemble-mean spectra and their ratio (the pairing-free discriminator) ----
+        for bk in sorted(spec_ref):
+            mo = np.nanmean(np.asarray(spec_ood[bk]), axis=0)
+            mr = np.nanmean(np.asarray(spec_ref[bk]), axis=0)
+            with np.errstate(invalid="ignore", divide="ignore"):
+                ratio = np.where(mr > 0, mo / mr, np.nan)
+            slot = entry["per_bin"][bk]
+            slot["P_ood_mean"] = mo.tolist()
+            slot["P_ref_mean"] = mr.tolist()
+            slot["P_ratio"] = ratio.tolist()
+            n_ev = len(spec_ref[bk])
+            sd = np.nanstd(np.asarray(spec_ood[bk]) / np.maximum(np.asarray(spec_ref[bk]), 1e-300),
+                           axis=0, ddof=1)
+            slot["P_ratio_sem"] = (sd / np.sqrt(max(n_ev, 1))).tolist()
         entry["mean_corr"] = float(np.nanmean([s["corr"] for s in entry["per_bin"].values()]))
         entry["mean_var_ratio"] = float(np.nanmean(
             [s["var_ratio"] for s in entry["per_bin"].values()]))
