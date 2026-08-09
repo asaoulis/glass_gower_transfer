@@ -5,6 +5,7 @@ from config.ablations import ablation_experiments
 from config.kids_legacy import kids_legacy_experiments
 from config.kids_legacy_counts import kids_legacy_counts_experiments
 from config.kids_legacy_novd import kids_legacy_novd_experiments
+from config.kids_legacy_dn import kids_legacy_dn_experiments
 from src.ml.embeddings.train import EmbeddingTrainArgs, train_embeddings_experiment
 from src.ml.models.custom_sbi import NeuralSplineFlow
 
@@ -17,6 +18,7 @@ experiments.update(ablation_experiments)
 experiments.update(kids_legacy_experiments)
 experiments.update(kids_legacy_counts_experiments)  # counts-normalisation rerun configs
 experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
+experiments.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:

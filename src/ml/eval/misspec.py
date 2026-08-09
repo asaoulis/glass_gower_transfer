@@ -138,11 +138,42 @@ NOVD_GLASS_PRETRAIN_VARIATES: List[Dict] = [
      "exclude_params": ["a_ia"]},
 ]
 
+# --- DUAL-NORMALISATION arm comparison (task training-runs/improved-shear-tests) ----------------
+# One variate set per shear-processing ARM. The arm is baked into the STORE, so the b_g test sets
+# must be read from the SAME arm's bake as the model trained on — evaluating an A1 model on A0
+# maps would measure the estimator mismatch, not the b_g robustness. Naming follows the bake DAG:
+#   glass_dn_{nla_m|gb0p7|gb1p0|gb1p5}_f16_{a0|a1|sc8|sc8a1}_fwhm4_lmin56_lcut1400
+# B1_selfstd reads the A0 store and applies its normalisation in the LOADER (eb_noise_norm='self'),
+# so it shares a0's variate set; the transform is chained in build_variate_test_loader.
+# All four b_g sets are nla_m (a_ia + b_ia present) => no exclude_params, all 9 params available.
+# gb0p7/gb1p0/gb1p5 share --rng-seed 4242, so the headline statistic is the PAIRED per-event
+# Δz = z(b_g) − z(b_g=1.0), matched on (sim_id, aug_id) offline from the sample npz.
+_DN_EB = "fwhm4_lmin56_lcut1400"
+_DN_EB_SC8 = "sc8_fwhm4_lmin56_lcut1400"
+
+
+def _dn_variate_set(arm_tag: str) -> List[Dict]:
+    def store(which):
+        return f"{_GPU5}/glass_dn_{which}_f16_{arm_tag}_{_DN_EB}/output_*.h5"
+    return [
+        {"name": f"glass_dn_{arm_tag}", "patterns": store("nla_m"),
+         "exclude_params": [], "in_distribution": True},
+        {"name": "glass_gb0p7", "patterns": store("gb0p7"), "exclude_params": []},
+        {"name": "glass_gb1p0", "patterns": store("gb1p0"), "exclude_params": []},
+        {"name": "glass_gb1p5", "patterns": store("gb1p5"), "exclude_params": []},
+    ]
+
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
     "gower": DEFAULT_VARIATES,
     "glass_pretrain": GLASS_PRETRAIN_VARIATES,
     "gower_novd": NOVD_GOWER_VARIATES,
     "glass_pretrain_novd": NOVD_GLASS_PRETRAIN_VARIATES,
+    "glass_dn_a0": _dn_variate_set("a0"),
+    "glass_dn_a1": _dn_variate_set("a1"),
+    "glass_dn_b1": _dn_variate_set("a0"),      # A0 store + the loader knob
+    "glass_dn_sc8": _dn_variate_set("sc8"),
+    "glass_dn_sc8a1": _dn_variate_set("sc8a1"),
 }
 
 
@@ -154,12 +185,14 @@ def _load_experiment_config(experiment_name: str):
     from config.kids_legacy import kids_legacy_experiments
     from config.kids_legacy_counts import kids_legacy_counts_experiments
     from config.kids_legacy_novd import kids_legacy_novd_experiments
+    from config.kids_legacy_dn import kids_legacy_dn_experiments
 
     exps = dict(base_experiments)
     exps.update(ablation_experiments)
     exps.update(kids_legacy_experiments)
     exps.update(kids_legacy_counts_experiments)
     exps.update(kids_legacy_novd_experiments)
+    exps.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
     experiment_config = exps[experiment_name]
 
     config = get_default_config()
@@ -220,6 +253,7 @@ def build_variate_test_loader(
     batch_size: int = 64,
     num_workers: int = 4,
     max_test_files: Optional[int] = None,
+    eb_noise_norm: Optional[str] = None,
 ):
     """Variate TEST loader with the ORIGINAL scalers injected (never refit).
 
@@ -227,6 +261,12 @@ def build_variate_test_loader(
     cosmologies when there is no overlap (e.g. a small gb subset outside the pool).
     ``max_test_files`` caps the test set by accumulating whole cosmologies (sorted by
     sim_id) until the file budget is reached.
+
+    ``eb_noise_norm`` mirrors the TRAIN-time loader (``src/ml/utils.py``): when the experiment
+    sets it, the per-sample E/B normalisation must be chained BEFORE the key scalers here too.
+    Such configs deliberately exclude the map keys from ``scaler_options['data']['keys']``
+    (the transform standardises them), so omitting it would feed the model raw unstandardised
+    maps and make the variate metrics meaningless.
     """
     all_paths = collect_paths(patterns)
     by_cosmo: Dict[int, List[str]] = {}
@@ -275,9 +315,14 @@ def build_variate_test_loader(
         transform=None,
         allow_missing_cosmo_params=True,
     )
+    data_transform = DataDictScalerTransform(key_scalers)
+    if eb_noise_norm:
+        from ..data.data_augmentations import EBNoiseNormTransform, ChainedDataTransform
+        data_transform = ChainedDataTransform(
+            [EBNoiseNormTransform(eb_noise_norm), data_transform])
     wrapped = TransformingDataset(
         ds,
-        data_transform=DataDictScalerTransform(key_scalers),
+        data_transform=data_transform,
         cosmo_scaler=cosmo_scaler,
     )
     loader = torch.utils.data.DataLoader(
@@ -810,6 +855,9 @@ def _eval_one_variate(
         # size — mitigate by resubmitting / splitting repeats across GPUs, not by shrinking.
         batch_size=min(64, int(getattr(cfg, "test_batch_size", None) or getattr(cfg, "batch_size", 64))),
         max_test_files=max_test_files,
+        # Mirror the TRAIN-time loader: a config with eb_noise_norm set (B1_selfstd) scales only
+        # the bandpowers, so the map standardisation MUST come from this transform.
+        eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
     )
 
     # Fail fast on a wrong eb-variant tag / absent params rather than skip-looping every file.
