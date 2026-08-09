@@ -56,6 +56,7 @@ from .evaluate_models import (
 )
 from .utils import (
     _config_preset_overrides,
+    _parse_aug_id,
     _pop_credible_intervals,
     _save_posterior_samples,
     _to_json_compatible,
@@ -629,6 +630,49 @@ def run_misspecification_eval(
     return summary
 
 
+def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names):
+    """Compact per-event companion to the full posterior-sample dump (KB, not hundreds of MB).
+
+    A z-score / bias analysis needs only the first two posterior moments per event, but the raw
+    dump is [n_samples, N, D] — ~280 MB per variate at the default 10 000 samples, which makes a
+    multi-arm comparison expensive to pull off the cluster. This writes the same information the
+    analysis actually consumes:
+
+      mean, std, theta0, z  [N, D] float32   with  z = (theta0 - mean) / std
+      sim_ids, aug_ids, test_files [N]        (the pairing keys; cf. _save_posterior_samples)
+      params [D]
+
+    ``z`` follows the sign convention of the existing misspec z-score tooling
+    (``first-npe-misspecification/artifacts/misspec_zscores.py``): positive z = the truth sits
+    ABOVE the posterior mean. Moments are in SCALED space, but z is affine-invariant, so it is
+    identical in physical space. Purely additive — the full sample dump is still written, and a
+    failure here never breaks the eval.
+    """
+    try:
+        samp = samples.detach().cpu().numpy() if hasattr(samples, "detach") else np.asarray(samples)
+        theta = theta0s.detach().cpu().numpy() if hasattr(theta0s, "detach") else np.asarray(theta0s)
+        mean = samp.mean(axis=0)
+        std = samp.std(axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            z = (theta - mean) / std
+        payload = {
+            "mean": mean.astype(np.float32), "std": std.astype(np.float32),
+            "theta0": theta.astype(np.float32), "z": z.astype(np.float32),
+            "params": np.array(list(param_names)),
+        }
+        if test_paths is not None and len(test_paths) == theta.shape[0]:
+            files = [os.path.basename(p) for p in test_paths]
+            payload["test_files"] = np.array(files)
+            payload["sim_ids"] = np.array([extract_cosmo_index(p) for p in test_paths], dtype=np.int64)
+            payload["aug_ids"] = np.array([_parse_aug_id(f) for f in files], dtype=np.int64)
+        np.savez_compressed(out_path, **payload)
+        print(f"[save-moments] wrote {out_path}  (N={theta.shape[0]}, keys={sorted(payload)})",
+              flush=True)
+    except Exception as e:  # never let a diagnostic dump break the eval
+        print(f"[save-moments] WARNING: failed to save posterior moments to {out_path}: {e}",
+              flush=True)
+
+
 def _compute_repeat_disagreement(name: str, per_repeat: Dict[str, Dict], out_dir: str):
     """Per-event posterior disagreement ACROSS training repeats for one variate.
 
@@ -955,6 +999,10 @@ def _eval_one_variate(
     _save_posterior_samples(
         os.path.join(out_dir, f"misspec_posterior_samples_{cfg.match_string}.npz"),
         theta0s, samples, test_paths,
+    )
+    _save_posterior_moments(
+        os.path.join(out_dir, f"misspec_posterior_moments_{cfg.match_string}.npz"),
+        theta0s, samples, test_paths, param_names,
     )
 
     cal_full = metrics["tarp"]["full"]["calibration_error"]
