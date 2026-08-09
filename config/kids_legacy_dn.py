@@ -22,18 +22,22 @@ See `.claude/runs/training-runs/improved-shear-tests/plan.md` and the leaderboar
 `_novd` (Era-3, counts-only store) name would mix eras in one checkpoint dir and
 `get_best_checkpoint` could silently resolve the wrong one.
 
-**Why TWO bands.** `split_by_cosmology` shuffles with `random.Random(42)` over the cosmology LIST,
-so adding one cosmology re-randomises the whole split. The raw foundation store is still being
-generated, so the `a0` and `sc8` bakes are DIFFERENT snapshots and need their own band (a band
-trained on snapshot S' would leak S-val cosmologies into the frozen encoder's training set).
-Within a snapshot, `a0`/`a1`/`b1` share one band: the derived `a1` store is baked FROM the finished
-`a0` store, so their file lists are identical by construction and their bandpowers are byte-equal.
+**One band, measured (not assumed).** `split_by_cosmology` shuffles with `random.Random(42)` over
+the cosmology LIST, so ONE extra cosmology re-randomises the entire split — and the raw foundation
+store is still being generated (~1 cosmology/min). The plan therefore budgeted a separate band per
+bake snapshot. In the event the `a0` and `sc8` bakes globbed the growing raw store seconds apart
+and captured **the same 83 001 files** — verified exhaustively by diffing the two stores' sorted
+name lists, not inferred from the counts. The derived `a1`/`sc8a1` stores are then baked FROM those
+finished parents, so all five arms share one file list by construction.
 
-Comparability rules that follow:
-  * WITHIN a snapshot (a0/a1/b1): identical file list, split and band ⇒ raw val NLL is directly
-    comparable arm-to-arm, and the seed's band best is the exact baseline for "ΔNLL vs bandpowers".
-  * ACROSS snapshots (a0-family vs sc8-family): report **ΔNLL = hybrid best val − its own band's
-    best val**; raw val is NOT comparable (different val cosmologies).
+⇒ a SINGLE band (`kids_legacy_band_nla_m_dn`, trained on the `a0` store, which carries
+`mixed_bandpowers` verbatim) is correct for every arm, and:
+  * raw val NLL is directly comparable across ALL FIVE arms (identical files, split and frozen
+    band; the only axis that varies is the shear processing);
+  * the seed's band best is the exact per-seed baseline for "ΔNLL vs bandpowers".
+
+If a future snapshot pair ever fails that identity check, the arms concerned need their own band
+and only ΔNLL (a difference, so the val-draw offset cancels to first order) stays comparable.
 
 Merge: `kids_legacy_dn_experiments` is `.update()`-merged into the experiments dict by train.py /
 eval.py / train_embeddings.py / .claude/cluster/smoke_test_experiment.py, and by
@@ -64,9 +68,9 @@ _DN_A1 = f"{_GPU5}/glass_dn_nla_m_f16_a1_{_EB}/output_*.h5"
 _DN_SC8 = f"{_GPU5}/glass_dn_nla_m_f16_sc8_{_EB}/output_*.h5"
 _DN_SC8A1 = f"{_GPU5}/glass_dn_nla_m_f16_sc8a1_{_EB}/output_*.h5"
 
-# Stage-I band checkpoint dirs — one per SNAPSHOT (see the module docstring).
-_BAND_CKPT_DN = f"{_CKPT}/kids_legacy_band_nla_m_dn/"          # serves a0 / a1 / b1
-_BAND_CKPT_DN_SC8 = f"{_CKPT}/kids_legacy_band_nla_m_dn_sc8/"  # serves sc8 / sc8a1
+# Stage-I band checkpoint dir. ONE band serves ALL FIVE arms — see the module docstring
+# ("one band, measured") for the proof.
+_BAND_CKPT_DN = f"{_CKPT}/kids_legacy_band_nla_m_dn/"
 
 # B1_selfstd: per-mock/per-bin footprint standardisation of the E maps at LOAD time
 # (EBNoiseNormTransform, landed c707c94). The transform already standardises the maps, so the
@@ -85,7 +89,7 @@ _HYBRID_REPEATS = (0, 1)
 kids_legacy_dn_experiments = {}
 
 
-# === Stage I — bandpower MLP (one per snapshot, 3 repeats each; v100) ===========================
+# === Stage I — bandpower MLP (3 repeats, shared by every arm; v100) =============================
 def _band_dn(data_patterns):
     """Stage-I bandpower encoder on the PREBAKED store (which carries `mixed_bandpowers` verbatim).
 
@@ -103,7 +107,8 @@ def _band_dn(data_patterns):
 
 
 kids_legacy_dn_experiments["kids_legacy_band_nla_m_dn"] = _band_dn(_DN_A0)
-kids_legacy_dn_experiments["kids_legacy_band_nla_m_dn_sc8"] = _band_dn(_DN_SC8)
+# NB no separate sc8 band: the a0 and sc8 snapshots are the SAME file list (see the
+# module docstring), so `kids_legacy_band_nla_m_dn` is the band for every arm.
 
 
 # === Stage II — the hybrid arms (2 repeats each; l40s/a100) =====================================
@@ -161,11 +166,11 @@ kids_legacy_dn_experiments["kids_legacy_hybrid_nla_m_dn_z8_resnet_b1"] = \
 # for robustness against SPATIALLY STRUCTURED misspecification, which a single per-mock scalar
 # cannot absorb; on b_g it ties A1.
 kids_legacy_dn_experiments["kids_legacy_hybrid_nla_m_dn_z8_resnet_sc8a1"] = \
-    _hybrid_dn(_DN_SC8A1, _EB_SC8, _BAND_CKPT_DN_SC8)
+    _hybrid_dn(_DN_SC8A1, _EB_SC8, _BAND_CKPT_DN)
 
 # A3s8 alone (OPTIONAL 5th arm — the sc8 intermediate is already on disk, so it costs 0 GB).
 kids_legacy_dn_experiments["kids_legacy_hybrid_nla_m_dn_z8_resnet_sc8"] = \
-    _hybrid_dn(_DN_SC8, _EB_SC8, _BAND_CKPT_DN_SC8)
+    _hybrid_dn(_DN_SC8, _EB_SC8, _BAND_CKPT_DN)
 
 # --- smoke clones --------------------------------------------------------------------------------
 for _name in ("a0", "a1", "sc8", "sc8a1"):
