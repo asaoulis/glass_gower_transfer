@@ -63,6 +63,27 @@ _EB_SC8 = "sc8_fwhm4_lmin56_lcut1400"         # the smoothed-counts map product 
 
 # Prebaked f16 stores on gpu5 (l40s-local). Bake DAG: raw -> a0 -> a1 and raw -> sc8 -> sc8a1;
 # the derived arm is baked FROM the finished parent so the file lists match exactly.
+# The CONSERVATIVE-SCALE-CUT arm (R1024). The raw dual-norm store carries a third E/B variant,
+# `(8.0, 56, 1024)` (master_kids_legacy_simulator.py:249, present since 8d5de4b on 2026-06-16, i.e.
+# well before this store was generated), which matches DES Y3's map configuration closely: they cut
+# hard at ell <= 1024 with no beam, while our default 4' beam is nearly a no-op at our own cut
+# (B_l^2 = 0.62 at l = 1400, half power only at l ~ 2380) so our effective resolution is the hard
+# l = 1400 cut. This arm therefore tests the one scale-cut lever that acts on the b_g
+# noise-variance channel: the readout is a LOCAL VARIANCE ESTIMATE, whose precision goes as
+# sqrt(N_modes) ~ l_max, so 1400 -> 1024 should degrade it by ~1.37x. See
+# .claude/runs/training-runs/improved-shear-tests/artifacts/SPECTRAL_RESPONSE.md.
+#
+# ⚠️ These two stores were baked WITHOUT `--keep-variant-tag`, so they carry BARE `E`/`B` groups,
+# not `E_<tag>` — hence `eb_map_variant=None` on the hybrid below. (Verified against
+# scripts/prebake_maps.py:109.)
+#
+# ⚠️ Their file list is NOT the a0 snapshot: 102 741 files against a0's 83 001, because the
+# generation run was still adding cosmologies. `split_by_cosmology` reshuffles on a single extra
+# cosmology, so this arm has its OWN train/val/test split and its OWN Stage-I band. Absolute val
+# NLL and FoM are therefore not comparable with a0 — only BIAS PER UNIT MARGINAL FoM is.
+_EB_R1024 = "fwhm8_lmin56_lcut1024"
+_DN_R1024 = f"{_GPU5}/glass_dn_nla_m_f16_a0_{_EB_R1024}/output_*.h5"
+
 _DN_A0 = f"{_GPU5}/glass_dn_nla_m_f16_a0_{_EB}/output_*.h5"
 _DN_A1 = f"{_GPU5}/glass_dn_nla_m_f16_a1_{_EB}/output_*.h5"
 _DN_SC8 = f"{_GPU5}/glass_dn_nla_m_f16_sc8_{_EB}/output_*.h5"
@@ -71,6 +92,10 @@ _DN_SC8A1 = f"{_GPU5}/glass_dn_nla_m_f16_sc8a1_{_EB}/output_*.h5"
 # Stage-I band checkpoint dir. ONE band serves ALL FIVE arms — see the module docstring
 # ("one band, measured") for the proof.
 _BAND_CKPT_DN = f"{_CKPT}/kids_legacy_band_nla_m_dn/"
+# The R1024 arm needs its OWN band: `kids_legacy_band_nla_m_dn` was fitted on the 83 001-file
+# snapshot's split, and ~90 % of this arm's validation cosmologies would sit inside it, which would
+# bias `val_nll_bandonly` by an unknown amount of the same order as the effect being measured.
+_BAND_CKPT_DN_R1024 = f"{_CKPT}/kids_legacy_band_nla_m_dn_r1024/"
 
 # B1_selfstd: per-mock/per-bin footprint standardisation of the E maps at LOAD time
 # (EBNoiseNormTransform, landed c707c94). The transform already standardises the maps, so the
@@ -107,6 +132,11 @@ def _band_dn(data_patterns):
 
 
 kids_legacy_dn_experiments["kids_legacy_band_nla_m_dn"] = _band_dn(_DN_A0)
+
+# R1024's own Stage-I band, on its own snapshot. Only 2 repeats: the hybrid runs at r0/r1 and the
+# 3rd a0 band seed exists solely as a plateau-rescue spare.
+kids_legacy_dn_experiments["kids_legacy_band_nla_m_dn_r1024"] = _band_dn(_DN_R1024)
+kids_legacy_dn_experiments["kids_legacy_band_nla_m_dn_r1024"]["repeat_indices"] = [0, 1]
 # NB no separate sc8 band: the a0 and sc8 snapshots are the SAME file list (see the
 # module docstring), so `kids_legacy_band_nla_m_dn` is the band for every arm.
 
@@ -172,8 +202,16 @@ kids_legacy_dn_experiments["kids_legacy_hybrid_nla_m_dn_z8_resnet_sc8a1"] = \
 kids_legacy_dn_experiments["kids_legacy_hybrid_nla_m_dn_z8_resnet_sc8"] = \
     _hybrid_dn(_DN_SC8, _EB_SC8, _BAND_CKPT_DN)
 
+# R1024 — the conservative scale cut (8' beam, hard ell <= 1024). Recipe is byte-identical to A0
+# apart from the store, the band and `eb_map_variant=None`: DELIBERATELY no anti-plateau knobs
+# (band_dropout_p / patch_head_init_gain), because "how hard the compression tries" is the dominant
+# term in the DES reconciliation and adding it here would confound the very axis under test. The
+# plateau risk is handled the way A0 handled it — 2 seeds, escalate to a 3rd only if both stall.
+kids_legacy_dn_experiments["kids_legacy_hybrid_nla_m_dn_z8_resnet_r1024"] = \
+    _hybrid_dn(_DN_R1024, None, _BAND_CKPT_DN_R1024)
+
 # --- smoke clones --------------------------------------------------------------------------------
-for _name in ("a0", "a1", "sc8", "sc8a1"):
+for _name in ("a0", "a1", "sc8", "sc8a1", "r1024"):
     kids_legacy_dn_experiments[f"kids_legacy_hybrid_nla_m_dn_z8_resnet_{_name}_smoke"] = \
         _hybrid_dn_smoke()
 kids_legacy_dn_experiments["kids_legacy_hybrid_nla_m_dn_z8_resnet_b1_smoke"] = \

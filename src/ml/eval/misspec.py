@@ -199,6 +199,20 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     "glass_dn_b1": _dn_variate_set("a0"),      # A0 store + the loader knob
     "glass_dn_sc8": _dn_variate_set("sc8"),
     "glass_dn_sc8a1": _dn_variate_set("sc8a1"),
+    # R1024 — the conservative-scale-cut arm (8' beam, hard ell <= 1024). Same `a0` arm tag (plain
+    # counts, no noise-norm) but the fwhm8_lmin56_lcut1024 bake; those stores carry BARE `E` groups
+    # (baked without --keep-variant-tag), which matches the config's eb_map_variant=None, so no
+    # per-variate `eb_variant` override is needed here.
+    "glass_dn_r1024": [
+        {"name": "glass_dn_r1024",
+         "patterns": f"{_GPU5}/glass_dn_nla_m_f16_a0_fwhm8_lmin56_lcut1024/output_*.h5",
+         "exclude_params": [], "in_distribution": True},
+    ] + [
+        {"name": f"glass_gb{b}",
+         "patterns": f"{_GPU5}/glass_dn_gb{b}_f16_a0_fwhm8_lmin56_lcut1024/output_*.h5",
+         "exclude_params": []}
+        for b in ("0p7", "1p0", "1p5")
+    ],
     "glass_inject_a0": _inject_variate_set("a0"),
     "glass_inject_sc8": _inject_variate_set("sc8"),
     # The "could a DES-sized channel pass at <0.3 sigma?" test. Same machinery, amplitudes from
