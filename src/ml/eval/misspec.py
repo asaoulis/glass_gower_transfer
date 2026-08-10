@@ -165,6 +165,30 @@ def _dn_variate_set(arm_tag: str) -> List[Dict]:
     ]
 
 
+def _inject_variate_set(arm_tag: str) -> List[Dict]:
+    """Synthetic noise-variance injection on the b_g=1.0 store — see src/ml/eval/inject.py.
+
+    All arms share ONE file list (the gb1p0 store), so `paired_dz.py` pairs them on
+    (sim_id, aug_id) against `glass_gb1p0` with zero cosmic variance. `glass_gb1p5` is carried
+    as the real-effect reference the injections are measured against.
+    """
+    def store(which):
+        return f"{_GPU5}/glass_dn_{which}_f16_{arm_tag}_{_DN_EB}/output_*.h5"
+    base = store("gb1p0")
+    return [
+        {"name": "glass_gb1p0", "patterns": base, "exclude_params": [], "in_distribution": True},
+        {"name": "glass_gb1p0_inj_null", "patterns": base, "exclude_params": [],
+         "inject": {"source": "null", "target_b": 1.5}},
+        {"name": "glass_gb1p0_inj_grf", "patterns": base, "exclude_params": [],
+         "inject": {"source": "grf", "target_b": 1.5, "slope": 1.0}},
+        {"name": "glass_gb1p0_inj_grfwhite", "patterns": base, "exclude_params": [],
+         "inject": {"source": "grf", "target_b": 1.5, "slope": 0.0}},
+        {"name": "glass_gb1p0_inj_kappa", "patterns": base, "exclude_params": [],
+         "inject": {"source": "kappa", "target_b": 1.5}},
+        {"name": "glass_gb1p5", "patterns": store("gb1p5"), "exclude_params": []},
+    ]
+
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
     "gower": DEFAULT_VARIATES,
     "glass_pretrain": GLASS_PRETRAIN_VARIATES,
@@ -175,6 +199,8 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     "glass_dn_b1": _dn_variate_set("a0"),      # A0 store + the loader knob
     "glass_dn_sc8": _dn_variate_set("sc8"),
     "glass_dn_sc8a1": _dn_variate_set("sc8a1"),
+    "glass_inject_a0": _inject_variate_set("a0"),
+    "glass_inject_sc8": _inject_variate_set("sc8"),
 }
 
 
@@ -255,6 +281,7 @@ def build_variate_test_loader(
     num_workers: int = 4,
     max_test_files: Optional[int] = None,
     eb_noise_norm: Optional[str] = None,
+    inject: Optional[Dict] = None,
 ):
     """Variate TEST loader with the ORIGINAL scalers injected (never refit).
 
@@ -317,10 +344,21 @@ def build_variate_test_loader(
         allow_missing_cosmo_params=True,
     )
     data_transform = DataDictScalerTransform(key_scalers)
-    if eb_noise_norm:
+    inject_tf = None
+    if eb_noise_norm or inject:
         from ..data.data_augmentations import EBNoiseNormTransform, ChainedDataTransform
-        data_transform = ChainedDataTransform(
-            [EBNoiseNormTransform(eb_noise_norm), data_transform])
+        chain = []
+        if inject:
+            # FIRST in the chain: the injection synthesises a b_g shift on the RAW maps, so
+            # everything downstream (eb_noise_norm, scalers) sees it exactly as it would see a
+            # real variate read. See src/ml/eval/inject.py.
+            from .inject import build_inject_transform
+            inject_tf = build_inject_transform(inject)
+            chain.append(inject_tf)
+        if eb_noise_norm:
+            chain.append(EBNoiseNormTransform(eb_noise_norm))
+        chain.append(data_transform)
+        data_transform = ChainedDataTransform(chain) if len(chain) > 1 else chain[0]
     wrapped = TransformingDataset(
         ds,
         data_transform=data_transform,
@@ -335,6 +373,7 @@ def build_variate_test_loader(
         "n_test_cosmologies": len(test_ids),
         "test_ids_from_fixed_lock": not used_fallback,
         "test_paths": filtered,
+        "inject_transform": inject_tf,
     }
     return loader, meta
 
@@ -902,6 +941,7 @@ def _eval_one_variate(
         # Mirror the TRAIN-time loader: a config with eb_noise_norm set (B1_selfstd) scales only
         # the bandpowers, so the map standardisation MUST come from this transform.
         eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
+        inject=variate.get("inject"),
     )
 
     # Fail fast on a wrong eb-variant tag / absent params rather than skip-looping every file.
@@ -932,6 +972,18 @@ def _eval_one_variate(
         m.test_dataloader = loader
 
     theta0s, samples = model.generate_samples(num_samples=num_samples)
+
+    # Injection calibration self-check: the achieved per-bin map power ratio must reproduce the
+    # ebdiff-measured b_g=1.5 response, else the synthesised channel is the wrong size.
+    inject_tf = meta.get("inject_transform")
+    if inject_tf is not None:
+        inject_report = inject_tf.summary()
+        print(f"[misspec] {name}: injection {inject_tf!r}", flush=True)
+        for side, rep in inject_report.items():
+            print(f"[misspec]   {side}: achieved {rep['achieved_power_ratio']} "
+                  f"vs target {rep['target_power_ratio']} (n={rep['n_events']})", flush=True)
+        input_stats = dict(input_stats or {})
+        input_stats["injection"] = {"spec": repr(inject_tf), "calibration": inject_report}
 
     # Drop test points whose posterior samples came out non-finite (far-OOD conditioning can
     # degenerate the spline inverse even with the clamped discriminant). Keep the analysis on
