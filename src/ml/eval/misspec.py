@@ -201,6 +201,17 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     "glass_dn_sc8a1": _dn_variate_set("sc8a1"),
     "glass_inject_a0": _inject_variate_set("a0"),
     "glass_inject_sc8": _inject_variate_set("sc8"),
+    # The "could a DES-sized channel pass at <0.3 sigma?" test. Same machinery, amplitudes from
+    # Gatti 2024's 5%->1% per-bin bracket instead of our ebdiff-measured ones (src/ml/eval/inject.py).
+    # Our network's reliance on the channel is frozen at TRAINING amplitude, so this UPPER-BOUNDS
+    # what a DES-amplitude channel could do through a compressor that has fully learned it.
+    "glass_injectdes_a0": [
+        {"name": "glass_gb1p0", "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5",
+         "exclude_params": [], "in_distribution": True},
+        {"name": "glass_gb1p0_inj_grfdes",
+         "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5", "exclude_params": [],
+         "inject": {"source": "grf", "target_b": 1.5, "slope": 1.0, "profile": "des"}},
+    ],
 }
 
 

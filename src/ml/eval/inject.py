@@ -69,6 +69,32 @@ MEASURED_POWER_RATIO_B1P5: Dict[str, np.ndarray] = {
     "south": np.array([1.061, 1.057, 1.039, 1.029, 1.015, 1.008]),
 }
 
+# ---------------------------------------------------------------------------------------------
+# The DES-Y3 amplitude profile, for the "could a DES-sized channel pass at <0.3 sigma?" test.
+#
+# Derivation, stated so it can be checked. Gatti et al. 2024 (arXiv:2307.13860), on the noise
+# double-counting the F(phi) factor corrects: "The variance of the noise is increased at most by 5
+# (resp. 1) per cent at small scales for the first (resp. fourth) DES tomographic bin." That
+# enhancement is b^2 sigma_delta^2 at b = 1, so sigma_delta^2 = 0.05 (bin 1) ... 0.01 (bin 4) at
+# their NSIDE-512 pixel scale. The b_g: 1 -> 1.5 power ratio is then 1 + (b^2-1) sigma_delta^2 =
+# 1 + 1.25 sigma_delta^2. Their 4 bins are mapped onto our 6 by geometric interpolation in
+# sigma_delta^2 across the same fractional bin position (low-z first in both surveys).
+#
+# Unlike ours these are PREDICTED rather than realised, but the prediction should be much closer to
+# truth for DES: their modulation is a smooth analytic factor with no Poisson lambda-clipping, which
+# is what suppresses our own realised ratios to ~0.4-0.6 of their prediction in the low bins.
+#
+# NOTE the headline: 1.0625 (their worst bin) against our measured 1.063. The channel amplitudes
+# are MATCHED, not orders apart -- so this arm is expected to land close to the `measured` arm, and
+# that is the point of running it.
+_DES_SIGMA_D2 = np.array([0.05, 0.0362, 0.0262, 0.0190, 0.0138, 0.01])
+DES_POWER_RATIO_B1P5: Dict[str, np.ndarray] = {
+    "north": 1.0 + 1.25 * _DES_SIGMA_D2,
+    "south": 1.0 + 1.25 * _DES_SIGMA_D2,
+}
+
+_PROFILES = {"measured": MEASURED_POWER_RATIO_B1P5, "des": DES_POWER_RATIO_B1P5}
+
 _REF_B = 1.5                      # the b_g the ratios above were measured at
 _SIDE_RE = re.compile(r"_(north|south)$")
 _EB_RE = re.compile(r"^[EB]_(north|south)$")
@@ -105,7 +131,8 @@ def _solve_amplitude(target_ratio: float, floor: float) -> float:
     return 0.5 * (lo + hi)
 
 
-def _amplitude(side: str, nbins: int, target_b: float, floor: float = 0.05) -> np.ndarray:
+def _amplitude(side: str, nbins: int, target_b: float, floor: float = 0.05,
+               profile: str = "measured") -> np.ndarray:
     """Per-bin modulation amplitude `a` such that <f^2> reproduces the measured power ratio.
 
     With `f = (1 + a g)^{-1/2}` and `g` zero-mean unit-variance, `<f^2> = <1/(1+ag)>`; `a` is
@@ -113,9 +140,12 @@ def _amplitude(side: str, nbins: int, target_b: float, floor: float = 0.05) -> n
     Extrapolating in b_g uses the `(b^2 - 1)` scaling the count sector must have (and which the
     measured 0.7/1.5 asymmetry confirms): the *excess* `R - 1` scales as `(b^2-1)/(b_ref^2-1)`.
     """
-    ratio = MEASURED_POWER_RATIO_B1P5.get(side)
+    table = _PROFILES.get(profile)
+    if table is None:
+        raise ValueError(f"profile must be one of {sorted(_PROFILES)}, got {profile!r}")
+    ratio = table.get(side)
     if ratio is None:
-        raise KeyError(f"no measured power ratio for side {side!r}")
+        raise KeyError(f"no power ratio for side {side!r} in profile {profile!r}")
     if nbins > ratio.size:
         raise ValueError(f"{side}: {nbins} bins but only {ratio.size} calibrated ratios")
     scale = (float(target_b) ** 2 - 1.0) / (_REF_B ** 2 - 1.0)
@@ -196,10 +226,14 @@ class NoiseVarianceInjectTransform:
     """
 
     def __init__(self, source: str = "grf", target_b: float = 1.5, slope: float = 1.0,
-                 kappa_smooth_pix: float = 6.0, floor: float = 0.05):
+                 kappa_smooth_pix: float = 6.0, floor: float = 0.05,
+                 profile: str = "measured"):
         if source not in ("grf", "kappa", "null"):
             raise ValueError(f"source must be grf|kappa|null, got {source!r}")
+        if profile not in _PROFILES:
+            raise ValueError(f"profile must be one of {sorted(_PROFILES)}, got {profile!r}")
         self.source = source
+        self.profile = profile
         self.target_b = float(target_b)
         self.slope = float(slope)
         self.kappa_smooth_pix = float(kappa_smooth_pix)
@@ -221,7 +255,7 @@ class NoiseVarianceInjectTransform:
 
     def _apply_side(self, arr: np.ndarray, side: str) -> np.ndarray:
         nbins = arr.shape[0]
-        amp = _amplitude(side, nbins, self.target_b, self.floor)
+        amp = _amplitude(side, nbins, self.target_b, self.floor, self.profile)
         out = np.array(arr, dtype=np.float64, copy=True)
         pin = np.zeros(nbins)
         pout = np.zeros(nbins)
@@ -271,7 +305,7 @@ class NoiseVarianceInjectTransform:
             pout = self._pow_out[side] / n
             with np.errstate(invalid="ignore", divide="ignore"):
                 achieved = np.where(pin > 0, pout / pin, np.nan)
-            tgt = MEASURED_POWER_RATIO_B1P5[side][: achieved.size]
+            tgt = _PROFILES[self.profile][side][: achieved.size]
             if self.source == "null":
                 tgt = np.ones_like(tgt)
             rep[side] = {
@@ -283,7 +317,7 @@ class NoiseVarianceInjectTransform:
 
     def __repr__(self):
         return (f"NoiseVarianceInjectTransform(source={self.source!r}, "
-                f"target_b={self.target_b}, slope={self.slope})")
+                f"target_b={self.target_b}, slope={self.slope}, profile={self.profile!r})")
 
 
 def build_inject_transform(spec: Optional[Dict]) -> Optional[NoiseVarianceInjectTransform]:
