@@ -205,6 +205,30 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     # Gatti 2024's 5%->1% per-bin bracket instead of our ebdiff-measured ones (src/ml/eval/inject.py).
     # Our network's reliance on the channel is frozen at TRAINING amplitude, so this UPPER-BOUNDS
     # what a DES-amplitude channel could do through a compressor that has fully learned it.
+    # Spectral sweep: WHERE in scale is the network sensitive to a noise-variance modulation?
+    # Every arm carries the SAME total modulation variance (the transform renormalises `g` to unit
+    # variance), so the only thing varying is which scales that variance sits at. Patch pixels are
+    # 6.87' at NSIDE 512, so k in cycles/pixel maps to 6.87/k arcmin.
+    "glass_injectk_a0": [
+        {"name": "glass_gb1p0", "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5",
+         "exclude_params": [], "in_distribution": True},
+    ] + [
+        {"name": f"glass_gb1p0_inj_{tag}",
+         "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5", "exclude_params": [],
+         "inject": dict({"source": "grf", "target_b": 1.5}, **kw)}
+        for tag, kw in [
+            # band-limited: all the modulation variance in one octave
+            ("k14_27",   {"kband": (0.25, 0.5)}),        # 14-27 arcmin
+            ("k27_55",   {"kband": (0.125, 0.25)}),      # 27-55 arcmin
+            ("k55_110",  {"kband": (0.0625, 0.125)}),    # 55-110 arcmin (~1-2 deg)
+            ("k110_220", {"kband": (0.03125, 0.0625)}),  # 1.8-3.7 deg
+            ("k220_550", {"kband": (0.0125, 0.03125)}),  # 3.7-9.2 deg
+            # power laws. In 2-D the variance per log-k goes as k^2 P(k), so slope<2 is still
+            # small-scale dominated and only slope>2 concentrates variance at large scales.
+            ("slope2",   {"slope": 2.0}),
+            ("slope3",   {"slope": 3.0}),
+        ]
+    ],
     "glass_injectdes_a0": [
         {"name": "glass_gb1p0", "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5",
          "exclude_params": [], "in_distribution": True},

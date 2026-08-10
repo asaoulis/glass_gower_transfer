@@ -168,15 +168,36 @@ def _seed_from(arr: np.ndarray) -> int:
     return int(np.frombuffer(h, dtype="<u8")[0] & 0x7FFFFFFF)
 
 
-def _red_grf(shape, slope: float, rng: np.random.Generator) -> np.ndarray:
-    """Zero-mean Gaussian field on an (H, W) grid with P(k) ∝ k^-slope, unit variance."""
+def _red_grf(shape, slope: float, rng: np.random.Generator,
+             kband: Optional[tuple] = None) -> np.ndarray:
+    """Zero-mean Gaussian field on an (H, W) grid, unit-ish variance.
+
+    Two spectra, so that "how much bias per unit modulation variance" can be measured as a
+    function of the SCALE of the modulation rather than only its total power:
+
+    * ``kband=None``  -> a power law `P(k) ∝ k^-slope`. `slope=0` is white. Note that in 2-D the
+      variance per log-k is `k^2 P(k)`, so slope < 2 still puts most of the variance at small
+      scales; only slope > 2 is large-scale dominated. This is why a slope sweep is informative
+      and not just a relabelling.
+    * ``kband=(lo, hi)`` -> a top-hat: power ONLY for `lo <= k < hi`, k in cycles/pixel. With the
+      field renormalised to unit variance downstream, this puts the ENTIRE modulation variance in
+      one octave, so the resulting posterior shift is the network's response to that scale alone.
+      Patch pixels are 6.87' (NSIDE 512), so k = 0.5 is 13.7' and k = 0.0125 is ~9 degrees.
+    """
     h, w = shape
     white = rng.standard_normal((h, w))
     ky = np.fft.fftfreq(h)[:, None]
     kx = np.fft.fftfreq(w)[None, :]
     k = np.sqrt(ky ** 2 + kx ** 2)
     k[0, 0] = np.inf                      # kill the mean; no DC power
-    amp = k ** (-0.5 * slope)
+    if kband is None:
+        amp = k ** (-0.5 * slope)
+    else:
+        lo, hi = float(kband[0]), float(kband[1])
+        amp = ((k >= lo) & (k < hi)).astype(float)
+        if not amp.any():
+            raise ValueError(f"kband {kband} selects no modes on a {h}x{w} grid "
+                             f"(k resolution is 1/{max(h, w)})")
     g = np.fft.ifft2(np.fft.fft2(white) * amp).real
     return g
 
@@ -227,13 +248,14 @@ class NoiseVarianceInjectTransform:
 
     def __init__(self, source: str = "grf", target_b: float = 1.5, slope: float = 1.0,
                  kappa_smooth_pix: float = 6.0, floor: float = 0.05,
-                 profile: str = "measured"):
+                 profile: str = "measured", kband: Optional[tuple] = None):
         if source not in ("grf", "kappa", "null"):
             raise ValueError(f"source must be grf|kappa|null, got {source!r}")
         if profile not in _PROFILES:
             raise ValueError(f"profile must be one of {sorted(_PROFILES)}, got {profile!r}")
         self.source = source
         self.profile = profile
+        self.kband = None if kband is None else (float(kband[0]), float(kband[1]))
         self.target_b = float(target_b)
         self.slope = float(slope)
         self.kappa_smooth_pix = float(kappa_smooth_pix)
@@ -248,7 +270,7 @@ class NoiseVarianceInjectTransform:
 
     def _modulator(self, plane: np.ndarray, mask: np.ndarray, rng) -> np.ndarray:
         if self.source == "grf":
-            return _unit_variance(_red_grf(plane.shape, self.slope, rng), mask)
+            return _unit_variance(_red_grf(plane.shape, self.slope, rng, self.kband), mask)
         # 'kappa': the event's own low-passed E map as a structure proxy (overdense -> larger g
         # -> smaller f -> LOWER noise variance, the correct sign for source clustering).
         return _unit_variance(_lowpass(plane, self.kappa_smooth_pix), mask)
@@ -317,7 +339,8 @@ class NoiseVarianceInjectTransform:
 
     def __repr__(self):
         return (f"NoiseVarianceInjectTransform(source={self.source!r}, "
-                f"target_b={self.target_b}, slope={self.slope}, profile={self.profile!r})")
+                f"target_b={self.target_b}, slope={self.slope}, profile={self.profile!r}, "
+                f"kband={self.kband})")
 
 
 def build_inject_transform(spec: Optional[Dict]) -> Optional[NoiseVarianceInjectTransform]:
