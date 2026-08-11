@@ -285,8 +285,11 @@ EB_SMOOTHING_VARIANTS = [(4.0, 56, 1400,), (8.0, 56, 1400), (8.0, 56, 1024)]
 #      DENOMINATOR before the spin-2 SHT.
 # Measured per-mock map-stage cost at production geometry (2026-08-06, jobs 1342042/1342078):
 #   baseline 120 s | + A1 scalars (1 variant) ~49 s | + the other 2 variants ~98 s
-#   | + the whole A3s8 branch ~215 s  =>  480 s as configured here.
+#   | + the A3s8 branch (1 sc8 variant) ~215 s  =>  480 s at that configuration.
 # Against ~728 s/mock of amortised shell time that is +6 % (A1 alone) vs +42 % (full store).
+# A SECOND sc8 variant (added 2026-08-11) re-filters the same alms, so it costs only a
+# filter + map + pixelise + noise meter (~50-60 s, i.e. like one extra counts variant), NOT
+# another ~215 s: the spin-2 transform with the smoothed-counts denominator is paid once.
 # The A3s8 share buys ONE thing: a hedge against SPATIALLY STRUCTURED misspecification (variable
 # depth), which a single per-mock scalar cannot absorb. Kept deliberately (user, 2026-08-06). It is carried for robustness option value
 # against SPATIALLY STRUCTURED misspecification (variable depth), which a single per-mock
@@ -295,15 +298,25 @@ EB_SMOOTHING_VARIANTS = [(4.0, 56, 1400,), (8.0, 56, 1400), (8.0, 56, 1024)]
 # The BANDPOWER branch is deliberately untouched: it keeps consuming the primary `counts` alms,
 # so the MCM/mask convention and src/validation/ are unaffected (per-observable normalisation).
 
-# EB variant the A3s8 branch is built for, as a (fwhm_arcmin, lmin, lcut) triple that MUST be one
-# of EB_SMOOTHING_VARIANTS -- training reads exactly one variant, so only that one is worth the
-# +2 MB/mock. None disables the whole second branch (byte-identical legacy output).
-A3S8_VARIANT = (4.0, 56, 1400)
+# EB variants the A3s8 branch is built for: (fwhm_arcmin, lmin, lcut) triples that MUST each be one
+# of EB_SMOOTHING_VARIANTS. Every entry re-filters the SAME sc8 alms, so the second and later
+# entries cost only a filter + SHT-to-map + pixelise (+ the noise-meter pass) -- NOT another
+# spin-2 transform of the catalogue, which is the expensive part of this branch. Empty/None
+# disables the whole second branch (byte-identical legacy output).
+#   (4.0, 56, 1400) = the primary scale cut (arms A3s8 / A3s8_A1, "sc8" / "sc8a1")
+#   (8.0, 56, 1024) = the conservative R1024 cut, so the sc8 x lcut1024 combination is available
+#                     without a re-simulation (user, 2026-08-11)
+A3S8_VARIANTS = [(4.0, 56, 1400), (8.0, 56, 1024)]
+# Typo guard: an sc8 variant with no matching counts-normalised variant would leave the arm
+# without its control map (and no prebake source for the comparison), which is silent on disk.
+assert all(tuple(v) in [tuple(x) for x in EB_SMOOTHING_VARIANTS] for v in A3S8_VARIANTS), (
+    f"A3S8_VARIANTS {A3S8_VARIANTS} must each appear in EB_SMOOTHING_VARIANTS "
+    f"{EB_SMOOTHING_VARIANTS}")
 # FWHM (arcmin) the count map is smoothed at before being used as the denominator. 8' is harness
 # candidate A3_smooth8 / A3s8_A1; do NOT change it without re-running the replay harness.
 A3S8_FWHM_ARCMIN = 8.0
 # The A3s8 maps are an ML-only derived product (never a science archive) and the loader casts on
-# read anyway, so float16 halves the on-disk delta to ~+1.95 MB/mock (+8 %).
+# read anyway, so float16 halves the on-disk delta to ~+1.95 MB/mock (+8 %) PER sc8 variant.
 A3S8_MAP_DTYPE = np.float16
 
 # Per-(variant, bin, patch) standard deviations of the RANDOM-ROTATION noise map, stored as
@@ -1091,7 +1104,7 @@ if __name__ == "__main__":
                         # references being independent realisations -- statistically fine, the
                         # random map is only a noise meter.
                         alm_sc8 = alm_rand_sc8 = None
-                        if A3S8_VARIANT is not None:
+                        if A3S8_VARIANTS:
                             sc8_rng = postproc_rng.spawn(1)[0]
                             alm_sc8, alm_rand_sc8 = make_alm_shear_convergence(
                                 catalogue, m_bias_for_shear, nbins, nside, lmax, nosh=False,
@@ -1145,24 +1158,27 @@ if __name__ == "__main__":
                         # --- A3s8 branch: E only, one variant, float16 -------------------------
                         # Done FIRST so its alms (~0.8 GB) are released before the three counts
                         # variants allocate their nside_out maps -- this bounds the peak RSS.
-                        sc8_tag = None
+                        sc8_tags = []
                         if alm_sc8 is not None:
-                            fwhm_v, lmin_v, lcut_v = A3S8_VARIANT
-                            sc8_tag = f"sc8_{eb_variant_tag(fwhm_v, lmin_v, lcut_v)}"
-                            E_s, _ = filter_EB_alms_and_make_maps(
-                                alm_list=alm_sc8, nside_out=nside_out, lmax_out=None,
-                                fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
-                                lmin=lmin_v, lcut=lcut_v,
-                            )
-                            map_types[f"E_{sc8_tag}"] = E_s
-                            Er_s, _ = filter_EB_alms_and_make_maps(
-                                alm_list=alm_rand_sc8, nside_out=nside_out, lmax_out=None,
-                                fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
-                                lmin=lmin_v, lcut=lcut_v,
-                            )
-                            noise_std[sc8_tag] = patch_noise_std(
-                                Er_s, patches, nside_out, ang, patch_names)
-                            del Er_s
+                            # All A3S8_VARIANTS re-filter the SAME sc8 alms — the expensive
+                            # spin-2 transform above is paid once regardless of how many.
+                            for fwhm_v, lmin_v, lcut_v in A3S8_VARIANTS:
+                                sc8_tag = f"sc8_{eb_variant_tag(fwhm_v, lmin_v, lcut_v)}"
+                                sc8_tags.append(sc8_tag)
+                                E_s, _ = filter_EB_alms_and_make_maps(
+                                    alm_list=alm_sc8, nside_out=nside_out, lmax_out=None,
+                                    fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
+                                    lmin=lmin_v, lcut=lcut_v,
+                                )
+                                map_types[f"E_{sc8_tag}"] = E_s
+                                Er_s, _ = filter_EB_alms_and_make_maps(
+                                    alm_list=alm_rand_sc8, nside_out=nside_out, lmax_out=None,
+                                    fwhm_arcmin=fwhm_v, taper_start_frac=0.95,
+                                    lmin=lmin_v, lcut=lcut_v,
+                                )
+                                noise_std[sc8_tag] = patch_noise_std(
+                                    Er_s, patches, nside_out, ang, patch_names)
+                                del Er_s
                             alm_sc8 = alm_rand_sc8 = None
                             gc.collect()
 
@@ -1237,7 +1253,7 @@ if __name__ == "__main__":
                                 "cosmo_dict/b_g_bin1..6 + galaxy_bias_eff (n_arcmin2-weighted)."
                             )
                         if noise_std:
-                            if sc8_tag is not None:
+                            if sc8_tags:
                                 pixelised_results["_provenance"]["a3s8"] = (
                                     f"E_sc8_* built by a SECOND make_alm_shear_convergence call with "
                                     f"normalization='smoothed_counts', "
@@ -1247,7 +1263,7 @@ if __name__ == "__main__":
                                     "is a noise meter only. Bandpowers are NOT affected: they are "
                                     "computed from the primary counts-normalised alms."
                                 )
-                                pixelised_results["_provenance"]["a3s8_variant"] = sc8_tag
+                                pixelised_results["_provenance"]["a3s8_variant"] = ",".join(sc8_tags)
 
                         # cls_results['full'] = {"cls": mixed_cls, "mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands}
                         cls_results['full'] = {"mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands, "cls": mixed_cls[:, :, :2, :]}  # only save EE and BB
