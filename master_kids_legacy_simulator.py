@@ -36,12 +36,16 @@ from src.cosmology.manip_cls import compute_cl_bandpowers, denoise_shear_cls
 from src.cosmology.pixelise_maps import get_patch_values
 
 from src.cosmology.map_shears  import make_alm_shear_convergence, filter_EB_alms_and_make_maps
-from src.KiDS.tomo import calculate_tomo_nz
+from src.KiDS.tomo import calculate_tomo_nz, n_arcmin2
 from src.KiDS.rotations import KiDS_PATCH_GOWER_ROTATIONS, KiDS_PATCH_GLASS_ROTATIONS
 from src.KiDS.simulation_config import (
     CAMB_CLS_CACHE_DIR,
     CAMB_LIMITS,
     COSMO_BASE_SEED,
+    GALAXY_BIAS_CLIP,
+    GALAXY_BIAS_PRIORS,
+    GALAXY_BIAS_PRIOR_MEANS,
+    GALAXY_BIAS_PRIOR_SIGMAS,
     INNER_NUM_SHAPE_NOISE_REALISATIONS,
     LOS_GRID,
     OUTER_NUM_SHAPE_NOISE_REALISATIONS,
@@ -185,6 +189,15 @@ def parse_args():
              "systematics are ON). Only takes effect on the systematics-ON path; the clean "
              "theory-test path (systematics OFF) always uses galaxy_bias=0. Use to generate "
              "clustering variates, e.g. --galaxy-bias 1.5 (strong) / 0.7 (weak).")
+
+    parser.add_argument(
+        "--galaxy-bias-prior", default=None, choices=sorted(GALAXY_BIAS_PRIORS),
+        help="Draw a per-tomo-bin galaxy-bias 6-vector per (sim, outer, rot) block from the "
+             "named Flamingo-calibrated prior preset (O3-diag: independent truncated Gaussians, "
+             "src/KiDS/simulation_config.GALAXY_BIAS_PRIORS) instead of a fixed scalar. Realised "
+             "values are stored per mock as cosmo_dict/b_g_bin1..6 + galaxy_bias_eff. Only "
+             "affects the systematics-ON path; mutually exclusive with --galaxy-bias (the fixed "
+             "override, which bypasses the prior).")
 
     parser.add_argument(
         "--rng-seed", type=int, default=None,
@@ -419,6 +432,28 @@ def build_block_rngs(seed, sim_num, outer_idx, rot_idx):
     )
 
 
+def draw_galaxy_bias_prior(preset, parent_rng):
+    """Draw the O3-diag per-tomo-bin galaxy-bias 6-vector for one (sim, outer, rot) block.
+
+    Independent truncated Gaussians ``b_i ~ N(mean_i, kappa*sigma_i)`` (Flamingo
+    calibration, ``GALAXY_BIAS_PRIOR_MEANS/SIGMAS``), truncated at +-3 kappa sigma and
+    clipped to ``GALAXY_BIAS_CLIP`` (lambda-clip safety at high-variance shells).
+
+    Draws from a SPAWNED child of ``parent_rng`` (= the block's sample stream): spawning
+    leaves the parent stream bit-identical, so a run without the prior — and the
+    ``--rng-seed`` pairing against existing stores — is unchanged, while a fixed seed makes
+    the draw deterministic per (seed, sim, outer, rot).
+    """
+    spec = GALAXY_BIAS_PRIORS[preset]
+    kappa = float(spec["kappa"])
+    bias_rng = parent_rng.spawn(1)[0]
+    means = np.asarray(GALAXY_BIAS_PRIOR_MEANS, dtype=float)
+    sigmas = kappa * np.asarray(GALAXY_BIAS_PRIOR_SIGMAS, dtype=float)
+    draw = bias_rng.normal(means, sigmas)
+    draw = np.clip(draw, means - 3.0 * sigmas, means + 3.0 * sigmas)
+    return np.clip(draw, GALAXY_BIAS_CLIP[0], GALAXY_BIAS_CLIP[1])
+
+
 # --- Raw galaxy-catalogue dumps --------------------------------------------------------------
 # Column dtypes for --save-catalogues. The catalogue is the LARGEST object in the pipeline
 # (~4e7 galaxies for a KiDS-Legacy footprint at the production n_eff), so the float64 working
@@ -647,6 +682,28 @@ if __name__ == "__main__":
     # None => unseeded (production default). An int switches on paired/reproducible generation.
     RNG_SEED = args.rng_seed
     SAVE_CATALOGUES = args.save_catalogues
+    GALAXY_BIAS_PRIOR = args.galaxy_bias_prior
+    if GALAXY_BIAS_PRIOR is not None and args.galaxy_bias is not None:
+        raise SystemExit("--galaxy-bias-prior and --galaxy-bias are mutually exclusive "
+                         "(the fixed override bypasses the prior; pick one).")
+    if GALAXY_BIAS_PRIOR is not None:
+        # TRIPWIRE: the per-tomo vector needs the bias_tomo hook at the protected
+        # positions_from_delta call site. Without it GLASS broadcasts a (nbins,) bias as
+        # nbins extra POPULATIONS over the same delta (~6x galaxies, mixed biases) — a
+        # silent corruption, not a crash. Fail fast instead.
+        import inspect as _inspect
+        from src.cosmology.simulators import BaseSimulator as _BS
+        if "bias_tomo" not in _inspect.getsource(_BS.run):
+            raise SystemExit(
+                "--galaxy-bias-prior requires the per-tomo 'bias_tomo' hook in "
+                "src/cosmology/simulators.py (BaseSimulator.run); without it the (nbins,) "
+                "bias vector is broadcast as extra galaxy populations and silently corrupts "
+                "the mocks. Apply the protected hook first (spec_O3.md).")
+    if rank == 0 and GALAXY_BIAS_PRIOR is not None:
+        _spec = GALAXY_BIAS_PRIORS[GALAXY_BIAS_PRIOR]
+        print(f"[rank 0] galaxy-bias prior '{GALAXY_BIAS_PRIOR}' (kappa={_spec['kappa']:g}): "
+              f"per-(sim,outer,rot) per-tomo-bin draws around {GALAXY_BIAS_PRIOR_MEANS}; "
+              f"realised values stored as cosmo_dict/b_g_bin1..6 + galaxy_bias_eff.", flush=True)
     if rank == 0 and SAVE_CATALOGUES:
         print(f"[rank 0] --save-catalogues: raw galaxy catalogues -> {OUTPUT_DIR}/catalogues/ "
               f"(~0.9 GB per mock at production n_eff — keep --num-sims small).", flush=True)
@@ -811,7 +868,10 @@ if __name__ == "__main__":
                             sim_grid=SIM_GRID,
                         )
 
-                    param_dict = backend["param_dict"]
+                    # Block-local COPY: the backend caches param_dict per sim, and this block
+                    # adds per-(outer,rot) keys (realised galaxy bias) that must not leak
+                    # across blocks or back into the cache.
+                    param_dict = dict(backend["param_dict"])
                     shells = backend["shells"]
                     matter = backend["matter"]
                     cosmo = backend["cosmo"]
@@ -937,6 +997,28 @@ if __name__ == "__main__":
                         # without touching the protected physics. Only the systematics-ON path
                         # honours it; the clean theory-test path above keeps galaxy_bias=0.
                         galaxy_bias_sim = bias if args.galaxy_bias is None else args.galaxy_bias
+                        if GALAXY_BIAS_PRIOR is not None:
+                            # O3-diag prior: per-block per-tomo-bin 6-vector. The spawned child
+                            # inside leaves this block's sample stream untouched, so the
+                            # default path and --rng-seed pairing stay byte-identical.
+                            galaxy_bias_sim = draw_galaxy_bias_prior(GALAXY_BIAS_PRIOR, rng)
+                            print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx}: "
+                                  f"b_g draw {np.array2string(galaxy_bias_sim, precision=3)}",
+                                  flush=True)
+
+                    # Record the realised galaxy bias per mock. SCALAR keys only — the ML read
+                    # side (src/ml/data/data_loading.py:load_cosmo_params) does
+                    # float(np.asarray(...)) per key, so the 6-vector is stored as six scalars
+                    # plus the n(z)-weighted effective scalar (for cross-option comparison /
+                    # optional 1-D inference). Old stores lack the keys (allow_missing -> NaN).
+                    if np.ndim(galaxy_bias_sim) > 0:
+                        for _bi, _bval in enumerate(np.asarray(galaxy_bias_sim, dtype=float)):
+                            param_dict[f"b_g_bin{_bi + 1}"] = float(_bval)
+                        param_dict["galaxy_bias_eff"] = float(
+                            np.sum(n_arcmin2 * np.asarray(galaxy_bias_sim, dtype=float))
+                            / np.sum(n_arcmin2))
+                    else:
+                        param_dict["galaxy_bias"] = float(galaxy_bias_sim)
 
                     kwargs = {
                         'cosmo': cosmo,
@@ -1030,7 +1112,9 @@ if __name__ == "__main__":
                                 extra_attrs={
                                     "sim_id": int(sim_num), "outer_idx": int(outer_idx),
                                     "rot_idx": int(rot_idx), "cat_idx": int(cat_idx),
-                                    "galaxy_bias": float(galaxy_bias_sim),
+                                    # scalar for fixed-b_g runs, (nbins,) vector under
+                                    # --galaxy-bias-prior (O3-diag)
+                                    "galaxy_bias": np.asarray(galaxy_bias_sim, dtype=float),
                                     "shear_normalization": SHEAR_NORMALIZATION,
                                     "systematics_model": SYSTEMATICS_MODEL,
                                     "nside": int(nside), "nside_out": int(nside_out),
@@ -1141,6 +1225,18 @@ if __name__ == "__main__":
                                     "footprint) by a geometric factor that is fixed across mocks."
                                 ),
                             }
+                        if GALAXY_BIAS_PRIOR is not None:
+                            # String provenance lives OUTSIDE cosmo_dict on purpose: a string
+                            # dataset in cosmo_dict breaks load_cosmo_params(cosmo_params=None)
+                            # (cf. the ia_model precedent).
+                            _gbspec = GALAXY_BIAS_PRIORS[GALAXY_BIAS_PRIOR]
+                            pixelised_results.setdefault("_provenance", {})["galaxy_bias_prior"] = (
+                                f"preset={GALAXY_BIAS_PRIOR}; kappa={_gbspec['kappa']:g}; O3-diag "
+                                "independent truncated Gaussians per tomo bin (Flamingo "
+                                "calibration, data/galaxy_bias_priors.txt); realised values in "
+                                "cosmo_dict/b_g_bin1..6 + galaxy_bias_eff (n_arcmin2-weighted)."
+                            )
+                        if noise_std:
                             if sc8_tag is not None:
                                 pixelised_results["_provenance"]["a3s8"] = (
                                     f"E_sc8_* built by a SECOND make_alm_shear_convergence call with "

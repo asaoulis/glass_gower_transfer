@@ -262,6 +262,10 @@ class BaseSimulator(ABC):
                 )
                 z_eff = np.average(self.los_z_integration, weights=self.tomo_nz[tomo])
                 ngal = np.trapezoid(dndz, z_vals)
+                # galaxy_bias may be a per-tomo-bin (nbins,) vector (--galaxy-bias-prior,
+                # O3-diag); a scalar preserves the historical behaviour exactly.
+                bias_tomo = (self.galaxy_bias[tomo]
+                             if np.ndim(self.galaxy_bias) > 0 else self.galaxy_bias)
 
                 kappa_i = self.systematics.apply_intrinsic_alignments(
                     delta=delta,
@@ -288,7 +292,7 @@ class BaseSimulator(ABC):
                             mask_rot_angle=mask_rot_angle, rotator=self.rotator,
                         )
                         for lon, lat, count in glass.points.positions_from_delta(
-                            ngal, delta, self.galaxy_bias, mask,
+                            ngal, delta, bias_tomo, mask,
                             rng=self.rng
                         ):
                             gal_z = glass.galaxies.redshifts(count,self.ws[i], rng=self.rng)

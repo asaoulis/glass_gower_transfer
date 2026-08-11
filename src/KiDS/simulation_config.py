@@ -7,6 +7,20 @@ import numpy as np
 nbins = 6
 bias = 1
 
+# Galaxy-bias prior presets (O3-diag, task simulation-runs/galaxy-bias-priors).
+# Per (sim, outer, rot) block draw of an independent per-tomo-bin 6-vector
+# b_i ~ N(mean_i, kappa * sigma_i), truncated at +-3*kappa*sigma_i and clipped to
+# GALAXY_BIAS_CLIP. Means/sigmas are the Flamingo KiDS-Legacy calibration
+# (data/galaxy_bias_priors.txt: columns b and TOTAL). kappa=1 is the calibrated
+# width; the _rob preset inflates it for robustness (pending final width decision).
+GALAXY_BIAS_PRIOR_MEANS = [1.0181, 1.0698, 1.1302, 1.2427, 1.3739, 1.4805]
+GALAXY_BIAS_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
+GALAXY_BIAS_PRIORS = {
+	"flamingo_pt_diag": {"kappa": 1.0},
+	"flamingo_pt_diag_rob": {"kappa": 1.5},
+}
+GALAXY_BIAS_CLIP = (0.3, 2.2)
+
 nside = 1024
 n_ell = 20
 lmax = 2 * nside
