@@ -3692,13 +3692,14 @@ experiments = {
         # --- whitening (reuses the pre-train's persisted whitener; never refits) ---
         "whiten_embeddings": {"k": 8},
         # Guard-(c) headroom, set from MEASUREMENT (2026-08-13) rather than guessed. In the correct
-        # encoder frame the warm start starts 10-30 nats above the pretrain best and then converges:
-        # r2's N=10 runs went ep0 5.5 -> best -1.19, i.e. down ~6.7 nats inside 50 epochs. The gap
-        # also grows with N (9.9 at N=10 -> 15.1 later) as the val split gets more representative,
-        # and r0/r1 tripped the old 25 at 25.9/29.4 on later grid points. 50 clears the observed
-        # band with room while staying ~70x below the frame-mismatch signature (3471 nats, which
-        # did NOT converge: ep0 3464 -> +468 after 50 epochs). Guards (a)/(b) are untouched.
-        "whiten_warmstart_max_gap_nats": 50.0,
+        # encoder frame the warm start starts well above the pretrain best and then CONVERGES:
+        # r2's N=10 runs went ep0 5.5 -> best -1.19 inside 50 epochs. Across r0's 37 completed runs
+        # the healthy band is gap 4.3-35.4 (median 16.9), every one of which converged, and the gap
+        # is only weakly predictive of final quality (r = +0.40) - in this range it is a soft
+        # quality signal, not a failure signal. r1 then produced a 65.9-nat outlier. 100 covers that
+        # with ~1.5x headroom and stays ~35x below the frame-mismatch signature (3471 nats, which
+        # demonstrably never converged: ep0 3464 -> +468 after 50 epochs). Guards (a)/(b) untouched.
+        "whiten_warmstart_max_gap_nats": 100.0,
         # --- cached-embedding reuse (raw gower_mocks no longer exists) ---
         "reuse_embedding_cache": True,
         "embedding_cache_experiment": "finetune_9param_nle_anaprior_ensemble_stratify",
