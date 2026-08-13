@@ -10,6 +10,7 @@ from tqdm import tqdm
 from sbi import utils as sbi_utils
 
 from .estimators import PatchedLikelihoodEstimator
+from .ensemble_flow import build_grouped_ensemble_likelihood
 from .utils import _move_nested_to_device
 
 
@@ -101,7 +102,13 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
 
         return float(-torch.cat(all_log_probs, dim=0).mean().item())
 
-    def build_posterior_object(self, prior=None, fixed_parameters=None, reduction: str = "logmeanexp"):
+    def build_posterior_object(
+        self,
+        prior=None,
+        fixed_parameters=None,
+        reduction: str = "logmeanexp",
+        fast: bool = True,
+    ):
         first = self.members[0]
         device = self._resolve_device()
 
@@ -121,9 +128,23 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
                 device=device,
             )
 
-        ensemble_likelihood = _EnsembleLikelihoodModel(
-            list(self.members), reduction=reduction
-        )
+        # Fast path: evaluate all members in one vectorised forward (numerically identical to the
+        # serial loop; see ensemble_flow.py). Falls back to the serial _EnsembleLikelihoodModel when
+        # the member flows can't be grouped (non-nsf flows) or fast=False.
+        ensemble_likelihood = None
+        if fast:
+            ensemble_likelihood = build_grouped_ensemble_likelihood(
+                list(self.members), reduction=reduction
+            )
+            if ensemble_likelihood is None:
+                print(
+                    "[EnsembleLikelihoodNDE] fast path unavailable for these members; "
+                    "falling back to the serial ensemble likelihood."
+                )
+        if ensemble_likelihood is None:
+            ensemble_likelihood = _EnsembleLikelihoodModel(
+                list(self.members), reduction=reduction
+            )
         likelihood_estimator = PatchedLikelihoodEstimator(
             model=ensemble_likelihood,
             prior=prior,
@@ -141,12 +162,14 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
         backend="loky",
         prior=None,
         reduction: str = "logmeanexp",
+        fast: bool = True,
         **mcmc_kwargs,
     ):
         posterior = self.build_posterior_object(
             prior=prior,
             reduction=reduction,
             fixed_parameters=mcmc_kwargs.pop("fixed_parameters", None),
+            fast=fast,
         )
 
         posterior.to("cpu")
