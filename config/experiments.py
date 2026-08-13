@@ -3685,8 +3685,8 @@ experiments = {
         # NLE evaluations (8000-sample MCMC per test point, and this branch has no fast
         # grouped-ensemble sampler) inside a single 48 h wall, with no wall-time evidence to size it
         # (the published sweep predates the SLURM-log era).
-        "run_training": True,
-        "run_evaluation": False,
+        "run_training": False,
+        "run_evaluation": True,
         "train_val_selection_strategy": "stratified",
         "train_val_selection_cosmo_params": ["omega_m", "sigma_8", "w0"],
         # --- whitening (reuses the pre-train's persisted whitener; never refits) ---
