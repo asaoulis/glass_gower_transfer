@@ -3691,3 +3691,28 @@ experiments = {
         "embeddings_cache_only": True,
     },
 }
+
+# --- per-repeat launcher aliases for the whitened chain -----------------------------------------
+# `train_embeddings.py <name>` runs `repeat_indices` SERIALLY inside one SLURM job, so the three
+# seeds would queue behind each other on one GPU. These aliases are launchable names that each
+# carry ONE repeat, so the seeds run concurrently on separate nodes.
+#
+# The `experiment_name` override is the point: `build_cfg_from_experiment_dict` seeds
+# cfg.experiment_name from the dict KEY and then applies the entry's keys on top, so all three
+# aliases write into the SINGLE canonical `checkpoints/<canonical name>/` tree — run dirs are
+# `pretrain_ncosmoNone_{i}_...` / `pretrain_ncosmo{N}_{i}_ens{j}_...`, disjoint per repeat, so the
+# concurrent jobs never touch the same file. Downstream (`pretrained_band_ckpt_path`, the whitener
+# resolve, the cache redirect, the ensemble-eval json names) is therefore identical to running the
+# canonical entry once with all three repeats.
+for _repeat_idx in (0, 1, 2):
+    experiments[f"glass_embeddings_9param_nle_white8_r{_repeat_idx}"] = {
+        **experiments["glass_embeddings_9param_nle_white8"],
+        "experiment_name": "glass_embeddings_9param_nle_white8",
+        "repeat_indices": [_repeat_idx],
+    }
+    experiments[f"finetune_9param_nle_ensemble_white8_r{_repeat_idx}"] = {
+        **experiments["finetune_9param_nle_ensemble_white8"],
+        "experiment_name": "finetune_9param_nle_ensemble_white8",
+        "repeat_indices": [_repeat_idx],
+    }
+del _repeat_idx
