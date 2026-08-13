@@ -3668,7 +3668,15 @@ experiments = {
         "repeats": 3,
         "repeat_indices": [0, 1, 2],
         "ensemble_repeats": 9,
+        # Two-phase launch. PHASE B1 (this state): train all 216 members, no evaluation.
+        # PHASE B2: flip to run_training=False + run_evaluation=True and resubmit — the 24 deferred
+        # ensemble evaluations then run off the checkpoints B1 wrote. Splitting them keeps each SLURM
+        # job bounded and restartable: one job would have to fit 216 flow trainings AND 24 ensemble
+        # NLE evaluations (8000-sample MCMC per test point, and this branch has no fast
+        # grouped-ensemble sampler) inside a single 48 h wall, with no wall-time evidence to size it
+        # (the published sweep predates the SLURM-log era).
         "run_training": True,
+        "run_evaluation": False,
         "train_val_selection_strategy": "stratified",
         "train_val_selection_cosmo_params": ["omega_m", "sigma_8", "w0"],
         # --- whitening (reuses the pre-train's persisted whitener; never refits) ---
