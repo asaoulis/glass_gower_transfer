@@ -3617,7 +3617,7 @@ experiments = {
     # +14%. These two entries are clones of `glass_embeddings_9param_noscale_nle` and
     # `finetune_9param_nle_anaprior_ensemble_stratify` with whitening as the ONLY substantive change.
     # =================================================================================================
-    "glass_embeddings_9param_nle_white8": {
+    "glass_embeddings_9param_nle_white8_v2": {
         # Clone of `glass_embeddings_9param_noscale_nle`. Source: glass_hybrid_patches_16_9param.
         "data_patterns": "/share/gpu5/asaoulis/transfer_datasets/glass_mocks_prior/output_*.h5",
         "dataset_quantities": [],
@@ -3649,7 +3649,7 @@ experiments = {
         "reuse_embedding_cache": True,
         "embedding_cache_experiment": "glass_embeddings_9param_noscale_nle",
     },
-    "finetune_9param_nle_ensemble_white8": {
+    "finetune_9param_nle_ensemble_white8_v2": {
         # Clone of `finetune_9param_nle_anaprior_ensemble_stratify`, warm-started from the WHITENED
         # pre-train. Trains from the published run's cached raw-z embeddings (gower_mocks was deleted
         # from the cluster), which also pins the splits to the published baseline for a clean A/B.
@@ -3667,7 +3667,7 @@ experiments = {
         "load_pretrained_flow": True,
         # MUST point at the WHITENED pre-train: whitening changes the flow event dim 16 -> 8, so the
         # published un-whitened checkpoints are unusable here (guard (a) raises if they are used).
-        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_embeddings_9param_nle_white8/",
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_embeddings_9param_nle_white8_v2/",
         # Full cached grid. N=30 is absent from the cache and cannot be regenerated (gower_mocks gone).
         "max_trainval_cosmos": [10, 15, 20, 40, 60, 80, 100, 120],
         # train_frac / val_frac / selection strategy MUST match the published entry: the cached
@@ -3715,14 +3715,14 @@ experiments = {
 # resolve, the cache redirect, the ensemble-eval json names) is therefore identical to running the
 # canonical entry once with all three repeats.
 for _repeat_idx in (0, 1, 2):
-    experiments[f"glass_embeddings_9param_nle_white8_r{_repeat_idx}"] = {
-        **experiments["glass_embeddings_9param_nle_white8"],
-        "experiment_name": "glass_embeddings_9param_nle_white8",
+    experiments[f"glass_embeddings_9param_nle_white8_v2_r{_repeat_idx}"] = {
+        **experiments["glass_embeddings_9param_nle_white8_v2"],
+        "experiment_name": "glass_embeddings_9param_nle_white8_v2",
         "repeat_indices": [_repeat_idx],
     }
-    experiments[f"finetune_9param_nle_ensemble_white8_r{_repeat_idx}"] = {
-        **experiments["finetune_9param_nle_ensemble_white8"],
-        "experiment_name": "finetune_9param_nle_ensemble_white8",
+    experiments[f"finetune_9param_nle_ensemble_white8_v2_r{_repeat_idx}"] = {
+        **experiments["finetune_9param_nle_ensemble_white8_v2"],
+        "experiment_name": "finetune_9param_nle_ensemble_white8_v2",
         "repeat_indices": [_repeat_idx],
     }
 del _repeat_idx
