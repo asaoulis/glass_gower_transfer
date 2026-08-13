@@ -462,6 +462,9 @@ def train_embedding_run(
         models,
         base_cfg=target_cfg,
         wandb_run_name=cache_run_name,
+        # ... but the whitener is persisted under THIS run's name, never the redirected one, so a
+        # cache redirect never deposits artefacts in the experiment it borrows embeddings from.
+        whitener_run_name=source_run_name,
         # Cache is normally read back only for pure-eval runs; `reuse_embedding_cache` opts a
         # TRAINING run into it too (required when the raw store no longer exists).
         use_cache_if_exists=((not do_run_training)

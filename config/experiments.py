@@ -3638,6 +3638,16 @@ experiments = {
         "whiten_embeddings": {"k": 8},
         # Fits + persists datasets/whitener.pt per repeat; the fine-tune resolves and reuses it.
         "run_evaluation": False,  # a multi-hour MCMC eval on the GLASS suite tells us nothing
+        # --- READ the published pretrain's embeddings rather than recomputing them ------------
+        # Recomputing gave embeddings in a DIFFERENT encoder frame from the published caches
+        # (2026-08-13: identical rows, identical split, but per-dim means 5.7 sigma apart and
+        # elementwise |dz| up to 9.0), so a flow trained on them saw the Gower cache as ~3500 nats
+        # off-manifold and could not fine-tune. Reading the published cache makes every embedding
+        # in this chain come from the published pipeline, so the whitened pretrain and the Gower
+        # finetune caches are in the same frame BY CONSTRUCTION - and whitening really is the only
+        # difference vs the published result. The whitener still persists to THIS experiment's dir.
+        "reuse_embedding_cache": True,
+        "embedding_cache_experiment": "glass_embeddings_9param_noscale_nle",
     },
     "finetune_9param_nle_ensemble_white8": {
         # Clone of `finetune_9param_nle_anaprior_ensemble_stratify`, warm-started from the WHITENED

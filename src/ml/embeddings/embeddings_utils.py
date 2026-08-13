@@ -442,6 +442,7 @@ def build_embedding_dataloaders(
     models: List[torch.nn.Module],
     base_cfg=None,
     wandb_run_name: Optional[str] = None,
+    whitener_run_name: Optional[str] = None,
     use_cache_if_exists=False,
     *,
     whiten_cfg: Optional[dict] = None,
@@ -526,12 +527,19 @@ def build_embedding_dataloaders(
             )
 
         if is_pretrain_source:
-            if wandb_run_name is None:
+            # The whitener is persisted under the run's OWN name, which is NOT necessarily the
+            # name the cache was READ from: `embedding_cache_experiment` can redirect the read at
+            # another experiment's tree (e.g. the published pretrain's embeddings, so that this
+            # chain lives in the same encoder frame as the published Gower caches). Writing the
+            # whitener to the redirected dir would deposit a new artefact inside that published
+            # run. Persist path therefore follows `whitener_run_name` (this run) when given.
+            persist_run_name = whitener_run_name or wandb_run_name
+            if persist_run_name is None:
                 raise RuntimeError(
-                    "[whiten] pretrain-source whitening requires wandb_run_name to derive the "
+                    "[whiten] pretrain-source whitening requires a run name to derive the "
                     "persist path (datasets/whitener.pt)."
                 )
-            w_train_path, _, _ = _get_embedding_cache_paths(base_cfg, wandb_run_name)
+            w_train_path, _, _ = _get_embedding_cache_paths(base_cfg, persist_run_name)
             whitener_path = os.path.join(os.path.dirname(w_train_path), WHITENER_FILENAME)
             emb_scaler = fit_and_persist_whitener(
                 train_z,
