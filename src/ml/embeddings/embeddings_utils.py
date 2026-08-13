@@ -684,11 +684,51 @@ def _compute_val_nll(model, val_loader) -> float:
     return total / max(n, 1)
 
 
-def _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_ckpt_path: str):
+@torch.no_grad()
+def _source_domain_nll(model, pretrained_ckpt_path: str, emb_scaler) -> Optional[float]:
+    """Mean NLL of `model` on the PRETRAIN's own cached val embeddings, or None if unavailable.
+
+    This is the direct test of "did the warm start load?": a correctly resolved flow + whitener
+    must reproduce the pretrain's own best val NLL on the pretrain's own data, whatever the
+    finetune-domain data does. Reads `<ckpt dir>/datasets/emb_val.pt`, i.e. the cache the
+    pretrain run wrote next to the checkpoint.
+    """
+    if not pretrained_ckpt_path:
+        return None
+    src = os.path.join(os.path.dirname(str(pretrained_ckpt_path)), "datasets", "emb_val.pt")
+    if not os.path.exists(src):
+        return None
+    try:
+        z, theta, _, _ = _load_embedding_cache(src)
+        ds = EmbeddingDataset(z, theta, emb_scaler=emb_scaler, cosmo_scaler=None,
+                              scale_embeddings=True)
+        loader = torch.utils.data.DataLoader(ds, batch_size=512, shuffle=False)
+        return _compute_val_nll(model, loader)
+    except Exception as exc:                      # never let a diagnostic break the run
+        print(f"[whiten][guard-c] source-domain check unavailable ({type(exc).__name__}: {exc})")
+        return None
+
+
+def _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_ckpt_path: str,
+                                emb_scaler=None):
     """Guard (c): abort if the finetune ep0 val NLL is a scratch-level gap above the pretrain best.
 
     Local calibration (research task): genuine warm starts land ~2-5 nats above the pretrain best;
     scratch / mis-framed-input runs land >=15 nats above. Threshold defaults to ~12 nats.
+
+    A large gap has TWO possible causes, which the gap alone cannot separate:
+      (i)  the warm start did not take effect (mis-resolved/mismatched whitener or flow) - a bug;
+      (ii) it loaded perfectly, but the finetune-domain data sits far off the pretrain manifold -
+           physics, and precisely what the finetune exists to correct.
+    So when the gap trips, re-score the SAME loaded model on the pretrain's OWN val embeddings.
+    Reproducing the pretrain's best val there proves the load is correct, which rules out (i);
+    the guard then warns loudly and proceeds instead of aborting a healthy run. If the source
+    domain does NOT reproduce, the load really is broken and we abort exactly as before.
+
+    Measured on this chain (GLASS->Gower, k=8, 2026-08-13): source-domain NLL reproduced the
+    pretrain best to 3 dp (-7.254) while the Gower ep0 NLL was +3464 - case (ii), because the
+    pretrained conditional q(z|theta) is far narrower than the unit-variance marginal, so a ~1
+    sigma-of-marginal domain shift is hundreds of sigma-of-conditional.
     """
     max_gap = getattr(base_cfg, "whiten_warmstart_max_gap_nats", 12.0)
     if max_gap is None or max_gap <= 0:
@@ -708,12 +748,30 @@ def _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_ckpt_pat
         f"gap={gap:.3f} nats (threshold {max_gap})."
     )
     if gap > max_gap:
+        # Disambiguate (i) broken load from (ii) genuine domain shift before aborting.
+        src_nll = _source_domain_nll(model, pretrained_ckpt_path, emb_scaler)
+        src_tol = float(getattr(base_cfg, "whiten_warmstart_source_tol_nats", 1.0))
+        if src_nll is not None and abs(src_nll - pretrain_best) <= src_tol:
+            print(
+                f"[whiten][guard-c] PROCEEDING despite the {gap:.3f}-nat finetune gap: the loaded "
+                f"flow reproduces the pretrain best on the PRETRAIN's own val split "
+                f"(source-domain NLL={src_nll:.3f} vs {pretrain_best:.3f}, tol {src_tol}), so the "
+                "whitener and flow are correctly resolved. The gap is a genuine source->target "
+                "domain shift, which is what the finetune is for. WATCH the final val NLL: if it "
+                "does not come down, the warm start is not helping and a from-scratch finetune "
+                "may be the better protocol."
+            )
+            return
+        detail = (
+            f"source-domain NLL={src_nll:.3f} (expected ~{pretrain_best:.3f}) - the load is BROKEN"
+            if src_nll is not None else
+            "source-domain check unavailable (no datasets/emb_val.pt next to the pretrain ckpt)"
+        )
         raise RuntimeError(
             f"[whiten][guard-c] Warm-start regression: finetune ep0 val NLL ({ep0:.3f}) is {gap:.3f} "
             f"nats above the pretrain best ({pretrain_best:.3f}), exceeding the scratch-signature "
-            f"threshold of {max_gap} nats. The warm start is NOT taking effect (likely a "
-            "mis-resolved/mismatched whitener or flow). Raise whiten_warmstart_max_gap_nats to "
-            "override if this gap is genuinely expected."
+            f"threshold of {max_gap} nats, AND {detail}. The warm start is NOT taking effect "
+            "(likely a mis-resolved/mismatched whitener or flow)."
         )
 
 
@@ -739,9 +797,12 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
         # Guard (a): when whitening is on, a shape-mismatched (wrong-k) flow must fail HARD rather
         # than silently leave layers randomly initialised.
         model._load_pretrained_flow(pretrained_band_ckpt, freeze=False, error_on_mismatch=whiten_on)
-        # Guard (c): warm-start regression check (whitening runs only).
+        # Guard (c): warm-start regression check (whitening runs only). The scaler comes off the
+        # loader's dataset so the source-domain re-score uses the EXACT whitener in play.
         if whiten_on:
-            _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_band_ckpt)
+            emb_scaler = getattr(getattr(val_loader, "dataset", None), "emb_scaler", None)
+            _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_band_ckpt,
+                                        emb_scaler=emb_scaler)
 
     # Standard Lightning trainer setup (similar to fit_model)
     num_gpus = torch.cuda.device_count()
