@@ -6,6 +6,7 @@ from config.kids_legacy import kids_legacy_experiments
 from config.kids_legacy_counts import kids_legacy_counts_experiments
 from config.kids_legacy_novd import kids_legacy_novd_experiments
 from config.kids_legacy_dn import kids_legacy_dn_experiments
+from config.kids_legacy_bgp import kids_legacy_bgp_experiments
 from src.ml.models.utils import train_model
 # import os
 # os.environ["MASTER_ADDR"] = "127.0.0.1"
@@ -17,6 +18,7 @@ experiments.update(kids_legacy_experiments)  # Merge KiDS-Legacy NLA-M configs
 experiments.update(kids_legacy_counts_experiments)  # Merge counts-normalisation rerun configs
 experiments.update(kids_legacy_novd_experiments)  # Merge NO-VD production suite configs
 experiments.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
+experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
 
 # ... rest of your code ...
 def retrieve_first_list_from_experiments(experiments):
