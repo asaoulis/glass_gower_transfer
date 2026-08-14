@@ -3731,3 +3731,20 @@ for _repeat_idx in (0, 1, 2):
         "repeat_indices": [_repeat_idx],
     }
 del _repeat_idx
+
+# --- per-(repeat, N) eval launchers -------------------------------------------------------------
+# Stage B2 is one ensemble evaluation per (N, repeat): 35 test batches sampled in ONE wave across
+# 36 loky workers, ~3h. Run sequentially inside a per-repeat job that is 8x that, i.e. right at the
+# 24h wall if a core is any slower than the machine the estimate came from. These aliases carry ONE
+# N and ONE repeat, so each job is a single ensemble and finishes with wide margin whichever
+# per-batch estimate is right. Same experiment_name, so every result still lands in the one
+# canonical tree under distinct ensemble_evaluation_results_ncosmo{N}_{i}.json names - no races.
+for _ri in (0, 1, 2):
+    for _nc in (10, 15, 20, 40, 60, 80, 100, 120):
+        experiments[f"finetune_9param_nle_ensemble_white8_v2_r{_ri}_n{_nc}"] = {
+            **experiments["finetune_9param_nle_ensemble_white8_v2"],
+            "experiment_name": "finetune_9param_nle_ensemble_white8_v2",
+            "repeat_indices": [_ri],
+            "max_trainval_cosmos": [_nc],
+        }
+del _ri, _nc
