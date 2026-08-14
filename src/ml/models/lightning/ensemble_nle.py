@@ -4,7 +4,7 @@ import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 from tqdm import tqdm
 
 from sbi import utils as sbi_utils
@@ -175,27 +175,37 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
         posterior.to("cpu")
         posterior.prior.to("cpu")
 
-        jobs = Parallel(
-            n_jobs=num_jobs,
-            backend=backend,
-            return_as="generator",
-        )(
-            delayed(posterior.sample_single_batch)(
-                num_samples,
-                test_data,
-                test_cosmo,
-                dict(mcmc_kwargs),
+        # Pin ONE compute thread per worker. Each of the num_jobs workers runs an independent
+        # vectorised MCMC over tiny (8-16 dim) flows, where torch's intra-op threading buys
+        # nothing but costs synchronisation - and with num_jobs workers each spawning a full
+        # thread pool on a same-sized node, the pool oversubscribes the CPU several times over
+        # and every worker slows down. `inner_max_num_threads` is the joblib-supported way to
+        # cap it; the environment variables alone do NOT reach loky workers.
+        # Measured (9-member ensemble, k=8, batch of 32, 1000 samples): 24.7 min single-threaded
+        # => 2.33 h per batch at 8000 samples, so ~18.7 h for a repeat's 8 ensembles, whereas the
+        # unpinned cluster run had not finished ONE wave of 35 batches in 3.5 h.
+        with parallel_config(backend=backend, inner_max_num_threads=1):
+            jobs = Parallel(
+                n_jobs=num_jobs,
+                backend=backend,
+                return_as="generator",
+            )(
+                delayed(posterior.sample_single_batch)(
+                    num_samples,
+                    test_data,
+                    test_cosmo,
+                    dict(mcmc_kwargs),
+                )
+                for test_data, test_cosmo in self.test_dataloader
             )
-            for test_data, test_cosmo in self.test_dataloader
-        )
 
-        results = list(
-            tqdm(
-                jobs,
-                total=len(self.test_dataloader),
-                desc="Sampling ensemble batches",
+            results = list(
+                tqdm(
+                    jobs,
+                    total=len(self.test_dataloader),
+                    desc="Sampling ensemble batches",
+                )
             )
-        )
 
         theta0s, samples = zip(*results)
         theta0s = torch.cat(theta0s, dim=0)
