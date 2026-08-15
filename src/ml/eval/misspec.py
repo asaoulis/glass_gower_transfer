@@ -165,6 +165,29 @@ def _dn_variate_set(arm_tag: str) -> List[Dict]:
     ]
 
 
+def _bgp_variate_set(arm_tag: str) -> List[Dict]:
+    """BGP campaign (`b_g` MARGINALISED at generation) — the same b_g ladder as `_dn_variate_set`.
+
+    Identical machinery and identical probe values (0.7 / 1.0 / 1.5, all at `--rng-seed 4242`, so
+    still bit-paired); the ONE thing that differs is the foundation the model was trained on: here
+    `b_g` was drawn per (sim, outer, rot) from the Flamingo O3-diag prior instead of pinned at 1.
+    That makes this set the direct test of the campaign's premise — does marginalising `b_g` shrink
+    the paired Δz that the `_dn` arms showed at +3.9σ…+4.5σ?
+
+    The gb1p0 store is NOT optional: the headline statistic is the PAIRED Δz = z(b_g) − z(b_g=1.0),
+    so without the 1.0 reference only absolute z is available.
+    """
+    def store(which):
+        return f"{_GPU5}/glass_bgp_{which}_f16_{arm_tag}_{_DN_EB}/output_*.h5"
+    return [
+        {"name": f"glass_bgp_{arm_tag}", "patterns": store("nla_m"),
+         "exclude_params": [], "in_distribution": True},
+        {"name": "glass_gb0p7", "patterns": store("gb0p7"), "exclude_params": []},
+        {"name": "glass_gb1p0", "patterns": store("gb1p0"), "exclude_params": []},
+        {"name": "glass_gb1p5", "patterns": store("gb1p5"), "exclude_params": []},
+    ]
+
+
 def _inject_variate_set(arm_tag: str) -> List[Dict]:
     """Synthetic noise-variance injection on the b_g=1.0 store — see src/ml/eval/inject.py.
 
@@ -199,6 +222,8 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     "glass_dn_b1": _dn_variate_set("a0"),      # A0 store + the loader knob
     "glass_dn_sc8": _dn_variate_set("sc8"),
     "glass_dn_sc8a1": _dn_variate_set("sc8a1"),
+    # BGP campaign (b_g marginalised at generation) — the payoff test for this campaign.
+    "glass_bgp_sc8a1": _bgp_variate_set("sc8a1"),
     # R1024 — the conservative-scale-cut arm (8' beam, hard ell <= 1024). Same `a0` arm tag (plain
     # counts, no noise-norm) but the fwhm8_lmin56_lcut1024 bake; those stores carry BARE `E` groups
     # (baked without --keep-variant-tag), which matches the config's eb_map_variant=None, so no
