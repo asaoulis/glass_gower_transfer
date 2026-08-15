@@ -504,8 +504,13 @@ def _compute_misspec_metrics(
     sample_means = scaled_samples_first.mean(axis=0)
     bias = sample_means - scaled_theta0s
     std_devs = scaled_samples_first.std(axis=0)
-    width_68 = (torch.quantile(scaled_samples_first, 0.84, dim=0)
-                - torch.quantile(scaled_samples_first, 0.16, dim=0))
+    # torch.quantile allocates a large sort buffer over the (n_samples, n_sims, d) tensor and OOMs
+    # a 16 GiB v100 here, which is why the misspec eval had to be pinned to a100/l40s. Same fix as
+    # evaluate_models.py:330-336 — do the quantile on CPU. Identical numbers, and it is a sort over
+    # an already-materialised tensor, so the transfer is the only cost.
+    _ssf_cpu = scaled_samples_first.cpu()
+    width_68 = (torch.quantile(_ssf_cpu, 0.84, dim=0)
+                - torch.quantile(_ssf_cpu, 0.16, dim=0)).to(scaled_samples_first.device)
     for dim in available_idx:
         name = param_names[dim]
         metrics[name] = {
