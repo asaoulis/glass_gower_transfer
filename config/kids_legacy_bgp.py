@@ -237,3 +237,63 @@ def _hybrid_bgp_bg8(data_patterns, arm_ckpt, repeat_index=_BG8_REPEAT):
 for _arm, _store in (("sc8a1", _BGP_SC8A1), ("sc8", _BGP_SC8), ("a1", _BGP_A1)):
     kids_legacy_bgp_experiments[f"kids_legacy_hybrid_nla_m_bgp_z8_resnet_{_arm}_bg8"] = \
         _hybrid_bgp_bg8(_store, _HYB_CKPT[_arm])
+
+
+# === M8 — ⭐ THE NEW PRODUCTION FOUNDATION: sc8a1, FULL 15-parameter set =========================
+#
+# User decision 2026-08-16: the foundation NPE now infers the **complete** parameter vector —
+# the 9 cosmology/IA params AND the 6 per-tomo-bin galaxy biases — on the **sc8a1** arm, which is
+# the single production shear estimator from this date. This supersedes the 9-param
+# `kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1` row as the DEFAULT NPE training parameter set;
+# that row is kept for continuity of the arm comparison, not as the production target.
+#
+# Why infer b_g rather than marginalise it implicitly (M6b, artifacts/M6b_REPORT.md): the counts
+# normalisation cancels b_g in the bandpowers but NOT in the maps, and the measured sensitivity is
+# **+5.2 sigma(Omega_m) per unit b_g — unchanged by drawing b_g from the prior at generation time**.
+# Prior-marginalisation only moved the unbiased point to b_g* ~ 1.12; it did not make the network
+# insensitive. Putting b_g in the inference vector is what lets the posterior absorb that direction
+# instead of projecting it onto Omega_m.
+#
+# ⚠️ The 25-epoch M7 probe (artifacts/M7_REPORT.md) is NOT a counter-argument to this row. It failed
+# on TRAINING BUDGET, not on physics: a fresh 8-D flow warm-started for 25 epochs came out
+# miscalibrated (TARP 1.2-3.0 vs 0.009-0.013 for the 9-param runs) with one NaN-sample run. This row
+# avoids that failure mode by training from the foundation recipe at FULL length rather than
+# warm-starting a short fine-tune.
+_BG_PARAMS = [f"b_g_bin{_i}" for _i in range(1, 7)]
+
+# 25% longer than the 100-epoch foundation (user, 2026-08-16): 15 inference dims vs 9 is a harder
+# density-estimation problem, and the M7 failure was under-training.
+# ⚠️ The scheduler is deliberately NOT rescaled. `cyclic` here is STEP-based
+# (cyclic_period_steps=6000, warmup=2000), so a longer run simply completes more cycles at the same
+# LR envelope — unlike the `exp` schedules elsewhere in this file, whose gamma MUST be re-derived
+# when the epoch count changes (cf. the bg8 rows, gamma 0.984 -> 0.938 for 100 -> 25 epochs).
+_P15_EPOCHS = 125
+_P15_REPEATS = (0, 1, 2, 3, 4)
+
+
+def _hybrid_bgp_p15(data_patterns, band_ckpt, repeat_indices=_P15_REPEATS):
+    """The 9-param sc8a1 foundation recipe, widened to the full 15-param inference vector.
+
+    Everything except the inference vector, the b_g prior boxes and the epoch count is inherited
+    from `_hybrid_bgp`, so this row cannot drift from the validated arch/tuning.
+    """
+    c = _hybrid_bgp(data_patterns, None, band_ckpt, repeat_indices=repeat_indices)
+    # Derive the 9 from the inherited config rather than re-listing them: if the foundation's
+    # parameter vector ever changes, this row follows it instead of silently disagreeing.
+    base9 = list(c["cosmo_param_names"])
+    assert len(base9) == 9, f"expected the 9-param foundation vector, got {base9}"
+    c["cosmo_param_names"] = base9 + list(_BG_PARAMS)
+    # The 9 cosmo/IA boxes come from the shared COSMO_PARAM_PRESET_MINMAX; only the 6 b_g boxes are
+    # new, so they ride as preset_overrides rather than mutating the shared constant.
+    # _build_cosmo_preset_scaler RAISES on a parameter with no box, so a missing entry here is a
+    # loud failure at config build, not a silent mis-scaling.
+    c["scaler_options"] = {
+        "data": {"type": "standard", "keys": None},
+        "cosmo": {"type": "preset", "preset_overrides": dict(_BG_BOXES)},
+    }
+    c["epochs"] = _P15_EPOCHS
+    return c
+
+
+kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1_p15"] = \
+    _hybrid_bgp_p15(_BGP_SC8A1, _BAND_CKPT_BGP)
