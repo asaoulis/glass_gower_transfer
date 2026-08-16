@@ -259,7 +259,15 @@ COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 # -> smoothing-only, keyed E_fwhm{fwhm}). The first entry reproduces the previous production map;
 # append triples to ALSO save lighter smoothings / hard-cut band variants, e.g.
 # [(8.0, None, None), (6.0, None, 1024), (6.0, 56, 1024)].
-EB_SMOOTHING_VARIANTS = [(4.0, 56, 1400,), (8.0, 56, 1400), (8.0, 56, 1024)]
+#
+# ⭐ DEFAULT CHANGED 2026-08-16 (user): the campaign has settled on **sc8a1** as the single
+# production estimator, so the counts-normalised E/B branch is OFF by default and this list is
+# EMPTY. sc8a1 reads `E_sc8_<tag>` / `noise_std_sc8_<tag>`, which are produced by the A3s8 branch
+# below and do NOT depend on this list. Dropping it removes 3 x (E + B) float64 map sets per mock
+# — by far the largest on-disk item — leaving one float16 E map, the bandpowers and the cosmology.
+# Nothing is deleted from the code: put the triples back to regenerate the A0/A1/B1 arms or the
+# B-mode null-test channel (they are only reachable from these maps).
+EB_SMOOTHING_VARIANTS = []
 
 # --- Shear-estimator hardening: the dual-normalisation SUPERSET store -------------------------
 # Source-galaxy clustering (b_g) modulates the per-pixel galaxy count N_p, and the counts
@@ -306,12 +314,26 @@ EB_SMOOTHING_VARIANTS = [(4.0, 56, 1400,), (8.0, 56, 1400), (8.0, 56, 1024)]
 #   (4.0, 56, 1400) = the primary scale cut (arms A3s8 / A3s8_A1, "sc8" / "sc8a1")
 #   (8.0, 56, 1024) = the conservative R1024 cut, so the sc8 x lcut1024 combination is available
 #                     without a re-simulation (user, 2026-08-11)
+#
+# ⭐ 2026-08-16 (user): BOTH sc8 variants are KEPT — the campaign is sc8a1-only on the
+# *normalisation* axis, not on the scale-cut axis:
+#   (4.0, 56, 1400) = aggressive  -> sc8a1
+#   (8.0, 56, 1024) = conservative R1024 -> sc8a1 x R1024
+# Each entry writes its own E_sc8_<tag> map AND its own noise_std_sc8_<tag> scalars, so each is a
+# complete sc8a1 arm on its own. The second entry re-filters the SAME sc8 alms, so it costs a
+# filter + map + pixelise + noise meter (~50-60 s/mock), NOT another spin-2 transform.
 A3S8_VARIANTS = [(4.0, 56, 1400), (8.0, 56, 1024)]
-# Typo guard: an sc8 variant with no matching counts-normalised variant would leave the arm
-# without its control map (and no prebake source for the comparison), which is silent on disk.
-assert all(tuple(v) in [tuple(x) for x in EB_SMOOTHING_VARIANTS] for v in A3S8_VARIANTS), (
+# Typo guard: while the counts branch is ENABLED, an sc8 variant with no matching counts-normalised
+# variant would leave the arm without its control map (and no prebake source for the comparison),
+# which is silent on disk. When EB_SMOOTHING_VARIANTS is empty the counts branch is deliberately
+# off (sc8a1-only store) and there is nothing to pair against, so the guard does not apply.
+assert not EB_SMOOTHING_VARIANTS or all(
+    tuple(v) in [tuple(x) for x in EB_SMOOTHING_VARIANTS] for v in A3S8_VARIANTS), (
     f"A3S8_VARIANTS {A3S8_VARIANTS} must each appear in EB_SMOOTHING_VARIANTS "
     f"{EB_SMOOTHING_VARIANTS}")
+# A store with neither branch would carry no maps at all — always a mistake, never a config.
+assert EB_SMOOTHING_VARIANTS or A3S8_VARIANTS, (
+    "both EB_SMOOTHING_VARIANTS and A3S8_VARIANTS are empty: the store would contain no E/B maps")
 # FWHM (arcmin) the count map is smoothed at before being used as the denominator. 8' is harness
 # candidate A3_smooth8 / A3s8_A1; do NOT change it without re-running the replay harness.
 A3S8_FWHM_ARCMIN = 8.0
@@ -324,7 +346,12 @@ A3S8_MAP_DTYPE = np.float16
 #   None  -> compute for every EB_SMOOTHING_VARIANTS entry (full optionality, ~+12.5 s/variant)
 #   list  -> compute only for these (fwhm, lmin, lcut) triples
 #   ()    -> disable (no noise_std groups written; the A1 arm becomes untrainable)
-NOISE_STD_VARIANTS = None
+# ⭐ DEFAULT CHANGED 2026-08-16 (user): sc8a1-only. This knob governs ONLY the counts branch, which
+# is now off, so it is set to () to make that explicit — leaving it at None would silently mean
+# "every EB_SMOOTHING_VARIANTS entry", i.e. nothing, and read as an oversight later.
+# ⚠️ The sc8a1 scalars are NOT controlled here: `noise_std_sc8_<tag>` is written unconditionally by
+# the A3s8 branch for every A3S8_VARIANTS entry. Setting this to () does not disable sc8a1.
+NOISE_STD_VARIANTS = ()
 
 
 def eb_variant_tag(fwhm_v, lmin_v, lcut_v):
