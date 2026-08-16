@@ -18,5 +18,6 @@ from .builders import (
     build_flow_with_extras_prior,
     build_analytic_prior,
     ia_marginal_priors,
+    galaxy_bias_marginal_priors,
 )
 from .empirical import train_or_load_gower_prior

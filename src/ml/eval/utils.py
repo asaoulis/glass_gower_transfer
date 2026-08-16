@@ -16,6 +16,7 @@ from ..data.priors import (
     build_gower_paper_known_priors,
     build_analytic_prior,
     ia_marginal_priors,
+    galaxy_bias_marginal_priors,
 )
 from .evaluate_models import run_evaluation_on_samples
 from ..data.data_selection import extract_cosmo_index
@@ -111,6 +112,10 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
     # Model-aware IA priors override the static (NLA-M) entries: NLA / NLA-z / TATT carry
     # different priors (and b_z / b_src), disambiguated by which companion param is present.
     known_priors = {**known_priors, **ia_marginal_priors(params)}
+    # Marginalised galaxy bias (BGP): b_g_bin* are analytic truncated Gaussians. Without this they
+    # fall through to the empirical flow, which is trained on the Gower Street CSV — that file has
+    # no b_g columns, so this is the difference between a correct prior and a hard failure.
+    known_priors = {**known_priors, **galaxy_bias_marginal_priors(params)}
 
     # Preserve the caller's parameter ordering.
     extra_priors = {p: known_priors[p] for p in params if p in known_priors}

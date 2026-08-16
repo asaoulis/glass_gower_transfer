@@ -9,6 +9,7 @@ except Exception:  # pragma: no cover
 
 from .distributions import (
     NFlowDistribution,
+    TruncatedNormal1D,
     PermutedDistribution,
     ScaledDistribution,
     ScaledJointDistribution,
@@ -64,6 +65,46 @@ BSRC_RANGE = (-0.5, 1.5)        # TATT / NLA-k density-weighting bias prior
 
 IA_COMPANION_PARAMS = ("b_ia", "b_z", "b_src")
 IA_PARAMS = ("a_ia",) + IA_COMPANION_PARAMS
+
+# Galaxy-bias marginalisation (BGP campaign). The per-tomo-bin b_g values are DRAWN per mock, so
+# when they are inferred (`b_g_bin1..6` in cosmo_param_names) their prior is analytic and known:
+# the Flamingo KiDS-Legacy O3-diag calibration at kappa=1, truncated at +-3 sigma.
+#
+# ⚠️ SOURCE OF TRUTH is `src/KiDS/simulation_config.py` (GALAXY_BIAS_PRIOR_MEANS / _SIGMAS), which
+# is what the SIMULATOR actually draws from. These are duplicated here rather than imported because
+# that module pulls in healpy and the whole survey-geometry stack, which has no business loading in
+# a GPU eval job — the same reason the IA constants above are duplicated. If the simulator's preset
+# ever changes, THIS MUST BE UPDATED IN LOCKSTEP or every shrinkage number silently references the
+# wrong prior. GALAXY_BIAS_CLIP=(0.3, 2.2) is not applied: it lies far outside +-3 sigma for every
+# bin, so it never binds.
+GALAXY_BIAS_PRIOR_MEANS = [1.0181, 1.0698, 1.1302, 1.2427, 1.3739, 1.4805]
+GALAXY_BIAS_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
+GALAXY_BIAS_PRIOR_NSIGMA = 3.0
+GALAXY_BIAS_PARAMS = tuple("b_g_bin%d" % i for i in range(1, len(GALAXY_BIAS_PRIOR_MEANS) + 1))
+
+
+def galaxy_bias_marginal_priors(params):
+    """Per-parameter 1D galaxy-bias priors for any `b_g_bin{i}` present in `params`.
+
+    Returns {} when none are present, so this is a no-op for every pre-BGP parameter set.
+
+    Each is a TruncatedNormal1D(mean_i, sigma_i) on [mean_i - 3 sigma_i, mean_i + 3 sigma_i],
+    matching the simulator's per-(sim, outer, rot) draw. Supplying these as ANALYTIC priors is what
+    keeps them out of `build_gower_prior`'s empirical-flow branch — the Gower Street CSV has no
+    b_g columns, so a b_g param reaching the flow is a hard failure, not a degraded prior.
+    """
+    present = [p for p in params if p in GALAXY_BIAS_PARAMS]
+    if not present:
+        return {}
+    out = {}
+    for name in present:
+        i = GALAXY_BIAS_PARAMS.index(name)
+        loc, scale = GALAXY_BIAS_PRIOR_MEANS[i], GALAXY_BIAS_PRIOR_SIGMAS[i]
+        half = GALAXY_BIAS_PRIOR_NSIGMA * scale
+        out[name] = TruncatedNormal1D(
+            loc=loc, scale=scale, low=loc - half, high=loc + half
+        )
+    return out
 
 
 def ia_marginal_priors(params):
