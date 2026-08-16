@@ -297,3 +297,35 @@ def _hybrid_bgp_p15(data_patterns, band_ckpt, repeat_indices=_P15_REPEATS):
 
 kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1_p15"] = \
     _hybrid_bgp_p15(_BGP_SC8A1, _BAND_CKPT_BGP)
+
+
+# === M8b — the M8 foundation with a LARGER NDE head =============================================
+# User request 2026-08-16: one extra run at higher density-estimator capacity, to test whether the
+# 15-D posterior is head-limited rather than encoder-limited. Identical to M8 in every other
+# respect (same store, same frozen Stage-I band, same 125 epochs, same repeat seed) so the flow
+# capacity is the ONLY axis that varies.
+#
+# `flow_type='nsf'` dispatches to `build_nsf(hidden_features=..., num_transforms=...)`
+# (src/ml/models/custom_sbi.py; both are popped from flow_kwargs in
+# src/ml/models/lightning/npe.py:set_up_model). The M8 baseline sets hidden_features=32 and leaves
+# num_transforms at its default of 5 — so "double the hidden dim, two more transforms" is:
+#     hidden_features 32 -> 64      (2x)
+#     num_transforms   5 -> 7       (+2)
+# ⚠️ num_transforms is NOT in the baseline's flow_kwargs; it comes from the build_nsf default. Read
+# that default before changing this, rather than assuming the dict shows the whole configuration.
+#
+# Run as ONE repeat at r0 so it is directly comparable to M8 r0 (same split_seed, same train/val
+# split) — a capacity comparison against a different seed would confound the two axes.
+_P15_BIGFLOW_REPEAT = (0,)
+
+
+def _hybrid_bgp_p15_bigflow(data_patterns, band_ckpt):
+    c = _hybrid_bgp_p15(data_patterns, band_ckpt, repeat_indices=_P15_BIGFLOW_REPEAT)
+    base = dict(c.get("flow_kwargs") or {})
+    c["flow_kwargs"] = {**base, "hidden_features": 2 * base.get("hidden_features", 32),
+                        "num_transforms": 7}
+    return c
+
+
+kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1_p15_bigflow"] = \
+    _hybrid_bgp_p15_bigflow(_BGP_SC8A1, _BAND_CKPT_BGP)
