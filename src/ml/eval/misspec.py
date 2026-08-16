@@ -224,6 +224,10 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     "glass_dn_sc8a1": _dn_variate_set("sc8a1"),
     # BGP campaign (b_g marginalised at generation) — the payoff test for this campaign.
     "glass_bgp_sc8a1": _bgp_variate_set("sc8a1"),
+    # Co-primary unwhitened arm. Same ladder, same probe values, same rng-seed pairing — the only
+    # difference is which shear product the maps were baked from, so sc8a1-vs-sc8 here isolates the
+    # normalisation's effect on b_g robustness. Probe bakes: jobs 1344427/28/29 (2026-08-16).
+    "glass_bgp_sc8": _bgp_variate_set("sc8"),
     # R1024 — the conservative-scale-cut arm (8' beam, hard ell <= 1024). Same `a0` arm tag (plain
     # counts, no noise-norm) but the fwhm8_lmin56_lcut1024 bake; those stores carry BARE `E` groups
     # (baked without --keep-variant-tag), which matches the config's eb_map_variant=None, so no

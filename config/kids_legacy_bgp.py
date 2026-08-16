@@ -162,3 +162,78 @@ kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8"] = \
 for _name in ("a1", "sc8", "sc8a1"):
     kids_legacy_bgp_experiments[f"kids_legacy_hybrid_nla_m_bgp_z8_resnet_{_name}_smoke"] = \
         _hybrid_bgp_smoke()
+
+
+# === M7 — the 8-parameter `b_g`-SENSITIVITY probe (one repeat per arm) ============================
+# Question: with `b_g` marginalised at generation, how much per-tomo-bin galaxy-bias information do
+# the maps actually carry, and does the SHEAR NORMALISATION change that? Each arm's finished
+# foundation encoder is warm-started and finetuned with a FRESH 8-D flow head over
+# {omega_m, sigma_8, b_g_bin1..6}. Same store, same architecture, same split as that arm's
+# foundation run — the only thing that changes is what the flow is asked to infer, so any
+# difference across arms is attributable to the shear processing.
+#
+# ⚠️ INTERPRETATION: the foundation encoders were VMIM-trained to compress for the NINE cosmo/IA
+# params, with `b_g` deliberately NOT among them. A *positive* b_g constraint after 25 warm-start
+# epochs is therefore meaningful; a NULL is weak evidence, because the encoder may simply need
+# longer to re-learn a channel it was trained to discard. Read a null as "not recovered in 25
+# epochs from this warm start", not "absent from the maps".
+_COSMO_8_BG = ["omega_m", "sigma_8"] + [f"b_g_bin{_i}" for _i in range(1, 7)]
+
+# Scaler boxes for the six per-bin biases = the generator's own truncated support: mean ± 3σ of the
+# Flamingo O3-diag calibration at kappa=1. Derived here rather than transcribed so they cannot drift
+# from the source of truth (src/KiDS/simulation_config.py: GALAXY_BIAS_PRIOR_MEANS/SIGMAS, ±3σ
+# truncation). None of the six reaches GALAXY_BIAS_CLIP=(0.3, 2.2), so ±3σ IS the realised range.
+_BG_PRIOR_MEANS = [1.0181, 1.0698, 1.1302, 1.2427, 1.3739, 1.4805]
+_BG_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
+_BG_BOXES = {
+    f"b_g_bin{_i + 1}": (_m - 3.0 * _s, _m + 3.0 * _s)
+    for _i, (_m, _s) in enumerate(zip(_BG_PRIOR_MEANS, _BG_PRIOR_SIGMAS))
+}
+
+# Foundation checkpoint dirs — one per arm, all 5-seed complete (2026-08-16).
+_HYB_CKPT = {
+    "sc8a1": f"{_CKPT}/kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1/",
+    "sc8": f"{_CKPT}/kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8/",
+    "a1": f"{_CKPT}/kids_legacy_hybrid_nla_m_bgp_z8_resnet_a1/",
+}
+
+# ⚠️ REPEAT 3, NOT 0 — deliberate and load-bearing. The a1 arm escaped the −4.4 wall on r3 ONLY
+# (r0/r1/r2 are dead wall-stuck checkpoints at ≈ −4.46 that were cancelled); warm-starting a1 from
+# r0 would measure a rank-degenerate encoder rather than the arm. r3 is also the BEST seed of both
+# sc8a1 (−5.4014) and sc8 (−5.3345), and gives all three arms the same `split_seed = base + 3`, so
+# the arms are compared on identical train/val/test splits (the three bakes share one file list).
+_BG8_REPEAT = 3
+
+
+def _hybrid_bgp_bg8(data_patterns, arm_ckpt, repeat_index=_BG8_REPEAT):
+    """One arm's foundation encoder, warm-started + finetuned with a FRESH 8-D flow head.
+
+    Built from that arm's OWN `_hybrid_bgp` recipe (not from `_encoder_finetune_z8`, which points at
+    a different store and replaces `scaler_options` wholesale), then given the warm-start deltas:
+    the band arrives INSIDE the loaded `embedding_net`, so the separate frozen-band path is dropped.
+    """
+    c = _hybrid_bgp(data_patterns, None, _BAND_CKPT_BGP, repeat_indices=(repeat_index,))
+    c.pop("pretrained_band_ckpt_path", None)   # band comes in with the embedding_net
+    c.pop("freeze_band", None)
+    c["pretrained_embedding_ckpt_path"] = arm_ckpt
+    c["freeze_embedding_net"] = False          # finetune the encoder — give each arm its best shot
+    c["match_num_cosmo"] = False               # resolve the arm ckpt per-repeat as "_{i}"
+    c["cosmo_param_names"] = list(_COSMO_8_BG)
+    # Same shape as config/default.py's scaler_options (data untouched) + the six b_g boxes; the
+    # preset scaler RAISES on an unknown parameter (src/ml/utils.py:170), so these are REQUIRED.
+    c["scaler_options"] = {
+        "data": {"type": "standard", "keys": None},
+        "cosmo": {"type": "preset", "preset_overrides": dict(_BG_BOXES)},
+    }
+    c["epochs"] = 25
+    c["scheduler_type"] = "exp"
+    # 0.938^25 ≈ 0.20 — the same 5x LR decay the 100-epoch encoder-finetune recipe uses (gamma
+    # 0.984), rescaled to 25 epochs. Keeping 0.984 here would only decay to ~0.67.
+    c["scheduler_kwargs"] = {"gamma": 0.938, "warmup_steps": 0}
+    c["project"] = "glass-pretraining"
+    return c
+
+
+for _arm, _store in (("sc8a1", _BGP_SC8A1), ("sc8", _BGP_SC8), ("a1", _BGP_A1)):
+    kids_legacy_bgp_experiments[f"kids_legacy_hybrid_nla_m_bgp_z8_resnet_{_arm}_bg8"] = \
+        _hybrid_bgp_bg8(_store, _HYB_CKPT[_arm])
