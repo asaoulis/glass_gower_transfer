@@ -493,7 +493,21 @@ def build_embedding_dataloaders(
     cosmo_param_names = []
     if base_cfg is not None and hasattr(base_cfg, "cosmo_param_names"):
         cosmo_param_names = list(base_cfg.cosmo_param_names)
-        cosmo_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, cosmo_param_names)
+        # Honour the SAME per-config box overrides as the training path (src/ml/utils.py:305-312).
+        # A config may legitimately supply boxes for parameters absent from the global preset — the
+        # 15-param vector's `b_g_bin1..6` are exactly that (the BGP campaign deliberately keeps them
+        # as overrides rather than mutating the shared constant). Without this merge the lookup below
+        # raises on them, which is a FALSE failure: the boxes were supplied, just not where this
+        # looked. Empty/absent overrides => the global preset, byte-identical to before.
+        preset = dict(COSMO_PARAM_PRESET_MINMAX)
+        _scaler_opts = getattr(base_cfg, "scaler_options", None) or {}
+        _overrides = (_scaler_opts.get("cosmo") or {}).get("preset_overrides") or {}
+        preset.update({k: tuple(v) for k, v in _overrides.items()})
+        # Kept for its VALIDATION value only — it fails fast when a cosmo parameter has no box.
+        # The scaler itself is deliberately discarded on the next line: theta reaching this point
+        # has ALREADY been min-max scaled into the prior box by the raw loader's
+        # TransformingDataset, so applying a second cosmo scaler here would double-scale it.
+        _build_cosmo_preset_scaler(preset, cosmo_param_names)
     cosmo_scaler = None
     # Try to load cached embeddings
     train_z = val_z = test_z = None
