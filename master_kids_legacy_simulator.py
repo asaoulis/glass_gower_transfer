@@ -200,6 +200,18 @@ def parse_args():
              "override, which bypasses the prior).")
 
     parser.add_argument(
+        "--eb-variants", default=EB_VARIANTS_DEFAULT, choices=sorted(EB_VARIANT_PRESETS),
+        help="Which COUNTS-normalised E/B map products the store carries (EB_VARIANT_PRESETS). "
+             "'sc8only' (default) = today's behaviour: counts branch off, sc8/sc8a1 arms only. "
+             "'full' = the pre-2026-08-16 superset: counts E and B at 3 smoothings plus every "
+             "noise_std_<tag> scalar, i.e. the A0/A1/B1 arms and the B-mode null-test channel "
+             "(~28.5 MB/mock vs ~4 MB). Sets BOTH EB_SMOOTHING_VARIANTS and NOISE_STD_VARIANTS — "
+             "they must move together or the counts maps land without their A1 scalars. "
+             "⚠️ State this EXPLICITLY on any row that may be resumed: the simulator is read at "
+             "RUN time, so a default change between a row's first submit and its wall-resume "
+             "otherwise splits one store across two products. Does not affect the sc8 arms.")
+
+    parser.add_argument(
         "--rng-seed", type=int, default=None,
         help="FIXED-RNG (paired-catalogue) mode. Default None = today's behaviour: one fresh, "
              "UNSEEDED generator per (sim, outer, rot) block. When set, every random stream is "
@@ -267,6 +279,14 @@ COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 # — by far the largest on-disk item — leaving one float16 E map, the bandpowers and the cosmology.
 # Nothing is deleted from the code: put the triples back to regenerate the A0/A1/B1 arms or the
 # B-mode null-test channel (they are only reachable from these maps).
+#
+# ⭐ 2026-08-17: this pair of constants is now SELECTABLE PER RUN via `--eb-variants`, because a
+# global default silently decided what a named store contains. A sim reads this module at RUN
+# time, so when the default flipped (3bb6a62, 2026-08-16 20:02Z) every *already-queued or
+# wall-resumed* row silently changed product mid-store — a resume of the S1 Gower foundation
+# (ranks started 16:10Z, i.e. 4 h before the flip) would have written ~4 MB sc8a1-only mocks into
+# a 28.5 MB superset store. `EB_VARIANT_PRESETS` below makes the choice an explicit property of
+# the ROW, and the rank-0 banner + `--num-sims`-style post-submit gate makes it auditable.
 EB_SMOOTHING_VARIANTS = []
 
 # --- Shear-estimator hardening: the dual-normalisation SUPERSET store -------------------------
@@ -352,6 +372,24 @@ A3S8_MAP_DTYPE = np.float16
 # ⚠️ The sc8a1 scalars are NOT controlled here: `noise_std_sc8_<tag>` is written unconditionally by
 # the A3s8 branch for every A3S8_VARIANTS entry. Setting this to () does not disable sc8a1.
 NOISE_STD_VARIANTS = ()
+
+# --- `--eb-variants`: the counts-branch store contents, as a named per-row mode ----------------
+# EB_SMOOTHING_VARIANTS and NOISE_STD_VARIANTS MUST move together — restoring the smoothing list
+# while leaving NOISE_STD_VARIANTS at () writes the counts E/B maps with NO `noise_std_<tag>`
+# scalars, which silently makes the A1 arm (E / noise_std) untrainable on exactly those mocks.
+# Pairing them in one preset is the whole point: there is no way to set half of it.
+#   sc8only  today's default — counts branch OFF, sc8 arms only (the smallest production store)
+#   full     the pre-2026-08-16 superset: counts E *and* B at 3 smoothings + every noise_std,
+#            i.e. the A0/A1/B1 arms and the B-mode null-test channel. Used by the S1 Gower
+#            foundation (`gower_mocks_nla_m_novd_bgp`) and every resume of it.
+# Neither preset touches A3S8_VARIANTS: the sc8/sc8a1 arms are written identically in both.
+EB_VARIANT_PRESETS = {
+    "sc8only": {"eb": [], "noise_std": ()},
+    "full": {"eb": [(4.0, 56, 1400), (8.0, 56, 1400), (8.0, 56, 1024)], "noise_std": None},
+}
+# The preset whose contents match the module-level defaults above, so `--eb-variants` defaults to
+# a genuine no-op and every existing caller keeps its exact behaviour.
+EB_VARIANTS_DEFAULT = "sc8only"
 
 
 def eb_variant_tag(fwhm_v, lmin_v, lcut_v):
@@ -722,6 +760,24 @@ if __name__ == "__main__":
     # None => unseeded (production default). An int switches on paired/reproducible generation.
     RNG_SEED = args.rng_seed
     SAVE_CATALOGUES = args.save_catalogues
+    # Resolve --eb-variants BEFORE any mock is written: rebind the two module globals the counts
+    # branch reads (see EB_VARIANT_PRESETS). Rebinding at module scope is what the write sites at
+    # `for fwhm_v, lmin_v, lcut_v in EB_SMOOTHING_VARIANTS` / `if NOISE_STD_VARIANTS is None`
+    # pick up. The default preset reproduces the module-level values, so this is a no-op unless
+    # the flag is passed.
+    EB_VARIANTS_MODE = args.eb_variants
+    _eb_preset = EB_VARIANT_PRESETS[EB_VARIANTS_MODE]
+    EB_SMOOTHING_VARIANTS = list(_eb_preset["eb"])
+    NOISE_STD_VARIANTS = _eb_preset["noise_std"]
+    # Re-run the pairing guard against the RESOLVED list: the import-time assert only ever saw the
+    # default, so a preset whose counts branch is on must still cover every A3S8 variant.
+    assert not EB_SMOOTHING_VARIANTS or all(
+        tuple(v) in [tuple(x) for x in EB_SMOOTHING_VARIANTS] for v in A3S8_VARIANTS), (
+        f"--eb-variants {EB_VARIANTS_MODE}: A3S8_VARIANTS {A3S8_VARIANTS} must each appear in "
+        f"the preset's EB_SMOOTHING_VARIANTS {EB_SMOOTHING_VARIANTS}")
+    assert EB_SMOOTHING_VARIANTS or A3S8_VARIANTS, (
+        f"--eb-variants {EB_VARIANTS_MODE} leaves both EB_SMOOTHING_VARIANTS and A3S8_VARIANTS "
+        f"empty: the store would contain no E/B maps")
     GALAXY_BIAS_PRIOR = args.galaxy_bias_prior
     if GALAXY_BIAS_PRIOR is not None and args.galaxy_bias is not None:
         raise SystemExit("--galaxy-bias-prior and --galaxy-bias are mutually exclusive "
@@ -744,6 +800,17 @@ if __name__ == "__main__":
         print(f"[rank 0] galaxy-bias prior '{GALAXY_BIAS_PRIOR}' (kappa={_spec['kappa']:g}): "
               f"per-(sim,outer,rot) per-tomo-bin draws around {GALAXY_BIAS_PRIOR_MEANS}; "
               f"realised values stored as cosmo_dict/b_g_bin1..6 + galaxy_bias_eff.", flush=True)
+    if rank == 0:
+        # ALWAYS printed (not only when non-default): this banner is the post-submit gate for
+        # what the store actually contains, and a gate that is silent in the default case cannot
+        # distinguish "sc8only was chosen" from "the flag was dropped by a stale gatekeeper".
+        _ns = ("every EB variant" if NOISE_STD_VARIANTS is None
+               else "none" if not NOISE_STD_VARIANTS
+               else str([eb_variant_tag(*v) for v in NOISE_STD_VARIANTS]))
+        print(f"[rank 0] --eb-variants {EB_VARIANTS_MODE}: counts-normalised E/B variants "
+              f"{[eb_variant_tag(*v) for v in EB_SMOOTHING_VARIANTS]} "
+              f"(noise_std for: {_ns}); sc8 arms "
+              f"{[eb_variant_tag(*v) for v in A3S8_VARIANTS]} unaffected.", flush=True)
     if rank == 0 and SAVE_CATALOGUES:
         print(f"[rank 0] --save-catalogues: raw galaxy catalogues -> {OUTPUT_DIR}/catalogues/ "
               f"(~0.9 GB per mock at production n_eff — keep --num-sims small).", flush=True)
