@@ -329,3 +329,58 @@ def _hybrid_bgp_p15_bigflow(data_patterns, band_ckpt):
 
 kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1_p15_bigflow"] = \
     _hybrid_bgp_p15_bigflow(_BGP_SC8A1, _BAND_CKPT_BGP)
+
+
+# === M4 precursor — whitening-dimension study on the p15 r0 summary ==============================
+# Before committing the M4 NLE chain to a whitening/truncation dimension, measure what truncation
+# actually COSTS in constraining power on the summary M4 will use.
+#
+# ⚠️ The inherited "whiten to k=8" recipe is a NO-OP on this architecture. In the pre-BGP era the
+# compressor emitted 16-D and k=8 was a genuine 2x truncation that fixed NLE over-confidence. The M8
+# z8 hybrid sets model_kwargs['hybrid_output_dim']=8, which OVERRIDES latent_dim=16 for the encoder
+# output (src/ml/utils.py:384-387) — so the summary fed to the flow is **8-D**, k=8 truncates
+# nothing, and k>8 is undefined (PCA cannot exceed the input rank). The study therefore sweeps
+# k = 2, 4, 6, 8 with k=8 as the pure-whiten INVARIANCE CONTROL (an invertible affine map: extracted
+# MI must be unchanged vs the raw 8-D embedding, up to optimisation noise).
+#
+# This row is CACHE-ONLY (`run_training: False`): build_embedding_dataloaders computes and persists
+# the frozen summary, and fit_nde_on_embeddings is skipped (src/ml/embeddings/train.py:407). The
+# cache stores **unscaled** z + theta (_save_embedding_cache), so ONE cache serves every k in the
+# sweep — whitening is applied locally, per k, on top of it. Deliberately NOT setting
+# whiten_embeddings here: a whitener persisted at some arbitrary k would be the wrong artefact to
+# hand the finetune, and picking k is the whole point of the study.
+_P15_EXP = "kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1_p15"
+
+
+def _p15_embcache(repeat_index=0):
+    """Cache-only embeddings run over the GLASS sc8a1 store, on the FROZEN p15 encoder at one repeat.
+
+    `cosmo_param_names` / the b_g prior boxes are READ FROM the p15 experiment rather than re-listed,
+    so this can never disagree with the encoder it is caching (a mismatch would mis-scale theta and
+    silently corrupt every downstream information estimate).
+
+    match_num_cosmo=False => repeat_match "_{i}", which resolves the source encoder's
+    `pretrain_ncosmoNone_{i}` checkpoint — the established idiom for the z6/z8 NLE chains.
+    """
+    src = kids_legacy_bgp_experiments[_P15_EXP]
+    return {
+        "data_patterns": src["data_patterns"],
+        "eb_map_variant": src.get("eb_map_variant"),
+        "dataset_quantities": [],          # overwritten from the source encoder at runtime
+        "latent_dim": 8,                   # = hybrid_output_dim, the p15 summary width
+        "epochs": 1,                       # unused (run_training False) — kept finite, not 0
+        "batch_size": 128,
+        "project": "bgp-nle",
+        "cosmo_param_names": list(src["cosmo_param_names"]),   # the full 15
+        "scaler_options": {k: dict(v) for k, v in src["scaler_options"].items()},
+        "inference_mode": "nle",
+        "repeat_indices": [int(repeat_index)],
+        "match_num_cosmo": False,
+        "scale_embeddings": False,
+        "whiten_embeddings": None,         # raw cache; k applied locally in the sweep
+        "run_training": False,             # CACHE ONLY
+        "run_evaluation": False,
+    }
+
+
+kids_legacy_bgp_experiments["bgp_p15_embcache_r0"] = _p15_embcache(0)
