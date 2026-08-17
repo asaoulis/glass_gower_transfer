@@ -386,6 +386,31 @@ def _p15_embcache(repeat_index=0):
 kids_legacy_bgp_experiments["bgp_p15_embcache_r0"] = _p15_embcache(0)
 
 
+# --- GUARD: the final summary width must be what we think it is -------------------------------
+# This exists because the width silently changed under us. The flow conditions on
+# `hybrid_output_dim` when set, and only falls back to `latent_dim` when it is None
+# (src/ml/utils.py:384-387) — so `latent_dim: 16` in a config dict does NOT mean the summary is
+# 16-D. `_hybrid_lmin50_z8` sets hybrid_output_dim=8, which is how the p15/M8 rows ended up on an
+# 8-D summary while reading as latent_dim=16. Verified empirically: the embed job over the trained
+# p15 r0 encoder reported "Computed embeddings ... with dimension 8".
+#
+# ⚠️ DOUBLE-CHECK THE FINAL SUMMARY SIZE (user, 2026-08-17). Call this on any row whose summary
+# width matters, so a future edit that changes it fails LOUDLY at config-build time instead of
+# silently retraining a different architecture.
+def _assert_final_summary_dim(c, expected, label):
+    mk = c.get("model_kwargs") or {}
+    got = mk.get("hybrid_output_dim")
+    source = "hybrid_output_dim"
+    if got is None:
+        got, source = c.get("latent_dim"), "latent_dim (hybrid_output_dim unset)"
+    assert got == expected, (
+        f"{label}: FINAL SUMMARY WIDTH IS {got} (from {source}), expected {expected}. "
+        f"The flow conditions on hybrid_output_dim when set, NOT on latent_dim "
+        f"(latent_dim here = {c.get('latent_dim')}, the CONCAT width)."
+    )
+    return c
+
+
 # === M9 — WIDER SUMMARY: does the 8-D bottleneck starve the 15-param posterior? ==================
 # Motivation (user, 2026-08-17), and it is NOT the bigflow/capacity hypothesis. Measured on the
 # SAME sc8a1 store: FoM(omega_m,sigma_8) drops 24.7% / 24.8% (paired, r0 / r3) going 9-param ->
@@ -417,4 +442,5 @@ def _hybrid_bgp_p15_z16(data_patterns, band_ckpt, repeat_indices=_P15_Z16_REPEAT
 
 
 kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15"] = \
-    _hybrid_bgp_p15_z16(_BGP_SC8A1, _BAND_CKPT_BGP)
+    _assert_final_summary_dim(_hybrid_bgp_p15_z16(_BGP_SC8A1, _BAND_CKPT_BGP), 16,
+                              "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15")
