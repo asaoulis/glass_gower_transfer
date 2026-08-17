@@ -384,3 +384,37 @@ def _p15_embcache(repeat_index=0):
 
 
 kids_legacy_bgp_experiments["bgp_p15_embcache_r0"] = _p15_embcache(0)
+
+
+# === M9 — WIDER SUMMARY: does the 8-D bottleneck starve the 15-param posterior? ==================
+# Motivation (user, 2026-08-17), and it is NOT the bigflow/capacity hypothesis. Measured on the
+# SAME sc8a1 store: FoM(omega_m,sigma_8) drops 24.7% / 24.8% (paired, r0 / r3) going 9-param ->
+# 15-param, and that is NOT explained by physics (both arms marginalise the same b_g uncertainty,
+# so exact inference gives the same 2-D marginal) NOR by overconfidence (the 15-param arm is BETTER
+# calibrated). See ../../simulation-runs/galaxy-bias-priors/artifacts/FOM_15_VS_9.md.
+#
+# The hypothesis this row tests: with 6 of 15 outputs being b_g, the NLL is dominated by dimensions
+# that carry no cosmology, while an 8-D summary has too little room to hold 15 parameters' worth of
+# information — so omega_m/sigma_8 get squeezed out of the bottleneck.
+#
+# Two widths move together (user decision, both to 16):
+#   latent_dim        16 -> 24   (= band 8 + patch 16, since dim_patch = latent_dim - dim_band)
+#   hybrid_output_dim  8 -> 16   (the FINAL summary the flow conditions on)
+# ⚠️ Two axes move at once, so a FoM change cannot be attributed to the map-branch width vs the
+# bottleneck width without a further run holding one fixed. Recorded deliberately.
+#
+# The frozen Stage-I band is UNCHANGED at 8-D (bandpower_latent_dim stays 8), so the existing
+# per-repeat band checkpoints still pair 1:1 and no new Stage I is needed.
+_P15_Z16_REPEATS = (0, 1, 3)   # splits whose M8 counterparts all escaped; r0/r3 have evaluated FoMs
+                               # to pair against directly, and r2's split (3 trapped inits) is avoided.
+
+
+def _hybrid_bgp_p15_z16(data_patterns, band_ckpt, repeat_indices=_P15_Z16_REPEATS):
+    c = _hybrid_bgp_p15(data_patterns, band_ckpt, repeat_indices=repeat_indices)
+    c["latent_dim"] = 24                                   # concat = band 8 + patch 16
+    c["model_kwargs"] = {**c["model_kwargs"], "hybrid_output_dim": 16}
+    return c
+
+
+kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15"] = \
+    _hybrid_bgp_p15_z16(_BGP_SC8A1, _BAND_CKPT_BGP)
