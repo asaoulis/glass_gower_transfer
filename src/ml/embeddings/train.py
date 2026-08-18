@@ -315,6 +315,15 @@ def load_embedding_model_with_dataloader(
     else:
         pretrained_models_match_string = match_string  # use full match_string for loading sources if match_num_cosmo is True
 
+    # `pretrained_models_match_string` addresses the SOURCE encoder run dirs
+    # (`pretrain_ncosmoNone_{i}_...`) and must NOT be used for lookups against THIS experiment's
+    # own run dirs, which are `pretrain_ncosmo{N}_{i}[_ens{j}]_...`. Commit 09b4478 correctly
+    # fixed the source form ("_0" -> "None_0") but applied it to the target-side lookups too, so
+    # on any `match_num_cosmo: False` experiment the ensemble member match became
+    # "None_{i}_ens{j}", which matches no directory: `get_best_checkpoint` returned [] for every
+    # member and the whole ensemble build failed ("No ensemble members were successfully
+    # loaded"). Target lookups below therefore use the full `match_string`; when
+    # `match_num_cosmo: True` the two strings are identical, so nothing else changes.
     cache_only = bool(getattr(cfg, "embeddings_cache_only", False))
     if cache_only:
         # The cached raw-z tensors ARE the input: there is nothing for the source encoders to
@@ -351,7 +360,7 @@ def load_embedding_model_with_dataloader(
 
         for j in range(n_ens):
             cfg_j = build_cfg_from_experiment_dict(experiment_name, exp_dict, n_cosmo=n_cosmo)
-            cfg_j.match_string = str(pretrained_models_match_string)
+            cfg_j.match_string = str(match_string)
             cfg_j.test_shape_noise_idx = [0]
             if config_overrides:
                 for key, value in config_overrides.items():
@@ -377,7 +386,7 @@ def load_embedding_model_with_dataloader(
         model = build_ensemble_model_from_checkpoints(
             cfg,
             test_loader=None,
-            match_string=pretrained_models_match_string,
+            match_string=match_string,
             member_test_loaders=member_test_loaders,
             model_builder=_build_embeddings_model_from_cfg_checkpoint,
         )
@@ -398,7 +407,7 @@ def load_embedding_model_with_dataloader(
             repeat_match=whiten_repeat_match,
             source_run_name=_member_source_run_name(cfg),
         )
-        checkpoint_path = _select_best_checkpoint_for_match(cfg, pretrained_models_match_string)
+        checkpoint_path = _select_best_checkpoint_for_match(cfg, match_string)
         if checkpoint_path is None:
             raise RuntimeError(
                 f"No checkpoint found for embeddings experiment '{experiment_name}' and match '{match_string}'."
