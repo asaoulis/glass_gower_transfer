@@ -87,6 +87,55 @@ def _build_prior(PRIOR_MODE):
 
     return prior, fixed_parameters
 
+# Identical `sample` jobs self-partition across nodes: each claims a different prior instead of
+# one job walking all three back to back. Three priors x ~1 wave of 35 batches is ~3x faster on
+# three nodes than on one, and the priors are completely independent (same checkpoints, different
+# prior object), so there is nothing to serialise.
+#
+# The claim is an atomically-created directory. A job starts at an offset derived from its SLURM
+# job id, so concurrently-submitted jobs pick different priors immediately, then walks the rest of
+# the list -- so ONE job still completes all three, just sequentially. Restart-safe: a prior whose
+# .tch already exists is skipped outright, and a claim older than CLAIM_STALE_HOURS with no output
+# is treated as abandoned (its job died) and retaken.
+CLAIM_STALE_HOURS = 12.0
+
+
+def _claim_dir(outpath, config_name, suffix):
+    return os.path.join(outpath, "_claims", f"{config_name}_{suffix}")
+
+
+def _try_claim(outpath, config_name, suffix):
+    """Atomically claim (config, prior). True if this process owns the work."""
+    import time
+
+    d = _claim_dir(outpath, config_name, suffix)
+    os.makedirs(os.path.dirname(d), exist_ok=True)
+    try:
+        os.mkdir(d)
+    except FileExistsError:
+        age_h = (time.time() - os.path.getmtime(d)) / 3600.0
+        if age_h < CLAIM_STALE_HOURS:
+            print(f"  [claim] {suffix}: held by another job ({age_h:.1f} h old), skipping")
+            return False
+        print(f"  [claim] {suffix}: stale claim ({age_h:.1f} h, no output) -- retaking")
+        os.utime(d, None)
+    with open(os.path.join(d, "jobid"), "w") as f:
+        f.write(str(os.environ.get("SLURM_JOB_ID", "local")) + "\n")
+    return True
+
+
+def _prior_runs_for_this_job():
+    """PRIOR_RUNS rotated by SLURM job id, so sibling jobs start on different priors."""
+    runs = list(PRIOR_RUNS)
+    if not runs:
+        return runs
+    try:
+        offset = int(os.environ.get("SLURM_JOB_ID", "0")) % len(runs)
+    except ValueError:
+        offset = 0
+    return runs[offset:] + runs[:offset]
+
+
 def _build_output_path(outpath, config_name, output_suffix):
     suffix = f"_{output_suffix}" if output_suffix else ""
     return os.path.join(outpath, f"{config_name}{suffix}.tch")
@@ -103,7 +152,8 @@ def _run_generation(output_suffix: str):
     outpath = "/share/gpu5/asaoulis/transfer_models/checkpoints/saved_samples"
     os.makedirs(outpath, exist_ok=True)
 
-    prior_runs = list(PRIOR_RUNS)
+    prior_runs = _prior_runs_for_this_job()
+    print(f"[claim] this job will try priors in order: {[m for m, _ in prior_runs]}")
     if output_suffix is not None:
         if len(prior_runs) != 1:
             raise ValueError(
@@ -236,6 +286,12 @@ def _run_generation(output_suffix: str):
         model.test_dataloader = test_loader
 
         for prior_mode, suffix, output_path in pending:
+            # Re-check: a sibling job may have finished this prior while we built the model.
+            if os.path.exists(output_path):
+                print(f"Completed by another job, skipping: {output_path}")
+                continue
+            if not _try_claim(outpath, config_name, suffix):
+                continue
             print(f"\n=== {config_name}: prior={prior_mode} -> {os.path.basename(output_path)} ===")
             prior, fixed_parameters = _build_prior(prior_mode)
             theta0s, samples = model.generate_samples(
