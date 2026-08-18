@@ -444,3 +444,52 @@ def _hybrid_bgp_p15_z16(data_patterns, band_ckpt, repeat_indices=_P15_Z16_REPEAT
 kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15"] = \
     _assert_final_summary_dim(_hybrid_bgp_p15_z16(_BGP_SC8A1, _BAND_CKPT_BGP), 16,
                               "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15")
+
+
+# === M10 — LOADING-PATCH VALIDATION + a 9-param wider-summary control ===========================
+# Two jobs in one cheap row (user, 2026-08-18):
+#
+# (1) **Validate the cross-width warm start.** The variate plan (see
+#     `.claude/runs/training-runs/production-training-runs/`) warm-starts 15-param z16 models from
+#     the 9-param z8 breakthroughs, i.e. ACROSS a summary-width change. This row exercises exactly
+#     that load path first, on a cheap 9-param run, before the expensive variate rows depend on it.
+#     ⭐ **No code patch was needed.** `load_partial_weights` (src/ml/models/lightning/utils.py)
+#     already skips shape-mismatched keys and loads the rest. Verified locally against
+#     `…_sc8a1/pretrain_ncosmoNone_0` -> the z16 geometry: **125/129 keys loaded**, with exactly the
+#     4 resized final-layer tensors skipped —
+#       patch_encoder.head.2.{weight,bias}: (8,256)/(8,) vs (16,256)/(16,)   <- map summary head
+#       hybrid_head.{weight,bias}:          (8,16)/(8,)  vs (16,24)/(16,)    <- final summary
+#     The whole CNN backbone + band encoder transfer. This is precisely "load the compressor weights
+#     UP TO the final layers with differing dimensions".
+#     ⚠️ Use `pretrained_embedding_ckpt_path` (partial, tolerant), NOT `checkpoint_path` — the latter
+#     goes through `NPELightningModule.load_from_checkpoint` -> `load_state_dict` STRICT, on purpose
+#     ("so a genuine architecture mismatch still surfaces", npe.py:141). That strictness is what
+#     would have caught the silent 8-vs-16 summary change, so it must NOT be loosened.
+#     ⚠️ `load_partial_weights` prints "Some source keys not used — prefix may be wrong" on EVERY
+#     encoder-only load from a full-model checkpoint (353 unused keys here = flow + duplicate
+#     embedding refs). It is a FALSE alarm in this workflow — do not chase it.
+#
+# (2) **Does a wider summary help 9-param inference?** Same z16 geometry as M9 but on the ORIGINAL
+#     9-param vector, warm-started from that seed's own 9-param foundation. Expected: little or no
+#     gain (the user's prior) — 9 params fit comfortably in 8 dims, so this isolates whether the M9
+#     15-param gain is really about *bottleneck capacity vs parameter count*, rather than the wider
+#     summary just being better in general. A NULL here strengthens the 15-param interpretation.
+_P15_9P_Z16_REPEATS = (0, 3)   # the two 9-param seeds with evaluated FoMs (r0 21.14, r3 21.79)
+_SC8A1_9P_CKPT = f"{_CKPT}/kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1/"
+
+
+def _hybrid_bgp_9p_z16(data_patterns, repeat_indices=_P15_9P_Z16_REPEATS):
+    c = _hybrid_bgp(data_patterns, None, _BAND_CKPT_BGP, repeat_indices=repeat_indices)
+    c.pop("pretrained_band_ckpt_path", None)   # band arrives inside the loaded embedding_net
+    c.pop("freeze_band", None)
+    c["pretrained_embedding_ckpt_path"] = _SC8A1_9P_CKPT
+    c["freeze_embedding_net"] = False          # finetune the whole encoder
+    c["match_num_cosmo"] = False               # resolve the source ckpt per-repeat as "_{i}"
+    c["latent_dim"] = 24                       # concat = band 8 + patch 16   (M9 geometry)
+    c["model_kwargs"] = {**c["model_kwargs"], "hybrid_output_dim": 16}
+    return c
+
+
+kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_warm"] = \
+    _assert_final_summary_dim(_hybrid_bgp_9p_z16(_BGP_SC8A1), 16,
+                              "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_warm")
