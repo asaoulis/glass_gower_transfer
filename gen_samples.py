@@ -242,7 +242,10 @@ def _run_generation(output_suffix: str):
                 prior=prior,
                 fixed_parameters=fixed_parameters,
                 num_samples=num_samples,
-                num_jobs=26,
+                # One loky worker per requested core. The test set is 35 batches, so 36
+                # workers finish it in ONE wave; 26 would need two, doubling the wall
+                # clock for no gain (same lesson as the B2 ensemble evals).
+                num_jobs=36,
                 num_chains=1,
                 show_progress_bars=True,
                 warmup_steps=500,
