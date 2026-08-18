@@ -48,7 +48,9 @@ from config.kids_legacy import (
     # sub-variate theta sets + the NLA-family a_ia box (nla/nla_z drop b_ia and widen a_ia)
     _COSMO_8_NLA, _A_IA_NLA_BOX,
     # the whitened-NLE chain factories (Stage A pretrain on GLASS; one repeat baked per row)
-    _nle_pretrain, _nle_bake_repeat,
+    _nle_pretrain, _nle_finetune, _nle_bake_repeat,
+    # the production Gower NPE ensemble finetune
+    _npe_finetune_z8,
 )
 # Import (never copy) the production map-encoder kwargs so this suite cannot drift from the
 # validated PreActResNet foundation arch.
@@ -610,3 +612,74 @@ for _r in _NLE_REPEATS:
     kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_bgp_z8_r{_r}"] = \
         _nle_pretrain_bgp(_BGP_NLA, _r, cosmo_param_names=_COSMO_8_NLA,
                           preset_overrides=_A_IA_NLA_BOX)
+
+
+# === M3 / M4b — the GOWER transfer stage ========================================================
+# ⏸️ WRITTEN AHEAD OF THE DATA (2026-08-18). The Gower foundation store (S1,
+# `gower_mocks_nla_m_novd_bgp`, job 1345036) is still generating, so NEITHER ROW CAN BE SUBMITTED
+# YET. They are written now so that landing the store is a one-command launch instead of a
+# config-writing session.
+#
+# ⚠️ **`_BGP_GOWER_NLA_M` IS AN ASSUMED NAME.** The bake does not exist yet; this follows the GLASS
+# convention exactly (`glass_mocks_nla_m_novd_bgp` -> `glass_bgp_nla_m_f16_sc8a1_<tag>`), so the
+# Gower analogue should be `gower_bgp_nla_m_f16_sc8a1_<tag>`. **Verify with `data-ls` before the
+# first submit** — a wrong path yields an empty glob, which surfaces as a confusing split error
+# rather than a missing-file error.
+#
+# Both rows are **9-param**, matching their parents: M3 finetunes the 9-param foundation, M4b
+# finetunes M4a's flow. Per the settled campaign direction b_g is a variate, not part of the
+# foundation's inference vector, so nothing here infers b_g.
+_BGP_GOWER_NLA_M = f"{_GPU5}/gower_bgp_nla_m_f16_sc8a1_{_EB}/output_*.h5"
+_GOWER_TEST_IDS = "config/fixed_test_sets/gower_test_ids.json"
+
+
+# --- M3: NPE ensemble finetune on Gower --------------------------------------------------------
+# Whole-model load (encoder + NPE flow) from each foundation repeat, then finetune everything.
+# ⭐ `map_kwargs=_RESNET_MAPKW` is CRITICAL and easy to lose: `_npe_finetune_z8` starts from a bare
+# `_hybrid_lmin50_z8()` with no map kwargs, so without this it builds a UNet and is then handed
+# PreActResNet weights. Unlike the tolerant `pretrained_embedding_ckpt_path` path, this row uses the
+# STRICT `checkpoint_path` loader, which is correct here (architectures match exactly) and is the
+# thing that would catch such a mismatch loudly.
+# Split: 300 train/val cosmologies (80/20) with the 200 fixed-test ids held out.
+def _npe_finetune_bgp(data_patterns=_BGP_GOWER_NLA_M):
+    c = _npe_finetune_z8(_SC8A1_9P_CKPT, data_patterns=data_patterns, eb_variant=None)
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
+    c["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    c["project"] = "gower-finetuning"
+    return c
+
+
+kids_legacy_bgp_experiments["gower_npe_finetune_nla_m_bgp_z8"] = \
+    _assert_final_summary_dim(_npe_finetune_bgp(), 8, "gower_npe_finetune_nla_m_bgp_z8")
+
+
+# --- M4b: NLE Stage B — ens9 flow finetune + MCMC eval, one row per repeat ----------------------
+# Loads the Stage-A flow from `checkpoints/glass_nle_pretrain_nla_m_bgp_z8_r{r}/` AND resolves that
+# run's persisted whitener (fit once on the GLASS train split, reused unchanged — never refit).
+# `whiten_k` MUST equal the pretrain's k or the flow checkpoint shapes disagree.
+#
+# ⚠️ `warmstart_max_gap_nats=22.0`: a PURE-WHITEN of a rank-deficient 8-D summary legitimately
+# inflates the epoch-0 GLASS->Gower gap (near-null PCs are fit sharply on GLASS and then amplify the
+# fidelity shift when divided by a tiny sqrt-eigenvalue), so the default 12-nat guard would fire on a
+# perfectly healthy warm start. Established on the z6/z8 chains; carried over unchanged.
+#
+# Runs on CORES64 via `embed --cpu` (flow training + a many-core MCMC eval), so it queues behind the
+# sims — sims win.
+for _r in _NLE_REPEATS:
+    _ft = _nle_finetune(f"glass_nle_pretrain_nla_m_bgp_z8_r{_r}", ensemble_repeats=9,
+                        whiten_k=8, warmstart_max_gap_nats=22.0,
+                        gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
+    _ft["max_trainval_cosmos"] = [300]
+    _ft["train_frac"] = 0.8
+    _ft["val_frac"] = 0.2
+    _ft["test_frac"] = 0.0        # test = the fixed 200 ids; fracs must sum to 1.0
+    _ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    _ft["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_r}_ens9"] = \
+        _nle_bake_repeat(_ft, _r)
+
+
+# --- M5c (the `nla` variate Gower NLE finetune) is NOT written -----------------------------------
+# It would need a Gower `nla` store (S2), and the dataset side's scope change of 2026-08-18 makes S1
+# the only remaining sim. Writing a row against a store nobody plans to generate would be dead
+# config that reads as ready. Add it if S2 is ever launched.
