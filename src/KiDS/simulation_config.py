@@ -18,6 +18,19 @@ GALAXY_BIAS_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
 GALAXY_BIAS_PRIORS = {
 	"flamingo_pt_diag": {"kappa": 1.0},
 	"flamingo_pt_diag_rob": {"kappa": 1.5},
+	# kappa=3 — the "galaxy bias as a VARIATE" prior (user, 2026-08-18). Deliberately much wider than
+	# a calibrated prior: the point is to make b_g a broadly-sampled nuisance the network must learn to
+	# marginalise, not to encode a belief about its value.
+	# ⚠️ AT kappa=3 THE CLIP IS ACTIVE AND RESHAPES THE PRIOR. With GALAXY_BIAS_CLIP=(0.3, 2.2):
+	#   bin1 (mu 1.018, sigma_3 0.540): nominal +-3sigma range [-0.603, 2.639] -> ~10.4 % of draws clip
+	#   bin6 (mu 1.480, sigma_3 0.295): [0.594, 2.367]                          -> ~0.6 % clip
+	# (kappa=1 clips 0.00 %, kappa=1.5 clips 0.26 % — so this is new behaviour at kappa=3, not a
+	# continuation.) The low-z bins would otherwise reach NEGATIVE bias, which is unphysical, so the
+	# clip is doing real work rather than trimming a tail. Consequence: bin1's effective prior is
+	# closer to "wide with a pile-up at 0.3" than to a Gaussian, and the realised expansion is < 3x
+	# for the low bins. See the variate write-up in
+	# .claude/runs/training-runs/production-training-runs/ — the clip width is an OPEN USER DECISION.
+	"flamingo_pt_diag_k3": {"kappa": 3.0},
 }
 GALAXY_BIAS_CLIP = (0.3, 2.2)
 
