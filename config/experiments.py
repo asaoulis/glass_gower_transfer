@@ -3649,6 +3649,51 @@ experiments = {
         "reuse_embedding_cache": True,
         "embedding_cache_experiment": "glass_embeddings_9param_noscale_nle",
     },
+    "finetune_9param_nle_white8_v2": {
+        # SINGLE-model (non-ensemble) twin of `finetune_9param_nle_ensemble_white8_v2`, i.e. the
+        # whitened counterpart of the PUBLISHED single-NLE chain
+        # `finetune_direct_9param_nle_anaprior_longsamples`. Everything below except the whitening
+        # block is copied verbatim from that published entry (0.7/0.2 splits, 75 epochs, lr 4e-4,
+        # hidden_features 64, match_num_cosmo False, no ensemble), so the ONLY substantive
+        # difference vs the published curve is WhitenPCAScaler(k=8) on the summaries.
+        "data_patterns": "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5",  # unused: cache-only
+        "dataset_quantities": [],
+        "latent_dim": 8,
+        "epochs": 75,
+        "batch_size": 128,
+        "lr": 0.0004,
+        "flow_kwargs": {"hidden_features": 64},
+        "project": "gower-finetuning",
+        "cosmo_param_names": ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"],
+        "inference_mode": "nle",
+        "match_num_cosmo": False,
+        "load_pretrained_flow": True,
+        # MUST be the WHITENED pre-train (event dim 16 -> 8); guard (a) raises on the published one.
+        # Same three pretrain repeats the ensemble arm warm-starts from.
+        "pretrained_band_ckpt_path": "/share/gpu5/asaoulis/transfer_models/checkpoints/glass_embeddings_9param_nle_white8_v2/",
+        # The full published grid, INCLUDING the values that were commented out in the published
+        # entry as it was edited between submissions. N=10/15 are deliberately absent: they have no
+        # cached embeddings in the published single-NLE tree and the raw gower_mocks store no longer
+        # exists on either datasets root, so they cannot be produced.
+        "max_trainval_cosmos": [20, 30, 40, 60, 80, 100, 120, 150, 200, 300, 400, 530],
+        # train_frac / val_frac MUST match the published entry: the cached emb_*.pt files ARE those
+        # splits, so this is a paired A/B rather than a re-split.
+        "train_frac": 0.7,
+        "val_frac": 0.2,
+        "scale_embeddings": False,
+        "repeats": 3,
+        "repeat_indices": [0, 1, 2],
+        "run_training": True,
+        "run_evaluation": True,
+        # --- whitening (reuses the pre-train's persisted whitener; never refits) ---
+        "whiten_embeddings": {"k": 8},
+        # Same measured guard-(c) headroom as the ensemble arm (see that entry for the derivation).
+        "whiten_warmstart_max_gap_nats": 100.0,
+        # --- cached-embedding reuse (raw gower_mocks no longer exists on gpu5 OR gpu4) ---
+        "reuse_embedding_cache": True,
+        "embedding_cache_experiment": "finetune_direct_9param_nle_anaprior_longsamples",
+        "embeddings_cache_only": True,
+    },
     "finetune_9param_nle_ensemble_white8_v2": {
         # Clone of `finetune_9param_nle_anaprior_ensemble_stratify`, warm-started from the WHITENED
         # pre-train. Trains from the published run's cached raw-z embeddings (gower_mocks was deleted
@@ -3748,3 +3793,21 @@ for _ri in (0, 1, 2):
             "max_trainval_cosmos": [_nc],
         }
 del _ri, _nc
+
+# --- per-(repeat, N) launchers for the SINGLE whitened arm --------------------------------------
+# Same rationale as the ensemble launchers above: `train_embeddings.py <name>` walks
+# repeat_indices x max_trainval_cosmos SERIALLY inside one SLURM job, so the canonical entry would
+# be 36 (train + ~1.7 h MCMC eval) runs on one wall clock. These aliases carry ONE (repeat, N) each
+# and share `experiment_name`, so all 36 jobs write into the single canonical
+# `checkpoints/finetune_9param_nle_white8_v2/` tree under disjoint
+# `pretrain_ncosmo{N}_{i}_glass_hybrid_patches_16_9param/` run dirs - no races, and any single cell
+# is independently re-submittable if it dies.
+for _sri in (0, 1, 2):
+    for _snc in (20, 30, 40, 60, 80, 100, 120, 150, 200, 300, 400, 530):
+        experiments[f"finetune_9param_nle_white8_v2_r{_sri}_n{_snc}"] = {
+            **experiments["finetune_9param_nle_white8_v2"],
+            "experiment_name": "finetune_9param_nle_white8_v2",
+            "repeat_indices": [_sri],
+            "max_trainval_cosmos": [_snc],
+        }
+del _sri, _snc

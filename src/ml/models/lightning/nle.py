@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import torch
-from joblib import Parallel, delayed
+from joblib import Parallel, delayed, parallel_config
 from tqdm import tqdm
 
 from sbi import utils as sbi_utils
@@ -72,27 +72,36 @@ class LikelihoodNDELightningModule(NDELightningModule):
         posterior.to("cpu")
         posterior.prior.to("cpu")
 
-        jobs = Parallel(
-            n_jobs=num_jobs,
-            backend=backend,
-            return_as="generator",
-        )(
-            delayed(posterior.sample_single_batch)(
-                num_samples,
-                test_data,
-                test_cosmo,
-                mcmc_kwargs,
+        # Pin ONE compute thread per worker - the same fix as EnsembleNLELightningModule
+        # (commit f4eec33). Each of the num_jobs workers runs an independent MCMC over a tiny
+        # (8-16 dim) flow, where torch's intra-op threading buys nothing but costs
+        # synchronisation - and with num_jobs workers each spawning a full thread pool on a
+        # same-sized node, the pool oversubscribes the CPU several times over and every worker
+        # slows down. `inner_max_num_threads` is the joblib-supported way to cap it; the
+        # OMP_NUM_THREADS-style environment variables alone do NOT reach loky workers. The
+        # unpinned ensemble path had not finished ONE wave of 35 batches in 3.5 h.
+        with parallel_config(backend=backend, inner_max_num_threads=1):
+            jobs = Parallel(
+                n_jobs=num_jobs,
+                backend=backend,
+                return_as="generator",
+            )(
+                delayed(posterior.sample_single_batch)(
+                    num_samples,
+                    test_data,
+                    test_cosmo,
+                    mcmc_kwargs,
+                )
+                for test_data, test_cosmo in self.test_dataloader
             )
-            for test_data, test_cosmo in self.test_dataloader
-        )
 
-        results = list(
-            tqdm(
-                jobs,
-                total=len(self.test_dataloader),
-                desc="Sampling batches",
+            results = list(
+                tqdm(
+                    jobs,
+                    total=len(self.test_dataloader),
+                    desc="Sampling batches",
+                )
             )
-        )
 
         theta0s, samples = zip(*results)
 
