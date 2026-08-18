@@ -45,6 +45,10 @@ configs **false-fail** it — production submits of those rows pass `--skip-smok
 """
 from config.kids_legacy import (
     _band_lmin50, _hybrid_lmin50_z8, _hybrid_lmin50_z8_smoke,
+    # sub-variate theta sets + the NLA-family a_ia box (nla/nla_z drop b_ia and widen a_ia)
+    _COSMO_8_NLA, _A_IA_NLA_BOX,
+    # the whitened-NLE chain factories (Stage A pretrain on GLASS; one repeat baked per row)
+    _nle_pretrain, _nle_bake_repeat,
 )
 # Import (never copy) the production map-encoder kwargs so this suite cannot drift from the
 # validated PreActResNet foundation arch.
@@ -493,3 +497,116 @@ def _hybrid_bgp_9p_z16(data_patterns, repeat_indices=_P15_9P_Z16_REPEATS):
 kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_warm"] = \
     _assert_final_summary_dim(_hybrid_bgp_9p_z16(_BGP_SC8A1), 16,
                               "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_warm")
+
+
+# === M4a — the WHITENED (k=8) NLE chain, Stage A: GLASS pretrain ================================
+# The NLE half of the multifidelity stack, resumed for this campaign (user 2026-08-18). Per repeat
+# r: freeze the 9-param sc8a1 foundation encoder, cache its 8-D summary over the FULL GLASS bgp
+# store, then train a flow q(z | theta) on those cached embeddings. Stage B (the Gower ens9
+# finetune) is written when the Gower stores land — S1 is still generating.
+#
+# ⭐ **9 parameters, not 15.** The settled campaign direction (STATUS.md §CAMPAIGN DIRECTION
+# SETTLED) makes b_g a VARIATE rather than part of the foundation's inference vector, and these rows
+# hang off the 9-param breakthroughs — so the theta vector here is `_COSMO_9`, inherited from the
+# source encoder rather than re-listed.
+#
+# ⭐ **whiten_k=8 is PURE-WHITEN, not truncation.** The z8 summary is 8-D
+# (`hybrid_output_dim=8` overrides `latent_dim`), so k=8 keeps full rank: an invertible affine map
+# that leaves the extracted mutual information exactly unchanged and buys only CONDITIONING.
+# That is deliberate and measured — `../bgp-nle-whitening-dim/artifacts/KSWEEP_REPORT.md` swept
+# k=2/4/6/8 on this very architecture and found NO free truncation (k=6 already costs 13 % of
+# FoM(omega_m,sigma_8), k=4 costs 22 %), while the k=8 invariance control reproduced the raw
+# summary to 0.003 nats. ⇒ Any k<8 here would throw away constraining power for nothing.
+#
+# ⚠️ The pretrain val NLL is NOT commensurable across repeats — it depends on each foundation seed's
+# embedding scale. A wide spread is expected and is not a quality signal; compare at eval.
+_NLE_REPEATS = (0, 1, 2, 3, 4)          # the 5 foundation seeds (r0..r4 all cleared the -4.5 wall)
+_NLE_EPOCHS = 150
+_BGP_NLE_PROJECT = "bgp-nle"            # keep this campaign's NLE runs in one W&B project
+
+
+def _nle_pretrain_bgp(data_patterns, repeat, cosmo_param_names=None, preset_overrides=None):
+    """Stage-A NLE pretrain row for one repeat, on a bgp GLASS store.
+
+    `eb_variant=None` because the bgp bakes write BARE `E` groups (no `--keep-variant-tag`), exactly
+    as the hybrid rows above read them. Passing a tag here would look for `E_<tag>` and find nothing.
+    """
+    kw = {}
+    if cosmo_param_names is not None:
+        kw["cosmo_param_names"] = cosmo_param_names
+    if preset_overrides is not None:
+        kw["preset_overrides"] = preset_overrides
+    c = _nle_pretrain(data_patterns, None, whiten_k=8, epochs=_NLE_EPOCHS, **kw)
+    c["project"] = _BGP_NLE_PROJECT
+    return _nle_bake_repeat(c, repeat)
+
+
+for _r in _NLE_REPEATS:
+    # source encoder is passed at the train_embeddings.py CLI:
+    #   embed --target glass_nle_pretrain_nla_m_bgp_z8_r<r> \
+    #         --sources kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1 --gpu v100
+    # match_num_cosmo=False (from the factory) => repeat_match "_{r}", which resolves that
+    # encoder's `pretrain_ncosmoNone_{r}` checkpoint AND trains this flow as repeat r.
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_m_bgp_z8_r{_r}"] = \
+        _nle_pretrain_bgp(_BGP_SC8A1, _r)
+
+
+# === M5a — GLASS IA sub-variate encoder finetune (the `nla` variate) ============================
+# Warm-start the whole 9-param foundation encoder (band + map) onto the `nla` IA store and train it
+# with a FRESH flow head. This is the GLASS-side variate chain: it teaches the compressor an IA
+# model it never saw, so the downstream Gower finetune inherits a representation that is not
+# over-fitted to NLA-M.
+#
+# ⭐ Built from `_hybrid_bgp`, NOT from `config.kids_legacy._encoder_finetune_z8`. The latter starts
+# from a bare `_hybrid_lmin50_z8()` with NO `map_kwargs`, so it would build a UNet map encoder and
+# then be handed PreActResNet weights — the load would silently drop the whole map branch. The
+# archived checklist flags this as CRITICAL for exactly this reason; going through `_hybrid_bgp`
+# keeps `_RESNET_MAPKW` attached by construction.
+#
+# ⚠️ theta is `_COSMO_8_NLA` (8 params: the NLA-M vector minus `b_ia`, which `nla` does not have) and
+# a_ia MUST be re-boxed to U[-6,6] — the global preset's a_ia box is the NLA-M range (4.48, 7.0), so
+# without the override a_ia is mis-scaled in BOTH training and eval.
+_BGP_NLA = f"{_GPU5}/glass_bgp_nla_f16_sc8a1_{_EB}/output_*.h5"     # G5 bake (job 1344916)
+_VARIATE_REPEATS = (0, 1, 2, 3, 4)
+
+
+def _encoder_finetune_bgp(data_patterns, cosmo_param_names, preset_overrides=None,
+                          repeat_indices=_VARIATE_REPEATS):
+    """Foundation-warm-started encoder finetune on a bgp GLASS sub-variate store, 8-D summary.
+
+    Same geometry as the foundation (z8) per the settled SUMMARY-WIDTH RULE: 16-D is reserved for
+    the FINAL 15-param variate rows that actually infer b_g. Here b_g is only marginalised, so the
+    width does not matter and the 9-param warm start carries the load.
+    """
+    c = _hybrid_bgp(data_patterns, None, _BAND_CKPT_BGP, repeat_indices=repeat_indices)
+    c.pop("pretrained_band_ckpt_path", None)   # the band arrives inside the loaded embedding_net
+    c.pop("freeze_band", None)
+    c["pretrained_embedding_ckpt_path"] = _SC8A1_9P_CKPT
+    c["freeze_embedding_net"] = False          # finetune the whole encoder
+    c["match_num_cosmo"] = False               # resolve the source ckpt per-repeat as "_{i}"
+    c["cosmo_param_names"] = list(cosmo_param_names)
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"gamma": 0.984, "warmup_steps": 0}   # 0.984^100 ~ 0.20: 2e-4 -> ~4e-5
+    c["lr"] = 0.0002
+    c["epochs"] = 100
+    if preset_overrides:
+        c["scaler_options"] = {
+            "data": {"type": "standard", "keys": None},
+            "cosmo": {"type": "preset", "preset_overrides": dict(preset_overrides)},
+        }
+    return c
+
+
+kids_legacy_bgp_experiments["glass_encoder_finetune_nla_bgp_z8"] = \
+    _assert_final_summary_dim(
+        _encoder_finetune_bgp(_BGP_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX), 8,
+        "glass_encoder_finetune_nla_bgp_z8")
+
+
+# === M5b — Stage-A NLE pretrain on the `nla` variate encoder ====================================
+# Blocked on M5a (its source encoder). Written now so the launch is a one-liner when it lands.
+# theta + a_ia box MUST match M5a exactly, or theta is mis-shaped/mis-scaled in training and eval.
+for _r in _NLE_REPEATS:
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_bgp_z8_r{_r}"] = \
+        _nle_pretrain_bgp(_BGP_NLA, _r, cosmo_param_names=_COSMO_8_NLA,
+                          preset_overrides=_A_IA_NLA_BOX)
