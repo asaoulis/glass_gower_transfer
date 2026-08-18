@@ -135,6 +135,43 @@ def _try_parse_repeat_idx(match_string: str) -> Optional[int]:
         return None
 
 
+def resolve_embedding_cache_run_name(cfg, source_run_name: str) -> str:
+    """Apply the `embedding_cache_experiment` redirect to a run name.
+
+    `create_run_name` yields "{experiment_name}/pretrain_{match}", so swapping the leading
+    experiment component points the cache lookup at ANOTHER experiment's checkpoint tree while
+    keeping the per-(ncosmo, repeat, ensemble) suffix that keys the cached files. Shared by the
+    training path (`train_embedding_run`) and the load-for-inference path so both resolve the
+    SAME cache directory.
+    """
+
+    cache_exp = getattr(cfg, "embedding_cache_experiment", None)
+    if not cache_exp:
+        return source_run_name
+    redirected = source_run_name.replace(f"{cfg.experiment_name}/", f"{cache_exp}/", 1)
+    if redirected == source_run_name:
+        raise RuntimeError(
+            f"embedding_cache_experiment='{cache_exp}' set, but run name '{source_run_name}' does "
+            f"not start with '{cfg.experiment_name}/' - cannot redirect the cache path."
+        )
+    return redirected
+
+
+def _require_complete_embedding_cache(cfg, cache_run_name: str) -> str:
+    """Hard-fail unless all three emb_{train,val,test}.pt exist; return the cache directory."""
+
+    paths = _get_embedding_cache_paths(cfg, cache_run_name)
+    missing = [p for p in paths if not os.path.exists(p)]
+    if missing:
+        raise RuntimeError(
+            "Embedding cache reuse is enabled but the cache is incomplete. Missing:\n  "
+            + "\n  ".join(missing)
+            + "\nExpected all three of emb_{train,val,test}.pt under\n  "
+            + os.path.dirname(paths[0])
+        )
+    return os.path.dirname(paths[0])
+
+
 def _build_embedding_test_loader_for_cfg(
     cfg,
     source_models,
@@ -143,19 +180,60 @@ def _build_embedding_test_loader_for_cfg(
     is_pretrain_source: bool = False,
     pretrained_ckpt_path_or_dir=None,
     repeat_match=None,
+    source_run_name: Optional[str] = None,
 ):
-    """Build scaled embedding test loader (and scalers) for one config instance."""
+    """Build scaled embedding test loader (and scalers) for one config instance.
+
+    When `source_run_name` is given the cached embeddings are used: the name is passed through
+    the `embedding_cache_experiment` redirect and handed to `build_embedding_dataloaders` as
+    `wandb_run_name`, which is what makes the cache readable at all (with `wandb_run_name=None`
+    the cache branch is skipped entirely and embeddings are recomputed from raw data).
+
+    Under `embeddings_cache_only` the raw store does not exist, so `prepare_data_parameters` -
+    which globs `data_patterns` and fits the data scalers - is skipped and replaced by the
+    data-INDEPENDENT preset cosmo scaler, exactly as `train_embedding_run` does.
+    """
 
     from .embeddings_utils import build_embedding_dataloaders
 
-    scalers, train_loader, val_loader, test_loader = prepare_data_parameters(cfg)
+    cache_only = bool(getattr(cfg, "embeddings_cache_only", False))
+    cache_run_name = (
+        resolve_embedding_cache_run_name(cfg, source_run_name) if source_run_name else None
+    )
+
+    if cache_run_name is not None and (cache_only or getattr(cfg, "embedding_cache_experiment", None)):
+        cache_dir = _require_complete_embedding_cache(cfg, cache_run_name)
+        print(f"[cache] embedding test loader reads {cache_dir}")
+
+    if cache_only:
+        if cache_run_name is None:
+            raise RuntimeError(
+                "embeddings_cache_only=True requires a run name to resolve the cached embeddings; "
+                "the caller did not pass source_run_name."
+            )
+        if cfg.scaler_options.get("cosmo", {}).get("type") != "preset":
+            raise RuntimeError(
+                "embeddings_cache_only=True requires scaler_options['cosmo']['type'] == 'preset' "
+                "(any fitted cosmo scaler would need the raw data this mode skips); got "
+                f"{cfg.scaler_options.get('cosmo')!r}."
+            )
+        scalers = {
+            "cosmo": _build_cosmo_preset_scaler(
+                COSMO_PARAM_PRESET_MINMAX, list(cfg.cosmo_param_names)
+            )
+        }
+        train_loader = _CacheOnlyLoaderStub(cfg)
+        val_loader = test_loader = train_loader
+    else:
+        scalers, train_loader, val_loader, test_loader = prepare_data_parameters(cfg)
+
     _, _, test_emb_loader = build_embedding_dataloaders(
         train_loader,
         val_loader,
         test_loader,
         source_models,
         base_cfg=cfg,
-        wandb_run_name=None,
+        wandb_run_name=cache_run_name,
         use_cache_if_exists=True,
         whiten_cfg=whiten_cfg,
         is_pretrain_source=is_pretrain_source,
@@ -236,14 +314,30 @@ def load_embedding_model_with_dataloader(
         pretrained_models_match_string = "None_" + match_string.split("_")[1]  # e.g. "ncosmo30_0" -> "_0"
     else:
         pretrained_models_match_string = match_string  # use full match_string for loading sources if match_num_cosmo is True
-    source_models, dataset_quantities, _ = load_pretrained_models(
-        list(source_experiments),
-        cfg_overrides=source_cfg_overrides,
-        repeat_idx=repeat_idx,
-        match_string=pretrained_models_match_string,
-        
-    )
+
+    cache_only = bool(getattr(cfg, "embeddings_cache_only", False))
+    if cache_only:
+        # The cached raw-z tensors ARE the input: there is nothing for the source encoders to
+        # encode, and on this chain the raw store they were trained against no longer exists.
+        # Mirrors the cache-only branch of `train_embedding_run`.
+        source_models, dataset_quantities = [], list(cfg.dataset_quantities)
+    else:
+        source_models, dataset_quantities, _ = load_pretrained_models(
+            list(source_experiments),
+            cfg_overrides=source_cfg_overrides,
+            repeat_idx=repeat_idx,
+            match_string=pretrained_models_match_string,
+        )
     cfg.dataset_quantities = dataset_quantities
+
+    # Cached embeddings are keyed by the RUN name, so reproduce the exact names training used:
+    # "{experiment_name}/pretrain_{match}[_ens{j}]_{sources}". `resolve_embedding_cache_run_name`
+    # then applies any `embedding_cache_experiment` redirect.
+    source_experiments_strings = "_".join(source_experiments)
+
+    def _member_source_run_name(cfg_for_name, ensemble_idx=None):
+        run_match = match_string if ensemble_idx is None else f"{match_string}_ens{int(ensemble_idx)}"
+        return f"{create_run_name(cfg_for_name, run_match)}_{source_experiments_strings}"
 
     if is_ensemble_eval_active(cfg):
         if repeat_idx is None:
@@ -274,6 +368,7 @@ def load_embedding_model_with_dataloader(
                 is_pretrain_source=whiten_is_pretrain_source,
                 pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
                 repeat_match=whiten_repeat_match,
+                source_run_name=_member_source_run_name(cfg_j, ensemble_idx=j),
             )
             if scalers is None:
                 scalers = scalers_j
@@ -301,6 +396,7 @@ def load_embedding_model_with_dataloader(
             is_pretrain_source=whiten_is_pretrain_source,
             pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
             repeat_match=whiten_repeat_match,
+            source_run_name=_member_source_run_name(cfg),
         )
         checkpoint_path = _select_best_checkpoint_for_match(cfg, pretrained_models_match_string)
         if checkpoint_path is None:
@@ -362,15 +458,8 @@ def train_embedding_run(
     # experiment component redirects the cache lookup at ANOTHER experiment's checkpoint tree while
     # keeping the per-(ncosmo, repeat, ensemble) suffix that keys the cached files.
     cache_only = bool(getattr(target_cfg, "embeddings_cache_only", False))
-    cache_run_name = source_run_name
     _cache_exp = getattr(target_cfg, "embedding_cache_experiment", None)
-    if _cache_exp:
-        cache_run_name = source_run_name.replace(f"{target_cfg.experiment_name}/", f"{_cache_exp}/", 1)
-        if cache_run_name == source_run_name:
-            raise RuntimeError(
-                f"embedding_cache_experiment='{_cache_exp}' set, but run name '{source_run_name}' does "
-                f"not start with '{target_cfg.experiment_name}/' — cannot redirect the cache path."
-            )
+    cache_run_name = resolve_embedding_cache_run_name(target_cfg, source_run_name)
 
     # A redirected cache must never be WRITTEN to: on a miss, the fresh-compute branch of
     # `build_embedding_dataloaders` would save into the foreign experiment's checkpoint tree and

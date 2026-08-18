@@ -46,9 +46,21 @@ def _build_fixed_parameters_list(
 
     return fixed_parameters
 
-PRIOR_MODE = "gower"  # "gower" | "kids_s8_analytic" | "LCDM_fixed_w0"
+# (prior mode, output suffix) pairs run BACK TO BACK against each model in one job.
+# The gatekeeper's `sample-submit` passes no arguments, so anything configurable has to live in
+# the file and be `sync`ed; running the priors as a list (rather than one PRIOR_MODE per job)
+# means the expensive part -- building a 9-member NLE ensemble and its cached test loader -- is
+# paid ONCE for all three sample sets. Suffixes match what the plotting notebooks load:
+#   longsamples = Gower empirical prior (apples-to-apples with the published NPE chains)
+#   FINAL       = KiDS-Legacy analytic S8 prior, wCDM
+#   LCDM        = same analytic prior with w0 fixed to -1
+PRIOR_RUNS = [
+    ("gower", "longsamples"),
+    ("kids_s8_analytic", "FINAL"),
+    ("LCDM_fixed_w0", "LCDM"),
+]
 
-def _build_prior():
+def _build_prior(PRIOR_MODE):
     from src.ml.embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX, _build_cosmo_preset_scaler
     from src.ml.eval.utils import build_gower_prior, build_s8_analytic_prior
 
@@ -86,8 +98,19 @@ def _run_generation(output_suffix: str):
     from src.ml.eval.utils import load_best_model_and_build_posterior
     from src.ml.utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_active, prepare_data_parameters
 
-    prior, fixed_parameters = _build_prior()
-    outpath = "data/saved_samples"
+    # Under MODELS_ROOT (not the repo) so the gatekeeper can `send` these: `view`/`send` are
+    # confined to MODELS_ROOT, and the old repo-local dumps were unreachable from outside.
+    outpath = "/share/gpu5/asaoulis/transfer_models/checkpoints/saved_samples"
+    os.makedirs(outpath, exist_ok=True)
+
+    prior_runs = list(PRIOR_RUNS)
+    if output_suffix is not None:
+        if len(prior_runs) != 1:
+            raise ValueError(
+                "--output-suffix only makes sense when PRIOR_RUNS has exactly one entry; "
+                f"it has {len(prior_runs)}. Edit PRIOR_RUNS instead."
+            )
+        prior_runs = [(prior_runs[0][0], output_suffix)]
 
     experiment_names = [
         # 2-tuple: regular/ensemble path
@@ -105,8 +128,11 @@ def _run_generation(output_suffix: str):
         # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo200_2", ["glass_hybrid_patches_16_9param"]),
         # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_2", ["glass_hybrid_patches_16_9param"]),
         # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_0", ["glass_hybrid_patches_16_9param"]),
-        ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_1", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo60_0", ["glass_hybrid_patches_16_9param"]),
+        # Whitened (k=8) transfer NLE ensemble, N=60, repeat 0 -- r0 is the best-calibrated of the
+        # three repeats at N=60 (full 9-param TARP 0.01003 vs 0.01195 / 0.01012) and also the best
+        # FoM (75.87). Runs cache-only off the published chain's embeddings; raw gower_mocks is gone.
+        ("finetune_9param_nle_ensemble_white8_v2", "ncosmo60_0", ["glass_hybrid_patches_16_9param"]),
+        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_1", ["glass_hybrid_patches_16_9param"]),
 
         # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo80_2", ["glass_hybrid_patches_16_9param"]),
         # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo60_1", ["glass_hybrid_patches_16_9param"]),
@@ -126,12 +152,17 @@ def _run_generation(output_suffix: str):
             source_experiments = None
 
         config_name = f"{experiment_name}_{match_string}"
-        output_path = _build_output_path(outpath, config_name, output_suffix)
 
-        if os.path.exists(output_path):
-            samples, theta0s = torch.load(output_path)
-            print(f"Loaded existing samples from {output_path}")
-            samples_dict[config_name] = (samples, theta0s)
+        pending = []
+        for prior_mode, suffix in prior_runs:
+            output_path = _build_output_path(outpath, config_name, suffix)
+            if os.path.exists(output_path):
+                print(f"Already on disk, skipping: {output_path}")
+                continue
+            pending.append((prior_mode, suffix, output_path))
+
+        if not pending:
+            print(f"All prior runs already present for {config_name}; nothing to do.")
             continue
 
         if len(experiment_entry) == 3:
@@ -203,25 +234,30 @@ def _run_generation(output_suffix: str):
 
         num_samples = 10000
         model.test_dataloader = test_loader
-        theta0s, samples = model.generate_samples(
-            prior=prior,
-            fixed_parameters=fixed_parameters,
-            num_samples=num_samples,
-            num_jobs=26,
-            num_chains=1,
-            show_progress_bars=True,
-            warmup_steps=500,
-        )
-        samples_dict[config_name] = (samples, theta0s)
-        torch.save((samples, theta0s), output_path)
-        print(f"Saved samples to {output_path}")
+
+        for prior_mode, suffix, output_path in pending:
+            print(f"\n=== {config_name}: prior={prior_mode} -> {os.path.basename(output_path)} ===")
+            prior, fixed_parameters = _build_prior(prior_mode)
+            theta0s, samples = model.generate_samples(
+                prior=prior,
+                fixed_parameters=fixed_parameters,
+                num_samples=num_samples,
+                num_jobs=26,
+                num_chains=1,
+                show_progress_bars=True,
+                warmup_steps=500,
+            )
+            samples_dict[f"{config_name}_{suffix}"] = (samples, theta0s)
+            torch.save((samples, theta0s), output_path)
+            print(f"Saved samples to {output_path}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Generate posterior samples for configured experiments.")
     parser.add_argument(
         "--output-suffix",
-        default="longsamples",
-        help="Optional suffix appended to saved sample files. Use an empty string for no suffix.",
+        default=None,
+        help="Legacy override of the output suffix. Only valid when PRIOR_RUNS has exactly one "
+             "entry; otherwise edit PRIOR_RUNS (which carries one suffix per prior).",
     )
     return parser.parse_args()
 
