@@ -18,19 +18,18 @@ GALAXY_BIAS_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
 GALAXY_BIAS_PRIORS = {
 	"flamingo_pt_diag": {"kappa": 1.0},
 	"flamingo_pt_diag_rob": {"kappa": 1.5},
-	# kappa=3 — the "galaxy bias as a VARIATE" prior (user, 2026-08-18). Deliberately much wider than
-	# a calibrated prior: the point is to make b_g a broadly-sampled nuisance the network must learn to
-	# marginalise, not to encode a belief about its value.
-	# ⚠️ AT kappa=3 THE CLIP IS ACTIVE AND RESHAPES THE PRIOR. With GALAXY_BIAS_CLIP=(0.3, 2.2):
-	#   bin1 (mu 1.018, sigma_3 0.540): nominal +-3sigma range [-0.603, 2.639] -> ~10.4 % of draws clip
-	#   bin6 (mu 1.480, sigma_3 0.295): [0.594, 2.367]                          -> ~0.6 % clip
-	# (kappa=1 clips 0.00 %, kappa=1.5 clips 0.26 % — so this is new behaviour at kappa=3, not a
-	# continuation.) The low-z bins would otherwise reach NEGATIVE bias, which is unphysical, so the
-	# clip is doing real work rather than trimming a tail. Consequence: bin1's effective prior is
-	# closer to "wide with a pile-up at 0.3" than to a Gaussian, and the realised expansion is < 3x
-	# for the low bins. See the variate write-up in
-	# .claude/runs/training-runs/production-training-runs/ — the clip width is an OPEN USER DECISION.
-	"flamingo_pt_diag_k3": {"kappa": 3.0},
+	# kappa=2 — the "galaxy bias as a VARIATE" prior (user, 2026-08-18). Deliberately wider than a
+	# calibrated prior: the point is to make b_g a broadly-sampled nuisance the network must learn to
+	# marginalise. Keeps the Flamingo per-bin MEANS and doubles the published sigmas, so it is a clean
+	# "2x the published sigma" statement.
+	# Effective coverage, P(0.8 < b_g < 1.8) per tomo bin (+-3sigma-truncated):
+	#   bin1 71.5 %  bin2 81.2 %  bin3 90.5 %  bin4 99.1 %  bin5 98.8 %  bin6 94.9 %
+	# i.e. the LOW-z bins deliberately sample well below 0.8 (bin1 central-90 % = [0.43, 1.61]).
+	# That asymmetry is structural, not a bug: kappa RESCALES but does not RE-CENTRE, and the Flamingo
+	# means run 1.018 -> 1.481, so bin1 sits only 0.22 above 0.8 while bin6 sits 0.32 below 1.8.
+	# Clip interaction is mild here — max 2.18 % of draws reach GALAXY_BIAS_CLIP (vs 10.38 % at
+	# kappa=3, which is why kappa=3 was considered and REJECTED; kappa=1 clips 0.00 %).
+	"flamingo_pt_diag_k2": {"kappa": 2.0},
 }
 GALAXY_BIAS_CLIP = (0.3, 2.2)
 
