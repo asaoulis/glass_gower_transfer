@@ -107,6 +107,29 @@ def _claim_dir(outpath, config_name, suffix):
     return os.path.join(outpath, "_claims", f"{config_name}_{suffix}")
 
 
+def _claim_job_is_alive(claim_dir) -> bool:
+    """Is the SLURM job that wrote this claim still in the queue?
+
+    Age alone is a poor staleness test: a cancelled job holds its cell for CLAIM_STALE_HOURS even
+    though it will never finish it. Asking squeue makes an abandoned claim reclaimable at once.
+    Unknown/unreadable => treat as alive and let the age rule decide.
+    """
+    import subprocess
+
+    try:
+        with open(os.path.join(claim_dir, "jobid")) as f:
+            jid = f.read().strip()
+        if not jid.isdigit():
+            return True
+        out = subprocess.run(["squeue", "-h", "-j", jid, "-o", "%T"],
+                             capture_output=True, text=True, timeout=30)
+        if out.returncode != 0:
+            return True                      # squeue itself failed -- do not steal on a guess
+        return bool(out.stdout.strip())
+    except Exception:
+        return True
+
+
 def _try_claim(outpath, config_name, suffix):
     """Atomically claim (config, prior). True if this process owns the work."""
     import time
@@ -117,26 +140,37 @@ def _try_claim(outpath, config_name, suffix):
         os.mkdir(d)
     except FileExistsError:
         age_h = (time.time() - os.path.getmtime(d)) / 3600.0
-        if age_h < CLAIM_STALE_HOURS:
-            print(f"  [claim] {suffix}: held by another job ({age_h:.1f} h old), skipping")
+        alive = _claim_job_is_alive(d)
+        if alive and age_h < CLAIM_STALE_HOURS:
+            print(f"  [claim] {suffix}: held by a live job ({age_h:.1f} h old), skipping")
             return False
-        print(f"  [claim] {suffix}: stale claim ({age_h:.1f} h, no output) -- retaking")
+        why = "job no longer in the queue" if not alive else f"stale ({age_h:.1f} h, no output)"
+        print(f"  [claim] {suffix}: {why} -- retaking")
         os.utime(d, None)
     with open(os.path.join(d, "jobid"), "w") as f:
         f.write(str(os.environ.get("SLURM_JOB_ID", "local")) + "\n")
     return True
 
 
-def _prior_runs_for_this_job():
-    """PRIOR_RUNS rotated by SLURM job id, so sibling jobs start on different priors."""
-    runs = list(PRIOR_RUNS)
-    if not runs:
-        return runs
+def _rotate_for_this_job(items):
+    """`items` rotated by SLURM job id, so sibling jobs start on different work.
+
+    Identical `sample` submissions self-partition: with the claim directory below, N jobs cover N
+    different (model, prior) cells concurrently instead of one job walking them back to back.
+    """
+    items = list(items)
+    if not items:
+        return items
     try:
-        offset = int(os.environ.get("SLURM_JOB_ID", "0")) % len(runs)
+        offset = int(os.environ.get("SLURM_JOB_ID", "0")) % len(items)
     except ValueError:
         offset = 0
-    return runs[offset:] + runs[:offset]
+    return items[offset:] + items[:offset]
+
+
+def _prior_runs_for_this_job():
+    """PRIOR_RUNS rotated by SLURM job id, so sibling jobs start on different priors."""
+    return _rotate_for_this_job(PRIOR_RUNS)
 
 
 def _build_output_path(outpath, config_name, output_suffix):
@@ -192,7 +226,7 @@ def _run_generation(output_suffix: str):
     model_configs = {}
     samples_dict = {}
 
-    for experiment_entry in experiment_names:
+    for experiment_entry in _rotate_for_this_job(experiment_names):
         opts = {}
         if len(experiment_entry) == 4:
             experiment_name, match_string, source_experiments, opts = experiment_entry
@@ -211,6 +245,8 @@ def _run_generation(output_suffix: str):
             output_path = _build_output_path(outpath, config_name, suffix)
             if os.path.exists(output_path):
                 print(f"Already on disk, skipping: {output_path}")
+                continue
+            if not _try_claim(outpath, config_name, suffix):
                 continue
             pending.append((prior_mode, suffix, output_path))
 
@@ -294,8 +330,6 @@ def _run_generation(output_suffix: str):
             # Re-check: a sibling job may have finished this prior while we built the model.
             if os.path.exists(output_path):
                 print(f"Completed by another job, skipping: {output_path}")
-                continue
-            if not _try_claim(outpath, config_name, suffix):
                 continue
             print(f"\n=== {config_name}: prior={prior_mode} -> {os.path.basename(output_path)} ===")
             prior, fixed_parameters = _build_prior(prior_mode)
