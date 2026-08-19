@@ -113,6 +113,13 @@ def _claim_job_is_alive(claim_dir) -> bool:
     Age alone is a poor staleness test: a cancelled job holds its cell for CLAIM_STALE_HOURS even
     though it will never finish it. Asking squeue makes an abandoned claim reclaimable at once.
     Unknown/unreadable => treat as alive and let the age rule decide.
+
+    The subtlety that matters: `squeue -j <id>` exits NON-ZERO for a job SLURM has purged, with
+    "Invalid job id specified" on stderr. That is precisely the "this job is gone" case, so it
+    must not be lumped in with "squeue is broken" -- doing so makes a cancelled job's claim
+    immortal, which is exactly what stranded the ensemble cell on 2026-08-19 (job 1345263 was
+    cancelled, its claim survived, and the sibling that should have retaken it exited with
+    nothing to do). Any OTHER non-zero exit still means "do not steal on a guess".
     """
     import subprocess
 
@@ -124,6 +131,9 @@ def _claim_job_is_alive(claim_dir) -> bool:
         out = subprocess.run(["squeue", "-h", "-j", jid, "-o", "%T"],
                              capture_output=True, text=True, timeout=30)
         if out.returncode != 0:
+            err = (out.stderr or "").lower()
+            if "invalid job id" in err or "invalid job" in err:
+                return False                 # SLURM has purged it: definitely not running
             return True                      # squeue itself failed -- do not steal on a guess
         return bool(out.stdout.strip())
     except Exception:
