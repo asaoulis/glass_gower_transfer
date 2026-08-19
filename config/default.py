@@ -121,6 +121,9 @@ def get_default_config():
     config.reuse_embedding_cache = False      # read the emb cache even when training
     config.embedding_cache_experiment = None  # read the cache from ANOTHER experiment's checkpoint dir
     config.embeddings_cache_only = False      # skip raw-data loading + source encoding entirely
+    # Optional held-out test-set swap for cache-only runs: {"path": <spec json>,
+    # "align_to_native": True}. See src/ml/embeddings/holdout_testset.py. None = off.
+    config.holdout_test_spec = None
     config.accumulate_grad_batches = 1
     config.inference_mode = "npe"
 

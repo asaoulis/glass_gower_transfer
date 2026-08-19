@@ -489,6 +489,24 @@ def build_embedding_dataloaders(
                     cosmo_scaler = cached_cosmo_scaler
                 cache_used = True
 
+                # --- optional held-out test-set swap (cache-only runs) ------------------------
+                # Under `embeddings_cache_only` the run's own emb_test.pt IS the test set, so a
+                # larger held-out set can only come from another run's cache. Swap it in HERE:
+                # both the cache-hit and fresh-compute paths converge below on raw z, so doing it
+                # before whitening means the run's own whitener/scalers apply to it unchanged.
+                holdout_cfg = getattr(base_cfg, "holdout_test_spec", None)
+                if holdout_cfg:
+                    from .holdout_testset import load_holdout_test_set
+
+                    test_z, test_theta = load_holdout_test_set(
+                        holdout_cfg,
+                        base_cfg.base_path,
+                        native_test_z=test_z,
+                        native_test_theta=test_theta,
+                        train_theta=train_theta,
+                        val_theta=val_theta,
+                    )
+
     if not cache_used:
         # Compute embeddings from scratch
         train_z, train_theta = compute_embeddings(models, train_loader)

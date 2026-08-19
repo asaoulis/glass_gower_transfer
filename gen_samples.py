@@ -56,8 +56,11 @@ def _build_fixed_parameters_list(
 #   LCDM        = same analytic prior with w0 fixed to -1
 PRIOR_RUNS = [
     ("gower", "longsamples"),
-    ("kids_s8_analytic", "FINAL"),
-    ("LCDM_fixed_w0", "LCDM"),
+    # The analytic-prior dumps feed the wCDM-vs-LCDM figure, not the coverage figure this run is
+    # for; re-enable them when that figure needs the new chains. The on-disk skip makes a later
+    # re-submit resume rather than redo.
+    # ("kids_s8_analytic", "FINAL"),
+    # ("LCDM_fixed_w0", "LCDM"),
 ]
 
 def _build_prior(PRIOR_MODE):
@@ -162,49 +165,49 @@ def _run_generation(output_suffix: str):
             )
         prior_runs = [(prior_runs[0][0], output_suffix)]
 
+    # Entries are (experiment, match_string[, source_experiments[, opts]]).
+    # `opts` (4th element, embeddings path only): {"overrides": {...extra config...},
+    # "suffix": "..."} -- the suffix REPLACES the prior's, which is what lets the same
+    # (experiment, match) be dumped twice against two different test sets without colliding.
+    HOLDOUT190 = {"path": "config/fixed_test_sets/nle_coverage_holdout190.json",
+                  "align_to_native": True}
     experiment_names = [
-        # 2-tuple: regular/ensemble path
-        # ("hybrid_patches_16_9param", "ncosmo400_"),
-        # ("finetune_hybrid_16_9param", "ncosmo150_"),
-        # ("finetune_hybrid_16_9param_ensemble_stratify", "ncosmo60_0"),
-        # ("finetune_hybrid_16_9param_ensemble_stratify", "ncosmo60_1"),
-        # ("finetune_hybrid_16_9param_ensemble_stratify", "ncosmo60_2"),
-
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo80_0", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_1", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo120_0", ["glass_hybrid_patches_16_9param"]),
-
-        # ("finetune_direct_9param_nle_anaprior_longsamples", "ncosmo200_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_0", ["glass_hybrid_patches_16_9param"]),
-        # Whitened (k=8) transfer NLE ensemble, N=60, repeat 0 -- r0 is the best-calibrated of the
-        # three repeats at N=60 (full 9-param TARP 0.01003 vs 0.01195 / 0.01012) and also the best
-        # FoM (75.87). Runs cache-only off the published chain's embeddings; raw gower_mocks is gone.
-        ("finetune_9param_nle_ensemble_white8_v2", "ncosmo60_0", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo100_1", ["glass_hybrid_patches_16_9param"]),
-
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo80_2", ["glass_hybrid_patches_16_9param"]),
-        # ("finetune_9param_nle_anaprior_ensemble_stratify", "ncosmo60_1", ["glass_hybrid_patches_16_9param"]),
-        # ("direct_9param_nle_anaprior_large", "ncosmo400_0", ["hybrid_patches_16_9param"]),
-        # 3-tuple: embeddings path (third element = source_experiments)
-        # ("finetune_direct_embeddings_9param_nle", "ncosmo200_0", ["hybrid_patches_16_9param"]),
+        # --- the NLE coverage figure: 190 held-out cosmologies x 4 augmentations ---------------
+        # Both whitened chains are cache-only, so their own emb_test.pt is a 59-cosmology set.
+        # `holdout_test_spec` swaps in the paper's 190-cosmology test set, assembled from the
+        # N=530 cache and affine-aligned into each model's own encoder frame
+        # (src/ml/embeddings/holdout_testset.py). Same 760 rows for both models, so the two
+        # coverage curves are computed on identical observations.
+        ("finetune_9param_nle_ensemble_white8_v2", "ncosmo60_0", ["glass_hybrid_patches_16_9param"],
+         {"overrides": {"holdout_test_spec": HOLDOUT190}, "suffix": "holdout190"}),
+        ("finetune_9param_nle_white8_v2", "ncosmo100_0", ["glass_hybrid_patches_16_9param"],
+         {"overrides": {"holdout_test_spec": HOLDOUT190}, "suffix": "holdout190"}),
+        # Cross-check: the single chain on its OWN cached test set (59 cosmologies, no swap, no
+        # frame map). Its ensemble twin already has this dump, so the pair lets the figure show
+        # that the swap did not move the coverage curve. Cheap -- one flow, not nine.
+        ("finetune_9param_nle_white8_v2", "ncosmo100_0", ["glass_hybrid_patches_16_9param"],
+         {"suffix": "longsamples"}),
     ]
 
     model_configs = {}
     samples_dict = {}
 
     for experiment_entry in experiment_names:
-        if len(experiment_entry) == 3:
+        opts = {}
+        if len(experiment_entry) == 4:
+            experiment_name, match_string, source_experiments, opts = experiment_entry
+        elif len(experiment_entry) == 3:
             experiment_name, match_string, source_experiments = experiment_entry
         else:
             experiment_name, match_string = experiment_entry
             source_experiments = None
+        is_embeddings_entry = source_experiments is not None
 
         config_name = f"{experiment_name}_{match_string}"
 
         pending = []
-        for prior_mode, suffix in prior_runs:
+        for prior_mode, prior_suffix in prior_runs:
+            suffix = opts.get("suffix", prior_suffix)
             output_path = _build_output_path(outpath, config_name, suffix)
             if os.path.exists(output_path):
                 print(f"Already on disk, skipping: {output_path}")
@@ -215,15 +218,17 @@ def _run_generation(output_suffix: str):
             print(f"All prior runs already present for {config_name}; nothing to do.")
             continue
 
-        if len(experiment_entry) == 3:
+        if is_embeddings_entry:
+            # NOTE: these two overrides are INERT under `embeddings_cache_only` -- the cached
+            # tensors are the dataset. Reaching a different test set is what `holdout_test_spec`
+            # (passed via opts["overrides"]) is for.
+            overrides = {"test_shape_noise_idx": [0, 0], "N_extra_test_cosmologies": 130}
+            overrides.update(opts.get("overrides", {}))
             art = load_embedding_model_with_dataloader(
                 experiment_name=experiment_name,
                 match_string=match_string,
                 source_experiments=source_experiments,
-                config_overrides={
-                    "test_shape_noise_idx": [0, 0],
-                    "N_extra_test_cosmologies": 130,
-                },
+                config_overrides=overrides,
             )
 
             model = art.model
