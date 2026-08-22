@@ -93,37 +93,40 @@ def _build_output_path(base_path, experiment_name, match_string, output_suffix,
         f"samples_{tag}_{match_string}{suffix}.npz",
     )
 
-# Eval-time loader overrides for the 3-tuple (embeddings) path:
-#  - test_shape_noise_idx [0,[0,1]] -> rot0, trailing noise in {0,1}: with the gower store's
-#    out{0,1} x rot{0..4} x _{0..3} layout this keeps out{0,1}_rot0_{0,1} = 4 noise
-#    variants/cosmology (2 outer x 2 inner, same footprint rotation)
-#  - N_test_cosmologies 40      -> trim the 200 fixed-test cosmologies to the first 40 by sim_id
-#                                  (train/val + scalers stay identical to training) => N = 160
-#  - emb_test_batch_size 6      -> ceil(160/6) = 27 MCMC joblib jobs (one per batch): a single
-#    wave on 30 CPUs with smaller per-job batches (wall ~ batch size for vectorised slice
-#    sampling), ~25% faster than batch 8 / 20 jobs
+# Eval-time loader overrides for the 3-tuple (embeddings) path. These are applied AFTER
+# load_embedding_model_with_dataloader's own hardcoded `cfg.test_shape_noise_idx = [0]`
+# (src/ml/embeddings/train.py:198), so they DO take effect here — unlike in the training path,
+# where the hardcode wins.
 #
-# 2026-08-04 (M4b-EARLY preview): trimmed to 15 cosmologies x 4 noise = 60 inference points and
-# batch 2 => 30 joblib jobs = EXACTLY one wave on the sample job's 30 CPUs. Wall is set by the
-# BATCH size (each job samples its batch serially), not the point count, so 60 points at batch 2
-# costs ~1/3 the wall of 160 points at batch 6 while still giving 60 representative posteriors.
+# ⭐ BGP CAMPAIGN SIZING 2026-08-22 (user: "100 cosmos from the test set, KiDS S8 analytic prior
+#    wCDM, report the constraint forecasts on S8, Omega_m, w, sigma_8").
+#  - test_shape_noise_idx [0, 0, 0]  -> the STRICT 3-element form (out, rot, cat): exactly ONE mock
+#    per test cosmology (out0_rot0_0). The Gower store is 4 outer x 5 rot x 4 mask = 80 mocks per
+#    cosmology, so anything looser multiplies the point count by 4-20x for no extra cosmologies.
+#  - N_test_cosmologies 100          -> the first 100 of the 200 fixed-test cosmologies by sim_id.
+#    Applied AFTER train/val are resolved, so the trainval pool and the fitted scalers stay
+#    byte-identical to training (src/ml/data/data_selection.py).
+#    => 100 cosmologies x 1 mock = 100 inference points.
+#  - emb_test_batch_size 4           -> ceil(100/4) = 25 joblib tasks: ONE wave on the sample job's
+#    NUM_JOBS=30 workers, so the wall is a single chain length rather than a multiple of it.
 CONFIG_OVERRIDES = {
-    "test_shape_noise_idx": [0, [0, 1]],
-    "N_test_cosmologies": 7,
-    "emb_test_batch_size": 2,
+    "test_shape_noise_idx": [0, 0, 0],
+    "N_test_cosmologies": 100,
+    "emb_test_batch_size": 4,
 }
 NUM_JOBS = 30
 
-# ⏱️ FAST-PREVIEW SIZING (2026-08-05). The wall of an NLE sampling job is set by the MCMC CHAIN
-# LENGTH, not the number of test points: each joblib task runs ~(num_samples + warmup) * num_chains
-# steps at ~4.4 it/s, so 20 000 samples = 41 100 steps ≈ 2 h 36 m PER TASK, and tasks beyond
-# NUM_JOBS queue into a second wave. Measured live on job 1341694.
-#   20k samples, 15 cosmologies (120 pts / 2 = 60 tasks over 30 workers = 2 waves) ⇒ ~5 h 15 m
-#    4k samples,  7 cosmologies ( 56 pts / 2 = 28 tasks over 30 workers = 1 wave)  ⇒ ~35 min
-# 4 000 samples is ample for corner plots. Dumps carry the SAMPLE_SUFFIX below so a fast run and a
-# full run coexist instead of one clobbering the other.
-NUM_SAMPLES = 4000
-SAMPLE_SUFFIX = "n4k"
+# ⏱️ SIZING. The wall of an NLE sampling job is set by the MCMC CHAIN LENGTH, not the number of
+# test points: `_gen_samples` calls `posterior.sample_batched`, which runs (batch x num_chains)
+# slice chains VECTORISED, so a task costs ~(num_samples + warmup) steps regardless of its batch.
+# Waves = ceil(points / batch / NUM_JOBS).
+#   measured: 20k samples, 160 pts, batch 6 -> 27 tasks = 1 wave => ~3.2 h (job of 2026-07-08)
+#   measured:  4k samples,  56 pts, batch 2 -> 28 tasks = 1 wave => ~35 min
+# Here: 100 pts / batch 4 = 25 tasks = 1 wave at 20k samples => ~3.2 h PER ROW, and one sample job
+# runs the listed rows SERIALLY => 5 repeats ~ 16 h against the gatekeeper's 48 h cap.
+# 20 000 is the production chain length; marginal 68 % widths are well converged there.
+NUM_SAMPLES = 20000
+SAMPLE_SUFFIX = "p100n20k"
 
 def _run_generation(output_suffix: str):
     from config.default import get_default_config
@@ -131,6 +134,7 @@ def _run_generation(output_suffix: str):
     from config.ablations import ablation_experiments
     from config.kids_legacy import kids_legacy_experiments
     from config.kids_legacy_novd import kids_legacy_novd_experiments
+    from config.kids_legacy_bgp import kids_legacy_bgp_experiments
     from src.ml.embeddings.train import load_embedding_model_with_dataloader
     from src.ml.eval.utils import load_best_model_and_build_posterior
     from src.ml.utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_active, prepare_data_parameters
@@ -141,35 +145,26 @@ def _run_generation(output_suffix: str):
     experiments.update(ablation_experiments)
     experiments.update(kids_legacy_experiments)
     experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
+    experiments.update(kids_legacy_bgp_experiments)   # BGP campaign (galaxy-bias prior marginalised)
 
     prior, fixed_parameters = _build_prior()
 
     experiment_names = [
-        # 3-tuple: embeddings path (third element = source_experiments).
-        # M4b-EARLY preview: the 5-member no-VD NLE ensemble on the r4 foundation. The match
-        # string is `ncosmoNone_4` because that config leaves max_trainval_cosmos at the default
-        # None (run_string = f"ncosmo{max_trainval_cosmos}_{repeat}"), unlike the ncosmo300_*
-        # production runs below.
-        ("gower_nle_finetune_nla_m_novd_z8_r4_ens5_early", "ncosmoNone_4",
-         ["kids_legacy_hybrid_nla_m_novd_z8_resnet"]),
-        # M3-EARLY preview: the 5-member NPE ensemble on the SAME store + foundation. 2-tuple =
-        # direct (non-embeddings) path. NPE ignores `prior` (see _build_output_path), so this dump
-        # is under the SIMULATION prior and is tagged `trainprior`, not `kids_s8_analytic`.
-        #
-        # Was gated off while its 5-member run trained, because
-        # build_ensemble_model_from_checkpoints (src/ml/utils.py) `continue`s past a member whose
-        # checkpoint is missing and only returns None when ZERO members load — sampling it
-        # mid-training would have silently written a 1- or 2-member "ensemble" under the 5-member
-        # filename, and the os.path.exists skip above would then have blocked the correct dump
-        # forever. RE-ENABLED 2026-08-05 05:00Z: all five ens{0..4} checkpoints verified on disk.
-        ("gower_npe_finetune_nla_m_novd_z8_r4_ens5_early", "ncosmoNone_4"),
-        # Previous (VD-era) production main-variate NLE ensembles (z8, 9 members), repeats 0..4 —
-        # already sampled 2026-07-08; kept for reference, skipped automatically when the npz exists.
-        # *[(f"gower_nle_finetune_nla_m_z8_r{r}_ens9", f"ncosmo300_{r}",
-        #    ["kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"]) for r in range(5)],
+        # ⭐ BGP campaign, M4b — the Gower NLE Stage-B ensembles (9 members each), 5 repeats.
+        # 3-tuple = the embeddings path; the third element is the SOURCE ENCODER whose frozen 8-D
+        # summary the cached embeddings come from (the same one M4a's Stage-A flow was fit on).
+        # match_string is `ncosmo300_{r}` because these rows set max_trainval_cosmos=[300]
+        # (run_string = f"ncosmo{max_trainval_cosmos}_{repeat}"); the run dirs are
+        # `ncosmo300_{r}_ens{0..8}`.
+        # NLE samples by MCMC against the explicit prior, so these dumps ARE under
+        # PRIOR_MODE = "kids_s8_analytic" (the wCDM analytic-S8 prior; w0 stays free — the
+        # w0 = -1 variant is the separate "LCDM_fixed_w0" mode).
+        *[(f"gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9", f"ncosmo300_{r}",
+           ["kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1"]) for r in range(5)],
     ]
     # Model classes that do NOT honour an explicit prior -> tag their dumps `trainprior`.
-    NO_PRIOR_SUPPORT = {"gower_npe_finetune_nla_m_novd_z8_r4_ens5_early"}
+    # (Empty here: every row above is NLE, which samples by MCMC against `prior`.)
+    NO_PRIOR_SUPPORT = set()
 
     from src.ml.eval.utils import _resolve_test_paths, _save_posterior_samples
 
