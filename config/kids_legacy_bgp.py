@@ -762,6 +762,57 @@ kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT
     _nle_bake_repeat(_ft_adapt, _ABLATION_REPEAT)
 
 
+# --- A3/A4: the ablation RE-RUN at the Stage-A budget, warm-started vs RANDOM INIT -------------
+# ⭐ User 2026-08-22 ~18:1xZ, after the 50-epoch A2 result: cancel it and run TWO variants at 150
+# epochs, one with the pre-trained NLE flow and one without.
+#
+# WHY the 50-epoch run had to be redone: its budget was sized for a warm start it never received.
+# Every A2 member peaked at epoch 45-49 of 50 — still improving when the budget ran out — whereas
+# the frozen-encoder baseline peaked at epoch 16-27 and went flat. Comparing FoM from that run would
+# have charged the adapted arm for a training-budget shortfall on top of the encoder change, which
+# is not the question being asked. 150 matches `_NLE_EPOCHS`, the Stage-A budget.
+#
+# ⭐ WHY THIS PAIR IS THE RIGHT CONTROL. A3 and A4 differ in `load_pretrained_flow` and NOTHING else,
+# so they isolate exactly one thing: whether the GLASS Stage-A flow is worth anything once the
+# encoder has moved. Two mechanics make that clean:
+#   * `pretrained_band_ckpt_path` stays SET in both. It is what drives
+#     `whiten_is_pretrain_source = (pretrained_band_ckpt_path is None)`, so BOTH variants REUSE the
+#     same persisted Stage-A whitener rather than one of them refitting. Same z-space in both arms.
+#   * the ep0 warm-start guard is only invoked under `if getattr(base_cfg,'load_pretrained_flow')`
+#     (`embeddings_utils.py:876`), so A4 skips it automatically — no threshold fiddling needed, and
+#     A3 keeps the real 250-nat guard.
+# ⇒ Because both share an encoder AND a whitener, their val NLLs ARE commensurable **with each
+#   other** (unlike either vs the frozen-encoder baseline, where the change of variables on z shifts
+#   the density by log|det J|). **If A3 ≈ A4 at convergence, the pre-training contributed nothing.**
+#
+# NEW NAMES rather than re-using `..._adapt`: that dir already holds the 50-epoch run's checkpoints
+# AND its `datasets/` cache, and `get_best_checkpoint` would happily return a stale 50-epoch member.
+# Fresh names keep the superseded run intact as a record and remove the hazard entirely.
+def _adapt_e150(load_flow: bool):
+    c = _nle_finetune(f"glass_nle_pretrain_nla_m_bgp_z8_r{_ABLATION_REPEAT}", ensemble_repeats=9,
+                      whiten_k=8, warmstart_max_gap_nats=250.0,
+                      gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
+    c["max_trainval_cosmos"] = [300]
+    c["train_frac"] = 0.8
+    c["val_frac"] = 0.2
+    c["test_frac"] = 0.0
+    c["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    c["project"] = _BGP_NLE_PROJECT
+    c["match_num_cosmo"] = True        # source lookup -> finetune_ncosmo300_4 (the adapted encoder)
+    c["epochs"] = _NLE_EPOCHS          # 150 — the Stage-A budget, not the warm-start budget
+    c["load_pretrained_flow"] = bool(load_flow)
+    return _nle_bake_repeat(c, _ABLATION_REPEAT)
+
+
+# A3 — adapted encoder + the pre-trained Stage-A flow (the warm-start arm)
+kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT}_ens9_adapt_e150"] = \
+    _adapt_e150(load_flow=True)
+
+# A4 — adapted encoder + a RANDOM-INIT flow (the no-pretraining control)
+kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT}_ens9_adapt_e150_scratch"] = \
+    _adapt_e150(load_flow=False)
+
+
 # --- M5c (the `nla` variate Gower NLE finetune) is NOT written -----------------------------------
 # It would need a Gower `nla` store (S2), and the dataset side's scope change of 2026-08-18 makes S1
 # the only remaining sim. Writing a row against a store nobody plans to generate would be dead
