@@ -731,6 +731,33 @@ _ft_adapt["test_frac"] = 0.0
 _ft_adapt["fixed_test_sim_ids"] = _GOWER_TEST_IDS
 _ft_adapt["project"] = _BGP_NLE_PROJECT
 _ft_adapt["match_num_cosmo"] = True          # see note 1 above — source lookup, nothing else
+# ⭐ 2026-08-22, MEASURED: the first attempt (job 1347063) aborted on guard-c at
+# **gap = 161.843 nats** (finetune ep0 val NLL 160.970 vs the Stage-A best -0.873), against the
+# 22.0 the M4b baseline inherited — where r4's frozen-encoder run sat at just **1.701 nats**.
+# That two-orders-of-magnitude jump is NOT a broken load, and the checks that rule that out are:
+#   * the embedding cache path proves the ADAPTED encoder was used
+#     (`pretrain_ncosmo300_4_ens0_gower_npe_finetune_nla_m_bgp_z8_r4_ens1/`), so match_num_cosmo
+#     did its job;
+#   * the flow-load block is BYTE-FOR-BYTE what the baseline prints — `Loaded keys: 110`,
+#     `Shape mismatches: 0`, `Missing target keys: 0` (the "Some source keys not used" line is the
+#     documented false alarm);
+#   * the whitener and the flow both resolved out of r4's own Stage-A run dir.
+# The cause is a genuine COORDINATE MISMATCH, and it is intrinsic to the ablation: the whitener is
+# an affine map (standardise → PCA rotate → divide by sqrt-eigenvalue) FIT ON `E_GLASS` outputs, and
+# `E_adapt` emits embeddings in its own scale and rotation. The near-null PCs — the same ~4 that made
+# the 22-nat override necessary in the first place — divide by a tiny sqrt-eigenvalue and amplify
+# that mismatch enormously.
+# ⇒ Raised to 250.0, which is exactly the override the guard's own message invites ("Raise
+# whiten_warmstart_max_gap_nats to override if this gap is genuinely expected") while still catching
+# a pathological run. ⚠️ INTERPRET ACCORDINGLY: at a 162-nat start the warm start contributes
+# essentially nothing, so this arm is honestly "adapted encoder + flow retrained from a poor init",
+# NOT a warm start. That asymmetry is itself part of the answer to "does adapting the compressor
+# help" — the Stage-A flow AND its whitener are encoder-specific, so adapting the encoder throws the
+# transfer away. The fairer-but-unbuilt variant would REFIT the whitener on the adapted encoder's
+# own train split; the code cannot express it today (`whiten_is_pretrain_source` is hard-wired to
+# `pretrained_band_ckpt_path is None`, so refit and flow-warm-start are mutually exclusive), and even
+# then the PCA axes of `E_adapt` need not correspond to `E_GLASS`'s.
+_ft_adapt["whiten_warmstart_max_gap_nats"] = 250.0
 kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT}_ens9_adapt"] = \
     _nle_bake_repeat(_ft_adapt, _ABLATION_REPEAT)
 
