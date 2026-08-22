@@ -679,6 +679,62 @@ for _r in _NLE_REPEATS:
         _nle_bake_repeat(_ft, _r)
 
 
+# === ABLATION (user 2026-08-22) — does ADAPTING THE COMPRESSOR to Gower buy anything? ===========
+# The whole M4b chain keeps the compressor FROZEN at its GLASS-trained state: Stage B only moves the
+# flow. This ablation asks the obvious counterfactual — let the encoder itself see Gower first, then
+# fine-tune the same Stage-A flow on the embeddings *that adapted encoder* produces. Prior campaigns
+# found no gain; this re-tests it on the bgp foundation.
+#
+# ⭐ ONE repeat only, and it MUST be the SAME index on both halves (r4) so the encoder shift is the
+# only thing that differs from the M4b r4 baseline. There is still a shift — that is the point.
+#
+# Precedent for this exact shape: `kids_legacy.py` → `gower_npe_finetune_nla_m_vicreg_v2` +
+# `gower_nle_finetune_nla_m_vicreg_npesrc` (the "1-head NLE test"). Two mechanics carried over:
+#
+# 1. ⚠️ **`match_num_cosmo = True` on the NLE row.** With the default False, the SOURCE-encoder
+#    lookup searches `"None_" + repeat` (train.py:217) — right for the GLASS foundation, whose runs
+#    are `pretrain_ncosmoNone_{r}`, but WRONG here: an NPE finetune writes `finetune_ncosmo300_{r}`,
+#    which carries no `None_` tag, so the lookup would find nothing. True makes it search the full
+#    `ncosmo300_{r}`. This does NOT disturb anything else: the target's own match_string comes from
+#    `format_ncosmo_tag` regardless, and BOTH the pretrained-flow checkpoint and the whitener are
+#    resolved with the hardcoded `whiten_repeat_match = f"None_{repeat_idx}"` (train.py:375), so the
+#    Stage-A pairing stays exactly as in the M4b baseline.
+# 2. ⭐ **`ensemble_repeats = 1` on the NPE row.** We need ONE unambiguous adapted encoder. At the
+#    production ens9 the run dirs are `finetune_ncosmo300_4_ens{0..8}` and `get_best_checkpoint`
+#    searching `ncosmo300_4` would match all nine. At ens1 the dir is plain `finetune_ncosmo300_4`
+#    (`models/utils.py:182` only appends `_ens{j}` when ensemble_repeats > 1). It is also 9x cheaper,
+#    and the ensemble was only ever there for the NPE posterior, which this ablation does not use.
+#
+# The ablation's own embedding cache cannot collide with the baseline's: the cache key is the run
+# name, and the experiment name differs (`..._adapt`).
+_ABLATION_REPEAT = 4
+
+
+# --- A1: the adapted encoder — NPE finetune on Gower, ONE member, repeat 4 ----------------------
+kids_legacy_bgp_experiments[f"gower_npe_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT}_ens1"] = \
+    _assert_final_summary_dim(
+        {**_npe_finetune_bgp(), "ensemble_repeats": 1, "repeat_indices": [_ABLATION_REPEAT]}, 8,
+        f"gower_npe_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT}_ens1")
+
+
+# --- A2: the same Stage-A flow, fine-tuned on the ADAPTED encoder's embeddings ------------------
+# Identical to M4b r4 in every field except `match_num_cosmo`; the source encoder is swapped at the
+# CLI:  embed --cpu --target gower_nle_finetune_nla_m_bgp_z8_r4_ens9_adapt \
+#             --sources gower_npe_finetune_nla_m_bgp_z8_r4_ens1
+_ft_adapt = _nle_finetune(f"glass_nle_pretrain_nla_m_bgp_z8_r{_ABLATION_REPEAT}", ensemble_repeats=9,
+                          whiten_k=8, warmstart_max_gap_nats=22.0,
+                          gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
+_ft_adapt["max_trainval_cosmos"] = [300]
+_ft_adapt["train_frac"] = 0.8
+_ft_adapt["val_frac"] = 0.2
+_ft_adapt["test_frac"] = 0.0
+_ft_adapt["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+_ft_adapt["project"] = _BGP_NLE_PROJECT
+_ft_adapt["match_num_cosmo"] = True          # see note 1 above — source lookup, nothing else
+kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT}_ens9_adapt"] = \
+    _nle_bake_repeat(_ft_adapt, _ABLATION_REPEAT)
+
+
 # --- M5c (the `nla` variate Gower NLE finetune) is NOT written -----------------------------------
 # It would need a Gower `nla` store (S2), and the dataset side's scope change of 2026-08-18 makes S1
 # the only remaining sim. Writing a row against a store nobody plans to generate would be dead
