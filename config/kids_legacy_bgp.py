@@ -861,6 +861,35 @@ _stack_pre["embedding_cache_name"] = "bgp_stack5_glass"   # short, explicit cach
 kids_legacy_bgp_experiments["glass_nle_pretrain_nla_m_bgp_stack5"] = _stack_pre
 
 
+# --- S1b: the PCA PROBE — answer question (1) in ~40 min instead of ~12 h -----------------------
+# The user wants the PCA to DECIDE the truncation dimension, so it has to land before the Stage-B
+# run commits to a k. A v100 would embed the full store in ~30 min, but BOTH v100 nodes are
+# IDLE+DRAIN (10 free GPUs, 376 G, not schedulable) and no other GPU can start, so the full-store
+# Stage-A is on CPU and ~12 h from its cache.
+#
+# This probe gets the same answer far sooner, because a 40-D covariance does not need 100 600 rows:
+#   * `max_trainval_cosmos=2000` (of ~25 150) ⇒ ~8 000 train/val mocks — 200 samples per dimension,
+#     ample for a well-determined 40-D PCA;
+#   * `N_test_cosmologies=100` keeps the test slice from dominating the pass (test_frac 0.1 of the
+#     FULL suite would otherwise be ~2 515 cosmologies, i.e. bigger than the trainval subset);
+#   * ⭐ `run_training=False` ⇒ `do_run_training` False, so `fit_nde_on_embeddings` is SKIPPED
+#     entirely: the job computes the embeddings, writes the cache, and exits.
+#
+# ⭐ The cached `emb_*.pt` holds the **RAW** stack, not the whitened one — `_save_embedding_cache`
+# runs BEFORE the whitening block, which is commented "both the cache-hit and fresh-compute paths
+# converge here with raw train_z/val_z/test_z". So the PCA is genuine, not circular.
+#
+# Its own `embedding_cache_name` keeps it from colliding with the full-store run's cache.
+_stack_probe = _nle_pretrain_bgp(_BGP_SC8A1, 0)
+_stack_probe["whiten_embeddings"] = {"k": _STACK_DIM}
+_stack_probe["source_match_strings"] = list(_STACK_MATCHES)
+_stack_probe["embedding_cache_name"] = "bgp_stack5_pcaprobe"
+_stack_probe["max_trainval_cosmos"] = [2000]
+_stack_probe["N_test_cosmologies"] = 100
+_stack_probe["run_training"] = False
+kids_legacy_bgp_experiments["glass_nle_pretrain_nla_m_bgp_stack5_pcaprobe"] = _stack_probe
+
+
 # --- S2: Stage-B fine-tune + MCMC eval on Gower, ens9 -------------------------------------------
 _stack_ft = _nle_finetune("glass_nle_pretrain_nla_m_bgp_stack5", ensemble_repeats=9,
                           whiten_k=_STACK_DIM, warmstart_max_gap_nats=22.0,
