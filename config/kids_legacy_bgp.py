@@ -904,6 +904,66 @@ _stack_ft["source_match_strings"] = list(_STACK_MATCHES)
 kids_legacy_bgp_experiments["gower_nle_finetune_nla_m_bgp_stack5_ens9"] = _nle_bake_repeat(_stack_ft, 0)
 
 
+# === STACK5 @ k=16 — NPE + NLE heads, GLASS then Gower (user 2026-08-23) ========================
+# ⭐ WHY AN NPE HEAD IS THE RIGHT INSTRUMENT FOR "how much extra information".
+# NLE val log-probs are densities over the WHITENED EMBEDDING, so they live in whatever coordinate
+# system the encoder+whitener define — a 16-D stack and an 8-D single summary are simply not
+# comparable (standing rule 2, and the reason the adapted-encoder arm's `test_log_prob` jump was
+# meaningless). An **NPE** head models p(theta | z): a density over THETA, the same space for every
+# encoder. So the NPE test log-prob IS directly comparable to the single-encoder foundation's
+# (-5.2681 … -5.4014) and is a genuine measure of extracted information. That is what makes the
+# user's "NPE head first, then NLE" ordering the informative one.
+#
+# k=16 (user's choice) sits between the PCA's 99 % mark (k=7) and 99.9 % (k=19), and is 2x the
+# single-encoder width. The measured spectrum spans 1.95e1 -> 8.0e-5 (ratio 2.4e5), so k=40
+# pure-whiten would amplify the worst direction ~500x; k=16 keeps ~99.8 % of the variance while
+# cutting that conditioning problem by more than an order of magnitude.
+#
+# ⚡ The two GLASS rows REUSE the full-store embedding cache that `..._stack5` (job 1348636) is
+# writing, so once it lands they train in MINUTES instead of repeating a ~10 h embedding pass.
+# Reusing the raw cache across different k is exactly right: the cache stores RAW z, and whitening
+# is applied per-run afterwards.
+_STACK_K16 = 16
+
+
+def _stack_head(inference_mode):
+    """GLASS Stage-A head on the 40-D stack, whitened to k=16. `npe` => p(theta|z), `nle` => p(z|theta)."""
+    c = _nle_pretrain_bgp(_BGP_SC8A1, 0)
+    c["inference_mode"] = inference_mode
+    c["whiten_embeddings"] = {"k": _STACK_K16}
+    c["source_match_strings"] = list(_STACK_MATCHES)
+    c["embedding_cache_name"] = "bgp_stack5_glass"     # share the full-store cache
+    c["reuse_embedding_cache"] = True                  # ...and skip re-embedding
+    return c
+
+
+kids_legacy_bgp_experiments["glass_npe_pretrain_nla_m_bgp_stack5_k16"] = _stack_head("npe")
+kids_legacy_bgp_experiments["glass_nle_pretrain_nla_m_bgp_stack5_k16"] = _stack_head("nle")
+
+
+def _stack_gower(inference_mode, pretrain_exp):
+    """Gower Stage-B finetune of a stacked head, ens9 + eval. Same split/store as the M4b baseline,
+    so the resulting FoM is directly comparable to the 5-repeat production numbers."""
+    c = _nle_finetune(pretrain_exp, ensemble_repeats=9, whiten_k=_STACK_K16,
+                      warmstart_max_gap_nats=22.0,
+                      gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
+    c["inference_mode"] = inference_mode
+    c["max_trainval_cosmos"] = [300]
+    c["train_frac"] = 0.8
+    c["val_frac"] = 0.2
+    c["test_frac"] = 0.0
+    c["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    c["project"] = _BGP_NLE_PROJECT
+    c["source_match_strings"] = list(_STACK_MATCHES)
+    return _nle_bake_repeat(c, 0)
+
+
+kids_legacy_bgp_experiments["gower_npe_finetune_nla_m_bgp_stack5_k16_ens9"] = \
+    _stack_gower("npe", "glass_npe_pretrain_nla_m_bgp_stack5_k16")
+kids_legacy_bgp_experiments["gower_nle_finetune_nla_m_bgp_stack5_k16_ens9"] = \
+    _stack_gower("nle", "glass_nle_pretrain_nla_m_bgp_stack5_k16")
+
+
 # --- M5c (the `nla` variate Gower NLE finetune) is NOT written -----------------------------------
 # It would need a Gower `nla` store (S2), and the dataset side's scope change of 2026-08-18 makes S1
 # the only remaining sim. Writing a row against a store nobody plans to generate would be dead
