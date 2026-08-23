@@ -222,7 +222,7 @@ def load_embedding_model_with_dataloader(
         cfg_overrides=source_cfg_overrides,
         repeat_idx=repeat_idx,
         match_string=pretrained_models_match_string,
-        
+        per_source_match_strings=getattr(cfg, "source_match_strings", None),
     )
     cfg.dataset_quantities = dataset_quantities
 
@@ -351,6 +351,9 @@ def train_embedding_run(
         repeat_idx=repeat_idx,
         match_string=getattr(target_cfg, "match_string", None),
         match_num_cosmo=getattr(target_cfg, "match_num_cosmo", False),
+        # Opt-in per-source run binding, so several REPEATS of one source experiment can be
+        # stacked into a single wider embedding (see load_pretrained_models). Absent => unchanged.
+        per_source_match_strings=getattr(target_cfg, "source_match_strings", None),
     )
 
     # Phase 2b: optional non-default embedding cut point, tagged onto the source encoders so

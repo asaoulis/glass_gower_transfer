@@ -1,7 +1,7 @@
 import os
 import re
 import sys
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import pytorch_lightning as pl
@@ -182,6 +182,7 @@ def load_pretrained_models(
     repeat_idx: Optional[int] = None,
     match_string: Optional[str] = None,
     match_num_cosmo: bool = False,
+    per_source_match_strings: Optional[Sequence[str]] = None,
 ) -> Tuple[List[torch.nn.Module], List[str], List[str]]:
     """Build models for a list of experiment names using their best checkpoints.
 
@@ -194,12 +195,24 @@ def load_pretrained_models(
             the cfg is used instead of building one from config.experiments.
             This is used to support split_on_source_experiments, where we want
             to set max_trainval_cosmos on the *source* experiments.
+        per_source_match_strings: optional per-source run-match overrides, one per entry of
+            `exp_names`. Without it every source resolves with the SAME match string, which is
+            right when the sources are distinct experiments but makes it impossible to stack
+            several REPEATS of one experiment (they share a checkpoint dir and differ only in the
+            run subdir, e.g. `pretrain_ncosmoNone_0` .. `_4`). Supplying
+            ["None_0", ..., "None_4"] alongside the same name five times stacks those five
+            encoders. Default None preserves the previous behaviour exactly.
 
     Returns:
         models: list of trained NDE models
         dataset_quantities: merged dataset quantities across experiments
         checkpoint_paths: list of checkpoint paths
     """
+    if per_source_match_strings is not None and len(per_source_match_strings) != len(exp_names):
+        raise ValueError(
+            f"per_source_match_strings has {len(per_source_match_strings)} entries but there are "
+            f"{len(exp_names)} source experiments; they must correspond one-to-one."
+        )
     models = []
     dataset_quantities = set()
     checkpoint_paths = []
@@ -211,13 +224,18 @@ def load_pretrained_models(
     # else:
     ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
 
-    for name in exp_names:
+    for src_i, name in enumerate(exp_names):
         if cfg_overrides is not None and name in cfg_overrides:
             cfg = cfg_overrides[name]
         else:
             cfg = _build_config_for_experiment(name)
 
-        if match_string is not None and str(match_string) and match_num_cosmo:
+        if per_source_match_strings is not None:
+            # Explicit per-source override wins over both the shared match_string and the
+            # repeat-derived default — this is the only way to bind several REPEATS of one
+            # experiment as separate sources.
+            ds_string_match = str(per_source_match_strings[src_i])
+        elif match_string is not None and str(match_string) and match_num_cosmo:
             ds_string_match = str(match_string)
         else:
             ds_string_match = f"None_{repeat_idx}" if repeat_idx is not None else ""

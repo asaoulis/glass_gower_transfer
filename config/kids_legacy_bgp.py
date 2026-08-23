@@ -813,6 +813,68 @@ kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT
     _adapt_e150(load_flow=False)
 
 
+# === STACKED-ENSEMBLE ABLATION (user 2026-08-23) — is there information in the 5 compressors ======
+# The 5 foundation repeats are 5 independently-seeded compressors of the SAME data. Each emits an
+# 8-D summary; concatenating all five gives a **40-D** stacked summary. Two questions:
+#   (1) how many PCA components does the 40-D stack actually need — i.e. are the 5 compressors
+#       redundant (effective rank ~8) or do they see complementary things (rank >> 8)?
+#   (2) does an NLE trained on the stack constrain better than one on a single 8-D summary?
+# Intended as the final exploratory test before considering an ensemble-stacked production posterior.
+#
+# ⭐ `compute_embeddings` ALREADY concatenates feature-wise across sources
+# (`torch.cat(zs_batch, dim=-1)`), so the 40-D vector needs no new machinery. The ONE obstacle was
+# that `load_pretrained_models` applied a single match string to every source, so five REPEATS of one
+# experiment could not be addressed separately — they share a checkpoint dir and differ only in the
+# run subdir (`pretrain_ncosmoNone_0` … `_4`). Fixed additively by `per_source_match_strings`
+# (defaults to None ⇒ previous behaviour byte-for-byte), driven from the config key below.
+#
+# ⚠️ The cached per-repeat `emb_*.pt` files CANNOT be concatenated instead: `split_seed = 42 + repeat`
+# (`utils.py:763`), so each repeat's Stage-A cache is a DIFFERENT train/val/test partition and the
+# rows are not aligned. The 40-D stack has to be computed fresh over one common split.
+#
+# ⚠️ SHORT ALIASES ARE DELIBERATE. `source_run_name = f"{run_name}_{'_'.join(sources)}"` becomes a
+# single directory component; five copies of the 44-char foundation name would make it ~246 chars,
+# a hair under Linux's 255-byte NAME_MAX. Aliasing to `bgpz8enc{r}` keeps it ~60. The alias carries
+# `experiment_name` = the REAL foundation name, so `load_best_model_and_build_posterior` still finds
+# `checkpoints/kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1/` — only the label is short.
+_FOUNDATION_EXP = "kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1"
+for _r in _NLE_REPEATS:
+    kids_legacy_bgp_experiments[f"bgpz8enc{_r}"] = {
+        **kids_legacy_bgp_experiments[_FOUNDATION_EXP],
+        "experiment_name": _FOUNDATION_EXP,
+    }
+
+_STACK_SOURCES = ",".join(f"bgpz8enc{_r}" for _r in _NLE_REPEATS)   # pass to `embed --sources`
+_STACK_MATCHES = [f"None_{_r}" for _r in _NLE_REPEATS]             # binds source i -> repeat i
+_STACK_DIM = 8 * len(_NLE_REPEATS)                                  # 40
+
+
+# --- S1: Stage-A NLE pretrain on the 40-D STACK (GLASS) -----------------------------------------
+# whiten_k = 40 = PURE-WHITEN on a 40-D summary, the exact analogue of k=8 on the 8-D one: a
+# full-rank invertible affine map that buys conditioning and throws nothing away. Deliberately NOT
+# truncated — the KSWEEP result is that there is no free truncation, and truncating here would also
+# pre-judge question (1), which the PCA analysis is meant to answer empirically.
+_stack_pre = _nle_pretrain_bgp(_BGP_SC8A1, 0)
+_stack_pre["whiten_embeddings"] = {"k": _STACK_DIM}
+_stack_pre["source_match_strings"] = list(_STACK_MATCHES)
+_stack_pre["embedding_cache_name"] = "bgp_stack5_glass"   # short, explicit cache dir
+kids_legacy_bgp_experiments["glass_nle_pretrain_nla_m_bgp_stack5"] = _stack_pre
+
+
+# --- S2: Stage-B fine-tune + MCMC eval on Gower, ens9 -------------------------------------------
+_stack_ft = _nle_finetune("glass_nle_pretrain_nla_m_bgp_stack5", ensemble_repeats=9,
+                          whiten_k=_STACK_DIM, warmstart_max_gap_nats=22.0,
+                          gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
+_stack_ft["max_trainval_cosmos"] = [300]
+_stack_ft["train_frac"] = 0.8
+_stack_ft["val_frac"] = 0.2
+_stack_ft["test_frac"] = 0.0
+_stack_ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+_stack_ft["project"] = _BGP_NLE_PROJECT
+_stack_ft["source_match_strings"] = list(_STACK_MATCHES)
+kids_legacy_bgp_experiments["gower_nle_finetune_nla_m_bgp_stack5_ens9"] = _nle_bake_repeat(_stack_ft, 0)
+
+
 # --- M5c (the `nla` variate Gower NLE finetune) is NOT written -----------------------------------
 # It would need a Gower `nla` store (S2), and the dataset side's scope change of 2026-08-18 makes S1
 # the only remaining sim. Writing a row against a store nobody plans to generate would be dead
