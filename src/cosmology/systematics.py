@@ -15,12 +15,27 @@ class BaseSystematics(ABC):
     def apply_intrinsic_alignments(self, delta, kappa, z_eff, tomo):
         return kappa
 
-    def apply_intrinsic_alignments_shear(self, delta, gamma, z_eff, tomo):
+    def intrinsic_alignment_amplitude(self, z_eff, tomo):
+        """Per-bin scalar f such that the IA convergence is kappa_IA = f * delta (0 = no IA).
+
+        Every IA model in this codebase contributes a convergence that is a SCALAR multiple of
+        the matter shell `delta`; exposing the scalar lets the simulator exploit the linearity
+        of `glass.lensing.from_convergence` (map2alm -> almxfl -> alm2map_spin, all linear) and
+        compute the spin-2 SHT of kappa and delta ONCE per shell, forming each tomographic
+        shear as gamma_i = G(kappa) + f_i * G(delta) instead of one SHT per bin.
+        A subclass whose IA convergence is NOT delta-proportional must not use this seam:
+        it should raise here (or the simulator loop must revert to per-bin transforms).
+        """
+        return 0.0
+
+    def apply_intrinsic_alignments_shear(self, delta, gamma, z_eff, tomo, s=None):
         """Shear-level IA correction. Default: unchanged.
 
         Used by IA models whose contribution is NOT a pure convergence (so it cannot be folded
         into `apply_intrinsic_alignments`): the restricted-TATT/NLA-k density-weighting term is a
         real-space product of the density and tidal fields and must be added to the shear directly.
+        `s` optionally passes in the precomputed unit-amplitude tidal shear
+        from_convergence(delta, shear=True) so callers that already have it avoid a second SHT.
         """
         return gamma
 
@@ -57,11 +72,13 @@ class NLASystematics(BaseSystematics):
         self.nla = nla
         self.cosmo = cosmo
 
-    def apply_intrinsic_alignments(self, delta, kappa, z_eff, tomo):
+    def intrinsic_alignment_amplitude(self, z_eff, tomo):
+        # delta enters every kappa_ia_* purely multiplicatively, so evaluating at delta=1.0
+        # extracts the exact scalar f with kappa_IA = f * delta (bit-identical to the map path).
         model = self.nla.get('model', 'nla_m')
         if model == 'nla_m':
-            kappa_ia = kappa_ia_nla_m(
-                delta,
+            return kappa_ia_nla_m(
+                1.0,
                 z_eff,
                 self.nla['f_red'][tomo],
                 self.cosmo,
@@ -69,30 +86,32 @@ class NLASystematics(BaseSystematics):
                 self.nla['b_ia'],
                 self.nla['log10_M_eff'][tomo]
             )
-        elif model == 'nla':
+        if model == 'nla':
             # Whole-population single-amplitude NLA (f_red=1, no mass term).
-            kappa_ia = kappa_ia_nla(delta, z_eff, self.cosmo, self.nla['a_ia'])
-        elif model == 'nla_z':
+            return kappa_ia_nla(1.0, z_eff, self.cosmo, self.nla['a_ia'])
+        if model == 'nla_z':
             # NLA with per-bin redshift-dependent effective amplitude.
             a_eff = nla_z_effective_amplitude(
                 self.nla['a_ia'], self.nla['b_z'], self.nla['avg_a'][tomo]
             )
-            kappa_ia = kappa_ia_nla(delta, z_eff, self.cosmo, a_eff)
-        elif model == 'tatt':
+            return kappa_ia_nla(1.0, z_eff, self.cosmo, a_eff)
+        if model == 'tatt':
             # Restricted-TATT/NLA-k: the NLA part is convergence-additive here; the
             # density-weighting term is added at the shear level (apply_intrinsic_alignments_shear).
-            kappa_ia = kappa_ia_nla(delta, z_eff, self.cosmo, self.nla['a_ia'])
-        else:
-            raise ValueError(f"Unknown IA model: {model!r}")
-        return kappa + kappa_ia
+            return kappa_ia_nla(1.0, z_eff, self.cosmo, self.nla['a_ia'])
+        raise ValueError(f"Unknown IA model: {model!r}")
 
-    def apply_intrinsic_alignments_shear(self, delta, gamma, z_eff, tomo):
+    def apply_intrinsic_alignments(self, delta, kappa, z_eff, tomo):
+        return kappa + delta * self.intrinsic_alignment_amplitude(z_eff, tomo)
+
+    def apply_intrinsic_alignments_shear(self, delta, gamma, z_eff, tomo, s=None):
         if self.nla.get('model', 'nla_m') != 'tatt':
             return gamma
         # s = unit-amplitude NLA intrinsic shear (spin-2 tidal field of delta). The NLA part
         # f_NLA*s is already in `gamma` (added via the convergence above); here we add the
         # restricted-TATT density-weighting term f_NLA * b_src * (delta * s).
-        s, = glass.lensing.from_convergence(delta, shear=True)
+        if s is None:
+            s, = glass.lensing.from_convergence(delta, shear=True)
         return gamma + gamma_ia_density_weight(
             delta, s, z_eff, self.cosmo, self.nla['a_ia'], self.nla['b_src']
         )

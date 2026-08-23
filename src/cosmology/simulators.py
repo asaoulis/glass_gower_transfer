@@ -253,6 +253,14 @@ class BaseSimulator(ABC):
                         # --- Rotate delta and kappa once per rotation spec ---# preallocate lists to avoid append
 
             kappa = self.convergence.kappa.copy()
+            # from_convergence is exactly linear in its input map (map2alm -> almxfl filters ->
+            # alm2map_spin), and every IA model's convergence is kappa_IA = f_tomo * delta, so
+            # G(kappa + f*delta) = G(kappa) + f*G(delta): do the two spin-2 SHTs once per shell
+            # and form the per-bin shears by scalar combination (6 SHTs/shell -> at most 2).
+            # NOTE: the identity requires BOTH transforms to use the same lmax/discretized —
+            # keep both calls on the defaults (lmax = 3*nside-1 from the shared nside).
+            gamma_kappa, = glass.lensing.from_convergence(kappa, shear=True)
+            gamma_delta = None  # lazy: only needed when some bin has f != 0 (also TATT's s)
             # --- Now loop over tomographic bins ---
             for tomo in range(self.nbins):
                 z_vals, dndz = glass.shells.restrict(
@@ -267,17 +275,20 @@ class BaseSimulator(ABC):
                 bias_tomo = (self.galaxy_bias[tomo]
                              if np.ndim(self.galaxy_bias) > 0 else self.galaxy_bias)
 
-                kappa_i = self.systematics.apply_intrinsic_alignments(
-                    delta=delta,
-                    kappa=kappa,
-                    z_eff=z_eff,
-                    tomo=tomo
-                )
-                gamma_rot, = glass.lensing.from_convergence(kappa_i, shear=True)
+                f_ia = self.systematics.intrinsic_alignment_amplitude(z_eff, tomo)
+                if f_ia != 0.0 and gamma_delta is None:
+                    gamma_delta, = glass.lensing.from_convergence(delta, shear=True)
+                if f_ia == 0.0:
+                    kappa_i = kappa
+                    gamma_rot = gamma_kappa
+                else:
+                    kappa_i = kappa + f_ia * delta
+                    gamma_rot = gamma_kappa + f_ia * gamma_delta
                 # Shear-level IA correction (default no-op; restricted-TATT/NLA-k adds its
-                # density-weighting term here since it is not a pure convergence).
+                # density-weighting term here since it is not a pure convergence). Pass the
+                # hoisted G(delta) as s so TATT does not redo that SHT (None -> hook computes it).
                 gamma_rot = self.systematics.apply_intrinsic_alignments_shear(
-                    delta=delta, gamma=gamma_rot, z_eff=z_eff, tomo=tomo
+                    delta=delta, gamma=gamma_rot, z_eff=z_eff, tomo=tomo, s=gamma_delta
                 )
 
 
