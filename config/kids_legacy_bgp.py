@@ -961,6 +961,31 @@ _stack_npe_k40["whiten_embeddings"] = {"k": _STACK_DIM}
 kids_legacy_bgp_experiments["glass_npe_pretrain_nla_m_bgp_stack5_k40"] = _stack_npe_k40
 
 
+# --- The MATCHED CONTROL for the stack: a SINGLE-encoder NPE head -------------------------------
+# The stacked k=16 NPE head cannot be read against the foundation's -5.4014..-5.2681 directly: the
+# foundation trains encoder+flow END-TO-END WITH RandomEBPatchAugment, whereas any head on frozen
+# cached embeddings sees ONE augmentation draw and therefore overfits (measured on 1348942: val
+# turns at ~epoch 20 and decays -5.40 -> -0.69 by epoch 80). That regime difference, not the
+# information content, could explain a gap either way.
+#
+# This row removes the confound: SAME pipeline, SAME training regime, SAME epochs/flow/LR, one
+# encoder instead of five. The comparison that answers "how much extra information does stacking
+# buy" is then stack@k16 MINUS this, both being best-checkpoint values under identical conditions.
+#
+# It reuses repeat r0's already-computed Stage-A cache, so it is a cache-hit job (minutes, no GPU,
+# no fresh embedding pass). The cache path was VERIFIED by fetching its emb_val.pt before this row
+# was written. Its whitener lands in this row's OWN run folder (rev 2c20b6d), so it cannot collide
+# with the k=8 whitener the r0 NLE row persisted.
+_npe_ctl_r0 = _nle_pretrain_bgp(_BGP_SC8A1, 0)
+_npe_ctl_r0["inference_mode"] = "npe"
+_npe_ctl_r0["embedding_cache_name"] = (
+    "glass_nle_pretrain_nla_m_bgp_z8_r0/"
+    "pretrain_ncosmoNone_0_kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1"
+)
+_npe_ctl_r0["reuse_embedding_cache"] = True
+kids_legacy_bgp_experiments["glass_npe_pretrain_nla_m_bgp_z8_r0_ctl"] = _npe_ctl_r0
+
+
 def _stack_gower(inference_mode, pretrain_exp):
     """Gower Stage-B finetune of a stacked head, ens9 + eval. Same split/store as the M4b baseline,
     so the resulting FoM is directly comparable to the 5-repeat production numbers."""
