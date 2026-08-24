@@ -400,6 +400,9 @@ def train_embedding_run(
         use_cache_if_exists=((not do_run_training)
                              or bool(getattr(target_cfg, "reuse_embedding_cache", False))),
         whiten_cfg=whiten_cfg,
+        # Persist/resolve the whitener under the RUN's own folder even when the embedding cache is
+        # shared via `embedding_cache_name` — that is where finetune/eval look for it.
+        whitener_run_name=source_run_name,
         is_pretrain_source=whiten_is_pretrain_source,
         pretrained_ckpt_path_or_dir=target_cfg.pretrained_band_ckpt_path,
         repeat_match=whiten_repeat_match,

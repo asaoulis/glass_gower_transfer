@@ -468,6 +468,7 @@ def build_embedding_dataloaders(
     use_cache_if_exists=False,
     *,
     whiten_cfg: Optional[dict] = None,
+    whitener_run_name: Optional[str] = None,
     is_pretrain_source: bool = False,
     pretrained_ckpt_path_or_dir: Optional[str] = None,
     repeat_match: Optional[str] = None,
@@ -590,8 +591,17 @@ def build_embedding_dataloaders(
                     "[whiten] pretrain-source whitening requires wandb_run_name to derive the "
                     "persist path (datasets/whitener.pt)."
                 )
-            w_train_path, _, _ = _get_embedding_cache_paths(base_cfg, wandb_run_name)
+            # The whitener must live in the RUN's own folder, not in a shared embedding cache:
+            # finetune/eval resolve it via `resolve_whitener_path(<flow ckpt>)`, i.e.
+            # `<ckpt dir>/datasets/whitener.pt`. With no `embedding_cache_name` the two coincide
+            # (wandb_run_name == source_run_name == "<experiment>/<run>"), so this is a no-op for
+            # every existing row. When a cache IS shared across head variants, pinning the whitener
+            # to the run keeps Stage-B able to find it AND stops two different k's from colliding on
+            # one whitener.pt.
+            w_name = whitener_run_name or wandb_run_name
+            w_train_path, _, _ = _get_embedding_cache_paths(base_cfg, w_name)
             whitener_path = os.path.join(os.path.dirname(w_train_path), WHITENER_FILENAME)
+            os.makedirs(os.path.dirname(whitener_path), exist_ok=True)
             emb_scaler = fit_and_persist_whitener(
                 train_z,
                 k,
