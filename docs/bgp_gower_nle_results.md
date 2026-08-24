@@ -109,12 +109,40 @@ approach needs no change.**
 > the *whitened embedding*; the adapted arm has a different encoder, so the two are in different
 > coordinate systems separated by a log|det J| offset.
 
-### 4b. Warm-starting the NLE flow onto a *moved* encoder is counter-productive
-The Stage-A flow lives in the old encoder's whitened coordinates, so warm-starting onto an adapted
-encoder opens at a **145–162-nat** gap and never recovers: best checkpoints pin to the very end of
-even a 150-epoch budget. A random-init flow on the same embeddings reaches **val ≈ 6.3** against the
-warm-started **≈ 0.7**. (That specific comparison is CPU-vs-GPU confounded; the eval numbers above
-are not, and they already show neither adapted arm beats frozen.)
+### 4b. Warm-starting the NLE flow onto the adapted encoder is **worth a lot** (corrected)
+
+> ⚠️ **This section previously said the opposite.** It read the val numbers with the sign inverted.
+> `val_log_prob` is what `ModelCheckpoint` monitors with `mode="min"` — it is a **loss**, so
+> **lower is better**. The warm-started arm's 1.76 beats the random-init arm's 6.72; the earlier
+> text took 6.72 as the winner. The completed evals settle it independently and in the same
+> direction, so the corrected reading is the one below.
+
+Same encoder (r4's, adapted on Gower), same whitener, same 150-epoch budget, same 3968 test points;
+the two arms differ **only** in `load_pretrained_flow`:
+
+| | warm-started (A3) | random init (A4) | ratio |
+|---|---|---|---|
+| **best val (lower better)** | **1.761** | 6.723 | — |
+| **FoM** | **29.07** | **18.96** | **1.53×** |
+| ± S8 | **0.02379** | 0.05540 | 2.33× wider |
+| ± Ω_m | **0.03356** | 0.08001 | 2.38× wider |
+| ± σ₈ | **0.04108** | 0.10464 | 2.55× wider |
+| ± w₀ | **0.14841** | 0.30224 | 2.04× wider |
+| Mahalanobis | 2.975 | 2.871 | both ≈ calibrated |
+
+**The pre-trained GLASS flow is carrying most of the constraining power.** Random init stays
+*calibrated* (Mahalanobis 2.87, near the 2.92 expected for 9-D) but is **~2.3× less informative on
+every parameter** — it is honest about knowing less, which is exactly the failure mode a
+calibration test alone would not flag.
+
+The warm start does open at a large gap — 145–162 nats, because the Stage-A flow lives in the old
+encoder's whitened coordinates — but it recovers from it and still ends far ahead. "Opens badly"
+and "ends badly" are not the same thing, and the earlier text conflated them.
+
+> Caveat, unchanged: A3 was GPU-trained and A4 CPU-trained, so the pair is hardware-confounded.
+> It does not threaten this conclusion — bf16-vs-fp32 rounding cannot produce a 2.3× posterior
+> width — and val and FoM agree in direction. It *would* matter for a small effect; it does not
+> for this one.
 
 ## 5. Gotchas worth keeping
 
