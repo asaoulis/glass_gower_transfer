@@ -941,6 +941,26 @@ kids_legacy_bgp_experiments["glass_npe_pretrain_nla_m_bgp_stack5_k16"] = _stack_
 kids_legacy_bgp_experiments["glass_nle_pretrain_nla_m_bgp_stack5_k16"] = _stack_head("nle")
 
 
+# --- The UNTRUNCATED NPE head: k=40 = pure-whiten -----------------------------------------------
+# The k=40 arm was NLE-only, because it predates the NPE idea: k=40 was written to answer "does the
+# stack help at all" and NPE only entered with the k=16 request. But NPE at k=40 is strictly the
+# better instrument for "how much extra information does stacking buy", and it is nearly free (it
+# reuses the same cache), so it is worth having:
+#   * NPE models p(theta | z) -- a density over THETA, the same space for every encoder -- so it is
+#     comparable to the single-encoder foundation's -5.2681 .. -5.4014. NLE is not (rule 5).
+#   * k=40 is a FULL-RANK invertible affine map, so it discards NOTHING. NPE@k=40 therefore measures
+#     the stack's TOTAL information, while NPE@k=16 (99.8 % of variance) is a LOWER BOUND on it.
+#   * The pair also prices the truncation directly, which KSWEEP says must not be assumed free:
+#     8 -> 6 cost 13 % FoM. (k40 - k16) is that cost measured on the stack.
+# CAVEAT: the 40-D spectrum spans 1.94e1 -> 9.6e-5 (ratio ~2e5), so pure-whitening amplifies the
+# worst direction ~450x. NPE only CONDITIONS on z rather than modelling its density, so it tolerates
+# that far better than the NLE head would -- but if this row trains unstably, that ill-conditioning
+# is the first suspect and k=16 is the answer, not a bug.
+_stack_npe_k40 = _stack_head("npe")
+_stack_npe_k40["whiten_embeddings"] = {"k": _STACK_DIM}
+kids_legacy_bgp_experiments["glass_npe_pretrain_nla_m_bgp_stack5_k40"] = _stack_npe_k40
+
+
 def _stack_gower(inference_mode, pretrain_exp):
     """Gower Stage-B finetune of a stacked head, ens9 + eval. Same split/store as the M4b baseline,
     so the resulting FoM is directly comparable to the 5-repeat production numbers."""
