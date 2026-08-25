@@ -1081,7 +1081,17 @@ for _r in _VARIATE_REPEATS:
                             gower_data=_BGP_GOWER_NLA, gower_eb=None,
                             cosmo_param_names=_COSMO_8_NLA,
                             preset_overrides=_A_IA_NLA_BOX)
-    _ft_nla["max_trainval_cosmos"] = [100]
+    # NOT a hard 100: S2 finished at 15 911/16 000 files, so ONE trainval cosmology is missing and
+    # only 199 of the 200 are on disk (the locked 100 test ids are ALL present - the loss is entirely
+    # from the finetune half). A hard [100] therefore raised
+    #   "Requested max_trainval_cosmos=100 but only 99 ... available after reserving the test set"
+    # and killed all five rows (jobs 1349075-79). `None` means "every cosmology not in the locked
+    # test set", which is what the 100/100 design actually intends, is robust to each variate's own
+    # shortfall (S3/K2 will land short too), and keeps the ONE invariant the user asked for - the
+    # SAME fixed 100 test cosmologies everywhere. Trainval size may then differ by a sim or two
+    # between variates; if strict parity is ever wanted, pin every variate to the min count once
+    # S3/K2 land.
+    _ft_nla["max_trainval_cosmos"] = None
     _ft_nla["train_frac"] = 0.8
     _ft_nla["val_frac"] = 0.2
     _ft_nla["test_frac"] = 0.0     # test = the locked 100; fracs must sum to 1.0
