@@ -813,6 +813,32 @@ kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT
     _adapt_e150(load_flow=False)
 
 
+# ##################################################################################################
+# 🗄️  ARCHIVED 2026-08-25 (user) — THE STACKED-ENSEMBLE QUESTION IS CLOSED. DO NOT LAUNCH THESE ROWS.
+#
+# Question asked: does stacking the 5 foundation compressors (40-D concat) carry information a
+# single 8-D compressor misses? Answer, on BOTH fidelities: essentially no.
+#
+#   * GLASS  — `glass_npe_pretrain_nla_m_bgp_stack5_k16` best val -5.3953 vs the five single
+#     encoders -5.4014 / -5.3484 / -5.3341 / -5.3183 / -5.2681 (monitored mode="min", so more
+#     negative is better): the 5-encoder stack lands SECOND, a hair behind the best single encoder.
+#   * GOWER  — `gower_npe_finetune_nla_m_bgp_stack5_k16_ens9` (job 1349015, ens9, 1 repeat):
+#     FoM 29.94 vs the single-encoder M4b baseline's 33.91 +/- 2.65, i.e. 1.5 sigma BELOW the
+#     baseline mean. Per-parameter 1-sigma widths are indistinguishable and marginally tighter
+#     (S8 0.02331 vs 0.0235; omega_m 0.03109 vs 0.0316; sigma_8 0.03731 vs 0.0385; w0 0.14470 vs
+#     0.1478), and calibration is slightly better (TARP-9D 0.00190 vs 0.0021, Mahalanobis 2.913).
+#     So the stack matches the MARGINALS but loses ~12% of the JOINT volume — worse parameter
+#     correlations, no information gain. Caveat on the record: ONE repeat vs a FIVE-repeat mean,
+#     and the +/-2.65 IS the seed spread, so 29.94 sits inside seed noise.
+#   * Both results are consistent with the PCA independence fraction of 2.9% measured on the full
+#     80 481-row embedding cache (stacked participation 2.58, k=8 @ 99%, k=19 @ 99.9%).
+#
+# ⚠️ THE ROWS BELOW ARE DELIBERATELY KEPT IMPORTABLE, NOT DELETED. `eval.py`, `misspec.py` and
+# `load_best_model_and_build_posterior` all rebuild a config BY EXPERIMENT NAME, so deleting these
+# entries would orphan the checkpoints still on disk under the same names. Archived == "closed, do
+# not launch", not "removed". If the on-disk artefacts are ever reclaimed (see the checklist for the
+# directory list), delete the dirs first and these rows last.
+# ##################################################################################################
 # === STACKED-ENSEMBLE ABLATION (user 2026-08-23) — is there information in the 5 compressors ======
 # The 5 foundation repeats are 5 independently-seeded compressors of the SAME data. Each emits an
 # 8-D summary; concatenating all five gives a **40-D** stacked summary. Two questions:
