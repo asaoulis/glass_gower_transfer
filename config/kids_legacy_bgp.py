@@ -1013,3 +1013,53 @@ kids_legacy_bgp_experiments["gower_nle_finetune_nla_m_bgp_stack5_k16_ens9"] = \
 # It would need a Gower `nla` store (S2), and the dataset side's scope change of 2026-08-18 makes S1
 # the only remaining sim. Writing a row against a store nobody plans to generate would be dead
 # config that reads as ready. Add it if S2 is ever launched.
+
+
+# === M5c — the `nla` variate GOWER NLE finetune (S2), one row per repeat ========================
+# WRITTEN 2026-08-25 on user direction, replacing the "M5c is NOT written" note above: S2
+# (`gower_mocks_nla_novd_bgp`, job 1348702) landed, so the store these rows need now exists.
+#
+# ⚠️ S2 HOLDS ONLY THE 200 FIXED-TEST COSMOLOGIES (`--gower-sim-set fixed_test --num-sims 200`;
+# 16 000 files / 80 per sim = 200). It is NOT shaped like S1, which has 509 sims and therefore let
+# M4b hold out all 200 and still train on 300. A straight M4b clone pointed here would leave ZERO
+# trainval cosmologies. Per the user (2026-08-25) the split is instead **100 test / 100 finetune**:
+#   * `fixed_test_sim_ids` locks 100 ids into test (see the lock file's own `derivation` note);
+#   * the other 100 fall through to the trainval pool, which `split_by_cosmology` SHUFFLES before
+#     cutting by train_frac/val_frac -- i.e. training + model selection on a randomly shuffled
+#     100-cosmology subset, which is what the user asked for.
+#
+# ⭐ WHY THE 100 ARE THE **SORTED-FIRST** 100, not the parent file's stratified prefix: sorted order
+# is exactly what `N_test_cosmologies` trims to (`data_selection.py`: "trim the TEST set to the
+# first N cosmologies by sorted sim_id"). Locking the sorted-first 100 here therefore selects the
+# SAME cosmologies that `N_test_cosmologies=100` would pick on any other row -- so an S1/M4b model
+# scored with `N_test_cosmologies=100` is directly comparable to these rows. That is the point of
+# the user's requirement that the 100 test sims be the same and fixed across all variates.
+# Checked before adopting it: sim_id is essentially uncorrelated with cosmology across the 200
+# (|corr| <= 0.11 for omega_m/sigma_8/w), and the resulting test vs trainval halves match in mean
+# and spread on all three, so the contiguous-in-id cut is statistically a random one.
+#
+# ⚠️ theta is `_COSMO_8_NLA` + `_A_IA_NLA_BOX`, NOT the 9-param NLA-M vector: `_nle_finetune`'s
+# docstring requires cosmo_param_names / preset_overrides to MATCH THE PAIRED PRETRAIN, and the
+# parent here is M5b (`glass_nle_pretrain_nla_bgp_z8_r{r}`), which is 8-param with a_ia ~ U[-6,6].
+# Getting this wrong mis-shapes and mis-scales theta in both training and eval.
+#
+# whiten_k=8 and warmstart_max_gap_nats=22.0 carry over from the proven M4b chain unchanged.
+# `run_evaluation=True` (set inside `_nle_finetune`) bundles the MCMC eval, so these rows produce
+# their own ensemble_evaluation_results json -- no separate eval submit is needed.
+_BGP_GOWER_NLA = f"{_GPU5}/gower_bgp_nla_f16_sc8a1_{_EB}/output_*.h5"   # S2 bake
+_GOWER_TEST_IDS_100 = "config/fixed_test_sets/gower_test_ids_100.json"
+
+for _r in _VARIATE_REPEATS:
+    _ft_nla = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_r{_r}", ensemble_repeats=9,
+                            whiten_k=8, warmstart_max_gap_nats=22.0,
+                            gower_data=_BGP_GOWER_NLA, gower_eb=None,
+                            cosmo_param_names=_COSMO_8_NLA,
+                            preset_overrides=_A_IA_NLA_BOX)
+    _ft_nla["max_trainval_cosmos"] = [100]
+    _ft_nla["train_frac"] = 0.8
+    _ft_nla["val_frac"] = 0.2
+    _ft_nla["test_frac"] = 0.0     # test = the locked 100; fracs must sum to 1.0
+    _ft_nla["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    _ft_nla["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9"] = \
+        _nle_bake_repeat(_ft_nla, _r)
