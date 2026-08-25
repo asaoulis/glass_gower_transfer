@@ -1041,6 +1041,39 @@ kids_legacy_bgp_experiments["gower_nle_finetune_nla_m_bgp_stack5_k16_ens9"] = \
 # config that reads as ready. Add it if S2 is ever launched.
 
 
+# === M5b-k5 — Stage-A NLE pretrain on the `nla` encoder at whiten_k=5 ==========================
+# ⭐ WHY k=5 AND NOT THE k=8 USED EVERYWHERE ELSE (user decision 2026-08-25), with the measurement
+# that drove it. The k=8 M5c rows aborted on guard-c at 22.6-30.8 nats against a 22 threshold. That
+# threshold is a PER-CHAIN calibration, and the `nla` chain's summary is far more rank-deficient
+# than the `nla_m` chain it was calibrated on. Both whiteners, compared directly:
+#
+#   nla_m (G1): EVR 6.42e-1 3.21e-1 1.90e-2 1.06e-2 4.45e-3 2.48e-3 4.32e-4 1.02e-4
+#               scales 2.27 ... 2.85e-2   -> max/min spread  79.5
+#   nla   (G5): EVR 8.08e-1 1.36e-1 4.03e-2 1.35e-2 1.72e-3 2.93e-4 7.06e-5 1.16e-5
+#               scales 2.54 ... 9.63e-3   -> max/min spread 264
+#
+# The nla summary's smallest PC carries 8.8x less variance and is divided by a scale 3.0x smaller,
+# so a GLASS->Gower shift along that near-null direction is amplified ~3.3x more in scale (~11x in
+# variance). Entering the NLL quadratically, nla_m's healthy 1-5 nats maps to ~10-50 here - which is
+# exactly where the observed 22.6-30.8 landed. So the gap was the DOCUMENTED pure-whiten mechanism,
+# not a broken warm start.
+#
+# k=5 removes the pathology at source rather than moving the tripwire: PCs 5-8 carry only
+# 1.72e-3 + 2.93e-4 + 7.06e-5 + 1.16e-5 = 0.21% of the variance, so k=5 keeps 99.96% of it while
+# dropping the directions whose tiny eigenvalues do the amplifying.
+#
+# ⚠️ NEW EXPERIMENT NAMES, deliberately. `whiten_k` changes the flow's context width, so a k=5 run
+# writing into the k=8 rows' checkpoint dirs would leave `get_best_checkpoint` free to resolve a
+# SHAPE-MISMATCHED k=8 checkpoint. Separate names keep the two spectra's artefacts apart.
+# ⚠️ The paired M5c rows below MUST use the same k - the finetune reuses this run's persisted
+# whitener and loads its flow, and both would be shape-wrong at a different k.
+for _r in _VARIATE_REPEATS:
+    _pre_k5 = _nle_pretrain_bgp(_BGP_NLA, _r, cosmo_param_names=_COSMO_8_NLA,
+                                preset_overrides=_A_IA_NLA_BOX)
+    _pre_k5["whiten_embeddings"] = {"k": 5}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_bgp_z8_k5_r{_r}"] = _pre_k5
+
+
 # === M5c — the `nla` variate GOWER NLE finetune (S2), one row per repeat ========================
 # WRITTEN 2026-08-25 on user direction, replacing the "M5c is NOT written" note above: S2
 # (`gower_mocks_nla_novd_bgp`, job 1348702) landed, so the store these rows need now exists.
@@ -1076,8 +1109,8 @@ _BGP_GOWER_NLA = f"{_GPU5}/gower_bgp_nla_f16_sc8a1_{_EB}/output_*.h5"   # S2 bak
 _GOWER_TEST_IDS_100 = "config/fixed_test_sets/gower_test_ids_100.json"
 
 for _r in _VARIATE_REPEATS:
-    _ft_nla = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_r{_r}", ensemble_repeats=9,
-                            whiten_k=8, warmstart_max_gap_nats=22.0,
+    _ft_nla = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_k5_r{_r}", ensemble_repeats=9,
+                            whiten_k=5, warmstart_max_gap_nats=22.0,
                             gower_data=_BGP_GOWER_NLA, gower_eb=None,
                             cosmo_param_names=_COSMO_8_NLA,
                             preset_overrides=_A_IA_NLA_BOX)
