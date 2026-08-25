@@ -10,7 +10,11 @@ import wandb
 from config.default import get_default_config
 from config.experiments import experiments
 
-from ..models.lightning_modules import NDELightningModule, LikelihoodNDELightningModule
+from ..models.lightning_modules import (
+    NDELightningModule,
+    LikelihoodNDELightningModule,
+    EnsembleLikelihoodNDELightningModule,
+)
 from ..eval.utils import load_best_model_and_build_posterior
 from ..eval.loading_model import get_best_checkpoint
 from ..data.scaling import BaseScaler, PerDimStandardScaler, WhitenPCAScaler
@@ -840,12 +844,22 @@ def _compute_val_nll(model, val_loader) -> float:
         device = next(model.parameters()).device
     except StopIteration:
         device = torch.device("cpu")
+    # NPE and NLE pass their flow arguments in OPPOSITE orders, so this helper must dispatch
+    # on the module type to really match "the module's validation_step loss" as documented:
+    #   NPE  models p(theta | z): forward(theta, cond=z)   -- npe.py:391-393
+    #   NLE  models p(z | theta): forward(z,     cond=theta) -- nle.py:36-38
+    # LikelihoodNDELightningModule SUBCLASSES NDELightningModule, so the NLE test must come
+    # first. The ensemble modules subclass pl.LightningModule directly (they are not in that
+    # hierarchy) and so are named explicitly -- ensemble_nle.py:93-100 vs ensemble_npe.py:63-71.
+    nle_style = isinstance(
+        model, (LikelihoodNDELightningModule, EnsembleLikelihoodNDELightningModule)
+    )
     total, n = 0.0, 0
     for batch in val_loader:
         x, theta = batch
         x = x.to(device)
         theta = theta.to(device)
-        preds = model.forward(x, cond=theta)
+        preds = model.forward(x, cond=theta) if nle_style else model.forward(theta, cond=x)
         loss = model.compute_loss(preds, theta)
         bs = int(x.shape[0])
         total += float(loss) * bs
