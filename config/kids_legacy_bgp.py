@@ -1129,6 +1129,22 @@ for _r in _VARIATE_REPEATS:
     _ft_nla["val_frac"] = 0.2
     _ft_nla["test_frac"] = 0.0     # test = the locked 100; fracs must sum to 1.0
     _ft_nla["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    # ⚠️⚠️ FUTURE WORK — 50 EPOCHS IS PROBABLY TOO FEW FOR THIS ROW (user observation 2026-08-25,
+    # deliberately NOT acted on for the current run). The models had not fully converged at 50.
+    # `epochs=50` is inherited from `_nle_finetune` and was calibrated on M4b, which trains on 300
+    # trainval cosmologies. THIS row trains on ~99, and the step counts make the mismatch concrete
+    # (both measured from the live logs, not estimated):
+    #     M4b  240 train cosmologies -> 150 iters/epoch -> 50 epochs = 7 500 optimiser steps
+    #     M5c   79 train cosmologies ->  50 iters/epoch -> 50 epochs = 2 500 optimiser steps
+    # i.e. AT THE SAME EPOCH COUNT THIS ROW GETS EXACTLY 3x FEWER UPDATES. Matching M4b's step
+    # budget would need ~150 epochs; 100 epochs still only reaches ~2/3 of it.
+    #
+    # ⭐ RAISE THIS IF THE EVALS COME BACK WITH SIGNIFICANTLY LOWER FoM THAN THE S1/M4b GOWER NLE
+    # BASELINE (33.91 +/- 2.65). Under-training is then the FIRST hypothesis to test - before
+    # concluding anything about the `nla` variate itself, the k=5 whitening, or the 100/100 split -
+    # because it is confounded with all three. The cheap test is one repeat at epochs=100.
+    # NOTE the fix belongs HERE as a per-row override, NOT in `_nle_finetune`: that factory is
+    # shared with M4b and every other NLE finetune, all of which are calibrated at 50.
     _ft_nla["project"] = _BGP_NLE_PROJECT
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9"] = \
         _nle_bake_repeat(_ft_nla, _r)
