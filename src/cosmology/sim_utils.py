@@ -103,62 +103,66 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 	`dndz_vd` is built exactly as the reference); the local smoke scales `tomo_nz` down by
 	`n_eff_scale`, so it must pass the same factor here.
 
-	Ports the reference VD driver (kids_legacy_sim_vd_looped.py lines ~334-458) VERBATIM, only
-	parameterised by the simulator's survey geometry:
+	Ports the reference VD driver (Kiyam/kids-legacy-sbi @ 4a22578,
+	scripts/kids_legacy_sim_vd_cluster.py lines ~340-560) VERBATIM, only parameterised by the
+	simulator's survey geometry:
 
 	- load per-tomo VD tracer maps (`vd_map`);
 	- build the count-contrast functions `n_contrast_vd` (mask-normalised so <contrast>_mask = 1,
 	  guaranteeing total galaxy counts match the no-VD case per tomo bin);
-	- build the per-pixel sigma_eps model `sigma_eps_var` (clipped cubic, rescaled so
+	- build the per-pixel sigma_eps model `sigma_eps_var` (clipped quadratic, rescaled so
 	  <sigma_eps>_mask = sigma_e[i]);
-	- build the per-VD-bin n(z) `dndz_vd` from the `comb_1` ascii;
+	- build the per-VD-bin n(z) `dndz_vd`, reading a SEPARATE recalibrated ascii per VD bin;
 	- assemble `AngularLosVariableDepthMask` + `VariableDepthShapeDispersion`.
 
 	Returns:
 		(var_depth_mask, vd_shapes, vd_map)
 	"""
-	from scipy.interpolate import interp1d
-
 	from .variable_depth import (
 		AngularLosVariableDepthMask,
 		VariableDepthShapeDispersion,
 	)
-	from src.KiDS.tomo import nbins, ztomo, ztomo_label, n_arcmin2
+	from src.KiDS.tomo import nbins, ztomo, n_arcmin2
 	from src.KiDS.variable_depth_config import (
+		a_ngal,
 		a_se,
+		b_ngal,
 		b_se,
+		c_ngal,
 		c_se,
-		d_se,
 		load_vd_maps,
-		n_eff_table,
+		n_contrast_clip,
 		n_vardepth_bins,
+		sigma_eps_clip,
 		vd_trace_eff_centre,
+		zb_label,
 	)
 
 	vd_map = load_vd_maps(data_dir, nside)  # (nbins, npix) at run nside
 
-	# n_eff interpolation -> count-contrast, mask-normalised so <contrast>_mask = 1.
-	n_eff_interp = [
-		interp1d(
-			vd_trace_eff_centre[i], n_eff_table[:, i],
-			kind="linear", bounds_error=False,
-			fill_value=(n_eff_table[0, i], n_eff_table[-1, i]),
+	# Count-contrast: clipped quadratic in the tracer, divided by the tomo-bin mean density so it
+	# is a CONTRAST (VD / no-VD) rather than an absolute density, then mask-normalised so
+	# <contrast>_mask = 1. That normalisation makes Sum_pix mask*contrast = Sum_pix mask exactly,
+	# guaranteeing total galaxy counts match the no-VD case at the per-tomo level.
+	_contrast_raw = [
+		lambda x, i=i: (
+			np.clip(a_ngal[i]*x**2 + b_ngal[i]*x + c_ngal[i], *n_contrast_clip) / n_arcmin2[i]
 		)
 		for i in range(nbins)
 	]
 	_disc_corr = np.array([
-		1.0 / np.average(n_eff_interp[i](vd_map[i]), weights=mask)
+		1.0 / np.average(_contrast_raw[i](vd_map[i]), weights=mask)
 		for i in range(nbins)
 	])
 	n_contrast_vd = [
-		lambda x, i=i: _disc_corr[i] * n_eff_interp[i](x)
+		lambda x, i=i: _disc_corr[i] * _contrast_raw[i](x)
 		for i in range(nbins)
 	]
 
-	# sigma_eps VD model: clipped cubic in the tracer, rescaled so <sigma_eps>_mask = sigma_e[i].
+	# sigma_eps VD model: clipped quadratic in the tracer, rescaled so <sigma_eps>_mask = sigma_e[i].
 	_se_raw = [
 		lambda x, i=i: np.clip(
-			a_se[i]*x**3 + b_se[i]*x**2 + c_se[i]*x + d_se[i], 0.25, 0.34,
+			a_se[i]*x**2 + b_se[i]*x + c_se[i], *sigma_eps_clip,
 		)
 		for i in range(nbins)
 	]
@@ -171,19 +175,21 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		for i in range(nbins)
 	])
 
-	# Per-VD-bin n(z): all read the SAME comb_1 ascii, scaled by n_contrast_vd at the VD-bin centre.
+	# Per-VD-bin n(z): each VD bin reads its OWN recalibrated ascii, scaled by n_contrast_vd at the
+	# VD-bin centre. Before the 2026-08 recalibration every VD bin read the same `comb_1` file, so
+	# the VD effect on n(z) was absent entirely (the depth only rescaled the amplitude, never the
+	# shape) — upstream `5a7c63e` is the fix. Note the VD index sits AFTER the ZB label here, and
+	# the stem carries the extra `_lab_filt_lab_` segment.
 	dndz_vd = np.zeros((nbins, n_vardepth_bins, len(los_z_integration)))
 	for i in range(nbins):
-		z1a, z1b = ztomo_label[i][0].split(".")
-		z2a, z2b = ztomo_label[i][1].split(".")
-		filename = (
-			f"{data_dir}/nofzs/nz_tgweights/BLINDSHAPES_KIDS_Legacy_NS_shear_noSG_noWeiCut_newCut_blindABC_A1_rmcol_filt_PSF_RAD_calc_filt_filt_comb_1_"
-			f"ZB{z1a}p{z1b}t{z2a}p{z2b}_calib_goldwt_Nz_recalibrated.ascii"
-		)
-		hdu = np.loadtxt(filename).T
-		z = hdu[0]
-		zmid = z[:-1] + 0.5 * (z[1:] - z[:-1])
 		for j in range(n_vardepth_bins):
+			filename = (
+				f"{data_dir}/nofzs/nz_tgweights/BLINDSHAPES_KIDS_Legacy_NS_shear_noSG_noWeiCut_newCut_blindABC_A1_rmcol_filt_lab_filt_lab_filt_PSF_RAD_calc_filt_filt_comb_"
+				f"{zb_label(i)}_{j + 1}_calib_goldwt_Nz_recalibrated.ascii"
+			)
+			hdu = np.loadtxt(filename).T
+			z = hdu[0]
+			zmid = z[:-1] + 0.5 * (z[1:] - z[:-1])
 			dndz_interpolated = np.interp(
 				los_z_integration,
 				zmid,

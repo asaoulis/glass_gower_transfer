@@ -139,7 +139,8 @@ class VariableDepthSystematics(NLASystematics):
       (the depth map rotated by the same ``lon_exact`` mask-rotation as ``base_mask``).
     - ``sample_ellipticity``: per-pixel intrinsic dispersion via ``vd_shapes`` (not a scalar).
     - ``apply_shear_bias``: per-galaxy multiplicative bias ``m_bias_vd_realised[tomo][vd_bin]``
-      (vd_bin from digitising the VD tracer at the galaxy pixel), the inherited additive
+      (vd_bin from digitising the VD tracer at the galaxy pixel against that tomo bin's own
+      edges — ``vd_trace_edges`` is (nbins, 11) since the 2026-08 recalibration), the inherited additive
       c-bias, plus the residual-PSF term ``alpha_{1,2}*psf_bias_map_{1,2}[gal_pix]``.
 
     All per-galaxy lookups (vd_bin, vd_shapes, psf) use the SURVEY-frame ``lon``/``lat`` (the
@@ -204,7 +205,7 @@ class VariableDepthSystematics(NLASystematics):
         gal_pix = hp.ang2pix(self.nside, lon, lat, lonlat=True)
 
         vd_bin = np.clip(
-            np.digitize(self.vd_map[tomo][gal_pix], self.vd_trace_edges) - 1,
+            np.digitize(self.vd_map[tomo][gal_pix], self.vd_trace_edges[tomo]) - 1,
             0, self.n_vardepth_bins - 1,
         )
         gal_m_bias = self.m_bias_vd_realised[tomo][vd_bin]
