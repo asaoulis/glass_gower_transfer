@@ -501,6 +501,64 @@ kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_wa
                               "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_warm")
 
 
+# === M11 — the 15-param z16 row, WARM-STARTED FROM THE p9 FOUNDATION (user, 2026-08-26) ========
+# ⭐ THIS REPLACES the from-scratch p15 rows as the parent of every 15-param variate.
+# "We found that p15 random starts in M9 did not manage to recover the good performance of the
+#  foundation runs. We must start from the known good foundation models." (user)
+# M8/M9 build the map encoder FROM SCRATCH behind a frozen band; that random init is what failed to
+# reach the foundation's quality. This row keeps M9's geometry and inference vector but **inherits
+# the trained p9 foundation encoder**, then resumes at high LR on the SAME G1 store the foundation
+# was trained on. It is the "care" step before any variate: get a good 15-param model on G1 FIRST,
+# then finetune that onto the small variate stores.
+#
+# ⭐ THE CROSS-WIDTH LOAD IS ALREADY VALIDATED — that is exactly what M10 above was for. Loading the
+# 8-D p9 foundation into this 16-D geometry gives **125/129 keys**, skipping precisely the 4 resized
+# final-layer tensors:
+#     patch_encoder.head.2.{weight,bias}  (8,256)/(8,)  vs (16,256)/(16,)   <- map summary head
+#     hybrid_head.{weight,bias}           (8,16)/(8,)   vs (16,24)/(16,)    <- final summary
+# The whole CNN backbone + band encoder transfer. **LAUNCH-VERIFY `Loaded keys: 125`** — 129 would
+# mean the width did not change, and 0 means the arch/ckpt pairing is wrong.
+# ⚠️ MUST use `pretrained_embedding_ckpt_path` (partial, tolerant), never `checkpoint_path` (STRICT
+# `load_state_dict`, npe.py:141) — the strictness is deliberate and must not be loosened.
+# ⚠️ "Some source keys not used — prefix may be wrong" is a FALSE alarm on every encoder-only load
+# from a full-model checkpoint. Do not chase it.
+#
+# ⚠️ GAMMA IS RE-DERIVED FOR 125 EPOCHS, not copied. The file's own rule: an `exp` gamma MUST be
+# re-derived whenever the epoch count changes (cf. the bg8 rows, 0.984 -> 0.938 for 100 -> 25).
+# Target the same ~0.20 total decay the 100-epoch finetunes use (2e-4 -> ~4e-5):
+#     0.20 ** (1/125) = 0.98720   (vs 0.984 ** 100 = 0.20 for the 100-epoch rows)
+# Epochs stay at `_P15_EPOCHS` = 125: 15 inference dims is a harder density problem than 9, and the
+# documented M7 failure mode for 15-param rows was UNDER-training. Warm-starting shortens the road
+# but this row is the one that has to be good, so it keeps the full budget.
+#
+# Repeats are the FULL (0..4): the p9 foundation trained all five, so every repeat has a parent —
+# unlike M9, which only ever ran (0, 1, 3).
+_P15_WARM_REPEATS = (0, 1, 2, 3, 4)
+
+
+def _hybrid_bgp_p15_z16_warm(data_patterns, repeat_indices=_P15_WARM_REPEATS):
+    """M9's 15-param/16-D recipe, but inheriting the trained p9 foundation encoder (M10's load path).
+
+    Built from `_hybrid_bgp_p15_z16` so the inference vector, the b_g prior boxes and the arch
+    cannot drift from the validated 15-param row; the warm-start keys mirror `_hybrid_bgp_9p_z16`.
+    """
+    c = _hybrid_bgp_p15_z16(data_patterns, _BAND_CKPT_BGP, repeat_indices=repeat_indices)
+    c.pop("pretrained_band_ckpt_path", None)   # the band arrives inside the loaded embedding_net
+    c.pop("freeze_band", None)
+    c["pretrained_embedding_ckpt_path"] = _SC8A1_9P_CKPT   # the KNOWN-GOOD p9 foundation
+    c["freeze_embedding_net"] = False          # resume/finetune the whole encoder
+    c["match_num_cosmo"] = False               # resolve the source ckpt per-repeat as "_{i}"
+    c["lr"] = 0.0002                           # high-LR resume, as on every other finetune here
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"gamma": 0.9872, "warmup_steps": 0}   # 0.9872^125 ~ 0.20
+    return c
+
+
+kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15_warm"] = \
+    _assert_final_summary_dim(_hybrid_bgp_p15_z16_warm(_BGP_SC8A1), 16,
+                              "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15_warm")
+
+
 # === M4a — the WHITENED (k=8) NLE chain, Stage A: GLASS pretrain ================================
 # The NLE half of the multifidelity stack, resumed for this campaign (user 2026-08-18). Per repeat
 # r: freeze the 9-param sc8a1 foundation encoder, cache its 8-D summary over the FULL GLASS bgp
