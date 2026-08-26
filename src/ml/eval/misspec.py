@@ -292,6 +292,7 @@ def _load_experiment_config(experiment_name: str):
     from config.kids_legacy_novd import kids_legacy_novd_experiments
     from config.kids_legacy_dn import kids_legacy_dn_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
+    from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 
     exps = dict(base_experiments)
     exps.update(ablation_experiments)
@@ -300,6 +301,7 @@ def _load_experiment_config(experiment_name: str):
     exps.update(kids_legacy_novd_experiments)
     exps.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
     exps.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
+    exps.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation
     experiment_config = exps[experiment_name]
 
     config = get_default_config()

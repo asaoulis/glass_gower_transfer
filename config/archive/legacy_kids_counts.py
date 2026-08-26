@@ -1,0 +1,876 @@
+"""Counts-normalisation production rerun — model configs (fwhm4 PRIMARY stack, M1-M6).
+
+The `--shear-normalization counts` rerun of the full production model checklist (task
+training-runs/production-training-runs, `models_checklist.md`). These clone the validated
+`config/kids_legacy.py` factories onto the counts-normalised datasets (glass_mocks_*_counts /
+gower_mocks_*_counts, prebaked f16 at the fwhm4_lmin56_lcut1400 smoothing tag). The data-pattern
+STORE NAMES below are the byte-for-byte contract with `datasets_checklist.md` (D1-D10).
+
+Scope: the fwhm4 PRIMARY stack (M1-M6). The conservative fwhm8 `_cons` stack (Section C of
+`models_checklist.md`) is a LATER pass and is deliberately NOT built here (see the TODO at the end).
+
+Merge: `kids_legacy_counts_experiments` is `.update()`-merged into the experiments dict by
+train.py / eval.py / train_embeddings.py / .claude/cluster/smoke_test_experiment.py, and by
+src/ml/eval/misspec.py:_load_experiment_config (so the M6 misspec base resolves).
+
+Every MAP config carries a de-clustered `_smoke` clone on the fwhm8 single-cosmology LOCAL fixture
+(.claude/cluster/smoke_data_nla, E_fwhm8_lmin50_lcut1400 only, cosmo a_ia+b_ia — no b_z). The
+production fwhm4 config false-fails that fwhm8-only local smoke, so the REAL runs submit with
+--skip-smoke (per the models_checklist smoke-gate note).
+"""
+from config.kids_legacy import (
+    # shared constants (parameter sets + the NLA/NLA-z a_ia box)
+    _COSMO_9, _COSMO_8_NLA, _COSMO_9_NLAZ, _A_IA_NLA_BOX,
+    # fwhm8 LOCAL smoke-fixture store + tag (smoke clones only; the harness overrides data_patterns
+    # but keeps eb_map_variant, which must be the fixture's fwhm8 tag)
+    _NLA_M_DATA as _SMOKE_DATA,
+    _EB_VARIANT as _SMOKE_EB_VARIANT,
+    # mean-norm lmin50 fwhm4 prebaked store (the H1 map-only mean-vs-counts comparison)
+    _NLA_M_DATA_LMIN50_FWHM4 as _MEAN_NLA_M_FWHM4,
+    _EB_VARIANT_LMIN50_FWHM4 as _MEAN_EB_VARIANT_FWHM4,
+    # factories to clone
+    _band_lmin50, _hybrid_lmin50_z8, _hybrid_lmin50_z8_smoke,
+    _encoder_finetune_z8, _encoder_finetune_z8_smoke,
+    _nle_pretrain, _nle_finetune, _nle_bake_repeat, _npe_finetune_z8,
+)
+
+# --- counts-normalised data stores (roots match config/kids_legacy.py) --------------------------
+_GPU5 = "/share/gpu5/asaoulis/transfer_datasets"
+_GPU4 = "/share/gpu4/asaoulis/transfer_datasets"
+_CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints"
+_EB_VARIANT = "fwhm4_lmin56_lcut1400"
+
+# GLASS pre-training stores. The band (M1) reads bandpowers off the RAW gpu4 store (smoothing-
+# independent, no prebake); the maps (M2+) read the prebaked f16 gpu5 stores.
+_NLA_M_RAW = f"{_GPU4}/glass_mocks_nla_m_counts/output_*.h5"
+_NLA_M     = f"{_GPU5}/glass_mocks_nla_m_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_NLA       = f"{_GPU5}/glass_mocks_nla_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_NLA_Z     = f"{_GPU5}/glass_mocks_nla_z_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_NOVD      = f"{_GPU5}/glass_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+
+# Gower fine-tuning stores (prebaked f16 gpu5, fwhm4).
+_GOWER_NLA_M = f"{_GPU5}/gower_mocks_nla_m_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_GOWER_NLA   = f"{_GPU5}/gower_mocks_nla_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_GOWER_NLA_Z = f"{_GPU5}/gower_mocks_nla_z_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+_GOWER_NOVD  = f"{_GPU5}/gower_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5"
+
+# Checkpoint dirs (written by M1 band / M2 foundation; consumed by M2/M3/M4/M5).
+_BAND_CKPT_DIR   = f"{_CKPT}/kids_legacy_band_nla_m_counts/"
+# PRODUCTION FOUNDATION = the PreActResNet hybrid (z8_resnet). All downstream (M3 NPE-finetune, M4 NLE
+# pretrain source, M5 encoder-finetune) default to this. Repeats run 0->4 (the clean foundation seed
+# formerly in slot 7 was renamed by the user into slot 3, so all of ncosmoNone_{0..4} are clean seeds).
+_FOUNDATION_CKPT = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_resnet/"
+
+# Production map-encoder kwargs — the PreActResNet backbone the foundation (z8_resnet) was trained
+# with. Any config that REBUILDS the foundation arch to load its weights (M3 NPE whole-model load,
+# M5a encoder warm-start) MUST set model_kwargs['map_kwargs']=_RESNET_MAPKW, or the state-dict load
+# silently mismatches the map encoder (default arch is the old UNet). Defined once here; the
+# counts-ext foundation variants further down reuse this same object.
+_RESNET_MAPKW = {"encoder_type": "preact_resnet", "patch_conditioning": None,
+                 "pool_types": ("avg", "gem"),
+                 "stage_channels": (32, 64, 128, 256, 256), "blocks_per_stage": 3}
+
+_GOWER_TEST_IDS = "config/fixed_test_sets/gower_test_ids.json"
+
+kids_legacy_counts_experiments = {}
+
+
+# === M1  Stage-I bandpower MLP (5 repeats; bandpowers off the RAW gpu4 counts store) ============
+def _band_counts():
+    c = _band_lmin50()
+    c["data_patterns"] = _NLA_M_RAW
+    c.pop("repeats", None)
+    c["repeat_indices"] = [0, 1, 2, 3, 4]
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_band_nla_m_counts"] = _band_counts()
+
+
+# === M2  foundation z8 hybrid (5 repeats; loads the frozen per-repeat counts band) ==============
+def _hybrid_counts_z8():
+    """z8-summary foundation on the counts nla_m fwhm4 store; loads the FROZEN per-repeat Stage-I
+    counts band (repeat i -> band i via pretrained_band_match_string '_{i}'), same as the lmin50
+    foundation. 8-D whitened summary = the foundation encoder for ALL downstream (M3/M4/M5)."""
+    c = _hybrid_lmin50_z8()                            # z8 arch + l40s tuning + ml_perf
+    c["data_patterns"] = _NLA_M
+    c["eb_map_variant"] = _EB_VARIANT
+    c["pretrained_band_ckpt_path"] = _BAND_CKPT_DIR
+    c.pop("repeats", None)
+    c["repeat_indices"] = [0, 1, 2, 3, 4]
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8"] = _hybrid_counts_z8()
+# Smoke = the kids_legacy z8 hybrid smoke verbatim (fwhm8 local fixture, from-scratch band).
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_smoke"] = _hybrid_lmin50_z8_smoke()
+
+
+# === M2-LR  LR-scheme DEBUG variants of the counts z8 foundation (1 repeat each; TOP PRIORITY) ====
+# The baseline cyclic (lr 2e-4) hybrid plateaus at the 2-pt band level on the counts maps — the CNN
+# is not breaking through. Probe the barrier with 3 LR schemes (user 2026-07-13). 1 repeat each
+# (repeat 0 -> band _0); everything else identical to _hybrid_counts_z8 (counts fwhm4 data, frozen
+# per-repeat band, 100 epochs). Cyclic max_lr = config.lr (base.py CyclicLR max_lr=base_lrs); exp
+# gamma is PER-EPOCH (step_gamma = gamma**(1/steps_per_epoch)).
+def _hybrid_counts_z8_lr(lr=None, scheduler_type=None, scheduler_kwargs=None):
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = [0]
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    return c
+
+
+def _hybrid_counts_z8_smoke_lr(lr=None, scheduler_type=None, scheduler_kwargs=None):
+    """De-clustered fwhm8-local smoke clone with the SAME LR override, for the pre-submit gate."""
+    c = _hybrid_lmin50_z8_smoke()
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    return c
+
+
+# gamma for 2e-4 -> 5e-5 over 100 epochs: 0.25**(1/100) ≈ 0.98623 (per-epoch).
+_EXPDECAY_KW = {"gamma": 0.98623, "warmup_steps": 0}
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3"] = _hybrid_counts_z8_lr(lr=0.001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e4"] = _hybrid_counts_z8_lr(lr=0.0001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_expdecay"] = _hybrid_counts_z8_lr(
+    lr=0.0002, scheduler_type="exp", scheduler_kwargs=_EXPDECAY_KW)
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3_smoke"] = _hybrid_counts_z8_smoke_lr(lr=0.001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e4_smoke"] = _hybrid_counts_z8_smoke_lr(lr=0.0001)
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_expdecay_smoke"] = _hybrid_counts_z8_smoke_lr(
+    lr=0.0002, scheduler_type="exp", scheduler_kwargs=_EXPDECAY_KW)
+
+
+# === M2-STAB  stability/ceiling DEBUG variants (counts-training-performance task, 2026-07-14) ====
+# Forensics (task .claude/runs/training-runs/counts-training-performance) nailed the failure mode:
+# at lr<=2e-4 on counts the map branch COLLAPSES to a constant output within ~10 epochs (patch_mu
+# batch-std = 0 in every stuck ckpt) because at init patch_mu enters the concat ~18x smaller than
+# the frozen band_mu and receives ~40x less step-0 gradient; at lr=1e-3 it escapes but then
+# memorises noise (train -6.3 / val -3.3 by ep95). These variants test the counter-measures:
+# LR escape+decay (cycexp), band modality-dropout, patch-head init gain, patch-variance hinge,
+# wider summary, weight decay, band-unfreeze, and the map-only H1 upper bounds (counts vs mean).
+def _hybrid_counts_z8_stab(mk_extra=None, repeat_indices=(0,), lr=None, scheduler_type=None,
+                           scheduler_kwargs=None, optimizer_kwargs=None, freeze_band=None,
+                           pretrained_band_lr=None):
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = list(repeat_indices)
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    if optimizer_kwargs is not None:
+        c["optimizer_kwargs"] = optimizer_kwargs
+    if freeze_band is not None:
+        c["freeze_band"] = freeze_band
+    if pretrained_band_lr is not None:
+        c["pretrained_band_lr"] = pretrained_band_lr
+    return c
+
+
+def _hybrid_counts_z8_stab_smoke(mk_extra=None, lr=None, scheduler_type=None,
+                                 scheduler_kwargs=None, optimizer_kwargs=None):
+    """De-clustered fwhm8-local smoke clone exercising the SAME new model kwargs / LR scheme."""
+    c = _hybrid_lmin50_z8_smoke()
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    if lr is not None:
+        c["lr"] = lr
+    if scheduler_type is not None:
+        c["scheduler_type"] = scheduler_type
+    if scheduler_kwargs is not None:
+        c["scheduler_kwargs"] = scheduler_kwargs
+    if optimizer_kwargs is not None:
+        c["optimizer_kwargs"] = optimizer_kwargs
+    return c
+
+
+# Decaying-peak cyclic (base.py 'cyclic_exp'): peaks 1e-3 * 0.98^epoch -> ~1.3e-4 by ep100; keeps
+# the proven 1e-3 escape early while consolidating late (vs flat-peak cyclic that collapses).
+_CYCEXP_1E3 = dict(lr=0.001, scheduler_type="cyclic_exp",
+                   scheduler_kwargs={"gamma": 0.98, "cyclic_period_steps": 6000, "warmup_steps": 1000})
+
+_STAB_VARIANTS = {
+    # name suffix -> (real-config kwargs, smoke-config kwargs)
+    "cycexp1e3": (dict(repeat_indices=(0, 1, 2), **_CYCEXP_1E3),
+                  dict(lr=0.001, scheduler_type="cyclic_exp",
+                       scheduler_kwargs={"gamma": 0.98, "cyclic_period_steps": 60, "warmup_steps": 5})),
+    "banddrop02": (dict(mk_extra={"band_dropout_p": 0.2}),
+                   dict(mk_extra={"band_dropout_p": 0.2})),
+    "pgain16": (dict(mk_extra={"patch_head_init_gain": 16.0}),
+                dict(mk_extra={"patch_head_init_gain": 16.0})),
+    "banddrop02_pgain16": (dict(mk_extra={"band_dropout_p": 0.2, "patch_head_init_gain": 16.0}),
+                           dict(mk_extra={"band_dropout_p": 0.2, "patch_head_init_gain": 16.0})),
+    "pvar05": (dict(mk_extra={"patch_var_reg_coeff": 0.5}),
+               dict(mk_extra={"patch_var_reg_coeff": 0.5})),
+    "z16": (dict(mk_extra={"hybrid_output_dim": 16}),
+            dict(mk_extra={"hybrid_output_dim": 16})),
+    "wd05_cycexp1e3": (dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)}, **_CYCEXP_1E3),
+                       dict(optimizer_kwargs={"weight_decay": 0.05, "betas": (0.9, 0.999)})),
+    # Init-gain + LR-escape combo — the two top-ranked (init / gradient-flow) levers together.
+    "pgain16_cycexp1e3": (dict(mk_extra={"patch_head_init_gain": 16.0}, **_CYCEXP_1E3),
+                          dict(mk_extra={"patch_head_init_gain": 16.0}, lr=0.001)),
+    "bandunfreeze": (dict(freeze_band=False, pretrained_band_lr=1e-5),
+                     dict()),
+}
+
+for _suffix, (_real_kw, _smoke_kw) in _STAB_VARIANTS.items():
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_z8_{_suffix}"] = \
+        _hybrid_counts_z8_stab(**_real_kw)
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_z8_{_suffix}_smoke"] = \
+        _hybrid_counts_z8_stab_smoke(**_smoke_kw)
+
+
+# --- Wave-2 combo (2026-07-15): z16 head + pgain16 init + sustained-escape-then-decay ------------
+# Wave-1 remote verdicts: z16 passed the band barrier at 2e-4 (head de-bottleneck, -4.3977@ep33);
+# pgain16 keeps the map branch alive but 2e-4 alone cannot escape; resume-based consolidation
+# FAILED (the maxlr1e3 optimum is an unstable transient — val degrades even at decayed LR). So do
+# escape+consolidate in ONE run: cyclic peaks HELD at the proven 1e-3 through the escape window
+# (~ep35 > the observed ep27 breakthrough), then per-epoch 0.97 peak decay ('cyclic_hold_exp',
+# base.py). ~970 steps/epoch at B=100 on the full store -> hold_steps 34000.
+_ESC1E3_HOLD = dict(lr=0.001, scheduler_type="cyclic_hold_exp",
+                    scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 6000,
+                                      "warmup_steps": 1000, "hold_steps": 34000})
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z16_pgain16_esc1e3"] = \
+    _hybrid_counts_z8_stab(mk_extra={"hybrid_output_dim": 16, "patch_head_init_gain": 16.0},
+                           **_ESC1E3_HOLD)
+# Wave-2c: exact maxlr1e3 replica (z8, NO init gain) + hold-then-decay. Both combo variants
+# (p6000 AND p2000) failed to escape, so the remaining suspects are (a) z16/pgain16 interfering
+# with the escape, (b) subtle cyclic_hold_exp-vs-CyclicLR difference, (c) the maxlr1e3 escape was
+# seed-luck. This run tests (a)+(b) together; a plain maxlr1e3 repeat-1 resubmit tests (c).
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_esc1e3_p2000"] = \
+    _hybrid_counts_z8_lr(lr=0.001, scheduler_type="cyclic_hold_exp",
+                         scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 2000,
+                                           "warmup_steps": 1000, "hold_steps": 34000})
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_esc1e3_p2000_smoke"] = \
+    _hybrid_counts_z8_smoke_lr(lr=0.001, scheduler_type="cyclic_hold_exp",
+                               scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 20,
+                                                 "warmup_steps": 5, "hold_steps": 100})
+
+
+# p2000 variant: identical combo but cyclic_period_steps=2000 — the DEFAULT period the one
+# escaping run (maxlr1e3) actually used. Period 6000 gives peaks only every ~6 epochs (~3x less
+# dwell near 1e-3); both stuck-slow cycexp runs and (if it fails) the esc1e3 combo share the 6000
+# period, so this isolates the dwell-time confound.
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z16_pgain16_esc1e3_p2000"] = \
+    _hybrid_counts_z8_stab(mk_extra={"hybrid_output_dim": 16, "patch_head_init_gain": 16.0},
+                           lr=0.001, scheduler_type="cyclic_hold_exp",
+                           scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 2000,
+                                             "warmup_steps": 1000, "hold_steps": 34000})
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z16_pgain16_esc1e3_p2000_smoke"] = \
+    _hybrid_counts_z8_stab_smoke(mk_extra={"hybrid_output_dim": 16, "patch_head_init_gain": 16.0},
+                                 lr=0.001, scheduler_type="cyclic_hold_exp",
+                                 scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 20,
+                                                   "warmup_steps": 5, "hold_steps": 100})
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z16_pgain16_esc1e3_smoke"] = \
+    _hybrid_counts_z8_stab_smoke(mk_extra={"hybrid_output_dim": 16, "patch_head_init_gain": 16.0},
+                                 lr=0.001, scheduler_type="cyclic_hold_exp",
+                                 scheduler_kwargs={"gamma": 0.97, "cyclic_period_steps": 60,
+                                                   "warmup_steps": 5, "hold_steps": 100})
+
+
+# --- z64: WIDE latent (user 2026-07-14, corrected spec) ------------------------------------------
+# The whole bottleneck widened to 64: frozen 8-D band (its ckpt must still load — do NOT change
+# bandpower_latent_dim) + 56-D map branch -> 64-D concat fed STRAIGHT to the flow (latent_dim=64,
+# no hybrid_output_dim => head is Linear(64->64), no compression, no expansion). Tests whether the
+# map-side 8-D latent (not just the 16->8 summary head) was the starving constraint.
+def _hybrid_counts_z64():
+    c = _hybrid_counts_z8()
+    c["latent_dim"] = 64                                  # band 8 + patch 56
+    mk = {**c["model_kwargs"]}
+    mk.pop("hybrid_output_dim", None)                     # output = latent_dim = 64
+    c["model_kwargs"] = mk
+    c["repeat_indices"] = [0]
+    return c
+
+
+def _hybrid_counts_z64_smoke():
+    c = _hybrid_lmin50_z8_smoke()
+    c["latent_dim"] = 64
+    mk = {**c["model_kwargs"]}
+    mk.pop("hybrid_output_dim", None)
+    c["model_kwargs"] = mk
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z64wide"] = _hybrid_counts_z64()
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z64wide_smoke"] = _hybrid_counts_z64_smoke()
+
+
+# --- Two-phase escape+consolidate: resume the maxlr1e3 transient optimum, decay from there ------
+# Remote wave-1 finding (jobs 1321123/1321124, 2026-07-14): the decaying-peak cyclic (gamma
+# 0.98/ep) NEVER escapes — its peak drops below the ~1e-3 escape threshold within ~15 epochs
+# (bests frozen at the band level through ep 40+), while flat 1e-3 escaped by ep 13 but then
+# memorised noise. Dose-response: escape needs SUSTAINED ~1e-3; consolidation needs decay.
+# So do them in sequence: warm-start from the maxlr1e3 run's best ckpt (-4.8107 @ep27, the
+# transient optimum) and fine-tune with a pure exp decay 3e-4 -> ~5e-6 over 60 epochs.
+def _hybrid_counts_z8_resumedecay():
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = [0]
+    c["checkpoint_path"] = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3/"
+    c["lr"] = 0.0003
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"gamma": 0.97, "warmup_steps": 0}
+    c["epochs"] = 60
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3_resumedecay"] = \
+    _hybrid_counts_z8_resumedecay()
+# Smoke: de-clustered (checkpoint_path is nulled by the smoke harness; proves lr/sched/epochs build).
+kids_legacy_counts_experiments["kids_legacy_hybrid_nla_m_counts_z8_maxlr1e3_resumedecay_smoke"] = \
+    _hybrid_counts_z8_stab_smoke(lr=0.0003, scheduler_type="exp",
+                                 scheduler_kwargs={"gamma": 0.97, "warmup_steps": 0})
+
+
+# --- H1 map-only upper bounds: does a band-free CNN beat the band level at all? -----------------
+# Same map encoder/data/l40s tuning as the hybrid but NO band branch: model_type kids_o3_dual on
+# E maps only. Run one on the counts store and one on the MEAN-norm store (same schedule) — the
+# counts-vs-mean map-only gap measures how much standalone map info counts normalisation removed
+# (H1 data ceiling vs fusion/optimisation failure).
+def _maponly(data_patterns, eb_variant):
+    c = _hybrid_counts_z8()               # inherit data/loader/l40s/ml_perf/epochs/project keys
+    c["data_patterns"] = data_patterns
+    c["eb_map_variant"] = eb_variant
+    c["model_type"] = "kids_o3_dual"
+    c["dataset_quantities"] = ["E_north", "E_south"]
+    c["latent_dim"] = 8
+    c["model_kwargs"] = {
+        "encoder_type": "unet_o3",
+        "pool_types": ("avg", "max", "gem"),
+        "patch_conditioning": ("side_info"),
+    }
+    for k in ("pretrained_band_ckpt_path", "freeze_band"):
+        c.pop(k, None)
+    c["repeat_indices"] = [0]
+    c["lr"] = _CYCEXP_1E3["lr"]
+    c["scheduler_type"] = _CYCEXP_1E3["scheduler_type"]
+    c["scheduler_kwargs"] = _CYCEXP_1E3["scheduler_kwargs"]
+    return c
+
+
+def _maponly_smoke():
+    """De-clustered LOCAL smoke of the map-only config (fwhm8 fixture, few epochs)."""
+    c = _maponly(_SMOKE_DATA, _SMOKE_EB_VARIANT)
+    c.pop("repeat_indices", None)
+    c["epochs"] = 3
+    c["num_workers"] = 2
+    c["prefetch_factor"] = 2
+    c["persistent_workers"] = False
+    c["batch_size"] = 8
+    return c
+
+
+kids_legacy_counts_experiments["kids_legacy_maponly_nla_m_counts"] = _maponly(_NLA_M, _EB_VARIANT)
+kids_legacy_counts_experiments["kids_legacy_maponly_nla_m_mean"] = _maponly(
+    _MEAN_NLA_M_FWHM4, _MEAN_EB_VARIANT_FWHM4)
+kids_legacy_counts_experiments["kids_legacy_maponly_nla_m_counts_smoke"] = _maponly_smoke()
+
+
+# === M3  main-variate Gower NPE 9-member ensemble finetune (5 repeats) ==========================
+# WHOLE-MODEL load (encoder + NPE flow) from the resnet foundation, so the map encoder MUST be
+# rebuilt as the resnet backbone (map_kwargs=_RESNET_MAPKW) or the state-dict load mismatches. This is
+# exactly the recipe the gower_ft_counts_resnet arch-benchmark validated (vals -5.15/-5.21/-5.28);
+# here it is the production ensemble (ensemble_repeats=9, repeat_indices 0..4 from _npe_finetune_z8).
+_gower_npe_ft_counts = _npe_finetune_z8(_FOUNDATION_CKPT, data_patterns=_GOWER_NLA_M, eb_variant=_EB_VARIANT)
+_gower_npe_ft_counts["model_kwargs"] = {**_gower_npe_ft_counts["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
+kids_legacy_counts_experiments["gower_npe_finetune_nla_m_counts_z8"] = _gower_npe_ft_counts
+
+
+def _npe_finetune_counts_z8_smoke():
+    """De-clustered LOCAL smoke of gower_npe_finetune_nla_m_counts_z8 (there is NO precedent smoke
+    for the z8 NPE finetune, so build one like the hybrid smoke): from-scratch (checkpoint_path=None,
+    from-scratch band), fwhm8 local fixture, single-cosmology-safe (no cosmo cap / fixed-test lock,
+    ensemble_repeats=1), few epochs -> proves the z8 NPE-finetune config BUILDS + finite loss."""
+    c = _npe_finetune_z8(_FOUNDATION_CKPT, data_patterns=_SMOKE_DATA, eb_variant=_SMOKE_EB_VARIANT)
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}  # exercise the real resnet arch
+    c["checkpoint_path"] = None
+    c.pop("pretrained_band_ckpt_path", None)
+    c["freeze_band"] = False
+    c["ensemble_repeats"] = 1
+    c.pop("max_trainval_cosmos", None)
+    c.pop("fixed_test_sim_ids", None)
+    # The REAL run gets its test set from the fixed-id lock (test_frac=0.0); the smoke has no lock, so
+    # it needs a NON-empty test split — on_validation_epoch_end's compute_avg_log_prob reduces over
+    # the TEST loader and torch.cat's an empty list otherwise. Fracs must sum to 1.0.
+    c["train_frac"] = 0.8
+    c["val_frac"] = 0.1
+    c["test_frac"] = 0.1
+    c["repeat_indices"] = [0]
+    c["epochs"] = 3
+    c["num_workers"] = 2
+    c["prefetch_factor"] = 2
+    c["persistent_workers"] = False
+    return c
+
+
+kids_legacy_counts_experiments["gower_npe_finetune_nla_m_counts_z8_smoke"] = _npe_finetune_counts_z8_smoke()
+
+
+# === M4  main-variate NLE chain: 5x (GLASS pretrain -> Gower ens9 finetune), z8 pure-whiten k=8 =
+# Per repeat r: GLASS pretrain (glass_nle_pretrain_nla_m_counts_z8_r{r}, v100) -> Gower ens9 finetune
+# (gower_nle_finetune_nla_m_counts_z8_r{r}_ens9, CORES64 MCMC eval). MAIN split: 300 train/val (80/20),
+# 200 fixed-test ids held out. Source encoder on the embed CLI (PRODUCTION = resnet foundation):
+# --sources kids_legacy_hybrid_nla_m_counts_z8_resnet.
+def _register_main_nle_counts_z8():
+    for r in range(5):
+        kids_legacy_counts_experiments[f"glass_nle_pretrain_nla_m_counts_z8_r{r}"] = _nle_bake_repeat(
+            _nle_pretrain(_NLA_M, _EB_VARIANT, whiten_k=8, epochs=150), r)
+        ft = _nle_finetune(f"glass_nle_pretrain_nla_m_counts_z8_r{r}", ensemble_repeats=9,
+                           whiten_k=8, warmstart_max_gap_nats=22.0,
+                           gower_data=_GOWER_NLA_M, gower_eb=_EB_VARIANT)
+        ft["max_trainval_cosmos"] = [300]
+        ft["train_frac"] = 0.8
+        ft["val_frac"] = 0.2
+        ft["test_frac"] = 0.0   # test = fixed 200 ids; fracs must sum to 1.0 (split_by_cosmology)
+        ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+        kids_legacy_counts_experiments[f"gower_nle_finetune_nla_m_counts_z8_r{r}_ens9"] = _nle_bake_repeat(ft, r)
+
+
+_register_main_nle_counts_z8()
+
+# (The old r7 escape-seed NLE-pretrain target has been removed: the user renamed foundation seed 7
+# into slot 3 and the r7 pretrain checkpoint dir into glass_nle_pretrain_nla_m_counts_z8_r3, so the
+# production set is cleanly r0..r4 — all registered by _register_main_nle_counts_z8() above.)
+
+
+# === M5  sub-variate chains {nla, nla_z, no_vd}: encoder-finetune (M5a) + NLE chain (M5b/M5c) ====
+# Per S: warm-start the counts foundation ENCODER onto the sub-variate GLASS suite (M5a), then the
+# NLE chain (M5b pretrain -> M5c Gower ens9 finetune). nla/nla_z carry the a_ia~U[-6,6] box at EVERY
+# stage; theta set per variate (nla 8-D a_ia; nla_z 9-D a_ia+b_z; no_vd 9-D a_ia+b_ia = NLA-M box).
+# Experiment names use `no_vd` (the established kids_legacy convention, e.g. glass_encoder_finetune_no_vd_z8),
+# even though the store is glass/gower_mocks_nla_m_novd_counts.
+#
+# _SUB_VARIATES[S] = (glass_store, gower_store, cosmo_param_names, preset_overrides, smoke_cosmo)
+# smoke_cosmo differs from cosmo where the LOCAL fixture lacks a param: nla_z's real b_z is not in the
+# fwhm8 NLA-M fixture, so its smoke uses _COSMO_9 (a_ia+b_ia) for the same 9-D flow shape (mirrors the
+# existing glass_encoder_finetune_nla_z_z8_smoke).
+_SUB_VARIATES = {
+    "nla":   (_NLA,   _GOWER_NLA,   _COSMO_8_NLA,  _A_IA_NLA_BOX, _COSMO_8_NLA),
+    "nla_z": (_NLA_Z, _GOWER_NLA_Z, _COSMO_9_NLAZ, _A_IA_NLA_BOX, _COSMO_9),
+    "no_vd": (_NOVD,  _GOWER_NOVD,  _COSMO_9,      None,          _COSMO_9),
+}
+
+
+def _encoder_finetune_counts(glass_data, cosmo, preset):
+    c = _encoder_finetune_z8(glass_data, _EB_VARIANT, cosmo, repeat_indices=(0, 1, 2, 3, 4),
+                             preset_overrides=preset)
+    c["pretrained_embedding_ckpt_path"] = _FOUNDATION_CKPT   # the COUNTS foundation (not the lmin50 one)
+    # Warm-start LOADS the resnet foundation encoder -> rebuild the resnet map backbone or the partial
+    # load silently skips it (leaving a random UNet map encoder). Same fix as M3.
+    c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
+    return c
+
+
+def _register_sub_variate(S, glass_data, gower_data, cosmo, preset, smoke_cosmo):
+    # M5a: encoder finetune (+ de-clustered smoke via the kids_legacy encoder-smoke factory).
+    kids_legacy_counts_experiments[f"glass_encoder_finetune_{S}_counts_z8"] = _encoder_finetune_counts(
+        glass_data, cosmo, preset)
+    _enc_smoke = _encoder_finetune_z8_smoke(smoke_cosmo)
+    _enc_smoke["model_kwargs"] = {**_enc_smoke["model_kwargs"], "map_kwargs": _RESNET_MAPKW}  # match real resnet arch
+    kids_legacy_counts_experiments[f"glass_encoder_finetune_{S}_counts_z8_smoke"] = _enc_smoke
+    # M5b/M5c: NLE pretrain -> Gower ens9 finetune per repeat. SUB split: 100 cosmos, 70/30.
+    for r in range(5):
+        kids_legacy_counts_experiments[f"glass_nle_pretrain_{S}_counts_z8_r{r}"] = _nle_bake_repeat(
+            _nle_pretrain(glass_data, _EB_VARIANT, whiten_k=8, epochs=150,
+                          cosmo_param_names=cosmo, preset_overrides=preset), r)
+        ft = _nle_finetune(f"glass_nle_pretrain_{S}_counts_z8_r{r}", ensemble_repeats=9,
+                           whiten_k=8, warmstart_max_gap_nats=22.0,
+                           gower_data=gower_data, gower_eb=_EB_VARIANT,
+                           cosmo_param_names=cosmo, preset_overrides=preset)
+        ft["max_trainval_cosmos"] = [100]
+        ft["train_frac"] = 0.7
+        ft["val_frac"] = 0.3
+        ft["test_frac"] = 0.0
+        # TODO(BLOCKER before M5c runs) sub-variate first-100/last-100 lock files. The sub-variate
+        # Gower stores (D6/D7/D8) are `--gower-sim-set fixed_test` = EXACTLY the 200 gower_test_ids, so
+        # this placeholder would force ALL 200 into the test split and leave 0 train/val — it WILL
+        # break M5c as-is (NOT a graceful fallback: the overlap is complete, not empty). Before M5c:
+        # create gower_test_ids_first100.json (train/val pool) + gower_test_ids_last100.json (held-out
+        # test), set fixed_test_sim_ids=last-100, and restrict train/val to the first-100. Placeholder
+        # kept only so the module imports; M5c is far downstream (blocked on D6/D7/D8 + M5a/M5b).
+        ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+        kids_legacy_counts_experiments[f"gower_nle_finetune_{S}_counts_z8_r{r}_ens9"] = _nle_bake_repeat(ft, r)
+
+
+for _S, (_g, _gow, _cos, _pre, _smk) in _SUB_VARIATES.items():
+    _register_sub_variate(_S, _g, _gow, _cos, _pre, _smk)
+
+
+# TODO Section C conservative (fwhm8) stack — mirror M2-M6 with `_cons` names + fwhm8 stores
+# (_EB_VARIANT_CONS="fwhm8_lmin56_lcut1024", *_fwhm8 map stores, _FOUNDATION_CONS_CKPT). Band M1 is
+# REUSED (bandpowers are smoothing-independent). Deliberately deferred (LATER pass).
+
+
+# =================================================================================================
+# counts-training-performance-EXTENDED (2026-07-16): anti-starvation + head/architecture waves.
+# Diagnosis (task artifacts/diagnosis.md): VMIM loss is minimised without the CNN (gradient
+# starvation); the zero-init scale-shift UNet degenerates to a rank-1, DC-exploding representation.
+# Levers here: patch_norm (LayerNorm barrier on patch_mu), patch_aux (map-only auxiliary VMIM
+# head), mdn (mixture head), deep (backbone depth/width). All on the default z8 base (user).
+# =================================================================================================
+
+def _counts_ext(name, mk_extra=None, top_extra=None, smoke_mk=None, smoke_top=None,
+                repeat_indices=(0,), **stab_kw):
+    """Register a counts-extended variant + its _smoke clone (fwhm8 single-cosmo fixture)."""
+    c = _hybrid_counts_z8_stab(mk_extra=mk_extra, repeat_indices=repeat_indices, **stab_kw)
+    for k, v in (top_extra or {}).items():
+        c[k] = v
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_{name}"] = c
+    s = _hybrid_counts_z8_stab_smoke(mk_extra=(smoke_mk if smoke_mk is not None else mk_extra))
+    for k, v in ((smoke_top if smoke_top is not None else top_extra) or {}).items():
+        s[k] = v
+    kids_legacy_counts_experiments[f"kids_legacy_hybrid_nla_m_counts_{name}_smoke"] = s
+
+
+def _deep_mapkw(base_mk, **kw):
+    mk = dict(base_mk or {})
+    mk["map_kwargs"] = {**mk.get("map_kwargs", {}), **kw}
+    return mk
+
+
+_BASE_MK = _hybrid_counts_z8()["model_kwargs"]
+
+# LayerNorm barrier on patch_mu: kills the DC/amplitude pathology + scale imbalance structurally.
+_counts_ext("z8_pnorm", mk_extra={"patch_norm": "layernorm"})
+# Map-only auxiliary VMIM head: first-class gradient into the CNN that the band cannot satisfy.
+_counts_ext("z8_mapaux05", top_extra={"patch_aux_weight": 0.5,
+                                      "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# The mechanistically-complete combo: barrier + aux gradient (+ known-good banddrop reserve below).
+_counts_ext("z8_pnorm_mapaux05", mk_extra={"patch_norm": "layernorm"},
+            top_extra={"patch_aux_weight": 0.5,
+                       "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# MDN/GMM head (build_made): smoother conditioning gradients than the spline flow.
+_counts_ext("z8_mdn", top_extra={"flow_type": "mdn",
+                                 "flow_kwargs": {"num_mixture_components": 12,
+                                                 "hidden_features": 64}})
+# Depth/width control: does capacity alone change anything? (prediction from diagnosis: no)
+# 64ch = 2x the historical 32ch width; 96ch at full 1000x100 res risks OOM at batch 100.
+_counts_ext("z8_deep", mk_extra=_deep_mapkw(_BASE_MK, model_channels=64, num_res_blocks=3))
+# Wider NSF head on the z8 base (flow-capacity axis).
+_counts_ext("z8_flowbig", top_extra={"flow_kwargs": {"hidden_features": 64}})
+# Combo + banddrop02 (strongest known anti-collapse) as the belt-and-braces variant.
+_counts_ext("z8_pnorm_mapaux05_banddrop02",
+            mk_extra={"patch_norm": "layernorm", "band_dropout_p": 0.2},
+            top_extra={"patch_aux_weight": 0.5,
+                       "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# BatchNorm barrier variant (2026-07-16, post-probe): the LayerNorm barrier + aux head still
+# collapses cross-sample (LN is per-sample; early training prefers constant conditioning for BOTH
+# flows). Non-affine BatchNorm on patch_mu forbids that state structurally; the aux head then
+# shapes WHICH forced variance is informative.
+_counts_ext("z8_bnorm_mapaux05", mk_extra={"patch_norm": "batchnorm"},
+            top_extra={"patch_aux_weight": 0.5,
+                       "patch_aux_flow_kwargs": {"hidden_features": 32}})
+# === PROMOTED (user 2026-07-16): clean pre-activation ResNet map encoder ========================
+# Replace the degenerating diffusion-UNet with a boring, alive-at-init deep ResNet (15 blocks,
+# GN, GeM head, symmetric downsampling). Highest-priority wave; aux-head/barrier variants are
+# fallback companions, not the lead. _RESNET_MAPKW is defined once at the top of this module (the
+# production foundation arch) and reused here + by M3/M5a.
+_counts_ext("z8_resnet", mk_extra={"map_kwargs": _RESNET_MAPKW})
+# Belt-and-braces companion: ResNet + the strongest known anti-collapse lever, in case starvation
+# still bites a healthy encoder.
+_counts_ext("z8_resnet_banddrop02",
+            mk_extra={"map_kwargs": _RESNET_MAPKW, "band_dropout_p": 0.2})
+# ResNet + wider NSF head (2026-07-17): with the encoder finally delivering map information into
+# the 8-D summary, the hidden=32 flow may be the next bottleneck (lit-review flag). Low-hanging
+# fruit push toward the -5.2..-5.5 floor target.
+_counts_ext("z8_resnet_flowbig", mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}})
+# === Phase 2b (2026-07-17): build on the ResNet breakthrough, target -5.5 =======================
+# T1: higher LR + standard exponential decay on the resnet+wide-flow base. gamma is PER-EPOCH
+# (base.py exp scheduler): 0.977**100 ~= 0.098 -> lr 1e-3 -> ~1e-4 over the run.
+_counts_ext("z8_resnet_flowbig_exp1e3",
+            mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}},
+            lr=0.001, scheduler_type="exp",
+            scheduler_kwargs={"gamma": 0.977, "warmup_steps": 1000})
+# T3: ConvNeXt-T-style encoder (Liu+22) — modern, common, one-sentence-defensible drop-in.
+_CONVNEXT_MAPKW = {"encoder_type": "convnext", "patch_conditioning": None,
+                   "pool_types": ("avg", "gem"),
+                   "dims": (64, 128, 256, 512), "depths": (3, 3, 9, 3),
+                   "drop_path_rate": 0.1}
+_counts_ext("z8_convnext_flowbig",
+            mk_extra={"map_kwargs": _CONVNEXT_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}})
+# T2: frozen-trunk head-stack retrains (v100; artifacts/head_analysis.md R-series).
+# CRITICAL: backbone_prefix MUST be the full shared_cnn path (default 'shared_cnn.backbone.'
+# silently no-matches a resnet ckpt -> random trunk); freeze_backbone freezes poolproj/fc too,
+# so _RESNET_MAPKW must stay byte-identical to the pretrained run.
+_RESNET_CKPT_DIR = f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_resnet/"
+
+def _resnet_frozen(name, mk_extra=None, top_extra=None):
+    mk = {"map_kwargs": _RESNET_MAPKW, **(mk_extra or {})}
+    top = {"pretrained_backbone_ckpt_path": _RESNET_CKPT_DIR,
+           "freeze_backbone": True,
+           "backbone_prefix": "model.embedding_net.patch_encoder.shared_cnn.",
+           **(top_extra or {})}
+    _counts_ext(name, mk_extra=mk, top_extra=top)
+
+# R3: widen the map channel to 16 pre-fusion (latent 24 = band 8 + patch 16, z8 kept) + big flow.
+_resnet_frozen("z8_resnetfz_dp16_flow128",
+               mk_extra={},
+               top_extra={"latent_dim": 24,
+                          "flow_kwargs": {"hidden_features": 128, "num_blocks": 3,
+                                          "num_bins": 12}})
+# R5-combo: nonlinear fusion (MLP hybrid head) + big flow.
+_resnet_frozen("z8_resnetfz_mlphead_flow128",
+               mk_extra={"hybrid_head_hidden": 32},
+               top_extra={"flow_kwargs": {"hidden_features": 128, "num_blocks": 3,
+                                          "num_bins": 12}})
+# R2 solo: map channel 16, baseline flow (attribution control for R3).
+_resnet_frozen("z8_resnetfz_dp16",
+               top_extra={"latent_dim": 24, "flow_kwargs": {"hidden_features": 64}})
+# R4: LayerNorm scale barrier at fusion (cheap, orthogonal).
+_resnet_frozen("z8_resnetfz_pnorm",
+               mk_extra={"patch_norm": "layernorm"},
+               top_extra={"flow_kwargs": {"hidden_features": 64}})
+# T2-fast (2026-07-17): cached-embedding head training (user: v100 full-forward runs were
+# ~15 min/ep). One embed run precomputes the frozen band+pre-head features to
+# checkpoints/embcache_frozenfeat_z8_resnet/datasets/ (shared via embedding_cache_name +
+# reuse_embedding_cache); head variants then train on cached 520-D vectors in seconds/epoch.
+# Run via: run_remote.py embed --target <name> --sources kids_legacy_hybrid_nla_m_counts_z8_resnet
+# NOTE: cached features are augmentation-free (one fixed view) — mild regularisation loss noted.
+
+def _fzemb(name, head_kwargs=None, flow_kwargs=None):
+    c = _hybrid_counts_z8()
+    c["repeat_indices"] = [0]
+    c["pretrained_band_ckpt_path"] = None      # band info lives inside the cached vector
+    c["load_pretrained_flow"] = False
+    c["embedding_cut"] = "hybrid_pre_head"
+    c["reuse_embedding_cache"] = True
+    c["embedding_cache_name"] = "embcache_frozenfeat_z8_resnet"
+    c["embedding_head_type"] = "hybrid_features"
+    c["embedding_head_kwargs"] = {"band_dim": 8, **(head_kwargs or {})}
+    c["flow_kwargs"] = dict(flow_kwargs or {"hidden_features": 64})
+    kids_legacy_counts_experiments[name] = c
+
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_dp16_flow128",
+       head_kwargs={"dim_patch": 16},
+       flow_kwargs={"hidden_features": 128, "num_blocks": 3, "num_bins": 12})
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_mlphead_flow128",
+       head_kwargs={"hybrid_head_hidden": 32},
+       flow_kwargs={"hidden_features": 128, "num_blocks": 3, "num_bins": 12})
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_dp16",
+       head_kwargs={"dim_patch": 16})
+_fzemb("kids_legacy_hybrid_nla_m_counts_z8_fzemb_pnorm",
+       head_kwargs={"patch_norm": "layernorm"})
+# Phase 2b follow-ups (2026-07-17 evening): 1e-3 exp too hot (peak -4.27@5 then degrade);
+# ConvNeXt-T failed to break through (A/B loser vs resnet). Next: 3e-4 middle-point schedule +
+# within-family ResNet scaling (20 blocks — still "a pre-activation ResNet" in a paper sentence).
+_counts_ext("z8_resnet_flowbig_exp3e4",
+            mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}},
+            lr=0.0003, scheduler_type="exp",
+            scheduler_kwargs={"gamma": 0.977, "warmup_steps": 1000})
+_RESNET_DEEP_MAPKW = {**_RESNET_MAPKW, "blocks_per_stage": 4}
+_counts_ext("z8_resnetdeep_flowbig",
+            mk_extra={"map_kwargs": _RESNET_DEEP_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}})
+# COMPOSITION run (2026-07-17 late): the -5.5 attempt = winning encoder (base resnet) +
+# dim_patch 16 end-to-end (T2's one positive, retrained unfrozen) + flow 64 + LONGER budget
+# (150 ep; r2's best came at ep85/100 with a productive tail).
+_counts_ext("z8_resnet_dp16_flowbig_ep150",
+            mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra={"latent_dim": 24,
+                       "flow_kwargs": {"hidden_features": 64},
+                       "epochs": 150})
+# Width axis (2026-07-18): 1.5x-wide preact ResNet (still 15 blocks) — the capacity axis
+# orthogonal to resnetdeep's depth test. Schedule verdict: exp decay FAILED at 1e-3 AND 3e-4;
+# cyclic 2e-4 is the recipe.
+_RESNET_WIDE_MAPKW = {**_RESNET_MAPKW, "stage_channels": (48, 96, 192, 384, 384)}
+# batch 64: 1.5x channels at full res OOMs a 40GB a100 at batch 100 (measured).
+_counts_ext("z8_resnetwide_flowbig",
+            mk_extra={"map_kwargs": _RESNET_WIDE_MAPKW},
+            top_extra={"flow_kwargs": {"hidden_features": 64}, "batch_size": 64})
+
+
+# === Phase 4 (2026-07-18): final push -5.2 -> -5.5 on the winning plain-resnet recipe ===========
+# Forensics (task artifacts/plateau_forensics.md): every escaped model carries exactly ONE
+# effective map dimension (patch_mu PR ~= 1.00/8); stalled variants are dead-branch failures.
+# Levers here target (A) richer pooled statistics at the source (stdpool), (B) representation
+# rank (covreg), (C) seed rescue via readout decoupling (sdband), (D) anti-aliased downsampling
+# (blurpool), (E) trough capture via a late anneal (anneal). See artifacts/phase4_experiments.md.
+
+# E1: cyclic until ep70, then linear morph of amplitude+envelope to 0.05x lr by ep100 — parks
+# the run at its oscillation trough instead of relying on best-checkpoint luck.
+_counts_ext("z8_resnet_anneal", mk_extra={"map_kwargs": _RESNET_MAPKW},
+            scheduler_type="cyclic_anneal",
+            scheduler_kwargs={"cyclic_period_steps": 6000, "anneal_start_epoch": 70,
+                              "final_factor": 0.05})
+# E2: second-moment (spatial std) pooling + penultimate-stage tap (ECAPA-MFA style): pool the
+# spatial VARIANCE of learned local statistics (peak-count-like info that mean pools discard).
+_STDPOOL_MAPKW = {**_RESNET_MAPKW, "pool_types": ("avg", "gem", "std"),
+                  "tap_penultimate": True}
+_counts_ext("z8_resnet_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
+# E3: off-diagonal covariance (decorrelation) penalty on patch_mu — direct anti-rank-1 pressure.
+# PAIRED with the per-dim variance hinge (VICReg needs both: cov alone is satisfied by
+# axis-aligning the one live direction — zero off-diag, PR still 1). Weights ~VICReg 25:1.
+_counts_ext("z8_resnet_covreg", mk_extra={"map_kwargs": _RESNET_MAPKW,
+                                          "patch_var_reg_coeff": 1.0,
+                                          "patch_cov_reg_coeff": 3e-2})
+# E4: asymmetric spectral decoupling (L2 on the band-only readout component), on the STUCK seed
+# (repeat 1) — a seed-rescue test: does readout decoupling free the collapsed basin?
+_counts_ext("z8_resnet_sdband", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+            repeat_indices=(1,))
+# E5: anti-aliased (Tri-3 blur) downsampling on stages 3-5 (stem + stages 1-2 keep the raw
+# small-scale path): stop aliasing corrupting the high-l content that carries the non-Gaussian
+# signal. Symmetric kernel -> flip/rot augmentation safe.
+_BLUR_MAPKW = {**_RESNET_MAPKW, "blur_stages": (2, 3, 4)}
+_counts_ext("z8_resnet_blurpool", mk_extra={"map_kwargs": _BLUR_MAPKW})
+# E6: in-model high-pass input channels [x, x-blur5(x)] — explicit small-scale content past the
+# CNN's spectral bias (user prior: beyond-2pt info lives at small scales). No data-side work.
+_HIPASS_MAPKW = {**_RESNET_MAPKW, "input_highpass": True}
+_counts_ext("z8_resnet_hipass", mk_extra={"map_kwargs": _HIPASS_MAPKW})
+# E12a: sdband + late anneal on the STRONG seed (rep 2, plain best -5.2062): tests (a) sdband on
+# a would-be-deep seed (does the penalty tax good seeds?), (b) the anneal on a run that actually
+# escapes (E1's seed never escaped, so it cannot test the anneal). The -5.5 combo attempt v1.
+_counts_ext("z8_resnet_sdband_anneal",
+            mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+            repeat_indices=(2,),
+            scheduler_type="cyclic_anneal",
+            scheduler_kwargs={"cyclic_period_steps": 6000, "anneal_start_epoch": 70,
+                              "final_factor": 0.05})
+
+
+# === Phase 4.6 (2026-07-19): GOWER DOWNSTREAM ARCHITECTURE BENCHMARK ============================
+# User: the new benchmark is Gower downstream performance. Fine-tune each phase-4 architecture
+# variant (whole-model load: encoder + NPE flow) on the ~300-complete gower counts nla_m store
+# (prebaked f16 fwhm4_lmin56, job 1327723), 300 trainval 80/20 + fixed-test lock, 10 ep lr 1e-5
+# (the production _npe_finetune_z8 recipe) but ensemble_repeats=1 — this is an architecture
+# comparison, not the production ensemble. One finetuned repeat r loads source repeat r.
+
+def _gower_ft_arch(name, src_exp, mk_extra=None, top_extra=None, repeat_indices=(0,)):
+    c = _npe_finetune_z8(f"{_CKPT}/{src_exp}/", data_patterns=_GOWER_NLA_M,
+                         eb_variant=_EB_VARIANT)
+    c["ensemble_repeats"] = 1
+    c["repeat_indices"] = list(repeat_indices)
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    for k, v in (top_extra or {}).items():
+        c[k] = v
+    kids_legacy_counts_experiments[f"gower_ft_counts_{name}"] = c
+    return c
+
+
+# plain ResNet recipe, the 3 deep seeds (r0 -5.148, r2 -5.206, r4 -5.282)
+_gower_ft_arch("resnet", "kids_legacy_hybrid_nla_m_counts_z8_resnet",
+               mk_extra={"map_kwargs": _RESNET_MAPKW}, repeat_indices=(0, 2, 4))
+# SD band penalty variant (E4 rep1 -5.2124; rep0 pending E4c) — keep the penalty during finetune
+_gower_ft_arch("sdband", "kids_legacy_hybrid_nla_m_counts_z8_resnet_sdband",
+               mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+               repeat_indices=(1,))
+# wider-flow variant (-5.137)
+_gower_ft_arch("flowbig", "kids_legacy_hybrid_nla_m_counts_z8_resnet_flowbig",
+               mk_extra={"map_kwargs": _RESNET_MAPKW},
+               top_extra={"flow_kwargs": {"hidden_features": 64}}, repeat_indices=(0,))
+# blurpool variant (-5.082)
+_gower_ft_arch("blurpool", "kids_legacy_hybrid_nla_m_counts_z8_resnet_blurpool",
+               mk_extra={"map_kwargs": _BLUR_MAPKW}, repeat_indices=(0,))
+# UNet z8 counts foundation control (the pre-phase-4 baseline, ~-4.4 on GLASS)
+_gower_ft_arch("unet", "kids_legacy_hybrid_nla_m_counts_z8", repeat_indices=(0,))
+# sdband+anneal (E12a rep2) — registered now; submit once E12a finishes
+_gower_ft_arch("sdband_anneal", "kids_legacy_hybrid_nla_m_counts_z8_resnet_sdband_anneal",
+               mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2},
+               repeat_indices=(2,))
+
+
+def _gower_ft_smoke(name, mk_extra=None, top_extra=None):
+    """De-clustered local smoke: from-scratch, fwhm8 fixture, tiny; proves BUILD + finite loss
+    for each finetune arch override."""
+    c = _npe_finetune_counts_z8_smoke()
+    if mk_extra:
+        c["model_kwargs"] = {**c["model_kwargs"], **mk_extra}
+    for k, v in (top_extra or {}).items():
+        c[k] = v
+    kids_legacy_counts_experiments[f"gower_ft_counts_{name}_smoke"] = c
+
+
+_gower_ft_smoke("resnet", mk_extra={"map_kwargs": _RESNET_MAPKW})
+_gower_ft_smoke("sdband", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2})
+_gower_ft_smoke("flowbig", mk_extra={"map_kwargs": _RESNET_MAPKW},
+                top_extra={"flow_kwargs": {"hidden_features": 64}})
+_gower_ft_smoke("blurpool", mk_extra={"map_kwargs": _BLUR_MAPKW})
+_gower_ft_smoke("unet")
+_gower_ft_smoke("sdband_anneal", mk_extra={"map_kwargs": _RESNET_MAPKW, "sd_band_coeff": 1e-2})
+
+
+# === Phase 4.7 (2026-07-19): END-TO-END POST-CNN HEAD REDESIGN (warm-start trunk) ===============
+# User hypothesis: all breakthrough architectures land in the same -5.1..-5.3 band => the CNN is
+# not the bottleneck; the 512->256->8 post-CNN funnel might be. Grey area: END-TO-END head
+# redesign with a WARM-STARTED trunk (dodges the escape-fragility confound that killed the cold
+# E2/E3/dp16 attempts; frozen-trunk sweeps could not co-adapt the CNN). Trunk = r4's escaped
+# ResNet (-5.2816, repeat 4 => split-consistent), backbone LR 2e-5, fresh head/fusion/flow at
+# 2e-4 cyclic, 60 ep. Cold-start reinit of any winner comes after identification (user).
+_WS_TRUNK = {
+    "pretrained_backbone_ckpt_path": f"{_CKPT}/kids_legacy_hybrid_nla_m_counts_z8_resnet/",
+    "backbone_prefix": "model.embedding_net.patch_encoder.shared_cnn.",
+    "freeze_backbone": False,
+    "pretrained_backbone_lr": 2e-5,
+    "epochs": 60,
+}
+_WS_SMOKE_TOP = {"pretrained_backbone_ckpt_path": None}  # de-cluster the smoke clone
+
+
+def _ws_head(name, mk_extra=None, top_extra=None):
+    top = {**_WS_TRUNK, **(top_extra or {})}
+    smoke_top = {k: v for k, v in (top_extra or {}).items()}
+    smoke_top.update(_WS_SMOKE_TOP)
+    _counts_ext(name, mk_extra=mk_extra, top_extra=top, smoke_top=smoke_top,
+                repeat_indices=(4,))
+
+
+# W1: gradual-taper N/S head 512->256->64->16->8 (replaces the 256->8 cliff)
+_ws_head("z8_resnet_ws_headdeep",
+         mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}})
+# W2: wider patch summary (dim_patch 16) + MLP fusion — the frozen-sweep winner, now end-to-end
+_ws_head("z8_resnet_ws_dp16mlp",
+         mk_extra={"map_kwargs": _RESNET_MAPKW, "hybrid_head_hidden": 32},
+         top_extra={"latent_dim": 24})
+# W3: richer pooled statistics (avg+gem+std, penultimate tap) — E2 retried without the escape
+_ws_head("z8_resnet_ws_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
+# W4: wide-not-deep funnel (hidden 512 head) — capacity control vs W1's taper
+_ws_head("z8_resnet_ws_bighead",
+         mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (512,)}})
+# P4.7 winners onto the downstream benchmark (rep 4 trunk lineage)
+_gower_ft_arch("headdeep", "kids_legacy_hybrid_nla_m_counts_z8_resnet_ws_headdeep",
+               mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}},
+               repeat_indices=(4,))
+_gower_ft_arch("ws_stdpool", "kids_legacy_hybrid_nla_m_counts_z8_resnet_ws_stdpool",
+               mk_extra={"map_kwargs": _STDPOOL_MAPKW}, repeat_indices=(4,))
+_gower_ft_smoke("headdeep", mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}})
+_gower_ft_smoke("ws_stdpool", mk_extra={"map_kwargs": _STDPOOL_MAPKW})
+# P4.7 endgame: COLD-START reinit of the identified winner (taper head) — no warm trunk, plain
+# recipe otherwise. If it escapes and matches ~-5.29, the prescription is self-contained;
+# if it fails the escape (cf. cold E2/stdpool), production = plain-escape + head-swap 2-stage.
+_counts_ext("z8_resnet_headdeep_cold",
+            mk_extra={"map_kwargs": {**_RESNET_MAPKW, "head_hidden_dims": (256, 64, 16)}},
+            repeat_indices=(4,))
+
+
+# === Shear-estimator hardening, Track B (2026-08-05, improved-shear-processing task) ============
+# B1_selfstd deployed as a data-loader transform (eb_noise_norm='self'): per-mock/bin footprint
+# standardisation of the E maps at load time. Kills the b_g noise-amplitude leakage (paired-replay
+# residual +0.15σ vs baseline +6.9σ; leaderboard in the task's RESULTS.md) with zero regeneration;
+# the bandpower branch keeps the amplitude. Identical to the z8_resnet foundation otherwise —
+# a direct FoM/ΔMI price measurement vs kids_legacy_hybrid_nla_m_counts_z8_resnet.
+# (B2 divB variant deliberately not built: real-data B-modes are poorly modelled; user 2026-08-05.)
+_EB_SELFSTD_TOP = {
+    "eb_noise_norm": "self",
+    # the transform already standardises the maps — scale only the bandpowers
+    "scaler_options": {"data": {"type": "standard", "keys": ["mixed_bandpowers"]},
+                       "cosmo": {"type": "preset"}},
+}
+_counts_ext("z8_resnet_ebselfstd", mk_extra={"map_kwargs": _RESNET_MAPKW},
+            top_extra=_EB_SELFSTD_TOP)

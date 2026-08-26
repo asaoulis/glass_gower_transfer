@@ -29,6 +29,7 @@ from config.kids_legacy_counts import kids_legacy_counts_experiments
 from config.kids_legacy_novd import kids_legacy_novd_experiments
 from config.kids_legacy_dn import kids_legacy_dn_experiments
 from config.kids_legacy_bgp import kids_legacy_bgp_experiments
+from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
 from src.ml.eval.misspec import VARIATE_SETS
 from copy import copy
@@ -43,6 +44,7 @@ experiments.update(kids_legacy_counts_experiments)  # counts-normalisation rerun
 experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
 experiments.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
 experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
+experiments.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation (closed; do not extend)
 
 # What a bare `python eval.py` runs. Explicit --mode wins. The gatekeeper passes eval.py CLI
 # args through (redeployed 2026-07-08), so submissions should say --mode explicitly:
