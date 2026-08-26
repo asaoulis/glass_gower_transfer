@@ -759,11 +759,16 @@ kids_legacy_bgp_experiments["glass_encoder_finetune_nla_z_bgp_z8"] = \
 # Success = the fixed-LR runs match or beat those AND keep improving late (best at a LATE epoch
 # rather than ~40-56), which is the actual point: recovering the ~half of the budget the exp runs
 # spend getting worse. A better best-val is a bonus; a later best-epoch is the signal.
+#
+# ⭐ PROMOTED FROM A/B TO PRODUCTION (user, 2026-08-26): the test PASSED 2/2 -- r1 -8.0265@ep65 vs
+# exp -7.5215@ep56, r2 -7.8100@ep63 vs exp -7.6226@ep41, both beating the baseline AND peaking far
+# later. Standing policy is that a measured-better setup gets re-run, not merely noted, so this row
+# now carries the FULL repeat set and becomes the `nla_z` production compressor. r1/r2 are already
+# trained; only r0/r3/r4 need launching.
 kids_legacy_bgp_experiments["glass_encoder_finetune_nla_z_bgp_z8_fixedlr"] = \
     _assert_final_summary_dim(
-        _encoder_finetune_bgp(_BGP_NLA_Z, _COSMO_9_NLAZ, preset_overrides=_A_IA_NLA_BOX,
-                              repeat_indices=(1, 2)), 8,      # scheduler defaults to "fixed"
-        "glass_encoder_finetune_nla_z_bgp_z8_fixedlr")
+        _encoder_finetune_bgp(_BGP_NLA_Z, _COSMO_9_NLAZ, preset_overrides=_A_IA_NLA_BOX), 8,
+        "glass_encoder_finetune_nla_z_bgp_z8_fixedlr")   # scheduler defaults to "fixed"
 
 
 # === M5b — Stage-A NLE pretrain on the `nla` variate encoder ====================================
@@ -1215,3 +1220,86 @@ for _r in _VARIATE_REPEATS:
     _ft_nlaz["project"] = _BGP_NLE_PROJECT
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_z_bgp_z8_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_nlaz, _r)
+
+
+# ##################################################################################################
+# === M12 — FIXED-LR ENCODER RE-RUN of BOTH variate chains (user policy, 2026-08-26) ==============
+# ##################################################################################################
+# ⭐ **STANDING POLICY (user): when a better setup is MEASURED, re-run the affected production work
+# on it — do not leave a known-inferior run standing as the result.**
+#
+# What was measured: the controlled fixed-vs-exp A/B on the `nla_z` compressor, same repeat indices
+# so identical split seeds, schedule the only variable. Fixed LR won 2/2 on BOTH pre-registered
+# criteria — beat the baseline AND peaked much later:
+#     r1  -8.0265 @ep65  vs exp  -7.5215 @ep56     (+0.50 nats)
+#     r2  -7.8100 @ep63  vs exp  -7.6226 @ep41     (+0.19 nats, 22 epochs later)
+# The exp runs had turned over by ep41-56 and spent the rest of the budget getting worse.
+#
+# Both shipped variate chains (`nla` M5c/M5e and `nla_z` M6) were built on EXP-decay compressors, so
+# both are re-run here from the encoder down. New names throughout: mixing recipes into the existing
+# run dirs would let `find_best_checkpoint` pick the global minimum across two recipes.
+#
+# ⚠️ WHY THIS ALSO MATTERS FOR THE M4b COMPARISON. `nla`'s deficit vs M4b (dim-norm FoM (om,s8,w0)
+# 2.2162 vs 3.0149 = 0.735x) is confounded: M4b's compressor IS the p9 foundation trained on CYCLIC
+# LR, while the variates add an EXP-decay finetune on top of it. This re-run removes the schedule
+# from that list. It does NOT make the chains identical — M4b has no variate-encoder-finetune step at
+# all, and ~99 vs 300 trainval cosmologies, k=5 vs k=8 and the store all still differ. Data volume
+# remains the larger untested difference.
+#
+# ⚠️ FIXED, NOT CYCLIC. Fixed is the schedule that was actually measured on this row family; cyclic
+# matches M4b but has never been tested head-to-head against fixed here. Cyclic stays the p15 hybrid
+# schedule (different failure mode: a plateau to escape, not an early turnover).
+#
+# ⭐ THE EXP-BASED CHAINS ARE KEPT AND BECOME THE CONTROL ARM. The `nla_z` Stage-B rows running on
+# the exp compressor are deliberately NOT cancelled: paired against these, they measure what the
+# encoder schedule is worth END-TO-END (FoM/calibration), which no encoder val can tell us.
+
+# --- M12a: the `nla` fixed-LR compressor (the exp row above is PINNED and stays as the control) ---
+kids_legacy_bgp_experiments["glass_encoder_finetune_nla_bgp_z8_fixedlr"] = \
+    _assert_final_summary_dim(
+        _encoder_finetune_bgp(_BGP_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX), 8,
+        "glass_encoder_finetune_nla_bgp_z8_fixedlr")   # scheduler defaults to "fixed"
+
+# --- M12b: Stage-A NLE pretrain on the fixed-LR compressors -------------------------------------
+# Separate experiment names (`_fx_`) rather than reusing the existing Stage-A rows with a different
+# `--sources`: the run folder does embed the source name, but Stage-B resolves its warm start
+# through `checkpoints/<stage_a_exp>/` and a match string, so two source folders under one Stage-A
+# experiment would make that resolution ambiguous. k=5 is unchanged and MUST match Stage-B.
+for _r in _VARIATE_REPEATS:
+    _pre_nla_fx = _nle_pretrain_bgp(_BGP_NLA, _r, cosmo_param_names=_COSMO_8_NLA,
+                                    preset_overrides=_A_IA_NLA_BOX)
+    _pre_nla_fx["whiten_embeddings"] = {"k": 5}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_bgp_z8_k5_fx_r{_r}"] = _pre_nla_fx
+
+    _pre_nlaz_fx = _nle_pretrain_bgp(_BGP_NLA_Z, _r, cosmo_param_names=_COSMO_9_NLAZ,
+                                     preset_overrides=_A_IA_NLA_BOX)
+    _pre_nlaz_fx["whiten_embeddings"] = {"k": 5}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_z_bgp_z8_k5_fx_r{_r}"] = _pre_nlaz_fx
+
+# --- M12c: Stage-B Gower NLE finetune on the fixed-LR chains ------------------------------------
+# Identical to the M5e / M6c rows in every respect except the parent Stage-A, so the pair isolates
+# the compressor schedule. 150 ep, ens9, k=5, same locked 100 test cosmologies.
+for _r in _VARIATE_REPEATS:
+    _ft_nla_fx = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_k5_fx_r{_r}", ensemble_repeats=9,
+                               whiten_k=5, warmstart_max_gap_nats=22.0,
+                               gower_data=_BGP_GOWER_NLA, gower_eb=None,
+                               cosmo_param_names=_COSMO_8_NLA,
+                               preset_overrides=_A_IA_NLA_BOX)
+    _ft_nlaz_fx = _nle_finetune(f"glass_nle_pretrain_nla_z_bgp_z8_k5_fx_r{_r}", ensemble_repeats=9,
+                                whiten_k=5, warmstart_max_gap_nats=22.0,
+                                gower_data=_BGP_GOWER_NLA_Z, gower_eb=None,
+                                cosmo_param_names=_COSMO_9_NLAZ,
+                                preset_overrides=_A_IA_NLA_BOX)
+    for _c in (_ft_nla_fx, _ft_nlaz_fx):
+        _c["max_trainval_cosmos"] = None
+        _c["train_frac"] = 0.8
+        _c["val_frac"] = 0.2
+        _c["test_frac"] = 0.0
+        _c["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+        _c["epochs"] = 150
+        _c["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_fx_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_nla_fx, _r)
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_z_bgp_z8_fx_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_nlaz_fx, _r)
+
