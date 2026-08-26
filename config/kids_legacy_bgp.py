@@ -1398,3 +1398,55 @@ for _r in _VARIATE_REPEATS:
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_nla_e150, _r)
 
+# --- M6c: STAGE-B -- GOWER NLE FINETUNE for the `nla_z` variate, all 5 repeats, 150 epochs -------
+# The `nla_z` column's second half. Chain per repeat r:
+#   M6a  glass_encoder_finetune_nla_z_bgp_z8      (GLASS NPE encoder, 8-D summary)
+#     -> M6b  glass_nle_pretrain_nla_z_bgp_z8_k5_r{r}   (Stage-A GLASS NLE on frozen embeddings, v100)
+#     -> M6c  THIS ROW                                   (Stage-B Gower NLE finetune + MCMC eval)
+#
+# GATE CLEARED 2026-08-26 20:30Z -- all five Stage-A repeats finished (`max_epochs=150 reached`),
+# each with top-3 checkpoints and a persisted `datasets/whitener.pt`. Best-checkpoint vals span
+# -3.16..-3.55 with best epochs at 118-149, i.e. LATE (no early-overfit signature). Those numbers are
+# NOT comparable to the `nla` chain's -- a different encoder means a different summary space and the
+# NLE log-prob differs by a change-of-variables Jacobian -- they only establish that the five repeats
+# are mutually consistent and none is a straggler.
+#
+# theta MUST match the paired Stage-A: `_COSMO_9_NLAZ` + `_A_IA_NLA_BOX` (9-param, a_ia ~ U[-6,6]).
+# `_nle_finetune`'s docstring makes this a hard requirement -- a mismatch mis-shapes and mis-scales
+# theta in BOTH training and eval, silently.
+#
+# whiten_k=5 MATCHES Stage-A and is VALIDATED ON nla_z's OWN SPECTRUM (not inherited from `nla`):
+#   [whiten] explained-variance ratio (top-k): [0.8087, 0.1319, 0.0422, 0.015, 0.0017]  = 0.9995
+# so k=5 keeps 99.95% and the dropped PCs 6-8 carry 0.05% -- a SMALLER discarded tail than `nla`'s
+# 0.21%. k is load-bearing beyond information content: the Stage-A flow checkpoint shapes differ per
+# k, so Stage-B must use the same value or the warm start cannot load.
+#
+# epochs=150 is the standing default for variate NLE Gower finetunes (user 2026-08-26), inherited
+# from the M5e step-budget argument: at 50 epochs this split gets ~2 500 optimiser steps vs M4b's
+# 7 500, and 150 restores parity. Unlike M5e there is no 50-epoch predecessor for `nla_z`, but the
+# `_e150` SUFFIX IS KEPT DELIBERATELY -- the cross-variate comparison partner is
+# `gower_nle_finetune_nla_bgp_z8_r{r}_ens9_e150`, and a bare `_ens9` here would collide in meaning
+# with the `nla` bare rows, which are 50 epochs. Same suffix must mean same recipe across variates.
+#
+# Gower store VERIFIED PRESENT (2026-08-26): 15 920 `*.h5` / 30G, baked 16:48 today -- slightly MORE
+# complete than the `nla` S2 bake that M5c/M5e run on (15 911). `max_trainval_cosmos=None` (every
+# cosmology not in the locked test set) rather than a hard [100], for the same reason as M5c: a hard
+# count dies on any variate that lands a sim or two short, while `None` keeps the ONE invariant that
+# matters -- the SAME fixed 100 test cosmologies across every variate.
+_BGP_GOWER_NLA_Z = f"{_GPU5}/gower_bgp_nla_z_f16_sc8a1_{_EB}/output_*.h5"   # verified 15 920 files
+
+for _r in _VARIATE_REPEATS:
+    _ft_nlaz = _nle_finetune(f"glass_nle_pretrain_nla_z_bgp_z8_k5_r{_r}", ensemble_repeats=9,
+                             whiten_k=5, warmstart_max_gap_nats=22.0,
+                             gower_data=_BGP_GOWER_NLA_Z, gower_eb=None,
+                             cosmo_param_names=_COSMO_9_NLAZ,
+                             preset_overrides=_A_IA_NLA_BOX)
+    _ft_nlaz["max_trainval_cosmos"] = None
+    _ft_nlaz["train_frac"] = 0.8
+    _ft_nlaz["val_frac"] = 0.2
+    _ft_nlaz["test_frac"] = 0.0     # test = the locked 100; fracs must sum to 1.0
+    _ft_nlaz["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    _ft_nlaz["epochs"] = 150
+    _ft_nlaz["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_z_bgp_z8_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_nlaz, _r)
