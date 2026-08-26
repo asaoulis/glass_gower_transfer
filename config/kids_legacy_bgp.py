@@ -718,6 +718,32 @@ kids_legacy_bgp_experiments["glass_encoder_finetune_nla_z_bgp_z8"] = \
         "glass_encoder_finetune_nla_z_bgp_z8")
 
 
+# === M6a-LR — CONTROLLED FIXED-LR TEST on `nla_z` (user, 2026-08-26) ============================
+# A/B against the row above: **identical in every respect except the LR schedule** (`fixed` here vs
+# `exp` there, same base lr 2e-4, same 100 epochs, same store, theta, warm start and split seeds).
+#
+# ⭐ REPEATS (1, 2) ARE CHOSEN, NOT ARBITRARY. Those are precisely the two that overfit WORST under
+# the exp decay — r1 peaked at epoch 56 and r2 at epoch 41 of 100, then fell to final-epoch -5.83 /
+# -6.14 (best -7.5215 / -7.6226). Re-running the SAME repeat indices keeps the split seed identical,
+# so the schedule is the only變 variable and the comparison is clean.
+#
+# ⚠️ SEPARATE EXPERIMENT NAME IS LOAD-BEARING. Writing fixed-LR checkpoints into the exp row's
+# `pretrain_ncosmoNone_{1,2}/` folders would leave two recipes' checkpoints in one directory, and
+# `find_best_checkpoint` picks the global min across the folder — so the A/B would silently
+# contaminate the very rows it is meant to be compared against.
+#
+# WHAT TO COMPARE (best-checkpoint val, from the filenames — never the final-epoch value):
+#   exp baseline: r1 **-7.5215** @ep56, r2 **-7.6226** @ep41   (pack: -7.52..-7.96 over all 5)
+# Success = the fixed-LR runs match or beat those AND keep improving late (best at a LATE epoch
+# rather than ~40-56), which is the actual point: recovering the ~half of the budget the exp runs
+# spend getting worse. A better best-val is a bonus; a later best-epoch is the signal.
+kids_legacy_bgp_experiments["glass_encoder_finetune_nla_z_bgp_z8_fixedlr"] = \
+    _assert_final_summary_dim(
+        _encoder_finetune_bgp(_BGP_NLA_Z, _COSMO_9_NLAZ, preset_overrides=_A_IA_NLA_BOX,
+                              repeat_indices=(1, 2)), 8,      # scheduler defaults to "fixed"
+        "glass_encoder_finetune_nla_z_bgp_z8_fixedlr")
+
+
 # === M5b — Stage-A NLE pretrain on the `nla` variate encoder ====================================
 # Blocked on M5a (its source encoder). Written now so the launch is a one-liner when it lands.
 # theta + a_ia box MUST match M5a exactly, or theta is mis-shaped/mis-scaled in training and eval.
