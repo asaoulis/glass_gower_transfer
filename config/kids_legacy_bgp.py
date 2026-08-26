@@ -1149,3 +1149,42 @@ for _r in _VARIATE_REPEATS:
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9"] = \
         _nle_bake_repeat(_ft_nla, _r)
 
+# --- M5d: THE EPOCH TEST (user-directed 2026-08-26) ------------------------------------------
+# ONE repeat at epochs=100, under its OWN experiment name, to test the under-training hypothesis
+# spelled out in the block above WITHOUT touching the five shipped M5c rows (retraining those would
+# re-roll all 45 members - there is no torch seeding on the train path).
+#
+# WHY THIS TEST AND NOT A DATA-VOLUME EXPLANATION: at a fixed epoch count this row gets 3x FEWER
+# OPTIMISER STEPS than the M4b baseline it is judged against (79 train cosmologies -> 50 iters/epoch
+# -> 2 500 steps, vs M4b's 240 -> 150 -> 7 500). epochs=100 buys 5 000 steps, ~2/3 of M4b's budget.
+#
+# The M5c evals came back (n=5) with the cosmology FoM clearly down vs M4b:
+#     dim-norm FoM (omega_m,sigma_8)  2.8112 +/-0.0578  vs  M4b 4.1836 +/-0.1492   (0.672x)
+#     width68 S8                      0.0797            vs  M4b 0.0470             (1.696x wider)
+# (The higher ALL-PARAM dim-norm FoM, 1.7321 vs 1.4754, is NOT a cosmology win - it is carried by the
+# a_ia nuisance, per-param dim-norm 4.66.)
+#
+# ⚠️ DO NOT use test_log_prob to judge this test. NLE learns p(t|theta) and t is the COMPRESSED
+# summary; M5c whitens to k=5 while M4b used k=8, so the two log-probs live on different summary
+# spaces and differ by a change-of-variables Jacobian. Comparing them across encoders is meaningless
+# (same reason raw Delta-MI is not comparable across encoders). Judge on the FoM/width metrics, and
+# compare e100 ONLY against the r4 M5c row - identical in every respect except epochs.
+#
+# r4 baseline to beat (its own ensemble json): dim-norm FoM (om,s8) 2.7774, FoM subset 8.031,
+# width68 S8 0.0797, all-param dim-norm 1.7274, TARP 0.0287.
+_E100_REPEAT = 4
+_ft_nla_e100 = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_k5_r{_E100_REPEAT}", ensemble_repeats=9,
+                             whiten_k=5, warmstart_max_gap_nats=22.0,
+                             gower_data=_BGP_GOWER_NLA, gower_eb=None,
+                             cosmo_param_names=_COSMO_8_NLA,
+                             preset_overrides=_A_IA_NLA_BOX)
+_ft_nla_e100["max_trainval_cosmos"] = None
+_ft_nla_e100["train_frac"] = 0.8
+_ft_nla_e100["val_frac"] = 0.2
+_ft_nla_e100["test_frac"] = 0.0
+_ft_nla_e100["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+_ft_nla_e100["epochs"] = 100          # <-- THE ONLY DIFFERENCE vs the shipped r4 row
+_ft_nla_e100["project"] = _BGP_NLE_PROJECT
+kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_E100_REPEAT}_ens9_e100"] = \
+    _nle_bake_repeat(_ft_nla_e100, _E100_REPEAT)
+
