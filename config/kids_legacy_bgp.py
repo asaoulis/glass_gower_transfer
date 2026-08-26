@@ -571,6 +571,52 @@ kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15_w
                               "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15_warm")
 
 
+# === M11b — p15 WARM START on the FOUNDATION's CYCLIC LR, 75 epochs (user-directed 2026-08-26) ===
+# The exp-decay warm rows above are NOT working and the reason is now measured, not guessed.
+# Best-checkpoint val_log_prob (lower is better; `find_best_checkpoint` takes the MINIMUM):
+#     M9  p15 (COLD, cyclic, 125 ep):  r0 -7.9109 @ep72   r1 -8.3320 @ep102   r3 -7.9523 @ep73
+#     M11 p15_warm (exp, 50 ep):       r0 -7.7386 @ep18   r2 -7.7673 @ep17    r3 -7.8443 @ep26
+# Two things follow. First, the warm rows are tracking WORSE than M9's own non-breakthrough seeds,
+# so the warm start is not yet buying what it should. Second — and this is the structural error —
+# ⭐ **M9 r1's breakthrough landed at EPOCH 102, which is past M11's ENTIRE 50-EPOCH BUDGET.** The
+# 125->50 shortening (c72a855) therefore made reproducing the one good run IMPOSSIBLE BY
+# CONSTRUCTION, whatever the schedule did. Epoch budget was the binding constraint, not the decay.
+#
+# ⚠️ NOTE the breakthrough was a COLD run (user 2026-08-26): "That breakthrough happened without the
+# warm start." So r1 is an existence proof that the 15-param optimum is REACHABLE, not evidence that
+# warm-starting reproduces it. A warm start SHOULD help substantially — that is the hypothesis this
+# row tests — but it has not been demonstrated yet, and nothing here should be read as assuming it.
+#
+# THE CHANGE: the FOUNDATION model's own cyclic schedule, applied to p15 on G1.
+#     cyclic, warmup=2000, min_factor=0.1, cyclic_period_steps=6000, lr 2e-4
+# taken verbatim from `kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1` (the p9 foundation these runs
+# warm-start FROM) — the same schedule M9 ran, which is the only setting under which a breakthrough
+# has ever been observed here. Cyclic matters mechanistically: a monotone decay anneals the model
+# into whichever basin it found early, while the periodic LR restarts are what let a run climb OUT
+# of the -7.9 plateau late (r1 at ep102). Decay cannot express that.
+#
+# At 805 iters/epoch (measured), 75 epochs = ~60 375 steps = ~10 full cycles, vs the foundation's
+# ~13.4 at 100 epochs. ~6:17/epoch measured => ~7.9 h/run.
+#
+# ⭐ SEPARATE EXPERIMENT NAME IS LOAD-BEARING (same trap as the fixed-LR A/B): writing cyclic
+# checkpoints into the exp rows' `pretrain_ncosmoNone_{i}/` folders would leave two recipes in one
+# directory, and `find_best_checkpoint` picks the global minimum across the folder — silently mixing
+# the comparison. The exp-decay checkpoints stay where they are as the record of that attempt.
+def _hybrid_bgp_p15_z16_warm_cyc(data_patterns, repeat_indices=_P15_WARM_REPEATS):
+    """p15 warm start, but on the p9 FOUNDATION's cyclic LR and a 75-epoch budget."""
+    c = _hybrid_bgp_p15_z16_warm(data_patterns, repeat_indices=repeat_indices)
+    c["epochs"] = 75
+    c["lr"] = 0.0002
+    c["scheduler_type"] = "cyclic"
+    c["scheduler_kwargs"] = {"warmup": 2000, "min_factor": 0.1, "cyclic_period_steps": 6000}
+    return c
+
+
+kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15_warm_cyc"] = \
+    _assert_final_summary_dim(_hybrid_bgp_p15_z16_warm_cyc(_BGP_SC8A1), 16,
+                              "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15_warm_cyc")
+
+
 # === M4a — the WHITENED (k=8) NLE chain, Stage A: GLASS pretrain ================================
 # The NLE half of the multifidelity stack, resumed for this campaign (user 2026-08-18). Per repeat
 # r: freeze the 9-param sc8a1 foundation encoder, cache its 8-D summary over the FULL GLASS bgp
