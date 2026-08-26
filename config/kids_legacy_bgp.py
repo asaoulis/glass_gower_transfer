@@ -452,6 +452,56 @@ kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15"]
                               "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15")
 
 
+# === M6b — the kappa=2 GLASS compressor finetune (15-param, 16-D) ==============================
+# The kappa=2 b_g-prior variate. Store = the K2 GLASS bake (11 844 files, job 1349194, zero drops).
+#
+# ⭐ WARM-STARTED, **NOT** trained from scratch (user, 2026-08-26). `_hybrid_bgp_p15{,_z16}` above is
+# a FROM-SCRATCH foundation recipe calibrated on the ~100 600-file G1 store; K2 has **11 844** files,
+# ~8.5x fewer, so training it from scratch would badly under-fit. This row therefore does to the
+# 15-param/16-D foundation exactly what `_encoder_finetune_bgp` does to the 9-param/8-D one:
+# load the whole encoder, unfreeze it, decay the LR, 100 epochs.
+#
+# ⚠️ PARENT CHOICE. It warm-starts from **M9** (`..._z16_resnet_sc8a1_p15`), not from the 9-param
+# foundation, because the parent must match BOTH the inference vector (15-param: the 9 + b_g_bin1..6)
+# AND the summary width (16-D). The SUMMARY-WIDTH RULE reserves 16-D for exactly these final
+# b_g-INFERRING rows, and a 9-param/8-D parent would mismatch the flow head and the bottleneck.
+#
+# ⚠️ REPEATS ARE (0, 1, 3), NOT (0..4). `match_num_cosmo=False` resolves the parent per repeat as
+# "_{i}", and M9 only ever trained `_P15_Z16_REPEATS = (0, 1, 3)` (the splits whose M8 counterparts
+# all escaped). Asking for r2/r4 would have no parent checkpoint to resolve.
+#
+# theta needs NO a_ia re-boxing: K2 is nla_m physics, so the inherited 9 carry a_ia+b_ia in the
+# NLA-M box already, and `_hybrid_bgp_p15` supplies the six b_g boxes via `_BG_BOXES`.
+_BGP_K2 = f"{_GPU5}/glass_bgpk2_nla_m_f16_sc8a1_{_EB}/output_*.h5"   # K2 bake (job 1349194)
+_Z16_P15_CKPT = f"{_CKPT}/kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15/"
+
+
+def _encoder_finetune_bgp_p15_z16(data_patterns, repeat_indices=_P15_Z16_REPEATS):
+    """Foundation-warm-started encoder finetune of the 15-param/16-D row onto a variate store.
+
+    Mirrors `_encoder_finetune_bgp` (the 9-param/8-D finetune) key-for-key; only the base recipe
+    differs, so the two finetunes cannot drift apart in LR/schedule/epochs.
+    """
+    c = _hybrid_bgp_p15_z16(data_patterns, _BAND_CKPT_BGP, repeat_indices=repeat_indices)
+    c.pop("pretrained_band_ckpt_path", None)   # the band arrives inside the loaded embedding_net
+    c.pop("freeze_band", None)
+    c["pretrained_embedding_ckpt_path"] = _Z16_P15_CKPT
+    c["freeze_embedding_net"] = False          # finetune the whole encoder
+    c["match_num_cosmo"] = False               # resolve the source ckpt per-repeat as "_{i}"
+    # exp decay, as on the 9-param finetune: 0.984^100 ~ 0.20, i.e. 2e-4 -> ~4e-5 over the run.
+    # (The inherited p15 `cyclic` schedule is for the from-scratch 125-epoch recipe, not this one.)
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"gamma": 0.984, "warmup_steps": 0}
+    c["lr"] = 0.0002
+    c["epochs"] = 100
+    return c
+
+
+kids_legacy_bgp_experiments["glass_encoder_finetune_k2_bgp_z16_p15"] = \
+    _assert_final_summary_dim(_encoder_finetune_bgp_p15_z16(_BGP_K2), 16,
+                              "glass_encoder_finetune_k2_bgp_z16_p15")
+
+
 # === M10 — LOADING-PATCH VALIDATION + a 9-param wider-summary control ===========================
 # Two jobs in one cheap row (user, 2026-08-18):
 #
