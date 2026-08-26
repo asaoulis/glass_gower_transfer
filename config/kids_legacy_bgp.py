@@ -523,13 +523,24 @@ kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_wa
 # ⚠️ "Some source keys not used — prefix may be wrong" is a FALSE alarm on every encoder-only load
 # from a full-model checkpoint. Do not chase it.
 #
-# ⚠️ GAMMA IS RE-DERIVED FOR 125 EPOCHS, not copied. The file's own rule: an `exp` gamma MUST be
+# ⭐ EPOCHS = 50, NOT the from-scratch `_P15_EPOCHS` = 125 (user, 2026-08-26):
+#     "the hardest bit of the foundation train is getting the extra sensitivity to Omega_m,
+#      sigma_8, which we've already done"
+# That sensitivity lives in the CNN backbone + band encoder, and those transfer WHOLE through the
+# warm start (125 of 129 keys; only the two final projections are resized). What this row still has
+# to learn is just the re-headed 16-D bottleneck and the fresh 15-param flow -- a far smaller job
+# than the from-scratch M8/M9 rows, which had to discover the cosmology sensitivity themselves and
+# therefore keep 125. M8/M9 are deliberately left at `_P15_EPOCHS`; only this row drops.
+# NB "50 epochs" here is NOT the same budget as "50 epochs" on a Gower NLE row: this trains on the
+# ~100k-mock G1 store, so an epoch is a great many more optimiser steps than on a 79-cosmology
+# finetune. The M5c step-deficit lesson does not transfer to this row.
+#
+# ⚠️ GAMMA IS RE-DERIVED FOR 50 EPOCHS, not copied. The file's own rule: an `exp` gamma MUST be
 # re-derived whenever the epoch count changes (cf. the bg8 rows, 0.984 -> 0.938 for 100 -> 25).
-# Target the same ~0.20 total decay the 100-epoch finetunes use (2e-4 -> ~4e-5):
-#     0.20 ** (1/125) = 0.98720   (vs 0.984 ** 100 = 0.20 for the 100-epoch rows)
-# Epochs stay at `_P15_EPOCHS` = 125: 15 inference dims is a harder density problem than 9, and the
-# documented M7 failure mode for 15-param rows was UNDER-training. Warm-starting shortens the road
-# but this row is the one that has to be good, so it keeps the full budget.
+# Target the same ~0.20 total decay the other finetunes use (2e-4 -> ~4e-5):
+#     0.20 ** (1/50) = 0.96832        (0.96832 ** 50 = 0.1998)
+# Leaving the previous 125-epoch value 0.9872 in place would decay only to 0.5251 over 50 epochs --
+# i.e. it would finish at ~1e-4, five times too hot. This is exactly the trap the rule exists for.
 #
 # Repeats are the FULL (0..4): the p9 foundation trained all five, so every repeat has a parent —
 # unlike M9, which only ever ran (0, 1, 3).
@@ -548,9 +559,10 @@ def _hybrid_bgp_p15_z16_warm(data_patterns, repeat_indices=_P15_WARM_REPEATS):
     c["pretrained_embedding_ckpt_path"] = _SC8A1_9P_CKPT   # the KNOWN-GOOD p9 foundation
     c["freeze_embedding_net"] = False          # resume/finetune the whole encoder
     c["match_num_cosmo"] = False               # resolve the source ckpt per-repeat as "_{i}"
+    c["epochs"] = 50                           # the warm start already carries the hard part
     c["lr"] = 0.0002                           # high-LR resume, as on every other finetune here
     c["scheduler_type"] = "exp"
-    c["scheduler_kwargs"] = {"gamma": 0.9872, "warmup_steps": 0}   # 0.9872^125 ~ 0.20
+    c["scheduler_kwargs"] = {"gamma": 0.96832, "warmup_steps": 0}  # 0.96832^50 ~ 0.20
     return c
 
 
