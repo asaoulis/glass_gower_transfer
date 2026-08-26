@@ -1148,3 +1148,23 @@ for _r in _VARIATE_REPEATS:
     _ft_nla["project"] = _BGP_NLE_PROJECT
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9"] = \
         _nle_bake_repeat(_ft_nla, _r)
+
+# --- M5c EVAL-ONLY RE-RUN (2026-08-26) --------------------------------------------------------
+# r0-r3's bundled MCMC evals were KILLED by the 2026-08-26 ~02:00Z storage incident AFTER sampling
+# had completed (r1 reached 63/63) but BEFORE the experiment-level json is written. The 9 trained
+# members per row are INTACT on disk (ckpts=27), so only the evaluation must be redone.
+#
+# `run_training: False` (config/default.py:146, "for embedding eval pattern") makes
+# src/ml/embeddings/train.py:413 SKIP `fit_nde_on_embeddings` while still building the embedding
+# loaders, the model_builder and the eval context, then running `evaluate_best_checkpoint` against
+# the EXISTING checkpoints (resolved by match_string). It also flips `use_cache_if_exists` on
+# (train.py:400) so the embedding cache is reused instead of recomputed.
+#
+# ⚠️ RETRAINING THESE ROWS IS DESTRUCTIVE: there is no torch seeding on the train path, so a re-run
+# RE-ROLLS every member — the recorded vals (r0 -3.5597, r1 -2.9072, r2 -3.2138, r3 -2.9369) would
+# stop describing the shipped models, and fresh checkpoints would mix into the same run dirs.
+# Keeping these four rows eval-only is therefore the SAFE state while the models are the deliverable.
+# To train them again (only if you intend to re-roll), delete these four lines.
+# NB r4 is deliberately NOT included: 1349127 is running its own bundled eval and needs no re-run.
+for _r in (0, 1, 2, 3):
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9"]["run_training"] = False
