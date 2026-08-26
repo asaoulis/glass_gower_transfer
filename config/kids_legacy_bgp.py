@@ -1166,6 +1166,38 @@ for _r in _VARIATE_REPEATS:
     kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_bgp_z8_k5_r{_r}"] = _pre_k5
 
 
+# === M6a-B — Stage-A NLE pretrain on the `nla_z` encoder ========================================
+# GATED ON M6a (`glass_encoder_finetune_nla_z_bgp_z8`), which is its source encoder. Written ahead
+# so the launch is a one-liner when the encoders land:
+#   embed --target glass_nle_pretrain_nla_z_bgp_z8_k5_r<r> \
+#         --sources glass_encoder_finetune_nla_z_bgp_z8 --gpu v100 --skip-smoke
+# ⭐ **v100 IS CORRECT HERE** and is the only stage that may use one. This trains a small flow over
+# CACHED EMBEDDINGS, not maps, so it fits the 16 GB card that the encoder finetune does not
+# (the encoder needs ~15.2 GiB and OOMs there — see the M6a v100 failures).
+#
+# ⚠️ theta is `_COSMO_9_NLAZ` and a_ia is re-boxed to U[-6,6] — these MUST match M6a EXACTLY. The
+# NLE flow q(t|theta) conditions on theta, so a mismatch mis-shapes AND mis-scales theta in both
+# training and eval, silently.
+#
+# ⚠️ k=5, mirroring the proven `nla` chain: pure-whitening a rank-deficient 8-D summary amplifies
+# the near-null PCs (tiny eigenvalues divide into the GLASS->Gower shift), which is what inflated
+# the k=8 warm-start gap. On `nla`, PCs 5-8 held only 0.21% of the variance, so k=5 kept 99.96% of
+# it while dropping the amplifiers.
+# ⚠️⚠️ **THAT 0.21% FIGURE IS THE `nla` ENCODER'S SPECTRUM, NOT THIS ONE'S.** k=5 is the sensible
+# prior here, not a measured fact for `nla_z`. When M6a lands, CHECK nla_z's own embedding
+# eigenvalues before trusting it; if PCs 5-8 carry materially more variance, raise k and rename the
+# rows (see the naming warning below).
+# ⚠️ NEW EXPERIMENT NAMES per k, deliberately: `whiten_k` sets the flow's context width, so a k=5
+# run writing into a k=8 row's checkpoint dir would let `get_best_checkpoint` resolve a
+# SHAPE-MISMATCHED checkpoint. The paired Gower NLE (Stage B) rows MUST use the same k — they reuse
+# this run's persisted whitener and load its flow, and both are shape-wrong at another k.
+for _r in _VARIATE_REPEATS:
+    _pre_nlaz_k5 = _nle_pretrain_bgp(_BGP_NLA_Z, _r, cosmo_param_names=_COSMO_9_NLAZ,
+                                     preset_overrides=_A_IA_NLA_BOX)
+    _pre_nlaz_k5["whiten_embeddings"] = {"k": 5}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_z_bgp_z8_k5_r{_r}"] = _pre_nlaz_k5
+
+
 # === M5c — the `nla` variate GOWER NLE finetune (S2), one row per repeat ========================
 # WRITTEN 2026-08-25 on user direction, replacing the "M5c is NOT written" note above: S2
 # (`gower_mocks_nla_novd_bgp`, job 1348702) landed, so the store these rows need now exists.
