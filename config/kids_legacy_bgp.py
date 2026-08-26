@@ -1188,3 +1188,42 @@ _ft_nla_e100["project"] = _BGP_NLE_PROJECT
 kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_E100_REPEAT}_ens9_e100"] = \
     _nle_bake_repeat(_ft_nla_e100, _E100_REPEAT)
 
+# --- M5e: FULL 150-EPOCH PRODUCTION RETRAIN, all 5 repeats (user-authorised 2026-08-26) -------
+# The 50-epoch M5c results were judged UNACCEPTABLE (user 2026-08-26). 150 epochs is not arbitrary:
+# it is the count that MATCHES M4b's OPTIMISER-STEP BUDGET, which is the documented deficit --
+#     M4b  240 train cosmologies -> 150 iters/epoch ->  50 epochs = 7 500 steps
+#     M5c   79 train cosmologies ->  50 iters/epoch ->  50 epochs = 2 500 steps   (3x fewer)
+#     M5e   79 train cosmologies ->  50 iters/epoch -> 150 epochs = 7 500 steps   (parity)
+#
+# ⭐ NEW ROW NAMES ON PURPOSE -- these do NOT overwrite the shipped 50-epoch M5c rows. Retraining
+# those in place would (a) re-roll all 45 members (there is no torch seeding on the train path) and
+# (b) mix fresh checkpoints into the same run dirs, DESTROYING the 50-epoch baseline that the whole
+# point is to measure the improvement against. Keep both; promote later if 150 wins.
+#
+# WHAT TO JUDGE IT ON (see plan.md 13:55Z): the FoM/width metrics AND w0 TARP calibration, which
+# must improve TOGETHER. M5c w0 calibration error was 0.2006 +/-0.0188 -- 2.8x the next-worst
+# parameter, and hard to blame on overconfidence alone because a 9-member logmeanexp likelihood
+# mixture is already strictly broader than any single member. If FoM improves while w0 TARP stays
+# flat, the problem is a SYSTEMATIC in the w0 direction, not convergence, and more steps will not
+# help. Do NOT judge on test_log_prob: k=5 vs M4b's k=8 are different summary spaces whose NLE
+# log-probs differ by a change-of-variables Jacobian.
+#
+# 50-epoch baselines to beat (n=5): dim-norm FoM (om,s8) 2.8112 +/-0.0578; FoM subset 8.2738
+# +/-0.3743; width68 S8 0.0797; TARP full 0.0242 +/-0.0034; TARP (sigma_8,omega_m,w0) 0.0659
+# +/-0.0073; TARP w0 0.2006 +/-0.0188. M4b targets: 4.1836 / 17.6122 / 0.0470 / 0.0021 / 0.0235.
+for _r in _VARIATE_REPEATS:
+    _ft_nla_e150 = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_k5_r{_r}", ensemble_repeats=9,
+                                 whiten_k=5, warmstart_max_gap_nats=22.0,
+                                 gower_data=_BGP_GOWER_NLA, gower_eb=None,
+                                 cosmo_param_names=_COSMO_8_NLA,
+                                 preset_overrides=_A_IA_NLA_BOX)
+    _ft_nla_e150["max_trainval_cosmos"] = None
+    _ft_nla_e150["train_frac"] = 0.8
+    _ft_nla_e150["val_frac"] = 0.2
+    _ft_nla_e150["test_frac"] = 0.0
+    _ft_nla_e150["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    _ft_nla_e150["epochs"] = 150       # <-- THE ONLY DIFFERENCE vs the shipped M5c rows
+    _ft_nla_e150["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_nla_e150, _r)
+
