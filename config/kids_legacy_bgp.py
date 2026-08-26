@@ -46,7 +46,7 @@ configs **false-fail** it — production submits of those rows pass `--skip-smok
 from config.kids_legacy import (
     _band_lmin50, _hybrid_lmin50_z8, _hybrid_lmin50_z8_smoke,
     # sub-variate theta sets + the NLA-family a_ia box (nla/nla_z drop b_ia and widen a_ia)
-    _COSMO_8_NLA, _A_IA_NLA_BOX,
+    _COSMO_8_NLA, _COSMO_9_NLAZ, _A_IA_NLA_BOX,
     # the whitened-NLE chain factories (Stage A pretrain on GLASS; one repeat baked per row)
     _nle_pretrain, _nle_finetune, _nle_bake_repeat,
     # the production Gower NPE ensemble finetune
@@ -603,6 +603,28 @@ kids_legacy_bgp_experiments["glass_encoder_finetune_nla_bgp_z8"] = \
     _assert_final_summary_dim(
         _encoder_finetune_bgp(_BGP_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX), 8,
         "glass_encoder_finetune_nla_bgp_z8")
+
+
+# === M6a — the `nla_z` GLASS compressor finetune (IA sub-variate: a_ia + b_z) ===================
+# Same factory, same geometry, same warm start as the `nla` row above; ONLY the store and theta
+# change. Store = the G6 bake (11 880 files, job 1349193, zero drops).
+#
+# ⚠️ theta is `_COSMO_9_NLAZ` = the NLA-M vector with `b_ia` REPLACED by `b_z` (9 params, not 8 like
+# `nla`). a_ia MUST still be re-boxed to U[-6,6] — the global preset's a_ia box is the NLA-M range
+# (4.48, 7.0), so without the override a_ia is mis-scaled in BOTH training and eval. `b_z` needs no
+# override: it already carries a preset box (-25.2, 17.8) = ~5 sigma around N(-3.7, 4.3)
+# (src/ml/data/constants.py:24). `_build_cosmo_preset_scaler` raises on any parameter with no box,
+# so a missing one fails loudly rather than silently mis-scaling.
+#
+# The summary stays **8-D** even though theta is 9-D: per the settled SUMMARY-WIDTH RULE, 16-D is
+# reserved for the FINAL 15-param rows that actually INFER b_g. Here b_g is only marginalised.
+# (The 9-param nla_m foundation this warm-starts from is likewise 9-D theta on an 8-D summary.)
+_BGP_NLA_Z = f"{_GPU5}/glass_bgp_nla_z_f16_sc8a1_{_EB}/output_*.h5"   # G6 bake (job 1349193)
+
+kids_legacy_bgp_experiments["glass_encoder_finetune_nla_z_bgp_z8"] = \
+    _assert_final_summary_dim(
+        _encoder_finetune_bgp(_BGP_NLA_Z, _COSMO_9_NLAZ, preset_overrides=_A_IA_NLA_BOX), 8,
+        "glass_encoder_finetune_nla_z_bgp_z8")
 
 
 # === M5b — Stage-A NLE pretrain on the `nla` variate encoder ====================================
