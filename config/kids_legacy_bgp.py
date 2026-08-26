@@ -643,7 +643,7 @@ _VARIATE_REPEATS = (0, 1, 2, 3, 4)
 
 
 def _encoder_finetune_bgp(data_patterns, cosmo_param_names, preset_overrides=None,
-                          repeat_indices=_VARIATE_REPEATS):
+                          repeat_indices=_VARIATE_REPEATS, scheduler="fixed"):
     """Foundation-warm-started encoder finetune on a bgp GLASS sub-variate store, 8-D summary.
 
     Same geometry as the foundation (z8) per the settled SUMMARY-WIDTH RULE: 16-D is reserved for
@@ -657,8 +657,21 @@ def _encoder_finetune_bgp(data_patterns, cosmo_param_names, preset_overrides=Non
     c["freeze_embedding_net"] = False          # finetune the whole encoder
     c["match_num_cosmo"] = False               # resolve the source ckpt per-repeat as "_{i}"
     c["cosmo_param_names"] = list(cosmo_param_names)
-    c["scheduler_type"] = "exp"
-    c["scheduler_kwargs"] = {"gamma": 0.984, "warmup_steps": 0}   # 0.984^100 ~ 0.20: 2e-4 -> ~4e-5
+    # ⭐ FIXED LR IS THE DEFAULT (user, 2026-08-26). These encoder finetunes OVERFIT LATE under the
+    # old `exp` decay: on `nla_z`, r1 peaked at epoch 56 and r2 at epoch 41 of 100, then val degraded
+    # badly (best -7.5215/-7.6226 vs final -5.83/-6.14). Best-checkpoint selection protects model
+    # QUALITY (`find_best_checkpoint` takes the min), so this is an EFFICIENCY fix — roughly half the
+    # epoch budget was being spent getting worse. A flat LR keeps the optimiser's step size (and its
+    # regularising gradient noise) up instead of annealing the model into whichever basin it found
+    # early. `scheduler="exp"` remains available and is pinned on the rows ALREADY TRAINED with it,
+    # so their configs still describe the checkpoints on disk.
+    # If a flat 2e-4 proves too hot to settle, the knob is `lr` — do NOT reintroduce decay silently.
+    if scheduler in ("exp", "exponential"):
+        c["scheduler_type"] = "exp"
+        c["scheduler_kwargs"] = {"gamma": 0.984, "warmup_steps": 0}  # 0.984^100 ~ 0.20: 2e-4 -> 4e-5
+    else:
+        c["scheduler_type"] = "fixed"
+        c["scheduler_kwargs"] = {"warmup_steps": 0}
     c["lr"] = 0.0002
     c["epochs"] = 100
     if preset_overrides:
@@ -669,9 +682,12 @@ def _encoder_finetune_bgp(data_patterns, cosmo_param_names, preset_overrides=Non
     return c
 
 
+# scheduler="exp" PINNED: this row's 5 repeats were TRAINED with the exp decay, before fixed LR
+# became the default. Keep it so the config still describes the checkpoints on disk.
 kids_legacy_bgp_experiments["glass_encoder_finetune_nla_bgp_z8"] = \
     _assert_final_summary_dim(
-        _encoder_finetune_bgp(_BGP_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX), 8,
+        _encoder_finetune_bgp(_BGP_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX,
+                              scheduler="exp"), 8,
         "glass_encoder_finetune_nla_bgp_z8")
 
 
@@ -691,9 +707,14 @@ kids_legacy_bgp_experiments["glass_encoder_finetune_nla_bgp_z8"] = \
 # (The 9-param nla_m foundation this warm-starts from is likewise 9-D theta on an 8-D summary.)
 _BGP_NLA_Z = f"{_GPU5}/glass_bgp_nla_z_f16_sc8a1_{_EB}/output_*.h5"   # G6 bake (job 1349193)
 
+# scheduler="exp" PINNED: r0/r1/r2/r4 are already trained and r3 is IN FLIGHT under the exp decay.
+# Switching this row now would give r3 (and any future re-roll) a different recipe from its own
+# siblings, which is exactly the inconsistency the straggler check would then trip over.
+# The fixed-LR default applies to the NEXT variate encoder row, not retroactively to this one.
 kids_legacy_bgp_experiments["glass_encoder_finetune_nla_z_bgp_z8"] = \
     _assert_final_summary_dim(
-        _encoder_finetune_bgp(_BGP_NLA_Z, _COSMO_9_NLAZ, preset_overrides=_A_IA_NLA_BOX), 8,
+        _encoder_finetune_bgp(_BGP_NLA_Z, _COSMO_9_NLAZ, preset_overrides=_A_IA_NLA_BOX,
+                              scheduler="exp"), 8,
         "glass_encoder_finetune_nla_z_bgp_z8")
 
 

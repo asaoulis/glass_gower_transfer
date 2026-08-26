@@ -275,6 +275,15 @@ class BaseLightningModule(pl.LightningModule):
             interval = "step"
             milestone = warmup_steps
 
+        elif sched_type in ["fixed", "constant", "none"]:
+            # Constant LR after warmup — no decay at all. Made explicit (rather than relying on the
+            # catch-all below) because configs now request it BY NAME: the encoder finetunes overfit
+            # late under `exp` decay, and a flat LR is the intended remedy. An explicit branch means
+            # a future change to the fallback cannot silently alter these runs.
+            main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
+            interval = "step"
+            milestone = warmup_steps
+
         else:
             main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
             interval = "step"
