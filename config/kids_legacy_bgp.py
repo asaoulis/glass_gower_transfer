@@ -501,48 +501,24 @@ kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_wa
                               "kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_9p_warm")
 
 
-# === M11 — the 15-param z16 row, WARM-STARTED FROM THE p9 FOUNDATION (user, 2026-08-26) ========
-# ⭐ THIS REPLACES the from-scratch p15 rows as the parent of every 15-param variate.
-# "We found that p15 random starts in M9 did not manage to recover the good performance of the
-#  foundation runs. We must start from the known good foundation models." (user)
-# M8/M9 build the map encoder FROM SCRATCH behind a frozen band; that random init is what failed to
-# reach the foundation's quality. This row keeps M9's geometry and inference vector but **inherits
-# the trained p9 foundation encoder**, then resumes at high LR on the SAME G1 store the foundation
-# was trained on. It is the "care" step before any variate: get a good 15-param model on G1 FIRST,
-# then finetune that onto the small variate stores.
+# === M11 — p15 warm-started from the p9 foundation. SUPERSEDED by M11b below =====================
+# ⛔ The exp-decay recipe here is ABANDONED (user, 2026-08-26): it plateaued at -7.74/-7.77/-7.84,
+# below M9's own non-breakthrough seeds, and its 50-epoch budget made M9 r1's epoch-102 breakthrough
+# unreachable by construction. The builder is kept ONLY because M11b derives from it; the row itself
+# should not be launched. Use `..._p15_warm_cyc` (M11b).
 #
-# ⭐ THE CROSS-WIDTH LOAD IS ALREADY VALIDATED — that is exactly what M10 above was for. Loading the
-# 8-D p9 foundation into this 16-D geometry gives **125/129 keys**, skipping precisely the 4 resized
-# final-layer tensors:
-#     patch_encoder.head.2.{weight,bias}  (8,256)/(8,)  vs (16,256)/(16,)   <- map summary head
-#     hybrid_head.{weight,bias}           (8,16)/(8,)   vs (16,24)/(16,)    <- final summary
-# The whole CNN backbone + band encoder transfer. **LAUNCH-VERIFY `Loaded keys: 125`** — 129 would
-# mean the width did not change, and 0 means the arch/ckpt pairing is wrong.
+# The warm-start mechanics below ARE still current and are what M11b inherits:
+# ⭐ LAUNCH-VERIFY `Loaded keys: 125` (129 would mean the width did not change; 0 means the
+#   arch/ckpt pairing is wrong). The 8-D p9 foundation loads into this 16-D geometry skipping
+#   exactly the 4 resized final-layer tensors (map summary head + hybrid head).
 # ⚠️ MUST use `pretrained_embedding_ckpt_path` (partial, tolerant), never `checkpoint_path` (STRICT
-# `load_state_dict`, npe.py:141) — the strictness is deliberate and must not be loosened.
+#   `load_state_dict`, npe.py:141) — that strictness is deliberate and must not be loosened.
 # ⚠️ "Some source keys not used — prefix may be wrong" is a FALSE alarm on every encoder-only load
-# from a full-model checkpoint. Do not chase it.
+#   from a full-model checkpoint. Do not chase it.
+# ⚠️ An `exp` gamma MUST be re-derived whenever the epoch count changes (cf. bg8, 0.984 -> 0.938 for
+#   100 -> 25 epochs). 0.96832 below is the 50-epoch value for the usual ~0.20 total decay.
 #
-# ⭐ EPOCHS = 50, NOT the from-scratch `_P15_EPOCHS` = 125 (user, 2026-08-26):
-#     "the hardest bit of the foundation train is getting the extra sensitivity to Omega_m,
-#      sigma_8, which we've already done"
-# That sensitivity lives in the CNN backbone + band encoder, and those transfer WHOLE through the
-# warm start (125 of 129 keys; only the two final projections are resized). What this row still has
-# to learn is just the re-headed 16-D bottleneck and the fresh 15-param flow -- a far smaller job
-# than the from-scratch M8/M9 rows, which had to discover the cosmology sensitivity themselves and
-# therefore keep 125. M8/M9 are deliberately left at `_P15_EPOCHS`; only this row drops.
-# NB "50 epochs" here is NOT the same budget as "50 epochs" on a Gower NLE row: this trains on the
-# ~100k-mock G1 store, so an epoch is a great many more optimiser steps than on a 79-cosmology
-# finetune. The M5c step-deficit lesson does not transfer to this row.
-#
-# ⚠️ GAMMA IS RE-DERIVED FOR 50 EPOCHS, not copied. The file's own rule: an `exp` gamma MUST be
-# re-derived whenever the epoch count changes (cf. the bg8 rows, 0.984 -> 0.938 for 100 -> 25).
-# Target the same ~0.20 total decay the other finetunes use (2e-4 -> ~4e-5):
-#     0.20 ** (1/50) = 0.96832        (0.96832 ** 50 = 0.1998)
-# Leaving the previous 125-epoch value 0.9872 in place would decay only to 0.5251 over 50 epochs --
-# i.e. it would finish at ~1e-4, five times too hot. This is exactly the trap the rule exists for.
-#
-# Repeats are the FULL (0..4): the p9 foundation trained all five, so every repeat has a parent —
+# Repeats are the full (0..4): the p9 foundation trained all five, so every repeat has a parent —
 # unlike M9, which only ever ran (0, 1, 3).
 _P15_WARM_REPEATS = (0, 1, 2, 3, 4)
 
@@ -1124,49 +1100,18 @@ for _r in _VARIATE_REPEATS:
     _ft_nla["val_frac"] = 0.2
     _ft_nla["test_frac"] = 0.0     # test = the locked 100; fracs must sum to 1.0
     _ft_nla["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
-    # ⚠️⚠️ FUTURE WORK — 50 EPOCHS IS PROBABLY TOO FEW FOR THIS ROW (user observation 2026-08-25,
-    # deliberately NOT acted on for the current run). The models had not fully converged at 50.
-    # `epochs=50` is inherited from `_nle_finetune` and was calibrated on M4b, which trains on 300
-    # trainval cosmologies. THIS row trains on ~99, and the step counts make the mismatch concrete
-    # (both measured from the live logs, not estimated):
-    #     M4b  240 train cosmologies -> 150 iters/epoch -> 50 epochs = 7 500 optimiser steps
-    #     M5c   79 train cosmologies ->  50 iters/epoch -> 50 epochs = 2 500 optimiser steps
-    # i.e. AT THE SAME EPOCH COUNT THIS ROW GETS EXACTLY 3x FEWER UPDATES. Matching M4b's step
-    # budget would need ~150 epochs; 100 epochs still only reaches ~2/3 of it.
-    #
-    # ⭐ RAISE THIS IF THE EVALS COME BACK WITH SIGNIFICANTLY LOWER FoM THAN THE S1/M4b GOWER NLE
-    # BASELINE (33.91 +/- 2.65). Under-training is then the FIRST hypothesis to test - before
-    # concluding anything about the `nla` variate itself, the k=5 whitening, or the 100/100 split -
-    # because it is confounded with all three. The cheap test is one repeat at epochs=100.
-    # NOTE the fix belongs HERE as a per-row override, NOT in `_nle_finetune`: that factory is
-    # shared with M4b and every other NLE finetune, all of which are calibrated at 50.
+    # ⭐ 50 epochs is FINAL for this row; the under-training hypothesis was TESTED AND REJECTED.
+    # M5e (same rows at 150 ep, giving optimiser-step parity with M4b's 7 500) moved the cosmology
+    # FoM by only 1.034x and left calibration flat -- see the M5e block below for the n=5 numbers.
+    # Do NOT raise epochs here again; the M4b gap is not a convergence problem.
     _ft_nla["project"] = _BGP_NLE_PROJECT
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9"] = \
         _nle_bake_repeat(_ft_nla, _r)
 
-# --- M5d: THE EPOCH TEST (user-directed 2026-08-26) ------------------------------------------
-# ONE repeat at epochs=100, under its OWN experiment name, to test the under-training hypothesis
-# spelled out in the block above WITHOUT touching the five shipped M5c rows (retraining those would
-# re-roll all 45 members - there is no torch seeding on the train path).
-#
-# WHY THIS TEST AND NOT A DATA-VOLUME EXPLANATION: at a fixed epoch count this row gets 3x FEWER
-# OPTIMISER STEPS than the M4b baseline it is judged against (79 train cosmologies -> 50 iters/epoch
-# -> 2 500 steps, vs M4b's 240 -> 150 -> 7 500). epochs=100 buys 5 000 steps, ~2/3 of M4b's budget.
-#
-# The M5c evals came back (n=5) with the cosmology FoM clearly down vs M4b:
-#     dim-norm FoM (omega_m,sigma_8)  2.8112 +/-0.0578  vs  M4b 4.1836 +/-0.1492   (0.672x)
-#     width68 S8                      0.0797            vs  M4b 0.0470             (1.696x wider)
-# (The higher ALL-PARAM dim-norm FoM, 1.7321 vs 1.4754, is NOT a cosmology win - it is carried by the
-# a_ia nuisance, per-param dim-norm 4.66.)
-#
-# ⚠️ DO NOT use test_log_prob to judge this test. NLE learns p(t|theta) and t is the COMPRESSED
-# summary; M5c whitens to k=5 while M4b used k=8, so the two log-probs live on different summary
-# spaces and differ by a change-of-variables Jacobian. Comparing them across encoders is meaningless
-# (same reason raw Delta-MI is not comparable across encoders). Judge on the FoM/width metrics, and
-# compare e100 ONLY against the r4 M5c row - identical in every respect except epochs.
-#
-# r4 baseline to beat (its own ensemble json): dim-norm FoM (om,s8) 2.7774, FoM subset 8.031,
-# width68 S8 0.0797, all-param dim-norm 1.7274, TARP 0.0287.
+# --- M5d: the 100-epoch probe, single repeat. TEST COMPLETE, superseded by M5e -----------------
+# One repeat at epochs=100 under its own name, probing the under-training hypothesis without
+# disturbing the shipped 50-epoch rows (retraining those in place would re-roll all 45 members --
+# there is no torch seeding on the train path). M5e then ran all 5 repeats at 150.
 _E100_REPEAT = 4
 _ft_nla_e100 = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_k5_r{_E100_REPEAT}", ensemble_repeats=9,
                              whiten_k=5, warmstart_max_gap_nats=22.0,
@@ -1183,29 +1128,25 @@ _ft_nla_e100["project"] = _BGP_NLE_PROJECT
 kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_E100_REPEAT}_ens9_e100"] = \
     _nle_bake_repeat(_ft_nla_e100, _E100_REPEAT)
 
-# --- M5e: FULL 150-EPOCH PRODUCTION RETRAIN, all 5 repeats (user-authorised 2026-08-26) -------
-# The 50-epoch M5c results were judged UNACCEPTABLE (user 2026-08-26). 150 epochs is not arbitrary:
-# it is the count that MATCHES M4b's OPTIMISER-STEP BUDGET, which is the documented deficit --
-#     M4b  240 train cosmologies -> 150 iters/epoch ->  50 epochs = 7 500 steps
-#     M5c   79 train cosmologies ->  50 iters/epoch ->  50 epochs = 2 500 steps   (3x fewer)
-#     M5e   79 train cosmologies ->  50 iters/epoch -> 150 epochs = 7 500 steps   (parity)
+# --- M5e: 150-epoch retrain, all 5 repeats. ⭐ VERDICT: MORE EPOCHS DO NOT HELP -----------------
+# 150 ep gives optimiser-step parity with M4b (7 500 each): M5c's 79 train cosmologies x 50
+# iters/ep x 50 ep = 2 500, i.e. 3x fewer updates than M4b's 240 x 150 x 50.
 #
-# ⭐ NEW ROW NAMES ON PURPOSE -- these do NOT overwrite the shipped 50-epoch M5c rows. Retraining
-# those in place would (a) re-roll all 45 members (there is no torch seeding on the train path) and
-# (b) mix fresh checkpoints into the same run dirs, DESTROYING the 50-epoch baseline that the whole
-# point is to measure the improvement against. Keep both; promote later if 150 wins.
+# RESULT (n=5, vs the 50-epoch M5c rows): dim-norm FoM (om,s8) 2.8112 -> 2.9071 (**1.034x**);
+# S8 width68 0.0797 -> 0.0776; TARP full 0.0242 -> 0.0248 (slightly WORSE); TARP w0 0.2006 ->
+# 0.1924 (flat). With step parity achieved it still reaches only **0.695x** of M4b's cosmology FoM
+# (M5c was 0.672x) -- tripling training closed 2.3 points of a 33-point gap.
+# ⭐ **The under-training hypothesis is FALSIFIED. Do not spend more epochs on this arm.**
 #
-# WHAT TO JUDGE IT ON (see plan.md 13:55Z): the FoM/width metrics AND w0 TARP calibration, which
-# must improve TOGETHER. M5c w0 calibration error was 0.2006 +/-0.0188 -- 2.8x the next-worst
-# parameter, and hard to blame on overconfidence alone because a 9-member logmeanexp likelihood
-# mixture is already strictly broader than any single member. If FoM improves while w0 TARP stays
-# flat, the problem is a SYSTEMATIC in the w0 direction, not convergence, and more steps will not
-# help. Do NOT judge on test_log_prob: k=5 vs M4b's k=8 are different summary spaces whose NLE
+# ⚠️ The M4b comparison carries a confound found 2026-08-26: M4b's encoder is the p9 foundation on
+# CYCLIC LR, while these variates add an EXP-DECAY encoder finetune on top of it, and the fixed-LR
+# A/B measured that decay at 0.19-0.50 nats. Retraining the variate encoder on a good schedule is
+# the outstanding test -- not more Stage-B epochs, and not k=8 alone.
+#
+# ⚠️ Do NOT judge on test_log_prob: k=5 here vs M4b's k=8 are different summary spaces whose NLE
 # log-probs differ by a change-of-variables Jacobian.
-#
-# 50-epoch baselines to beat (n=5): dim-norm FoM (om,s8) 2.8112 +/-0.0578; FoM subset 8.2738
-# +/-0.3743; width68 S8 0.0797; TARP full 0.0242 +/-0.0034; TARP (sigma_8,omega_m,w0) 0.0659
-# +/-0.0073; TARP w0 0.2006 +/-0.0188. M4b targets: 4.1836 / 17.6122 / 0.0470 / 0.0021 / 0.0235.
+# NEW ROW NAMES ON PURPOSE -- these do not overwrite the 50-epoch M5c rows, whose checkpoints are
+# the baseline the whole comparison depends on.
 for _r in _VARIATE_REPEATS:
     _ft_nla_e150 = _nle_finetune(f"glass_nle_pretrain_nla_bgp_z8_k5_r{_r}", ensemble_repeats=9,
                                  whiten_k=5, warmstart_max_gap_nats=22.0,
