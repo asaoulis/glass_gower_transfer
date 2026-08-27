@@ -1400,3 +1400,44 @@ for _r in _K2_REPEATS:
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgpk2_z16_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_k2, _r)
 
+# =============================================================================================
+# kappa=2, k=5 whiten -- THE PRODUCTION kappa=2 CHAIN (supersedes the k=16 rows above).
+# ---------------------------------------------------------------------------------------------
+# The k=16 rows above are a full-rank "pure whiten" and were MEASURED RANK-DEFICIENT on this 16-D
+# head (2026-08-27, Stage-A job 1349506):
+#     EVR = [0.5361, 0.3476, 0.1002, 0.011, 0.0025, 0.0012, 0.0007, 0.0004,
+#            0.0002, 0.0001, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+# 3 components carry 98.4 %, 4 carry 99.49 %, 5 carry 99.74 % -- and SIX eigenvalues are EXACTLY
+# 0.0. The 16-D head is effectively ~4-D, the same shape every z8 head shows.
+# WHY THAT BREAKS: WhitenPCAScaler.fit does `scale = evals[:k].clamp(min=1e-12).sqrt()` and
+# `transform` DIVIDES by scale, so each null direction gets scale=1e-6 and is AMPLIFIED ~1e6. The
+# NLE would silently receive ~4 real dimensions plus 6 dimensions of blown-up float noise. Nothing
+# raises -- only the EVR exposes it, which is why the Stage-A EVR check is mandatory for a new k.
+# k=5 matches the recipe validated on every z8 chain (EVR ~0.9995, guard-c gap 17.140 vs 22.0).
+# A DISTINCT experiment name is REQUIRED: `fit_and_persist_whitener` refuses to re-fit an existing
+# whitener at a different k (fit-once, research Finding C3). NEVER delete whitener.pt to force one.
+# guard-c stays at 22.0: if it fires it is reporting a real problem, not a threshold that is too tight.
+# =============================================================================================
+_K2_WHITEN_K5 = 5
+
+for _r in _K2_REPEATS:
+    _pre_k2b = _nle_pretrain_bgp(_BGPK2_GLASS, _r, cosmo_param_names=list(_K2_THETA),
+                                 preset_overrides=dict(_BG_BOXES_K2))
+    _pre_k2b["whiten_embeddings"] = {"k": _K2_WHITEN_K5}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_r{_r}"] = _pre_k2b
+
+    _ft_k2b = _nle_finetune(f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_r{_r}", ensemble_repeats=9,
+                            whiten_k=_K2_WHITEN_K5, warmstart_max_gap_nats=22.0,
+                            gower_data=_BGPK2_GOWER, gower_eb=None,
+                            cosmo_param_names=list(_K2_THETA),
+                            preset_overrides=dict(_BG_BOXES_K2))
+    _ft_k2b["max_trainval_cosmos"] = None
+    _ft_k2b["train_frac"] = 0.8
+    _ft_k2b["val_frac"] = 0.2
+    _ft_k2b["test_frac"] = 0.0
+    _ft_k2b["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    _ft_k2b["epochs"] = 150
+    _ft_k2b["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgpk2_z16_k5_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_k2b, _r)
+
