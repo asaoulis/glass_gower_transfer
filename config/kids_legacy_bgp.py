@@ -1303,3 +1303,100 @@ for _r in _VARIATE_REPEATS:
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_z_bgp_z8_fx_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_nlaz_fx, _r)
 
+
+# ##################################################################################################
+# === M13 — the kappa=2 GALAXY-BIAS VARIATE chain (encoder -> Stage-A -> Stage-B) =================
+# ##################################################################################################
+# The kappa=2 arm widens the per-bin galaxy-bias prior: `b_i ~ N(mean_i, kappa*sigma_i)`, truncated
+# at +-3*kappa*sigma_i and clipped to GALAXY_BIAS_CLIP (src/KiDS/simulation_config.py). Preset
+# `flamingo_pt_diag_k2`.
+#
+# ⭐ PARENT = M11b r1. The kappa=2 compressor warm-starts from the p15 cyclic run, which is the only
+# 15-param model that ever escaped the -7.9 wall: r1 reached **-8.0957 @ep40**, clearing BOTH of M9's
+# cold non-breakthrough seeds (-7.9109 / -7.9523). Its siblings stalled at -7.81..-7.86, so the
+# per-repeat warm start below inherits that spread honestly -- select downstream on Gower-val, do not
+# average the weak seeds in. r4 has no parent (its M11b repeat never left the queue), hence 0..3.
+#
+# ⚠️⚠️ THE kappa=2 PRIOR BOXES ARE **CLIPPED**, AND kappa=1's ARE NOT. This is the subtle part.
+# `_BG_BOXES` is a clean mean +- 3 sigma because at kappa=1 nothing reaches GALAXY_BIAS_CLIP (the
+# config records 0.00 % of draws on the clip). At kappa=2 the sigmas double, +-3*2*sigma overruns the
+# clip on the LOW side of bins 1-2 (bin1 would reach -0.06, below the 0.3 floor), and the config
+# records **2.18 % of draws on the clip**. So the realised support is the CLIPPED interval, and the
+# scaler box must match it -- a mean +- 6 sigma box would tell the scaler the data spans a range it
+# never occupies and mis-scale theta. Derived here from the same constants as `_BG_BOXES` rather than
+# transcribed, so both follow the source of truth together.
+_BG_CLIP = (0.3, 2.2)          # GALAXY_BIAS_CLIP, src/KiDS/simulation_config.py
+_K2 = 2.0
+_BG_BOXES_K2 = {
+    f"b_g_bin{_i + 1}": (max(_m - 3.0 * _K2 * _s, _BG_CLIP[0]),
+                         min(_m + 3.0 * _K2 * _s, _BG_CLIP[1]))
+    for _i, (_m, _s) in enumerate(zip(_BG_PRIOR_MEANS, _BG_PRIOR_SIGMAS))
+}
+
+_BGPK2_GLASS = f"{_GPU5}/glass_bgpk2_nla_m_f16_sc8a1_{_EB}/output_*.h5"
+_BGPK2_GOWER = f"{_GPU5}/gower_bgpk2_nla_m_f16_sc8a1_{_EB}/output_*.h5"
+_P15_CYC_CKPT = f"{_CKPT}/kids_legacy_hybrid_nla_m_bgp_z16_resnet_sc8a1_p15_warm_cyc/"
+_K2_REPEATS = (0, 1, 2, 3)     # r4 has no M11b parent
+
+# --- M13a: the kappa=2 compressor (p15 cyclic -> kappa=2 GLASS store) ---------------------------
+# ⭐ LAUNCH-VERIFY **`Loaded keys: 129`** here, NOT 125. M11b's warm start was 8-D -> 16-D and so
+# skipped the 4 resized final-layer tensors (125/129). This one is 16-D -> 16-D, same architecture
+# and same widths, so EVERY key must load. A 125 here would mean the parent is the p9 foundation
+# rather than the p15 cyclic run, i.e. the wrong lineage. Summary dim stays 16.
+def _hybrid_bgpk2_z16(data_patterns, repeat_indices=_K2_REPEATS):
+    """kappa=2 variate compressor: the p15 cyclic recipe, re-pointed at the kappa=2 store."""
+    c = _hybrid_bgp_p15_z16_warm_cyc(data_patterns, repeat_indices=repeat_indices)
+    c["pretrained_embedding_ckpt_path"] = _P15_CYC_CKPT      # parent = M11b, not the p9 foundation
+    c["scaler_options"] = {
+        "data": {"type": "standard", "keys": None},
+        "cosmo": {"type": "preset", "preset_overrides": dict(_BG_BOXES_K2)},   # CLIPPED boxes
+    }
+    return c
+
+
+kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc"] = \
+    _assert_final_summary_dim(_hybrid_bgpk2_z16(_BGPK2_GLASS), 16,
+                              "kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc")
+
+# --- M13b/M13c: Stage-A (GLASS NLE on frozen embeddings) + Stage-B (Gower NLE + MCMC eval) ------
+# ⚠️ whiten_k = 16 = PURE-WHITEN on the 16-D summary, the exact analogue of k=8 on an 8-D one: a
+# full-rank invertible affine map that improves conditioning and discards nothing. Deliberately NOT
+# truncated -- the KSWEEP result is that there is no free truncation. (The nla/nla_z chains use k=5
+# on 8-D, which IS a truncation; that choice was validated on their own eigenspectra and does not
+# transfer here.) ⚠️ k=16 is UNVALIDATED for this arm: check the Stage-A log's
+# `[whiten] explained-variance ratio` before trusting it, exactly as k=5 was checked for nla_z.
+#
+# ⚠️ `warmstart_max_gap_nats` is left at 22.0, the z8 value, DELIBERATELY. A 16-D pure-whiten may gap
+# wider, but the guard exists to catch a broken warm start and raising it pre-emptively would defeat
+# it. If guard-c fires here, DIAGNOSE -- do not simply widen the threshold.
+# ⚠️⚠️ theta HERE IS THE 15-PARAM VECTOR, and it must be passed EXPLICITLY. Leaving
+# `cosmo_param_names=None` falls through to the 9-param default, which silently builds a Stage-A/B
+# that disagrees with its own 15-param compressor -- caught exactly that on the first write of this
+# block. `_nle_finetune`'s docstring makes theta-matching a hard requirement: a mismatch mis-shapes
+# and mis-scales theta in BOTH training and eval. Taken from the compressor row itself rather than
+# re-listed, so the chain cannot drift from its own parent.
+_K2_THETA = list(
+    kids_legacy_bgp_experiments["kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc"]["cosmo_param_names"])
+assert len(_K2_THETA) == 15, f"expected the 15-param kappa=2 vector, got {len(_K2_THETA)}"
+
+for _r in _K2_REPEATS:
+    _pre_k2 = _nle_pretrain_bgp(_BGPK2_GLASS, _r, cosmo_param_names=list(_K2_THETA),
+                                preset_overrides=dict(_BG_BOXES_K2))
+    _pre_k2["whiten_embeddings"] = {"k": 16}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_m_bgpk2_z16_r{_r}"] = _pre_k2
+
+    _ft_k2 = _nle_finetune(f"glass_nle_pretrain_nla_m_bgpk2_z16_r{_r}", ensemble_repeats=9,
+                           whiten_k=16, warmstart_max_gap_nats=22.0,
+                           gower_data=_BGPK2_GOWER, gower_eb=None,
+                           cosmo_param_names=list(_K2_THETA),
+                           preset_overrides=dict(_BG_BOXES_K2))
+    _ft_k2["max_trainval_cosmos"] = None
+    _ft_k2["train_frac"] = 0.8
+    _ft_k2["val_frac"] = 0.2
+    _ft_k2["test_frac"] = 0.0
+    _ft_k2["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    _ft_k2["epochs"] = 150
+    _ft_k2["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgpk2_z16_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_k2, _r)
+
