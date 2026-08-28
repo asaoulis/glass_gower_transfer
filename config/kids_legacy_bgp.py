@@ -1441,3 +1441,91 @@ for _r in _K2_REPEATS:
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgpk2_z16_k5_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_k2b, _r)
 
+
+
+# ##################################################################################################
+# M14 — the `vd` (VARIABLE-DEPTH) variate chain: GLASS encoder -> Stage-A NLE -> Stage-B Gower NLE
+# --------------------------------------------------------------------------------------------------
+# The fourth production variate, alongside `nla` (M5) and `nla_z` (M6). Same three-stage shape and
+# the same factories; only the store and the theta box differ.
+#
+# ⭐ **theta is the PLAIN 9-param NLA-M vector and needs NO `preset_overrides`.** This is the one
+# real difference from `nla`/`nla_z`: those two re-box `a_ia` to U[-6,6] because they *replace* the
+# IA model, so the global preset's NLA-M a_ia box (4.48, 7.0) would mis-scale them. `vd` does NOT
+# touch the IA model at all — it varies the SURVEY DEPTH — so its a_ia really is drawn from the
+# NLA-M box and the global preset is already correct. Adding an override here would be the bug.
+# Confirmed against the store: `data-h5` reports exactly {omega_m, sigma_8, w0, mnu, h, ns, ombh2,
+# a_ia, b_ia} + b_g_bin1..6 + galaxy_bias_eff — i.e. the NLA-M vector, with NO vd-specific parameter.
+# Variable depth is a property of the FORWARD MODEL, not an inferred parameter.
+#
+# ⚠️ `eb_map_variant=None` (bare `E`/`B` groups), NOT the `fwhm4_lmin56_lcut1400` tag. The store name
+# carries that suffix, but the suffix records WHICH variant was extracted, not whether it was written
+# tagged. Every `glass_bgp_*_f16_sc8a1_*` store is baked WITHOUT `--keep-variant-tag` (cf. lines
+# 66-68) and its sibling row `kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1` resolves to
+# `eb_map_variant=None` — verified by loading the built config. **A wrong guess here does not raise:
+# the loader SILENTLY SKIPS every file and trains on nothing.** Confirm on the first cluster run from
+# the `ok=` / `Loaded keys` count in the log before trusting any number that comes out of it.
+#
+# Summary stays 8-D per the SUMMARY-WIDTH RULE (16-D is reserved for rows that actually INFER b_g;
+# here b_g is only marginalised), and `_assert_final_summary_dim` pins that.
+#
+# Fixed LR: this is a NEW row, so it takes the post-2026-08-26 default (`scheduler="fixed"`). The
+# `exp` decay pinned on the M5a/M6a rows is there only because their checkpoints were trained under it.
+_BGP_NLA_M_VD = f"{_GPU5}/glass_bgp_nla_m_vd_f16_sc8a1_{_EB}/output_*.h5"
+# Store VERIFIED PRESENT 2026-08-28: 11 880 `*.h5` / 22G on gpu5, baked 10:06-10:07, count stable
+# across two listings 15 min apart (i.e. the bake had finished, not still running).
+
+# theta: the plain 9-param NLA-M vector, read off the built foundation row rather than re-listed, so
+# this cannot drift from `kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1`.
+_COSMO_9_NLAM = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"]
+
+# === M14a — the `vd` GLASS compressor finetune ===================================================
+kids_legacy_bgp_experiments["glass_encoder_finetune_nla_m_vd_bgp_z8"] = \
+    _assert_final_summary_dim(
+        _encoder_finetune_bgp(_BGP_NLA_M_VD, _COSMO_9_NLAM), 8,
+        "glass_encoder_finetune_nla_m_vd_bgp_z8")
+
+# === M14b — Stage-A: GLASS NLE on the frozen `vd` embeddings, k=5 whiten ========================
+# GATED ON M14a (its source encoder). Submit per repeat with:
+#   embed --target glass_nle_pretrain_nla_m_vd_bgp_z8_k5_r<r> \
+#         --sources glass_encoder_finetune_nla_m_vd_bgp_z8 --gpu v100 --skip-smoke
+# k=5 matches every other z8 chain (EVR ~0.9995 there). ⚠️ NEW NAME PER k, deliberately: `whiten_k`
+# sets the flow's context width, so a k=5 run writing into a k=8 row's dir would let
+# `get_best_checkpoint` resolve a SHAPE-MISMATCHED checkpoint. The paired Stage-B rows MUST use the
+# same k — they reuse this run's persisted whitener and load its flow.
+for _r in _VARIATE_REPEATS:
+    _pre_vd = _nle_pretrain_bgp(_BGP_NLA_M_VD, _r, cosmo_param_names=_COSMO_9_NLAM)
+    _pre_vd["whiten_embeddings"] = {"k": 5}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_m_vd_bgp_z8_k5_r{_r}"] = _pre_vd
+
+# === M14c — Stage-B: Gower NLE ens9 finetune + bundled MCMC eval ================================
+# ⛔ **BLOCKED ON DATA, AND `_BGP_GOWER_NLA_M_VD` IS AN ASSUMED NAME.** As of 2026-08-28 the Gower VD
+# raw sim (`sim_gower_mocks_nla_m_vd_bgp`, job 1349289) is STILL RUNNING and NO baked Gower VD store
+# exists — `data-ls` shows only the unrelated `gower_mocks_nla_m_novd_counts_f16_...` (note `novd`).
+# The name below follows the settled convention `gower_bgp_<variate>_f16_sc8a1_<tag>` (cf.
+# `_BGP_GOWER_NLA_Z`). **Verify with `data-ls` before submitting.** Once the sim finishes, bake it:
+#   prebake --src-datasets-root gpu4 --src-dir gower_mocks_nla_m_vd_bgp \
+#           --out-dir gower_bgp_nla_m_vd_f16_sc8a1_fwhm4_lmin56_lcut1400 \
+#           --eb-variant sc8a1_fwhm4_lmin56_lcut1400 --dtype float16
+# (i.e. the sc8a1 recipe; omit `--keep-variant-tag` to keep bare `E` groups, matching gower_eb=None.)
+# A sim leaving squeue is NOT evidence the store exists — only `data-ls` is.
+#
+# `max_trainval_cosmos=None` (every cosmology outside the locked test set) rather than a hard count,
+# for the same reason as M5c/M6c: a hard count dies on a variate that lands a sim or two short, while
+# `None` preserves the ONE invariant that matters — the SAME fixed 100 test cosmologies everywhere.
+_BGP_GOWER_NLA_M_VD = f"{_GPU5}/gower_bgp_nla_m_vd_f16_sc8a1_{_EB}/output_*.h5"   # ASSUMED — verify
+
+for _r in _VARIATE_REPEATS:
+    _ft_vd = _nle_finetune(f"glass_nle_pretrain_nla_m_vd_bgp_z8_k5_r{_r}", ensemble_repeats=9,
+                           whiten_k=5, warmstart_max_gap_nats=22.0,
+                           gower_data=_BGP_GOWER_NLA_M_VD, gower_eb=None,
+                           cosmo_param_names=_COSMO_9_NLAM)
+    _ft_vd["max_trainval_cosmos"] = None
+    _ft_vd["train_frac"] = 0.8
+    _ft_vd["val_frac"] = 0.2
+    _ft_vd["test_frac"] = 0.0        # test = the locked 100; fracs must sum to 1.0
+    _ft_vd["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    _ft_vd["epochs"] = 150
+    _ft_vd["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_vd_bgp_z8_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_vd, _r)
