@@ -75,15 +75,17 @@ IA_PARAMS = ("a_ia",) + IA_COMPANION_PARAMS
 # that module pulls in healpy and the whole survey-geometry stack, which has no business loading in
 # a GPU eval job — the same reason the IA constants above are duplicated. If the simulator's preset
 # ever changes, THIS MUST BE UPDATED IN LOCKSTEP or every shrinkage number silently references the
-# wrong prior. GALAXY_BIAS_CLIP=(0.3, 2.2) is not applied: it lies far outside +-3 sigma for every
-# bin, so it never binds.
+# wrong prior. GALAXY_BIAS_CLIP binds only once the prior is WIDENED: at kappa=1 it lies far outside
+# +-3 sigma for every bin and never applies, but at kappa=2 it clips the low-z bins (up to ~2.18 % of
+# draws), so it must be carried here rather than assumed inert.
 GALAXY_BIAS_PRIOR_MEANS = [1.0181, 1.0698, 1.1302, 1.2427, 1.3739, 1.4805]
 GALAXY_BIAS_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
 GALAXY_BIAS_PRIOR_NSIGMA = 3.0
+GALAXY_BIAS_CLIP = (0.3, 2.2)          # src/KiDS/simulation_config.py — keep in lockstep
 GALAXY_BIAS_PARAMS = tuple("b_g_bin%d" % i for i in range(1, len(GALAXY_BIAS_PRIOR_MEANS) + 1))
 
 
-def galaxy_bias_marginal_priors(params):
+def galaxy_bias_marginal_priors(params, kappa=1.0, clip=GALAXY_BIAS_CLIP):
     """Per-parameter 1D galaxy-bias priors for any `b_g_bin{i}` present in `params`.
 
     Returns {} when none are present, so this is a no-op for every pre-BGP parameter set.
@@ -99,12 +101,45 @@ def galaxy_bias_marginal_priors(params):
     out = {}
     for name in present:
         i = GALAXY_BIAS_PARAMS.index(name)
-        loc, scale = GALAXY_BIAS_PRIOR_MEANS[i], GALAXY_BIAS_PRIOR_SIGMAS[i]
+        loc = GALAXY_BIAS_PRIOR_MEANS[i]
+        # kappa RESCALES the width: the simulator draws b_i ~ N(mean_i, kappa*sigma_i) truncated at
+        # +-3*kappa*sigma_i and clipped to GALAXY_BIAS_CLIP (src/KiDS/simulation_config.py). Scaling
+        # only the BOUNDS and not the SIGMA would still mis-model the prior, so both scale here.
+        scale = kappa * GALAXY_BIAS_PRIOR_SIGMAS[i]
         half = GALAXY_BIAS_PRIOR_NSIGMA * scale
-        out[name] = TruncatedNormal1D(
-            loc=loc, scale=scale, low=loc - half, high=loc + half
-        )
+        low, high = loc - half, loc + half
+        if clip is not None:
+            low, high = max(low, clip[0]), min(high, clip[1])
+        out[name] = TruncatedNormal1D(loc=loc, scale=scale, low=low, high=high)
     return out
+
+
+def _infer_galaxy_bias_kappa(preset_overrides):
+    """Recover the b_g prior-width multiplier `kappa` from the scaled parameter boxes.
+
+    The boxes an experiment supplies as `scaler_options['cosmo']['preset_overrides']` are exactly
+    `(max(mean - 3*kappa*sigma, CLIP_LO), min(mean + 3*kappa*sigma, CLIP_HI))`, so kappa is
+    recoverable from any box that the clip did not touch. Clipping only ever SHRINKS a box, so the
+    WIDEST bin gives the true kappa; at kappa=2 the clip reaches at most 2.18 % of draws and leaves
+    several bins untouched, and at kappa=1 it is inert for every bin.
+
+    Returns 1.0 when no b_g boxes are supplied, which is the pre-existing behaviour.
+    """
+    if not preset_overrides:
+        return 1.0
+    ratios = []
+    for name, box in preset_overrides.items():
+        if name not in GALAXY_BIAS_PARAMS:
+            continue
+        try:
+            lo, hi = float(box[0]), float(box[1])
+        except (TypeError, IndexError, ValueError):
+            continue
+        sigma = GALAXY_BIAS_PRIOR_SIGMAS[GALAXY_BIAS_PARAMS.index(name)]
+        ratios.append((hi - lo) / (2.0 * GALAXY_BIAS_PRIOR_NSIGMA * sigma))
+    if not ratios:
+        return 1.0
+    return max(ratios)
 
 
 def ia_marginal_priors(params):

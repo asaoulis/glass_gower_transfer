@@ -17,6 +17,7 @@ from ..data.priors import (
     build_analytic_prior,
     ia_marginal_priors,
     galaxy_bias_marginal_priors,
+    _infer_galaxy_bias_kappa,
 )
 from .evaluate_models import run_evaluation_on_samples
 from ..data.data_selection import extract_cosmo_index
@@ -115,7 +116,13 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
     # Marginalised galaxy bias (BGP): b_g_bin* are analytic truncated Gaussians. Without this they
     # fall through to the empirical flow, which is trained on the Gower Street CSV — that file has
     # no b_g columns, so this is the difference between a correct prior and a hard failure.
-    known_priors = {**known_priors, **galaxy_bias_marginal_priors(params)}
+    # ⚠️ kappa-AWARE. The b_g prior WIDTH is a property of the store: the simulator draws
+    # b_i ~ N(mean_i, kappa*sigma_i) truncated at +-3*kappa*sigma_i. Hardcoding kappa=1 here put
+    # 58.5 % of the kappa=2 test truths OUTSIDE the sampler's b_g support and produced a spurious
+    # 0.2476 TARP calibration error. kappa is recovered from the caller's own preset_overrides, so
+    # the prior can never disagree with the boxes the model was scaled with.
+    _bg_kappa = _infer_galaxy_bias_kappa(preset_overrides)
+    known_priors = {**known_priors, **galaxy_bias_marginal_priors(params, kappa=_bg_kappa)}
 
     # Preserve the caller's parameter ordering.
     extra_priors = {p: known_priors[p] for p in params if p in known_priors}

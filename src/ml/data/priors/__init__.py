@@ -19,5 +19,6 @@ from .builders import (
     build_analytic_prior,
     ia_marginal_priors,
     galaxy_bias_marginal_priors,
+    _infer_galaxy_bias_kappa,
 )
 from .empirical import train_or_load_gower_prior
