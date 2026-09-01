@@ -73,6 +73,16 @@ DEFAULT_EXPERIMENTS = [
     "gower_npe_finetune_nla_m_novd_z8",
     "glass_encoder_finetune_nla_novd_z8",
     "glass_encoder_finetune_nla_z_novd_z8",
+    # === M15: the 2-parameter compression-ceiling suite (user directive 2026-09-01) =============
+    # 4 arms x 3 repeats on the `nla` GLASS store, theta = (omega_m, sigma_8) only. M15a is the
+    # 2-pt ceiling; the three hybrids test whether the maps add anything on top of it, whether the
+    # band must be variate-matched, and whether the map warm start is load-bearing. Compare the
+    # arms to EACH OTHER on FoM(omega_m,sigma_8) and the CI68 widths -- all four share one store,
+    # one architecture and one split per repeat, so the comparison is clean.
+    "m15a_band_nla_p2",
+    "m15b_hybrid_nla_p2_newband_warmmap",
+    "m15c_hybrid_nla_p2_oldband_warmmap",
+    "m15d_hybrid_nla_p2_newband_scratchmap",
 ]
 
 

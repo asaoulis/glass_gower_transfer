@@ -1529,3 +1529,109 @@ for _r in _VARIATE_REPEATS:
     _ft_vd["project"] = _BGP_NLE_PROJECT
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_vd_bgp_z8_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_vd, _r)
+
+
+# ##################################################################################################
+# === M15 — THE 2-PARAMETER COMPRESSION CEILING SUITE (user directive 2026-09-01) =================
+# ##################################################################################################
+# ⭐ PRIORITY: this suite takes precedence over ALL other training, because it decides whether the
+# variate rows need re-running at all.
+#
+# THE QUESTION. On the `nla` variate, S8 at FIXED nuisances is already within ~11 % of the flagship
+# (artifacts/variate_diagnostics/ASSESSMENT.md §7), but omega_m is still ~1.36x wider and that
+# residual is NOT IA-degeneracy and NOT explained by any handicap kappa=2 also carries (same 11.8k
+# GLASS store, same k=5, same ~99 Gower cosmologies, same epochs — kappa=2 lands at 1.02-1.05x).
+# So: is the variate compressor actually AT the constraining power of the data, or is it
+# under-trained / stuck in a poor compression minimum?
+#
+# THE DESIGN. Collapse to a 2-PARAMETER inference problem (omega_m, sigma_8; everything else
+# varies in the mocks and is marginalised implicitly, exactly as b_g is on the flagship). A 2-D
+# posterior is the cleanest possible read of compression quality: no nuisance volume, no IA prior
+# asymmetry, nothing to condition out. Four arms, 3 repeats each, ALL on the same `nla` GLASS store
+# with the same architecture/epochs/lr as the production variate chain — only theta and the
+# pretrained loads differ.
+#
+#   M15a  band-only, warm-started from the NLA-M band  -> the 2-pt CEILING
+#   M15b  NEW band (M15a, FROZEN) + warm-started map   -> does the map add anything on top?
+#   M15c  OLD band (NLA-M, FROZEN) + warm-started map  -> does a variate-matched band matter?
+#   M15d  NEW band (M15a, FROZEN) + SCRATCH map        -> is the map warm start load-bearing?
+#
+# Read: M15b ~ M15a  => the maps add nothing after the finetune (compression failure).
+#       M15b >> M15a => the maps work and the variate width is closer to honest.
+#       M15b vs M15c => whether the band must be re-fit per variate.
+#       M15b vs M15d => whether the map warm start is what carries the transfer.
+#
+# ⚠️⚠️ **LOAD ORDER IS THE WHOLE EXPERIMENT.** `_load_pretrained_embedding_net` writes the ENTIRE
+# hybrid embedding_net (band + map + fusion) and `build_model` runs it LAST. Setting both
+# `pretrained_band_ckpt_path` and `pretrained_embedding_ckpt_path` naively therefore lets the
+# NLA-M foundation SILENTLY OVERWRITE the band we just trained — M15b/M15d would secretly become
+# M15c. `band_load_after_embedding=True` (added to src/ml/utils.py:build_model for this suite,
+# default False everywhere else) defers the band load until after the embedding load so the
+# intended band survives. ACCEPTANCE CHECK ON THE FIRST M15b JOB LOG: the embedding-load line must
+# print BEFORE the band-load line, both with sane matched-key counts.
+#
+# ⚠️ ONE match string resolves BOTH parents: `get_best_checkpoint(..., pretrained_band_match_string)`
+# is used for the band AND the embedding folder, so both parents must expose repeat r under the
+# same `match_num_cosmo=False` -> "_{r}" convention. Verified for r in 0,1,2 before launch.
+_M15_REPEATS = [0, 1, 2]
+_COSMO_2 = ["omega_m", "sigma_8"]
+_M15_BAND_CKPT = f"{_CKPT}/m15a_band_nla_p2/"          # written by M15a below
+
+
+def _m15_common(c):
+    """Shared: 2-param theta, 3 repeats, per-repeat source resolution, own W&B project."""
+    c["cosmo_param_names"] = list(_COSMO_2)
+    c.pop("repeats", None)
+    c["repeat_indices"] = list(_M15_REPEATS)
+    c["match_num_cosmo"] = False       # resolve every parent checkpoint per-repeat as "_{i}"
+    c["project"] = "bgp-p2-ceiling"
+    return c
+
+
+# --- M15a: the 2-pt ceiling. Band-only MLP on the nla store, warm-started from the NLA-M band. ----
+# For a band-only model the embedding_net IS the band, so the whole-embedding loader is the clean
+# mechanism here (no `_find_band_module` subtlety) and there is no map branch to overwrite.
+_m15a = _m15_common(_band_bgp(_BGP_NLA))
+_m15a["pretrained_embedding_ckpt_path"] = _BAND_CKPT_BGP
+_m15a["freeze_embedding_net"] = False               # warm start, then train it
+kids_legacy_bgp_experiments["m15a_band_nla_p2"] = _m15a
+
+
+def _m15_hybrid(band_ckpt, warm_map, key):
+    """A hybrid arm: FROZEN `band_ckpt`, map branch warm-started from the 9-param foundation or not.
+
+    `band_ckpt=None` is not offered — every hybrid arm here freezes a band, and which band is the
+    variable under test.
+    """
+    c = _hybrid_bgp(_BGP_NLA, None, band_ckpt, repeat_indices=_M15_REPEATS)
+    c = _m15_common(c)
+    c["pretrained_band_ckpt_path"] = band_ckpt
+    c["freeze_band"] = True
+    if warm_map:
+        # warm-start the map branch (and fusion head) from the 9-param NLA-M foundation, THEN lay
+        # the frozen band on top -- see the LOAD ORDER warning above.
+        c["pretrained_embedding_ckpt_path"] = _SC8A1_9P_CKPT
+        c["freeze_embedding_net"] = False
+        c["band_load_after_embedding"] = True
+    else:
+        c.pop("pretrained_embedding_ckpt_path", None)
+        c["freeze_embedding_net"] = False
+        # no embedding load => nothing can overwrite the band, but keep the flag on so the arms
+        # differ ONLY in the map warm start and the printed load order is identical.
+        c["band_load_after_embedding"] = True
+    return _assert_final_summary_dim(c, 8, key)
+
+
+# --- M15b: NEW band (frozen) + warm-started map -- the headline arm -------------------------------
+kids_legacy_bgp_experiments["m15b_hybrid_nla_p2_newband_warmmap"] = \
+    _m15_hybrid(_M15_BAND_CKPT, warm_map=True, key="m15b_hybrid_nla_p2_newband_warmmap")
+
+# --- M15c: OLD (NLA-M) band (frozen) + warm-started map ------------------------------------------
+kids_legacy_bgp_experiments["m15c_hybrid_nla_p2_oldband_warmmap"] = \
+    _m15_hybrid(_BAND_CKPT_BGP, warm_map=True, key="m15c_hybrid_nla_p2_oldband_warmmap")
+
+# --- M15d: NEW band (frozen) + SCRATCH map (no warm start) ---------------------------------------
+# "Without the warm start" = the MAP warm start. The frozen new band stays, otherwise this is not
+# the same-as-M15b control it is meant to be.
+kids_legacy_bgp_experiments["m15d_hybrid_nla_p2_newband_scratchmap"] = \
+    _m15_hybrid(_M15_BAND_CKPT, warm_map=False, key="m15d_hybrid_nla_p2_newband_scratchmap")

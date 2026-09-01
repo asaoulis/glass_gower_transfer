@@ -466,6 +466,28 @@ def build_model(config, test_dataloader=None):
     checkpoint_path = getattr(config, 'checkpoint_path', None)
     pretrained_band_ckpt_folder = getattr(config, 'pretrained_band_ckpt_path', None)
 
+    # LOAD-ORDER HAZARD. `_load_pretrained_embedding_net` writes the WHOLE hybrid embedding_net
+    # (band branch + map branch + fusion head) and runs LAST in this function. So a config setting
+    # BOTH `pretrained_band_ckpt_path` and `pretrained_embedding_ckpt_path` gets its band weights
+    # SILENTLY OVERWRITTEN by whatever band is inside the embedding checkpoint. That is why
+    # `_encoder_finetune_bgp` pops the band keys rather than combining them.
+    # `band_load_after_embedding=True` is the opt-in for the combination config could not express:
+    # warm-start the MAP branch from one parent, then lay a DIFFERENT (separately trained) band on
+    # top and freeze it. Default False leaves every existing caller's order and behaviour unchanged.
+    band_load_after_embedding = getattr(config, 'band_load_after_embedding', False)
+
+    def _do_band_load():
+        # Resolve + load the pretrained band encoder; returns the module name (or None).
+        pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
+        freeze_band = getattr(config, 'freeze_band', False)
+        # band_prefix = getattr(config, 'band_prefix', 'model.embedding_net.')
+        pretrained_band_ckpt = pretrained_band_ckpts[0]  # TODO: fix this
+        return model._load_pretrained_band_encoder(
+            pretrained_band_ckpt,
+            freeze=freeze_band,
+            band_prefix="model.embedding_net.",
+        )
+
     if checkpoint_path:
         model.load_from_checkpoint(checkpoint_path)
         print("Loaded full model state from checkpoint:", checkpoint_path)
@@ -478,17 +500,9 @@ def build_model(config, test_dataloader=None):
         if getattr(config, 'freeze_band', False):
             band_module_name = model._freeze_band_encoder()
     else:
-        if pretrained_band_ckpt_folder is not None:
-            pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
-            freeze_band = getattr(config, 'freeze_band', False)
-            # band_prefix = getattr(config, 'band_prefix', 'model.embedding_net.')
-            pretrained_band_ckpt = pretrained_band_ckpts[0]  # TODO: fix this
-            band_module_name = model._load_pretrained_band_encoder(
-                pretrained_band_ckpt,
-                freeze=freeze_band,
-                band_prefix="model.embedding_net.",
-            )
-        
+        if pretrained_band_ckpt_folder is not None and not band_load_after_embedding:
+            band_module_name = _do_band_load()
+
     if getattr(config, 'load_pretrained_flow', False):
         # Joint module has two flows (NPE and NLE heads) that may be pretrained separately.
         if is_joint:
@@ -551,6 +565,14 @@ def build_model(config, test_dataloader=None):
             pretrained_embedding_ckpt,
             freeze=freeze_embedding_net,
         )
+
+    # Deferred band load: AFTER the embedding_net load, so the band the config actually asked for
+    # is the one that survives (see the LOAD-ORDER HAZARD note above). Runs whether or not an
+    # embedding checkpoint was supplied, so the flag means the same thing in both cases.
+    if (not checkpoint_path) and pretrained_band_ckpt_folder is not None and band_load_after_embedding:
+        print("[build_model] band_load_after_embedding=True -> loading the band encoder AFTER "
+              "the embedding_net load so it is not overwritten.")
+        band_module_name = _do_band_load()
 
     # After we know which submodules were actually used for pretrained
     # loading, configure optional per-module learning rates, if present
