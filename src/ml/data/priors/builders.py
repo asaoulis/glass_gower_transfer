@@ -208,6 +208,20 @@ def build_s8_box_known_priors(
     }
 
 
+def _combine_independent(dists):
+    """Join independent priors into one distribution.
+
+    `sbi`'s MultipleIndependent asserts len(dists) > 1, so a SINGLE distribution must be returned
+    as-is rather than wrapped. That case arises whenever the leading distribution already spans
+    every inferred parameter and no extra analytic priors are appended -- e.g. the 2-param
+    {omega_m, sigma_8} runs, where the Gower flow covers both. With 2+ distributions the behaviour
+    is unchanged.
+    """
+    if len(dists) == 1:
+        return dists[0]
+    return MultipleIndependent(dists)
+
+
 def build_kde_prior_from_df(
     df,
     columns,
@@ -229,7 +243,7 @@ def build_kde_prior_from_df(
             idx = name_to_idx[name]
             dists.append(ScaledDistribution(dist, scaler.min[idx], scaler.max[idx]))
 
-    return MultipleIndependent(dists)
+    return _combine_independent(dists)
 
 
 def build_gower_st_prior(
@@ -277,7 +291,7 @@ def build_flow_with_extras_prior(
             idx = name_to_idx[name]
             dists.append(ScaledDistribution(dist, min_val=scaler.min[idx], max_val=scaler.max[idx]))
 
-    joint_prior = MultipleIndependent(dists)
+    joint_prior = _combine_independent(dists)
 
     if not return_restricted:
         return joint_prior
@@ -386,7 +400,7 @@ def build_analytic_prior(
                 dists.append(ScaledDistribution(ia_1d[p], scaler.min[idx], scaler.max[idx]))
                 internal_order.append(p)
 
-    joint_prior = MultipleIndependent(dists)
+    joint_prior = _combine_independent(dists)
     base_to_wrap = joint_prior
 
     if return_restricted:
