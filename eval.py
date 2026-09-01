@@ -58,7 +58,10 @@ DEFAULT_MODE = "list"
 # said "run on v100"; that is wrong and will kill the job.)
 # evaluate_best_checkpoint skips repeats/runs with no checkpoint yet, so re-running is safe and
 # entries may be listed before their models exist.
-DEFAULT_EXPERIMENTS = [
+# ARCHIVED list from the NO-VD / counts campaigns. Kept verbatim so those rows can be re-run by
+# pointing DEFAULT_EXPERIMENTS back at it (or via --experiments); NOT evaluated by default any more,
+# because a bare `python eval.py` on the cluster walks this whole list and each row costs real time.
+_ARCHIVED_EXPERIMENTS = [
     # PRODUCTION eval: main-variate Gower NPE ens9 (all 5 repeats) + the GLASS sub-variate
     # encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
     # ensemble_evaluation_results_*.json + the P0 posterior_samples.npz / ensemble_posterior_samples_*.npz.
@@ -73,7 +76,24 @@ DEFAULT_EXPERIMENTS = [
     "gower_npe_finetune_nla_m_novd_z8",
     "glass_encoder_finetune_nla_novd_z8",
     "glass_encoder_finetune_nla_z_novd_z8",
-    # === M15: the 2-parameter compression-ceiling suite (user directive 2026-09-01) =============
+]
+
+
+# === CURRENT CAMPAIGN: the M15 compression-ceiling suite + its GLASS-side references =============
+# `evaluate_best_checkpoint` skips rows with no checkpoint yet, so the M15 entries can sit here
+# before their models exist and the same list can be re-run as the arms land.
+DEFAULT_EXPERIMENTS = [
+    # --- REFERENCES: what the EXISTING compressors already achieve on the GLASS test split -------
+    # These have never been evaluated (TALLY_evals.md has no NPE row for either), which is why the
+    # variates' GLASS-side constraining power was unknown. `kids_legacy_band_nla_m_bgp` is the
+    # BAND-ONLY model -- the pure 2-point reference the M15 hybrids have to beat.
+    # ⚠️ theta differs across these rows (8 / 9 / 9 params), so FoM is comparable only on a SHARED
+    # subset -- use FoM(omega_m,sigma_8) and the per-parameter CI68 widths, never the all-parameter
+    # FoM, which is a d-dimensional volume ratio.
+    "kids_legacy_band_nla_m_bgp",
+    "glass_encoder_finetune_nla_bgp_z8",
+    "glass_encoder_finetune_nla_z_bgp_z8",
+    # --- M15: the 2-parameter compression-ceiling suite (user directive 2026-09-01) --------------
     # 4 arms x 3 repeats on the `nla` GLASS store, theta = (omega_m, sigma_8) only. M15a is the
     # 2-pt ceiling; the three hybrids test whether the maps add anything on top of it, whether the
     # band must be variate-matched, and whether the map warm start is load-bearing. Compare the
