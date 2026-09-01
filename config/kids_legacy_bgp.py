@@ -1438,6 +1438,20 @@ for _r in _K2_REPEATS:
     _ft_k2b["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
     _ft_k2b["epochs"] = 150
     _ft_k2b["project"] = _BGP_NLE_PROJECT
+    # ⭐ EVAL-ONLY (`run_training: False`, user 2026-09-01). These 4 repeats are ALREADY TRAINED; the
+    # only thing being redone is the train-time deferred ensemble MCMC eval, so that it runs under the
+    # kappa-AWARE b_g prior (fix a0c153b). `train_embedding_run` skips `fit_nde_on_embeddings` when
+    # this is False and still returns the eval_context, and it flips `use_cache_if_exists=True` so the
+    # existing embedding cache is reused. The experiment NAME must stay unchanged — the ensemble eval
+    # resolves its members from `checkpoints/<experiment_name>/`.
+    #
+    # ⚠️ RETRAINING THESE IS NOT A SAFE FALLBACK. A retrain attempt (jobs 1351199-1351202) died on
+    # `[whiten][guard-c] Warm-start regression: ... 4820.500 nats above the pretrain best`, i.e. the
+    # Stage-A whitener/flow no longer resolves for these rows — consistent with 2c20b6d having moved
+    # whitener resolution to the run folder AFTER these checkpoints were written. Re-training would
+    # also re-roll the flow init (no torch seeding on the train path), destroying the paired
+    # before/after. If you ever DO need to retrain these, fix the whitener resolution first.
+    _ft_k2b["run_training"] = False
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgpk2_z16_k5_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_k2b, _r)
 
