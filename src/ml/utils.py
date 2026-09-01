@@ -503,7 +503,21 @@ def build_model(config, test_dataloader=None):
         if pretrained_band_ckpt_folder is not None and not band_load_after_embedding:
             band_module_name = _do_band_load()
 
-    if getattr(config, 'load_pretrained_flow', False):
+    # ⚠️ WARM-START LOADS MUST NOT OVERWRITE A FULLY-LOADED CHECKPOINT.
+    # `checkpoint_path` means "restore this trained model" — it is how EVERY evaluation rebuilds a
+    # run (`eval/utils.py:435` and `build_ensemble_model_from_checkpoints` both set it on a config
+    # copy). The flow / backbone / embedding loads below are WARM-START mechanisms for TRAINING a
+    # new model, and they used to run unconditionally, i.e. AFTER the full-model load. The effect
+    # was silent and severe: evaluating any row carrying `pretrained_embedding_ckpt_path` restored
+    # the trained weights and then overwrote the whole embedding_net with the warm-start PARENT's,
+    # so the flow was scored against an encoder it had never been trained against. Measured
+    # 2026-09-01 on `glass_encoder_finetune_nla*_bgp_z8`: every credible interval came back NaN and
+    # FoM(omega_m,sigma_8) scattered 2.41 +/- 1.93 across repeats.
+    # The band branch was already correct — it lives inside the `else` above, and the
+    # `checkpoint_path` branch honours `freeze_band` explicitly. These three now follow that same
+    # contract. Verified against the merged experiment registry: ZERO configs set `checkpoint_path`
+    # together with any of these keys, so no training configuration changes behaviour.
+    if (not checkpoint_path) and getattr(config, 'load_pretrained_flow', False):
         # Joint module has two flows (NPE and NLE heads) that may be pretrained separately.
         if is_joint:
             npe_folder = getattr(config, 'pretrained_npe_flow_ckpt_path', None) or getattr(config, 'pretrained_flow_ckpt_path', None) or pretrained_band_ckpt_folder
@@ -539,6 +553,14 @@ def build_model(config, test_dataloader=None):
             model._load_pretrained_flow(pretrained_flow_ckpt, freeze=False, flow_prefix=flow_prefix)
 
     pretrained_backbone_ckpt = getattr(config, 'pretrained_backbone_ckpt_path', None)
+    if checkpoint_path and pretrained_backbone_ckpt is not None:
+        # No freeze re-application here (unlike the band branch, which has a standalone
+        # `_freeze_band_encoder`): backbone freezing only happens inside
+        # `_load_pretrained_cnn_backbone`, and the only path that sets `checkpoint_path` is
+        # evaluation, where the model runs under `.eval()` with no gradients and freezing is moot.
+        print("[build_model] checkpoint_path set -> SKIPPING the pretrained-backbone warm start so "
+              "the loaded checkpoint's weights survive.")
+        pretrained_backbone_ckpt = None
     if pretrained_backbone_ckpt is not None:
         freeze_backbone = getattr(config, 'freeze_backbone', False)
         backbone_prefix = getattr(config, 'backbone_prefix', 'shared_cnn.backbone.')
@@ -557,6 +579,10 @@ def build_model(config, test_dataloader=None):
             target_prefix=target_prefix,
         )
     pretrained_embedding_ckpt_folder = getattr(config, 'pretrained_embedding_ckpt_path', None)
+    if checkpoint_path and pretrained_embedding_ckpt_folder is not None:
+        print("[build_model] checkpoint_path set -> SKIPPING the pretrained-embedding warm start so "
+              "the loaded checkpoint's weights survive.")
+        pretrained_embedding_ckpt_folder = None
     if pretrained_embedding_ckpt_folder is not None:
         pretrained_embedding_ckpts, _ = get_best_checkpoint(pretrained_embedding_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
         pretrained_embedding_ckpt = pretrained_embedding_ckpts[0]  # TODO: fix this
