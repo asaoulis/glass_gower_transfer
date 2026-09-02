@@ -1015,6 +1015,7 @@ for _r in _VARIATE_REPEATS:
     _pre_k5 = _nle_pretrain_bgp(_BGP_NLA, _r, cosmo_param_names=_COSMO_8_NLA,
                                 preset_overrides=_A_IA_NLA_BOX)
     _pre_k5["whiten_embeddings"] = {"k": 5}
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows.
     kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_bgp_z8_k5_r{_r}"] = _pre_k5
 
 
@@ -1047,6 +1048,7 @@ for _r in _VARIATE_REPEATS:
     _pre_nlaz_k5 = _nle_pretrain_bgp(_BGP_NLA_Z, _r, cosmo_param_names=_COSMO_9_NLAZ,
                                      preset_overrides=_A_IA_NLA_BOX)
     _pre_nlaz_k5["whiten_embeddings"] = {"k": 5}
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows.
     kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_z_bgp_z8_k5_r{_r}"] = _pre_nlaz_k5
 
 
@@ -1165,6 +1167,7 @@ for _r in _VARIATE_REPEATS:
     _ft_nla_e150["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
     _ft_nla_e150["epochs"] = 150       # <-- THE ONLY DIFFERENCE vs the shipped M5c rows
     _ft_nla_e150["project"] = _BGP_NLE_PROJECT
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows.
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_bgp_z8_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_nla_e150, _r)
 
@@ -1218,6 +1221,7 @@ for _r in _VARIATE_REPEATS:
     _ft_nlaz["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
     _ft_nlaz["epochs"] = 150
     _ft_nlaz["project"] = _BGP_NLE_PROJECT
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows.
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_z_bgp_z8_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_nlaz, _r)
 
@@ -1633,6 +1637,7 @@ kids_legacy_bgp_experiments["glass_encoder_finetune_nla_m_vd_bgp_z8"] = \
 for _r in _VARIATE_REPEATS:
     _pre_vd = _nle_pretrain_bgp(_BGP_NLA_M_VD, _r, cosmo_param_names=_COSMO_9_NLAM)
     _pre_vd["whiten_embeddings"] = {"k": 5}
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows.
     kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_m_vd_bgp_z8_k5_r{_r}"] = _pre_vd
 
 # === M14c — Stage-B: Gower NLE ens9 finetune + bundled MCMC eval ================================
@@ -1664,6 +1669,7 @@ for _r in _VARIATE_REPEATS:
     _ft_vd["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
     _ft_vd["epochs"] = 150
     _ft_vd["project"] = _BGP_NLE_PROJECT
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows.
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_vd_bgp_z8_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_vd, _r)
 
@@ -1772,3 +1778,79 @@ kids_legacy_bgp_experiments["m15c_hybrid_nla_p2_oldband_warmmap"] = \
 # the same-as-M15b control it is meant to be.
 kids_legacy_bgp_experiments["m15d_hybrid_nla_p2_newband_scratchmap"] = \
     _m15_hybrid(_M15_BAND_CKPT, warm_map=False, key="m15d_hybrid_nla_p2_newband_scratchmap")
+
+
+# =================================================================================================
+# ⭐⭐ e890aec RETRAIN BLOCK — `_hf` (HEAD-FIXED) rows for EVERY exposed embeddings-NLE chain.
+# (user decision 2026-09-02: no legacy-compat flag, retrain instead.)
+# -------------------------------------------------------------------------------------------------
+# WHY — `.claude/runs/training-runs/production-training-runs/BUG_kappa2_prior.md` §7.16/§7.19.
+# The embeddings path builds its SOURCE encoder via `build_model` with `checkpoint_path` set at
+# RUNTIME (`src/ml/utils.py:690`). Any source config carrying `pretrained_embedding_ckpt_path` had
+# its restored weights OVERWRITTEN by the warm-start PARENT immediately afterwards, until
+# `e890aec` (2026-09-01 13:04) made the checkpoint win. Every embedding, whitener and Stage-B flow
+# produced before that cutover is therefore in the PARENT's coordinate frame.
+#
+# ⚠️ ALL of these are MODE (i): parent and child have the SAME summary width (hybrid_output_dim=8
+# for the z8 variate encoders), so all tensors loaded and the chain is INTERNALLY CONSISTENT — just
+# built on the WRONG encoder. For the three chains below the wrong encoder is the **NLA-M
+# foundation** (`kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1`), i.e. the IA/VD variate finetune the
+# arm is named after never reached the NLE. That is what invalidates the arm-vs-arm comparisons.
+# (kappa=2 is handled by its own `_hf` block above; its wrong encoder is the kappa=1 p15 parent.)
+#
+# ⚠️ NEW NAMES ARE MANDATORY, never re-run an old name: the old run folders still hold the
+# parent-frame fit-once `whitener.pt` (would be REUSED, not refit), stale Stage-A checkpoints
+# (`find_best_checkpoint` takes the min over ALL files) and parent-frame `emb_*.pt` caches
+# (`use_cache_if_exists`). A distinct experiment name gives a clean `checkpoints/<name>/` tree.
+#
+# Built by calling the SAME factories with the SAME arguments as the originals, so the only
+# differences are (a) the name and (b) Stage-B's `pretrained_band_ckpt_path` -> the `_hf` Stage-A.
+# `run_training` is left at the factory default (True) throughout.
+#
+# LAUNCH: Stage-A `embed --target <A> --sources <ENCODER> --gpu v100|--cpu --partition CORES64`,
+# then Stage-B `embed --cpu --target <B> --sources <ENCODER> --skip-smoke` gated on it.
+# Driver runbook: `.claude/runs/training-runs/production-training-runs/HANDOFF_hf_retrain.md`.
+# =================================================================================================
+_HF_CHAINS = (
+    # (tag, glass_store, gower_store, theta, preset_overrides, source encoder [CLI, for the docs])
+    ("nla_bgp_z8",      _BGP_NLA,      _BGP_GOWER_NLA,      _COSMO_8_NLA,  _A_IA_NLA_BOX,
+     "glass_encoder_finetune_nla_bgp_z8"),
+    ("nla_z_bgp_z8",    _BGP_NLA_Z,    _BGP_GOWER_NLA_Z,    _COSMO_9_NLAZ, _A_IA_NLA_BOX,
+     "glass_encoder_finetune_nla_z_bgp_z8"),
+    ("nla_m_vd_bgp_z8", _BGP_NLA_M_VD, _BGP_GOWER_NLA_M_VD, _COSMO_9_NLAM, None,
+     "glass_encoder_finetune_nla_m_vd_bgp_z8"),
+)
+HF_RETRAIN_SOURCES = {}   # {experiment_name: source encoder to pass as --sources}
+
+for _tag, _glass, _gower, _theta, _box, _src in _HF_CHAINS:
+    for _r in _VARIATE_REPEATS:
+        _a_name = f"glass_nle_pretrain_{_tag}_k5_hf_r{_r}"
+        _kw = {"cosmo_param_names": _theta}
+        if _box is not None:
+            _kw["preset_overrides"] = _box
+        _a = _nle_pretrain_bgp(_glass, _r, **_kw)
+        _a["whiten_embeddings"] = {"k": 5}
+        kids_legacy_bgp_experiments[_a_name] = _a
+        HF_RETRAIN_SOURCES[_a_name] = _src
+
+        _b_name = f"gower_nle_finetune_{_tag}_hf_r{_r}_ens9_e150"
+        _b = _nle_finetune(_a_name, ensemble_repeats=9, whiten_k=5, warmstart_max_gap_nats=22.0,
+                           gower_data=_gower, gower_eb=None,
+                           cosmo_param_names=_theta,
+                           preset_overrides=_box)
+        _b["max_trainval_cosmos"] = None
+        _b["train_frac"] = 0.8
+        _b["val_frac"] = 0.2
+        _b["test_frac"] = 0.0
+        _b["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+        _b["epochs"] = 150
+        _b["project"] = _BGP_NLE_PROJECT
+        kids_legacy_bgp_experiments[_b_name] = _nle_bake_repeat(_b, _r)
+        HF_RETRAIN_SOURCES[_b_name] = _src
+
+# kappa=2 k5 `_hf` (defined above) belongs to the same retrain campaign — register its source too.
+for _r in _K2_REPEATS:
+    HF_RETRAIN_SOURCES[f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_hf_r{_r}"] = \
+        "kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc"
+    HF_RETRAIN_SOURCES[f"gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{_r}_ens9_e150"] = \
+        "kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc"
