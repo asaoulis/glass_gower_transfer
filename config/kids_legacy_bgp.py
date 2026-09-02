@@ -1834,7 +1834,16 @@ for _tag, _glass, _gower, _theta, _box, _src in _HF_CHAINS:
         HF_RETRAIN_SOURCES[_a_name] = _src
 
         _b_name = f"gower_nle_finetune_{_tag}_hf_r{_r}_ens9_e150"
-        _b = _nle_finetune(_a_name, ensemble_repeats=9, whiten_k=5, warmstart_max_gap_nats=22.0,
+        # ⚠️ `warmstart_max_gap_nats=50.0` (was 22.0), user decision 2026-09-02. The variate arms
+        # (`nla` / `nla_z` / VD) run off the `glass_encoder_finetune_*` encoders, whose GLASS->Gower
+        # embedding shift is far larger than kappa=2's: `nla` Stage-B r0 (job 1351491) aborted at ep0
+        # with gap=26.568 nats even though the encoder, whitener, Stage-A flow and Gower store all
+        # resolved correctly (see `.claude/runs/.../log.md` 2026-09-02 17:30 and BUG_kappa2_prior.md).
+        # 22.0 was calibrated on the kappa=2 chain, which warm-starts at 0.8 nats; it is too tight to
+        # be a scratch-signature test for these arms. 50 keeps the guard live (a truly random head
+        # still trips it) while letting a genuine-but-large warm start through, so we can gauge from
+        # the training curve whether the warm start is real. kappa=2's own `_hf` rows stay at 22.0.
+        _b = _nle_finetune(_a_name, ensemble_repeats=9, whiten_k=5, warmstart_max_gap_nats=50.0,
                            gower_data=_gower, gower_eb=None,
                            cosmo_param_names=_theta,
                            preset_overrides=_box)
