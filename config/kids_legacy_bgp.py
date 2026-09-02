@@ -1457,6 +1457,62 @@ for _r in _K2_REPEATS:
 
 
 
+# === M13d — kappa=2 p15 GOWER **NPE** ENSEMBLE FINETUNE (user 2026-09-02) ========================
+# ⭐ PURPOSE: DISAMBIGUATE. The kappa2 NLE Stage-B eval under the corrected b_g prior (a0c153b) came
+# back with near-PERFECT b_g coverage (ECP@68 ~0.675 on all six bins, up from ~0.55) but ALSO a
+# collapsed FoM (3.8974 -> 1.5151), CI68 S8 0.0492 -> 0.2225, test_log_prob 1.99 -> 729 and
+# mahalanobis std 1.24 -> 16.4. Those last two are the signature of a bad-chain TAIL, consistent with
+# the prior returning log_prob=-inf for ~1 % of its OWN samples (the CLIPPED b_g box puts scaled
+# values exactly on 0/1, and the widened support now reaches that edge).
+#
+# NPE settles it. `NPELightningModule.generate_samples` builds its posterior with **NO explicit
+# prior** and draws straight from q(theta|t) — **no MCMC, no slice sampler, no prior support to fall
+# off** (cf. gen_samples.py's `prior_tag` docstring: NPE dumps are under the SIMULATION prior whatever
+# PRIOR_MODE says). So:
+#   • NPE FoM ~ the NLE's PRE-fix FoM  ⇒ the compressor really does constrain, and the corrected-prior
+#     NLE numbers are being wrecked by the sampler/boundary ⇒ fix the boundary, not the compressor.
+#   • NPE FoM ~ the NLE's POST-fix (collapsed) FoM ⇒ the tight PRE-fix numbers were an artefact of the
+#     too-narrow prior, and this compressor genuinely does not constrain 15 params on Gower.
+#
+# ⚠️ Built from `_hybrid_bgpk2_z16`, NOT from `config.kids_legacy._npe_finetune_z8`: that factory is
+# z8 and would silently mismatch this z16 compressor's summary width (and carries the 9-param theta).
+# Going through the kappa2 builder keeps the z16 arch, the 15-param theta and the CLIPPED _BG_BOXES_K2
+# attached by construction.
+# ⚠️ `fixed_test_sim_ids` is the **100-id** set — the SAME held-out cosmologies the kappa2 NLE rows
+# used — so the NPE and NLE FoMs are computed on identical test data and ARE comparable.
+# ⚠️ `checkpoint_path` is a WHOLE-MODEL load of the kappa2 GLASS compressor; e890aec makes build_model
+# skip the pretrained-embedding warm start when checkpoint_path is set, but the parent key is popped
+# here too so the intent is explicit rather than relying on that guard.
+def _gower_npe_ft_bgpk2_z16(repeat_indices=(0,)):
+    c = _hybrid_bgpk2_z16(_BGPK2_GOWER, repeat_indices=repeat_indices)
+    c["eb_map_variant"] = None
+    c["checkpoint_path"] = f"{_CKPT}/kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc/"
+    c.pop("pretrained_embedding_ckpt_path", None)
+    c.pop("pretrained_band_ckpt_path", None)
+    c["freeze_band"] = False
+    # Finetune schedule copied from the validated production NPE ensemble finetune
+    # (config.kids_legacy._npe_finetune_z8): short, low-LR, 9 members.
+    c["epochs"] = 10
+    c["lr"] = 1e-5
+    c["batch_size"] = 128
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"warmup": 0}
+    c["ensemble_repeats"] = 9
+    c["max_trainval_cosmos"] = None
+    c["train_frac"] = 0.8
+    c["val_frac"] = 0.2
+    c["test_frac"] = 0.0
+    c["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    c["match_num_cosmo"] = False
+    c["project"] = "gower-finetuning"
+    return c
+
+
+kids_legacy_bgp_experiments["gower_npe_finetune_nla_m_bgpk2_z16_r0_ens9"] = \
+    _assert_final_summary_dim(_gower_npe_ft_bgpk2_z16((0,)), 16,
+                              "gower_npe_finetune_nla_m_bgpk2_z16_r0_ens9")
+
+
 # ##################################################################################################
 # M14 — the `vd` (VARIABLE-DEPTH) variate chain: GLASS encoder -> Stage-A NLE -> Stage-B Gower NLE
 # --------------------------------------------------------------------------------------------------
