@@ -448,11 +448,12 @@ class NFlowDistribution(Distribution):
     support = constraints.real
     has_rsample = False
 
-    def __init__(self, flow, dims):
+    def __init__(self, flow, dims, max_tries: int = 10_000):
         super().__init__(validate_args=False)
 
         self.flow = flow
         self.dims = dims
+        self.max_tries = int(max_tries)
         self.log_det = torch.tensor(0.0)
         self._event_shape = torch.Size([dims])
         self._batch_shape = torch.Size([])
@@ -466,8 +467,41 @@ class NFlowDistribution(Distribution):
         return self._batch_shape
 
     def sample(self, sample_shape=torch.Size()):
+        # REJECTION-RESAMPLE to the flow's own declared support. The empirical Gower flow is a
+        # normalising flow over the SCALED ([0,1]^d) parameter box, so it is unbounded and leaks
+        # ~1 % of draws outside the box -- while `log_prob` below hard-masks those to -inf. Without
+        # this loop `sample()` and `log_prob()` disagree, and the joint prior assigns ZERO density
+        # to ~1 % of the samples it drew itself (measured 0.9901 finite on 20k draws, identical at
+        # kappa=1/kappa=2 and with no b_g params at all -- i.e. this is a property of the flow, not
+        # of any analytic marginal). Mirrors TruncatedNormal1D.sample.
+        # NOTE: `log_prob` is deliberately left untouched, so it remains unnormalised by
+        # log Z ~ -0.01 nats (a constant: it cancels in MCMC and is negligible for dMI).
         n = int(torch.tensor(sample_shape).prod()) if len(sample_shape) else 1
-        x = self.flow.sample(n)
+        if n == 0:  # e.g. sample_shape=(0,); the pre-fix code returned an empty tensor here
+            return torch.empty(sample_shape + self.event_shape)
+
+        chunks = []
+        filled = 0
+        tries = 0
+        while filled < n and tries < self.max_tries:
+            tries += 1
+            k = max(256, 2 * (n - filled))
+            x = self.flow.sample(k).reshape(-1, self.dims)
+            accepted = x[((x >= 0.0) & (x <= 1.0)).all(dim=-1)]
+            if accepted.numel() == 0:
+                continue
+            take = min(accepted.shape[0], n - filled)
+            chunks.append(accepted[:take])
+            filled += take
+
+        if filled < n:
+            raise RuntimeError(
+                "NFlowDistribution.sample: rejection sampler exhausted after "
+                f"{tries} tries ({filled}/{n} accepted); the flow is placing almost no mass "
+                "inside the [0, 1]^d scaled box it was trained on."
+            )
+
+        x = torch.cat(chunks, dim=0) if len(chunks) > 1 else chunks[0]
         return x.reshape(sample_shape + self.event_shape)
 
     def log_prob(self, x):

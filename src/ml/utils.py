@@ -517,6 +517,13 @@ def build_model(config, test_dataloader=None):
     # `checkpoint_path` branch honours `freeze_band` explicitly. These three now follow that same
     # contract. Verified against the merged experiment registry: ZERO configs set `checkpoint_path`
     # together with any of these keys, so no training configuration changes behaviour.
+    if checkpoint_path and getattr(config, 'load_pretrained_flow', False):
+        # Say so out loud. The other two skips below already print; this one was silent, and the
+        # set of warm starts that DID NOT run is exactly what distinguishes the encoder this build
+        # produces from the one an older revision produced for the same checkpoint (see the
+        # kappa=2 source-encoder frame change, BUG_kappa2_prior.md 7.16).
+        print("[build_model] checkpoint_path set -> SKIPPING the pretrained-flow warm start so "
+              "the loaded checkpoint's weights survive.")
     if (not checkpoint_path) and getattr(config, 'load_pretrained_flow', False):
         # Joint module has two flows (NPE and NLE heads) that may be pretrained separately.
         if is_joint:
@@ -748,6 +755,7 @@ def build_ensemble_model_from_checkpoints(
 
     members = []
     resolved_member_test_loaders = []
+    missing_members = []
 
     for j in range(n_ens):
         member_match = f"{match_string}_ens{j}"
@@ -758,8 +766,15 @@ def build_ensemble_model_from_checkpoints(
                 f"[build_ensemble_model_from_checkpoints] No checkpoint found for member '{member_match}'",
                 flush=True,
             )
+            missing_members.append(member_match)
             continue  # Skip this member but keep going for others
             # return None
+        # ⚠️ EVAL PROVENANCE. Which member checkpoint a re-eval resolves is NOT stable over time:
+        # `find_best_checkpoint` takes the min val_log_prob among the files PRESENT, so a rotated /
+        # re-rolled / added checkpoint silently changes what gets scored. Measured instance: the
+        # kappa=2 k5 Stage-A parent resolved best val 1.396 on 2026-08-27 and 1.735 on 2026-09-01.
+        # Log the exact file so two runs of "the same" eval can be compared after the fact.
+        print(f"[build_ensemble_model_from_checkpoints] member {j}: {best_ckpt}", flush=True)
 
         cfg_j = copy(cfg)
         cfg_j.checkpoint_path = best_ckpt
@@ -784,6 +799,17 @@ def build_ensemble_model_from_checkpoints(
     if len(members) == 0:
         print("No ensemble members were successfully loaded. Returning None.", flush=True)
         return None
+    # ⚠️ A SHORT ENSEMBLE IS NOT THE ENSEMBLE THAT WAS TRAINED. Skipping unresolvable members used
+    # to be a bare `print`, so an eval could silently score 6 of 9 members and report it as an
+    # ens9 number. Fail loudly instead; `allow_partial_ensemble: True` is the deliberate escape
+    # hatch for a genuinely partial run. Eval-path only — training is unaffected.
+    if missing_members and not bool(getattr(cfg, "allow_partial_ensemble", False)):
+        raise RuntimeError(
+            f"[build_ensemble_model_from_checkpoints] resolved only {len(members)}/{n_ens} ensemble "
+            f"members for '{cfg.experiment_name}' match '{match_string}'; missing "
+            f"{missing_members}. A short ensemble is not comparable to the ens{n_ens} numbers it "
+            "would be filed against. Set `allow_partial_ensemble: True` on the config to override."
+        )
     inference_mode = str(getattr(cfg, "inference_mode", "npe")).lower()
     EnsembleCls = EnsembleLikelihoodNDELightningModule if inference_mode == "nle" else EnsembleNDELightningModule
     model = EnsembleCls(members)

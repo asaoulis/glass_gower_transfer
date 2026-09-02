@@ -149,7 +149,7 @@ def _build_embedding_test_loader_for_cfg(
 def _build_embeddings_model_from_cfg_checkpoint(cfg, test_dataloader=None):
     """Build NDE-on-embeddings model and load cfg.checkpoint_path when provided."""
 
-    from .embeddings_utils import build_nde_on_embeddings
+    from .embeddings_utils import build_nde_on_embeddings, load_embeddings_checkpoint
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if test_dataloader is None:
@@ -160,8 +160,8 @@ def _build_embeddings_model_from_cfg_checkpoint(cfg, test_dataloader=None):
 
     checkpoint_path = getattr(cfg, "checkpoint_path", None)
     if checkpoint_path:
-        ckpt = torch.load(checkpoint_path, map_location=device)
-        model.load_state_dict(ckpt["state_dict"], strict=False)
+        load_embeddings_checkpoint(model, checkpoint_path, device,
+                                   tag=str(getattr(cfg, "experiment_name", "")))
 
     model.to(device)
     model.eval()
@@ -403,6 +403,9 @@ def train_embedding_run(
         # Persist/resolve the whitener under the RUN's own folder even when the embedding cache is
         # shared via `embedding_cache_name` — that is where finetune/eval look for it.
         whitener_run_name=source_run_name,
+        # Record WHICH source-encoder checkpoints produced z, so a cache reused under a fixed key
+        # (which `run_training: False` always does) can be checked instead of trusted.
+        source_checkpoints=list(checkpoint_paths or []),
         is_pretrain_source=whiten_is_pretrain_source,
         pretrained_ckpt_path_or_dir=target_cfg.pretrained_band_ckpt_path,
         repeat_match=whiten_repeat_match,
@@ -418,7 +421,7 @@ def train_embedding_run(
     # embeddings flow checkpoint before calling.
     #
     def emb_model_builder(cfg, test_dataloader = None):
-        from .embeddings_utils import build_nde_on_embeddings
+        from .embeddings_utils import build_nde_on_embeddings, load_embeddings_checkpoint
         import torch
     
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -426,8 +429,8 @@ def train_embedding_run(
     
         checkpoint_path = getattr(cfg, "checkpoint_path", None)
         if checkpoint_path:
-            ckpt = torch.load(checkpoint_path, map_location=device)
-            model.load_state_dict(ckpt["state_dict"], strict=False)
+            load_embeddings_checkpoint(model, checkpoint_path, device,
+                                       tag=str(getattr(cfg, "experiment_name", "")))
     
         model.to(device)
         model.eval()

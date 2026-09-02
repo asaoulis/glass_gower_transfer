@@ -1,3 +1,4 @@
+import hashlib
 import os
 import re
 import sys
@@ -337,12 +338,124 @@ def _get_embedding_cache_paths(base_cfg, wandb_run_name: str) -> Tuple[str, str,
     return train_path, val_path, test_path
 
 
+def _encoder_fingerprint(model) -> Optional[str]:
+    """Stable content hash of a source model's ASSEMBLED `embedding_net` weights.
+
+    ⚠️ THE CHECKPOINT PATH IS NOT ENOUGH. `build_model` ASSEMBLES an encoder: it restores
+    `checkpoint_path` and (pre-`e890aec`) then let warm-start loads overwrite `embedding_net` with
+    the PARENT's weights. The SAME checkpoint path therefore produced DIFFERENT encoder weights
+    before and after that commit, and every cached embedding, persisted whitener and trained flow
+    built under the old assembly lives in a different coordinate frame. Hashing the tensors that
+    actually produce `z` is the only thing that catches that.
+
+    NORMALISED so an honest cache can never false-raise across the environments this pipeline
+    actually spans (Stage-A on a v100 GPU, Stage-B/eval on CPU, `bf16-mixed` autocast):
+      * keys in sorted order, so dict insertion order is irrelevant;
+      * every tensor `.detach().cpu().contiguous()`, so device never enters;
+      * FLOATING tensors up-cast to float32 (fp16/bf16/fp32 -> fp32 is exact and idempotent),
+        so a half-precision store and a single-precision store of the same weights agree;
+      * INTEGER / BOOL buffers (nflows registers `identity_features` / `transform_features` as
+        int64) hashed in their own dtype and tagged, never funnelled through float.
+    """
+    net = getattr(model, "embedding_net", None)
+    if net is None:
+        return None
+    try:
+        h = hashlib.sha256()
+        for k in sorted(net.state_dict().keys()):
+            v = net.state_dict()[k]
+            if not torch.is_tensor(v):
+                h.update(f"{k}|scalar|{v!r}".encode())
+                continue
+            t = v.detach().cpu()
+            if t.is_floating_point():
+                kind, t = "f32", t.to(torch.float32)
+            else:
+                kind = str(t.dtype)
+            t = t.contiguous()
+            h.update(f"{k}|{kind}|{tuple(t.shape)}|".encode())
+            h.update(t.numpy().tobytes())
+        return h.hexdigest()[:16]
+    except Exception as exc:  # a diagnostic must never break a run
+        print(f"[emb-cache] could not fingerprint an encoder: {exc}", flush=True)
+        return None
+
+
+def _build_cache_provenance(base_cfg, source_checkpoints=None, source_models=None) -> dict:
+    """Everything that must match for a cached `emb_*.pt` to still be valid for this run.
+
+    ⚠️ The cache key (`{base}/checkpoints/{wandb_run_name}/datasets/`) encodes the TARGET
+    experiment, the repeat match and the ensemble member, but NOT *which source-encoder
+    checkpoint produced z*, NOT the data patterns and NOT the theta box. Those can all change
+    under a fixed key — and `run_training: False` sets `use_cache_if_exists=True`, so an eval
+    silently consumes whatever is on disk. Recording them makes a stale cache detectable.
+    """
+    return {
+        "data_patterns": _as_jsonable(getattr(base_cfg, "data_patterns", None)),
+        "cosmo_param_names": _as_jsonable(getattr(base_cfg, "cosmo_param_names", None)),
+        "split_seed": _as_jsonable(getattr(base_cfg, "split_seed", None)),
+        "max_trainval_cosmos": _as_jsonable(getattr(base_cfg, "max_trainval_cosmos", None)),
+        "test_shape_noise_idx": _as_jsonable(getattr(base_cfg, "test_shape_noise_idx", None)),
+        "source_checkpoints": _as_jsonable(source_checkpoints),
+        # Content hash of the ASSEMBLED encoders (see _encoder_fingerprint) — catches a frame
+        # change even when the checkpoint path is byte-identical.
+        "source_encoder_fingerprints": (
+            [_encoder_fingerprint(m) for m in source_models] if source_models else None
+        ),
+    }
+
+
+def _as_jsonable(v):
+    if isinstance(v, (list, tuple)):
+        return [_as_jsonable(x) for x in v]
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    return str(v)
+
+
+def _check_cache_provenance(path: str, stored: Optional[dict], expected: dict):
+    """Compare a cache's recorded provenance with this run's. RAISE on a real mismatch.
+
+    A cache written before provenance existed has `stored is None`: that is WARNED about loudly
+    (old caches stay readable) but never passed over in silence. `source_checkpoints` is compared
+    only when BOTH sides recorded it, so a legacy-ish partial record cannot false-fire.
+    """
+    if stored is None:
+        print(
+            f"[emb-cache] ⚠️  LEGACY CACHE (no provenance recorded): {path}\n"
+            f"[emb-cache]     cannot verify it was built by this run's encoder / data / theta box. "
+            f"Expected: {expected}",
+            flush=True,
+        )
+        return
+    mismatches = []
+    for key, want in expected.items():
+        if key in ("source_checkpoints", "source_encoder_fingerprints") and (
+            want is None or stored.get(key) is None
+        ):
+            continue  # only comparable when both sides recorded it
+        got = stored.get(key)
+        if got != want:
+            mismatches.append(f"  {key}: cache={got!r} != run={want!r}")
+    if mismatches:
+        raise RuntimeError(
+            f"[emb-cache] STALE CACHE at {path} — it was NOT built for this run:\n"
+            + "\n".join(mismatches)
+            + "\n[emb-cache] Cached embeddings from a different encoder / fidelity / theta box "
+              "live in a different coordinate frame from the persisted whitener and the trained "
+              "flow, so every log-prob and posterior from them is meaningless. Delete the cache "
+              "to force a recompute, or point the run at the matching source."
+        )
+    print(f"[emb-cache] provenance OK: {path}", flush=True)
+
+
 def _save_embedding_cache(
     path: str,
     z: torch.Tensor,
     theta: torch.Tensor,
     emb_scaler: BaseScaler,
     cosmo_scaler: Optional[BaseScaler],
+    provenance: Optional[dict] = None,
 ):
     """Save raw embeddings, cosmology vectors and scaler parameters.
 
@@ -359,11 +472,13 @@ def _save_embedding_cache(
         "cosmo_min": getattr(cosmo_scaler, "min", None) if cosmo_scaler is not None else None,
         "cosmo_max": getattr(cosmo_scaler, "max", None) if cosmo_scaler is not None else None,
         "cosmo_param_names": getattr(cosmo_scaler, "parameter_names", None) if cosmo_scaler is not None else None,
+        # What this cache was built FROM (see _build_cache_provenance).
+        "provenance": provenance,
     }
     torch.save(state, path)
 
 
-def _load_embedding_cache(path: str) -> Tuple[torch.Tensor, torch.Tensor, Optional[BaseScaler], Optional[BaseScaler]]:
+def _load_embedding_cache(path: str):
     """Load raw embeddings/cosmo and reconstruct scaler objects if stats exist."""
     ckpt = torch.load(path, map_location="cpu")
     z = ckpt["z"]
@@ -385,7 +500,7 @@ def _load_embedding_cache(path: str) -> Tuple[torch.Tensor, torch.Tensor, Option
             cosmo_scaler.min = ckpt["cosmo_min"]
             cosmo_scaler.max = ckpt["cosmo_max"]
 
-    return z, theta, emb_scaler, cosmo_scaler
+    return z, theta, emb_scaler, cosmo_scaler, ckpt.get("provenance")
 
 
 def resolve_whitener_path(
@@ -473,6 +588,7 @@ def build_embedding_dataloaders(
     *,
     whiten_cfg: Optional[dict] = None,
     whitener_run_name: Optional[str] = None,
+    source_checkpoints=None,
     is_pretrain_source: bool = False,
     pretrained_ckpt_path_or_dir: Optional[str] = None,
     repeat_match: Optional[str] = None,
@@ -542,11 +658,42 @@ def build_embedding_dataloaders(
         train_path, val_path, test_path = _get_embedding_cache_paths(base_cfg, wandb_run_name)
         if use_cache_if_exists:
             if os.path.exists(train_path) and os.path.exists(val_path) and os.path.exists(test_path):
-                train_z, train_theta, emb_scaler, cached_cosmo_scaler = _load_embedding_cache(train_path)
-                val_z, val_theta, _, _ = _load_embedding_cache(val_path)
-                test_z, test_theta, _, _ = _load_embedding_cache(test_path)
-                # Prefer scaler from cache if present; otherwise use freshly built preset
+                expected_prov = _build_cache_provenance(base_cfg, source_checkpoints, models)
+                train_z, train_theta, emb_scaler, cached_cosmo_scaler, prov = _load_embedding_cache(train_path)
+                _check_cache_provenance(train_path, prov, expected_prov)
+                val_z, val_theta, _, _, prov_v = _load_embedding_cache(val_path)
+                _check_cache_provenance(val_path, prov_v, expected_prov)
+                test_z, test_theta, _, _, prov_t = _load_embedding_cache(test_path)
+                _check_cache_provenance(test_path, prov_t, expected_prov)
+                print(
+                    f"[emb-cache] HIT {train_path} (train {tuple(train_z.shape)}, "
+                    f"val {tuple(val_z.shape)}, test {tuple(test_z.shape)})",
+                    flush=True,
+                )
+                # Prefer scaler from cache if present; otherwise use freshly built preset.
+                # ⚠️ This OVERRIDES the theta scaler the config just built, silently. If the two
+                # disagree, theta is scaled into a different box than the flow was trained on, so
+                # refuse rather than pick one.
                 if cached_cosmo_scaler is not None:
+                    if cosmo_scaler is not None:
+                        import numpy as _np
+                        same = (
+                            list(getattr(cached_cosmo_scaler, "parameter_names", []) or [])
+                            == list(getattr(cosmo_scaler, "parameter_names", []) or [])
+                            and _np.allclose(_np.asarray(cached_cosmo_scaler.min, dtype=float),
+                                             _np.asarray(cosmo_scaler.min, dtype=float))
+                            and _np.allclose(_np.asarray(cached_cosmo_scaler.max, dtype=float),
+                                             _np.asarray(cosmo_scaler.max, dtype=float))
+                        )
+                        if not same:
+                            raise RuntimeError(
+                                "[emb-cache] the cached theta scaler disagrees with the one this "
+                                f"config builds ({train_path}).\n  cache names="
+                                f"{getattr(cached_cosmo_scaler, 'parameter_names', None)}\n  run   names="
+                                f"{getattr(cosmo_scaler, 'parameter_names', None)}\n"
+                                "Using either one would scale theta into a box the flow was not "
+                                "trained on. Delete the cache to force a recompute."
+                            )
                     cosmo_scaler = cached_cosmo_scaler
                 cache_used = True
 
@@ -572,9 +719,10 @@ def build_embedding_dataloaders(
             print(" Train:", train_path)
             train_path, val_path, test_path = _get_embedding_cache_paths(base_cfg, wandb_run_name)
             os.makedirs(os.path.dirname(train_path), exist_ok=True)
-            _save_embedding_cache(train_path, train_z, train_theta, emb_scaler, cosmo_scaler)
-            _save_embedding_cache(val_path, val_z, val_theta, emb_scaler, cosmo_scaler)
-            _save_embedding_cache(test_path, test_z, test_theta, emb_scaler, cosmo_scaler)
+            _prov = _build_cache_provenance(base_cfg, source_checkpoints, models)
+            _save_embedding_cache(train_path, train_z, train_theta, emb_scaler, cosmo_scaler, _prov)
+            _save_embedding_cache(val_path, val_z, val_theta, emb_scaler, cosmo_scaler, _prov)
+            _save_embedding_cache(test_path, test_z, test_theta, emb_scaler, cosmo_scaler, _prov)
 
     # --- Per-source whitening / PCA truncation (research Finding C3 fix) ------------------------
     # Both the cache-hit and fresh-compute paths converge here with raw train_z/val_z/test_z, so a
@@ -825,6 +973,58 @@ def build_nde_on_embeddings(
 
     model.to(device)
     model.eval()
+    return model
+
+
+def load_embeddings_checkpoint(model, checkpoint_path, device, *, tag: str = ""):
+    """Restore a trained NDE-on-embeddings checkpoint, REPORTING what actually loaded.
+
+    ⚠️ EVAL-PATH GUARD. The two embeddings model builders used to do a bare
+    ``model.load_state_dict(ckpt["state_dict"], strict=False)`` and report NOTHING, so a
+    shape/key mismatch left the density head **randomly initialised** and the run produced
+    numbers instead of failing. That is invisible on the ``run_training: False`` path, which
+    never calls ``fit_nde_on_embeddings`` and therefore never runs guard (a) or guard (c).
+
+    Kept permissive where it is legitimately permissive (an IdentityEmbedding contributes no
+    parameters, and old checkpoints may carry extra bookkeeping keys), but HARD-FAILS on the two
+    signatures that make a downstream number meaningless:
+      * the checkpoint matched NOTHING, and
+      * any ``model.flow.*`` tensor missing, i.e. a partly/entirely random density head.
+    """
+    ckpt = torch.load(checkpoint_path, map_location=device)
+    state = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
+
+    target_keys = set(model.state_dict().keys())
+    incompatible = model.load_state_dict(state, strict=False)
+    missing = list(incompatible.missing_keys)
+    unexpected = list(incompatible.unexpected_keys)
+    matched = len(target_keys) - len(missing)
+
+    label = f"[emb-ckpt]{(' ' + tag) if tag else ''}"
+    print(
+        f"{label} {checkpoint_path} -> loaded {matched}/{len(target_keys)} keys "
+        f"(missing {len(missing)}, unexpected {len(unexpected)})",
+        flush=True,
+    )
+    if missing:
+        print(f"{label}   missing[:8]: {missing[:8]}", flush=True)
+    if unexpected:
+        print(f"{label}   unexpected[:8]: {unexpected[:8]}", flush=True)
+
+    if matched == 0:
+        raise RuntimeError(
+            f"{label} checkpoint '{checkpoint_path}' matched NONE of the model's "
+            f"{len(target_keys)} parameters — the model is entirely randomly initialised. "
+            "Refusing to evaluate."
+        )
+    missing_flow = [k for k in missing if k.startswith("model.flow.")]
+    if missing_flow:
+        raise RuntimeError(
+            f"{label} checkpoint '{checkpoint_path}' is missing {len(missing_flow)} "
+            f"'model.flow.*' tensors (e.g. {missing_flow[:5]}), so the density head is partly or "
+            "wholly RANDOM. Any log-prob / posterior from this model is meaningless. "
+            "Refusing to evaluate."
+        )
     return model
 
 

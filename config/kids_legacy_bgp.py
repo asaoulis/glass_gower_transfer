@@ -1424,6 +1424,7 @@ for _r in _K2_REPEATS:
     _pre_k2b = _nle_pretrain_bgp(_BGPK2_GLASS, _r, cosmo_param_names=list(_K2_THETA),
                                  preset_overrides=dict(_BG_BOXES_K2))
     _pre_k2b["whiten_embeddings"] = {"k": _K2_WHITEN_K5}
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows below.
     kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_r{_r}"] = _pre_k2b
 
     _ft_k2b = _nle_finetune(f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_r{_r}", ensemble_repeats=9,
@@ -1452,9 +1453,75 @@ for _r in _K2_REPEATS:
     # also re-roll the flow init (no torch seeding on the train path), destroying the paired
     # before/after. If you ever DO need to retrain these, fix the whitener resolution first.
     _ft_k2b["run_training"] = False
+    # INVALID pre-e890aec (parent-frame encoder) — superseded by the `_hf` rows below.
     kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgpk2_z16_k5_r{_r}_ens9_e150"] = \
         _nle_bake_repeat(_ft_k2b, _r)
 
+
+
+# =============================================================================================
+# ⭐ M13c-HF — kappa=2, k=5, **HEAD-FIXED** (`_hf`). THE VALID kappa=2 CHAIN. (user 2026-09-02)
+# ---------------------------------------------------------------------------------------------
+# WHY THESE EXIST AT ALL — see `.claude/runs/training-runs/production-training-runs/
+# BUG_kappa2_prior.md` §7.16. The embeddings path builds its SOURCE encoder through
+# `build_model` with `checkpoint_path` set at RUNTIME (`src/ml/utils.py:690`). The kappa=2 source
+# `kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc` carries `pretrained_embedding_ckpt_path`, so
+# BEFORE `e890aec` (2026-09-01 13:04) the restored kappa=2 checkpoint was immediately OVERWRITTEN
+# by its kappa=1 p15-cyclic PARENT — all 129 embedding_net tensors (measured). Every embedding,
+# the persisted whitener and all 9 Stage-B member flows of the pre-`_hf` chain therefore live in
+# the PARENT's coordinate frame: a self-consistent inference with the WRONG (kappa=1) encoder.
+# `e890aec` fixed the assembly, which is exactly why the 09-01 retrain died on
+# `[whiten][guard-c] ... 4820.500 nats` and the eval-only re-run returned test_log_prob 729.
+#
+# ⚠️ A NEW EXPERIMENT NAME IS MANDATORY — re-running the old names is UNSAFE on three counts:
+#   1. `fit_and_persist_whitener` is FIT-ONCE: the old run folder's `datasets/whitener.pt` (fit on
+#      parent-frame z) would be silently REUSED, not refit.
+#   2. `find_best_checkpoint` takes the min val over ALL files in the folder, so Stage-B could
+#      warm-start from a stale parent-frame Stage-A flow (this is the 1.396-vs-1.735 drift).
+#   3. `use_cache_if_exists` would find the old parent-frame `emb_{train,val,test}.pt`.
+# A distinct name gives a clean `checkpoints/<experiment_name>/` tree for all three.
+#
+# The dicts are otherwise IDENTICAL to the k5 rows above — same source encoder
+# (`kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc`, passed at the CLI), same GLASS/Gower stores,
+# same k=5 whitening, same theta (15-param) and CLIPPED kappa=2 boxes, same repeats, epochs and
+# guard threshold — built by calling the SAME factories, so they cannot drift apart.
+#
+# ⭐ Stage-B here is `run_training: True` (the factory default). The `run_training: False` on the
+# rows above was the EVAL-ONLY re-scoring of already-trained members; these members do not exist
+# yet and must actually be trained.
+#
+# LAUNCH (one per repeat, Stage-A first; Stage-B gated on its Stage-A finishing):
+#   embed --target glass_nle_pretrain_nla_m_bgpk2_z16_k5_hf_r{r} \
+#         --sources kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc --gpu v100 --skip-smoke
+# VERIFY in the Stage-A log: `[whiten] Fit whitener k=5` (NOT "Reusing"), EVR summing ~0.9974 with
+# NO zero eigenvalues, and — new at HEAD — `[build_model] checkpoint_path set -> SKIPPING the
+# pretrained-embedding warm start`, which is the positive confirmation that the TRUE kappa=2
+# encoder is in use.
+# =============================================================================================
+for _r in _K2_REPEATS:
+    _pre_hf = _nle_pretrain_bgp(_BGPK2_GLASS, _r, cosmo_param_names=list(_K2_THETA),
+                                preset_overrides=dict(_BG_BOXES_K2))
+    _pre_hf["whiten_embeddings"] = {"k": _K2_WHITEN_K5}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_hf_r{_r}"] = _pre_hf
+
+    # `pretrained_band_ckpt_path` (the Stage-A dir that supplies BOTH the warm-start flow and the
+    # whitener) is derived from this name by `_nle_finetune`, so pointing at the `_hf` Stage-A is
+    # the only change needed to keep the new chain self-contained.
+    _ft_hf = _nle_finetune(f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_hf_r{_r}", ensemble_repeats=9,
+                           whiten_k=_K2_WHITEN_K5, warmstart_max_gap_nats=22.0,
+                           gower_data=_BGPK2_GOWER, gower_eb=None,
+                           cosmo_param_names=list(_K2_THETA),
+                           preset_overrides=dict(_BG_BOXES_K2))
+    _ft_hf["max_trainval_cosmos"] = None
+    _ft_hf["train_frac"] = 0.8
+    _ft_hf["val_frac"] = 0.2
+    _ft_hf["test_frac"] = 0.0
+    _ft_hf["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    _ft_hf["epochs"] = 150
+    _ft_hf["project"] = _BGP_NLE_PROJECT
+    # NOTE: run_training deliberately LEFT AT THE DEFAULT (True) — these members must be trained.
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_hf, _r)
 
 
 # === M13d — kappa=2 p15 GOWER **NPE** ENSEMBLE FINETUNE (user 2026-09-02) ========================

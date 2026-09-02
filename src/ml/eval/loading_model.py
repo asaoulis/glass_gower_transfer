@@ -49,5 +49,22 @@ def get_best_checkpoint(experiment_path, match_string):
             best_checkpoints.append(best_checkpoint)
             val_losses.append(best_val_loss)
             
+    # ⚠️ SORT BY val_loss SO `[0]` IS THE GLOBAL BEST. Almost every caller takes `best[0]`, but
+    # `os.walk` order is filesystem-dependent, so with MORE THAN ONE run folder matching
+    # `match_string` the resolved checkpoint used to be arbitrary — and silently unstable between
+    # two runs of "the same" eval. (`_select_best_checkpoint_for_match` already worked around this
+    # with its own argmin; sorting here fixes it for every other caller too. Measured symptom: the
+    # kappa=2 k5 Stage-A parent resolved best val 1.396 on 2026-08-27 and 1.735 on 2026-09-01.)
+    if val_losses:
+        order = sorted(range(len(best_checkpoints)), key=lambda i: val_losses[i])
+        best_checkpoints = [best_checkpoints[i] for i in order]
+        val_losses = [val_losses[i] for i in order]
+        if len(best_checkpoints) > 1:
+            print(
+                f"[get_best_checkpoint] {len(best_checkpoints)} run folders matched "
+                f"'{match_string}'; using the global best (val={val_losses[0]}). "
+                f"Others: {list(zip(best_checkpoints[1:], val_losses[1:]))}"
+            )
+
     print("Best checkpoints found:", best_checkpoints)
     return best_checkpoints, val_losses

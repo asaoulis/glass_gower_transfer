@@ -89,16 +89,31 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
         target_device = self._resolve_device()
 
         all_log_probs = []
+        per_member = [[] for _ in self.members]
         for batch in self.test_dataloader:
             x, theta = batch
             x = _move_nested_to_device(x, target_device)
             theta = _move_nested_to_device(theta, target_device)
             batch_lps = []
-            for m in self.members:
+            for i, m in enumerate(self.members):
                 m.to(target_device)
                 m.eval()
-                batch_lps.append(m.forward(x, cond=theta))
+                lp = m.forward(x, cond=theta)
+                batch_lps.append(lp)
+                per_member[i].append(lp.reshape(-1).detach())
             all_log_probs.append(torch.stack(batch_lps, dim=0).mean(dim=0).reshape(-1))
+
+        # ⚠️ REPORT PER-MEMBER, not just the mean. This is a mean OF LOG-densities, so ONE
+        # degenerate member (mis-resolved checkpoint, wrong whitener, random head) drags the
+        # ensemble number arbitrarily far and is completely invisible in the aggregate. Measured
+        # instance: this metric read 1.99 on 2026-08-28 and 729.12 on a 2026-09-02 re-eval of the
+        # "same" row. Printing the spread makes that diagnosable from the log alone.
+        member_means = [float(-torch.cat(v, dim=0).mean().item()) for v in per_member]
+        print(
+            "[ensemble-nle] per-member mean -log p(z|theta): "
+            + ", ".join(f"m{i}={v:.4f}" for i, v in enumerate(member_means)),
+            flush=True,
+        )
 
         return float(-torch.cat(all_log_probs, dim=0).mean().item())
 
