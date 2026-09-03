@@ -212,7 +212,26 @@ def _inject_variate_set(arm_tag: str) -> List[Dict]:
     ]
 
 
+# --- BGP campaign, GOWER side (the production 9-param sc8a1 chain's variates) --------------------
+# In-dist = the S1 sc8a1 bake the Gower rows train on; the variates are their own sc8a1 bakes
+# (S2/S3 IA sub-variates on the 200 fixed-test ids, S4/S5 fixed-b_g probes on 40 of them, V2 VD).
+# All bakes carry BARE `E` groups (no --keep-variant-tag), matching the chain's eb_map_variant=None.
+# gb1p3's bake is OWED (raw store on gpu4 only) — the entry is kept so it fails soft (probe) and
+# is reported as missing rather than silently dropped.
+_BGP_EB_TAG = "sc8a1_fwhm4_lmin56_lcut1400"
+GOWER_BGP_VARIATES: List[Dict] = [
+    {"name": "gower_bgp_nla_m", "patterns": f"{_GPU5}/gower_bgp_nla_m_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": [], "in_distribution": True},
+    {"name": "gower_nla", "patterns": f"{_GPU5}/gower_bgp_nla_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": ["a_ia"]},
+    {"name": "gower_nla_z", "patterns": f"{_GPU5}/gower_bgp_nla_z_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": ["a_ia"]},
+    {"name": "gower_gb1p0", "patterns": f"{_GPU5}/gower_bgp_gb1p0_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
+    {"name": "gower_gb1p3", "patterns": f"{_GPU5}/gower_bgp_gb1p3_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
+    {"name": "gower_vd", "patterns": f"{_GPU5}/gower_bgp_nla_m_vd_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
+]
+
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
+    "gower_bgp": GOWER_BGP_VARIATES,
     "gower": DEFAULT_VARIATES,
     "glass_pretrain": GLASS_PRETRAIN_VARIATES,
     "gower_novd": NOVD_GOWER_VARIATES,
@@ -418,8 +437,38 @@ def build_variate_test_loader(
         filtered = capped
         test_ids = kept_ids
 
+    loader, inject_tf = _wrap_paths_as_loader(
+        filtered, nested_keys, cosmo_param_names, key_scalers, cosmo_scaler,
+        batch_size=batch_size, num_workers=num_workers, eb_noise_norm=eb_noise_norm, inject=inject,
+    )
+    meta = {
+        "n_test_files": len(filtered),
+        "n_test_cosmologies": len(test_ids),
+        "test_ids_from_fixed_lock": not used_fallback,
+        "test_paths": filtered,
+        "inject_transform": inject_tf,
+    }
+    return loader, meta
+
+
+def _wrap_paths_as_loader(
+    paths: Sequence[str],
+    nested_keys: Dict,
+    cosmo_param_names: Sequence[str],
+    key_scalers: Dict,
+    cosmo_scaler,
+    *,
+    batch_size: int = 64,
+    num_workers: int = 4,
+    eb_noise_norm: Optional[str] = None,
+    inject: Optional[Dict] = None,
+):
+    """Plain (no augmentation, no shuffle) loader over explicit file paths with the ORIGINAL
+    scalers injected — the shared tail of ``build_variate_test_loader``, also used by the
+    summary extraction to read the model's own train split without training-time augmentation.
+    Returns ``(loader, inject_transform_or_None)``."""
     ds = H5CosmoDataset(
-        filtered,
+        list(paths),
         nested_keys,
         list(cosmo_param_names),
         transform=None,
@@ -441,23 +490,49 @@ def build_variate_test_loader(
             chain.append(EBNoiseNormTransform(eb_noise_norm))
         chain.append(data_transform)
         data_transform = ChainedDataTransform(chain) if len(chain) > 1 else chain[0]
-    wrapped = TransformingDataset(
-        ds,
-        data_transform=data_transform,
-        cosmo_scaler=cosmo_scaler,
-    )
+    wrapped = TransformingDataset(ds, data_transform=data_transform, cosmo_scaler=cosmo_scaler)
     loader = torch.utils.data.DataLoader(
-        wrapped, batch_size=batch_size, shuffle=False,
-        num_workers=num_workers, pin_memory=False,
+        wrapped, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=False,
     )
-    meta = {
-        "n_test_files": len(filtered),
-        "n_test_cosmologies": len(test_ids),
-        "test_ids_from_fixed_lock": not used_fallback,
-        "test_paths": filtered,
-        "inject_transform": inject_tf,
-    }
-    return loader, meta
+    return loader, inject_tf
+
+
+def resolve_shared_pool(variates: List[Dict]):
+    """``test_id_source='shared'``: the sim_ids common to every OUT-of-distribution variate on disk."""
+    ood = [v for v in variates if not v.get("in_distribution")] or variates
+    per_variate_ids = []
+    for v in ood:
+        ids = {extract_cosmo_index(p) for p in collect_paths(v["patterns"])}
+        print(f"[misspec] shared-pool: {v['name']} has {len(ids)} cosmologies on disk", flush=True)
+        if not ids:
+            # An absent store (e.g. a bake that is still owed) must not empty the intersection
+            # for everyone else; that variate fails soft on its own later (probe).
+            print(f"[misspec] shared-pool: WARNING {v['name']} has NO files on disk — excluded from the pool", flush=True)
+            continue
+        per_variate_ids.append(ids)
+    shared_pool = set.intersection(*per_variate_ids) if per_variate_ids else set()
+    if not shared_pool:
+        raise RuntimeError(
+            "test_id_source='shared' but the out-of-distribution variates share no sim_ids: "
+            f"{[len(s) for s in per_variate_ids]}"
+        )
+    print(f"[misspec] shared-pool: {len(shared_pool)} cosmologies common to {[v['name'] for v in ood]}", flush=True)
+    return shared_pool
+
+
+def derive_test_id_pool(cfg, in_dist_test_loader, repeat_index):
+    """Variate test cosmologies: the lock file when the experiment pins one, else the experiment's
+    own held-out test cosmologies (identical across repeats — the test slice comes from the fixed
+    rng(42) shuffle before the per-repeat trainval reshuffle)."""
+    from .utils import _resolve_test_paths
+    lock_spec = getattr(cfg, "fixed_test_sim_ids", None)
+    if lock_spec:
+        return set(resolve_fixed_test_ids(lock_spec) or [])
+    held_out = _resolve_test_paths(in_dist_test_loader) or []
+    pool = {extract_cosmo_index(p) for p in held_out}
+    print(f"[misspec] repeat {repeat_index}: derived test-id pool from the training split "
+          f"({len(pool)} held-out cosmologies).", flush=True)
+    return pool
 
 
 def _compute_misspec_metrics(
@@ -617,21 +692,7 @@ def run_misspecification_eval(
     # strict held-out run, never as a replacement.
     shared_pool = None
     if test_id_source == "shared":
-        ood = [v for v in variates if not v.get("in_distribution")] or variates
-        per_variate_ids = []
-        for v in ood:
-            ids = {extract_cosmo_index(p) for p in collect_paths(v["patterns"])}
-            per_variate_ids.append(ids)
-            print(f"[misspec] shared-pool: {v['name']} has {len(ids)} cosmologies on disk",
-                  flush=True)
-        shared_pool = set.intersection(*per_variate_ids) if per_variate_ids else set()
-        if not shared_pool:
-            raise RuntimeError(
-                "test_id_source='shared' but the out-of-distribution variates share no sim_ids: "
-                f"{[len(s) for s in per_variate_ids]}"
-            )
-        print(f"[misspec] shared-pool: {len(shared_pool)} cosmologies common to "
-              f"{[v['name'] for v in ood]}", flush=True)
+        shared_pool = resolve_shared_pool(variates)
     elif test_id_source != "heldout":
         raise ValueError(f"test_id_source must be 'heldout' or 'shared', got {test_id_source!r}")
 
@@ -661,14 +722,7 @@ def run_misspecification_eval(
         # Test-id pool for the variates: the lock file when the experiment pins one, else the
         # experiment's own held-out test cosmologies (identical across repeats — the test slice
         # comes from the fixed rng(42) shuffle before the per-repeat trainval reshuffle).
-        lock_spec = getattr(cfg, "fixed_test_sim_ids", None)
-        if lock_spec:
-            test_id_pool = set(resolve_fixed_test_ids(lock_spec) or [])
-        else:
-            held_out = _resolve_test_paths(in_dist_test_loader) or []
-            test_id_pool = {extract_cosmo_index(p) for p in held_out}
-            print(f"[misspec] repeat {r}: derived test-id pool from the training split "
-                  f"({len(test_id_pool)} held-out cosmologies).", flush=True)
+        test_id_pool = derive_test_id_pool(cfg, in_dist_test_loader, r)
 
         if test_id_source == "shared":
             test_id_pool = shared_pool

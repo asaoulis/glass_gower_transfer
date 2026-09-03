@@ -195,7 +195,7 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
-    parser.add_argument("--mode", choices=["list", "misspec", "ebdiff"], default=None,
+    parser.add_argument("--mode", choices=["list", "misspec", "ebdiff", "summaries"], default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
                         help="list mode: experiment names (default: the DEFAULT_EXPERIMENTS list)")
@@ -216,12 +216,38 @@ def main(argv=None):
                              "(whole cosmologies, sorted by sim_id)")
     parser.add_argument("--eb-variant", default=None,
                         help="E/B group tag for --mode ebdiff (omit for bare-E pre-baked stores)")
-    parser.add_argument("--test-id-source", choices=["heldout", "shared"], default="heldout",
+    parser.add_argument("--test-id-source", choices=["heldout", "shared", "all"], default="heldout",
                         help="misspec mode: 'heldout' (default) evaluates each variate on the "
                              "model's held-out test cosmologies only; 'shared' evaluates EVERY "
                              "variate (reference included) on the cosmologies the OOD variates "
                              "have on disk — many more events, matched across variates, but no "
                              "held-out guarantee. Writes to misspec_shared/ so both can coexist.")
+    parser.add_argument("--variate-glob", nargs="+", default=None, metavar="NAME=GLOB",
+                        help="summaries mode: ad-hoc variate(s) as NAME=GLOB (e.g. a local store or a "
+                             "real-data file), used INSTEAD of --variates when given")
+    parser.add_argument("--max-train-files", type=int, default=20000,
+                        help="summaries mode: size of the random train-split subset encoded as the "
+                             "reference cloud (per repeat)")
+    parser.add_argument("--data-patterns", default=None,
+                        help="summaries mode: override the base experiment's data_patterns (LOCAL "
+                             "smoke/self-tests only — the split, scalers and train cloud follow it)")
+    parser.add_argument("--base-path", default=None,
+                        help="summaries mode: override config.base_path (LOCAL self-tests: a dir whose "
+                             "checkpoints/ holds the fetched ml-checkpoints tree)")
+    parser.add_argument("--data-store", default=None,
+                        help="summaries mode: like --data-patterns but a bare dataset DIR NAME under the "
+                             "gpu5 datasets root (cluster-safe: the gatekeeper forbids '/' and '*')")
+    parser.add_argument("--fixed-test-ids", default=None,
+                        help="summaries mode: override config.fixed_test_sim_ids (lock-file path) so a "
+                             "GLASS-trained encoder can be split like the Gower chain")
+    parser.add_argument("--max-trainval-cosmos", type=int, default=None,
+                        help="summaries mode: override config.max_trainval_cosmos (train-cloud size in "
+                             "cosmologies; checkpoint match string is NOT affected)")
+    parser.add_argument("--no-ood", action="store_true",
+                        help="summaries mode: only dump summaries, skip the in-job OOD scoring")
+    parser.add_argument("--ood-k", type=int, default=10, help="summaries mode: kNN k for the OOD scores")
+    parser.add_argument("--ood-n-perm", type=int, default=200,
+                        help="summaries mode: permutations for the MMD two-sample p-value")
     args = parser.parse_args(argv)
 
     mode = args.mode or DEFAULT_MODE
@@ -240,8 +266,45 @@ def main(argv=None):
             max_files=args.max_test_files or 120,
             out_root=out_root,
         )
+    elif mode == "summaries":
+        # Summary-space OOD diagnostic: dump the compressor's z for train / ID-heldout / each variate
+        # (per repeat, per ensemble member) and score them (src/ml/eval/ood.py). Cheap: one encoder
+        # forward per mock, no posterior sampling.
+        from src.ml.eval.summaries import run_summary_extraction
+
+        adhoc = None
+        if args.variate_glob:
+            adhoc = []
+            for spec in args.variate_glob:
+                name, _, glob_ = spec.partition("=")
+                if not name or not glob_:
+                    raise SystemExit(f"--variate-glob expects NAME=GLOB, got {spec!r}")
+                adhoc.append({"name": name, "patterns": glob_, "exclude_params": []})
+        data_patterns = args.data_patterns
+        if args.data_store:
+            from src.ml.eval.misspec import _GPU5
+            data_patterns = f"{_GPU5}/{args.data_store}/output_*.h5"
+        run_summary_extraction(
+            base_experiment=args.misspec_base,
+            repeat_indices=args.repeat_indices or (0,),
+            variate_set=args.variates,
+            variate_names=args.variate_names,
+            variates=adhoc,
+            max_test_files=args.max_test_files,
+            test_id_source=args.test_id_source,
+            max_train_files=args.max_train_files,
+            data_patterns_override=data_patterns,
+            run_ood=not args.no_ood,
+            ood_k=args.ood_k,
+            ood_n_perm=args.ood_n_perm,
+            base_path_override=args.base_path,
+            fixed_test_ids_override=args.fixed_test_ids,
+            max_trainval_cosmos_override=args.max_trainval_cosmos,
+        )
     elif mode == "misspec":
         from src.ml.eval.misspec import run_misspecification_eval
+        if args.test_id_source == "all":
+            raise SystemExit("--test-id-source all is only implemented for --mode summaries")
 
         run_misspecification_eval(
             base_experiment=args.misspec_base,
