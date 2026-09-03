@@ -509,7 +509,16 @@ class NFlowDistribution(Distribution):
         batch_flat = x.reshape(-1, self.dims)
         valid_mask = ((batch_flat >= 0.0) & (batch_flat <= 1.0)).all(dim=1)
         logp_flat = torch.full((batch_flat.shape[0],), float("-inf"), device=x.device)
-        logp_flat[valid_mask] = self.flow.log_prob(batch_flat[valid_mask])
+        # GUARD: nflows cannot evaluate an EMPTY batch -- a coupling transform does
+        # `transform_params.reshape(b, d, -1)` and with b=0 that raises
+        # "cannot reshape tensor of 0 elements into shape [0, 1, -1]". The vectorised slice
+        # sampler proposes in unconstrained space, so a call in which EVERY chain sits outside
+        # the scaled [0,1]^d box is rare but inevitable -- it killed the VD `_hf` r0 Stage-B job
+        # (1351808) in its MCMC eval after all 150 training epochs had completed.
+        # Those rows are already -inf by construction, so skipping the flow call changes no
+        # finite value on any existing path.
+        if valid_mask.any():
+            logp_flat[valid_mask] = self.flow.log_prob(batch_flat[valid_mask])
         logp = logp_flat.reshape(original_shape[:-1])
         return logp + self.log_det.to(x.device)
 
