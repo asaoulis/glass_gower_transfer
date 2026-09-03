@@ -1857,6 +1857,20 @@ for _tag, _glass, _gower, _theta, _box, _src in _HF_CHAINS:
         kids_legacy_bgp_experiments[_b_name] = _nle_bake_repeat(_b, _r)
         HF_RETRAIN_SOURCES[_b_name] = _src
 
+# --- one-wave MCMC sampling for the VD `_hf` Stage-B rows (2026-09-03, user-approved) -----------
+# The ensemble-NLE sampler runs `len(test_dataloader)` (= 63 here) batches through a joblib pool of
+# `num_jobs` workers, so wall time is ceil(n_batches / num_jobs) * batch_time. The sampler's own
+# default of 36 gives TWO waves; 63 workers on a 64-core CORES64 node gives ONE, roughly halving the
+# sampling phase (measured: ~14 h -> ~7 h for the 15-param arm, ~4.5 h -> ~2.2 h for the 8-param ones).
+# Applied ONLY to the VD rows, which have not run yet: the kappa=2 / nla / nla_z rows are already
+# scored (or in flight) at 36 workers, and their configs must keep describing what actually ran.
+# MUST be paired with `embed --cpu --partition CORES64 --ncpu 64` (and headroom RAM) — asking for 63
+# workers on a 40-core allocation would oversubscribe and be slower, not faster.
+for _r in _VARIATE_REPEATS:
+    _vd_b = kids_legacy_bgp_experiments.get(f"gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{_r}_ens9_e150")
+    if _vd_b is not None:
+        _vd_b["sampling_num_jobs"] = 63
+
 # kappa=2 k5 `_hf` (defined above) belongs to the same retrain campaign — register its source too.
 for _r in _K2_REPEATS:
     HF_RETRAIN_SOURCES[f"glass_nle_pretrain_nla_m_bgpk2_z16_k5_hf_r{_r}"] = \

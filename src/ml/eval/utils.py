@@ -346,6 +346,12 @@ def evaluate_best_checkpoint(
         preset_overrides=_config_preset_overrides(config),
     )
     sampling_kwargs["prior"] = our_prior
+    # Optional override for the MCMC sampling pool size. Left unset (None) the sampler keeps its
+    # own default (36 workers), so every existing caller and every previously-run config is
+    # unaffected. An explicit caller-supplied `num_jobs` still wins.
+    _sampling_num_jobs = getattr(config, "sampling_num_jobs", None)
+    if _sampling_num_jobs is not None and "num_jobs" not in sampling_kwargs:
+        sampling_kwargs["num_jobs"] = int(_sampling_num_jobs)
     # If ensemble evaluation is active, run a single ensemble evaluation for the
     # provided match_string (bound to repeat idx) and return early.
     if is_ensemble_eval_active(config) and getattr(config, "match_string", None):

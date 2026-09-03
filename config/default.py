@@ -145,6 +145,14 @@ def get_default_config():
     config.load_pretrained_flow = False
     config.run_training = True # for embedding eval pattern
     config.run_evaluation = True # embeddings: set False to skip post-training (MCMC) evaluation
+    # Worker count for the ensemble-NLE MCMC sampling pool. None => leave
+    # `generate_samples`' own default (36) untouched, i.e. no behaviour change.
+    # The sampler runs `len(test_dataloader)` batches through a joblib pool, so the wall time is
+    # ceil(n_batches / num_jobs) * batch_time. With the usual 63 test batches, 36 workers means TWO
+    # waves; setting this to >= n_batches on a node with that many cores collapses it to one wave
+    # and roughly halves the sampling time. Only raise it if the SLURM allocation really has the
+    # cores (and the RAM for that many worker processes).
+    config.sampling_num_jobs = None
 
     # Embeddings pipeline options
     # If False, do not normalise/standardise the precomputed embedding vectors
