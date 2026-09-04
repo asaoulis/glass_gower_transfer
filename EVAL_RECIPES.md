@@ -74,6 +74,41 @@ python .claude/runs/eval-and-viz/first-npe-misspecification/artifacts/plot_missp
     --out misspec_tarp_coverage.png
 ```
 
+## Summary-space OOD diagnostic — `--mode summaries` (added 2026-09-04)
+
+Dumps the compressor's summary vector `z` (the flow context) for the base model's TRAIN split
+(random subset), its held-out in-distribution TEST split and each variate's test set (original
+scalers injected, as in misspec mode), then scores every variate in summary space
+(`src/ml/eval/ood.py`: Mahalanobis, kNN and a θ-conditional residual kNN, each calibrated to an
+empirical p-value on the model's own held-out split; dataset-level AUROC / MMD permutation p /
+classifier two-sample test). One encoder forward per mock, no posterior sampling — minutes per
+repeat on l40s. Everything is PER MODEL (per repeat, per ensemble member): only p-values / AUROCs
+may be aggregated across models, never the raw summaries.
+
+```bash
+# GLASS b_g ladder, 5 foundation repeats, matched cosmologies:
+python .claude/cluster/run_remote.py eval --gpu l40s --args "--mode summaries \
+    --misspec-base kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1 --variates glass_bgp_sc8a1 \
+    --repeat-indices 0 1 2 3 4 --test-id-source shared --max-test-files 1500 --max-train-files 20000"
+# Gower variates through the FROZEN foundation encoder, split like the NLE Stage-B (300 train
+# cosmologies + the 200-id lock) so the train cloud / null are the Stage-B flow's:
+python .claude/cluster/run_remote.py eval --gpu l40s --args "--mode summaries \
+    --misspec-base kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1 --variates gower_bgp --repeat-indices 0 1 2 3 4 \
+    --data-store gower_bgp_nla_m_f16_sc8a1_fwhm4_lmin56_lcut1400 --fixed-test-ids gower_test_ids \
+    --max-trainval-cosmos 300 --max-test-files 1000 --max-train-files 20000"
+```
+
+Outputs: `checkpoints/<exp>/summaries[_shared|_all]/<variate>/summaries_<match>[_m<j>].npz`
+(+ `ood_<match>.json`, `ood_summary_<match>.json`); fetch with `fetch --exp <exp> --rel summaries`.
+Offline tabulation/figures: `.claude/runs/eval-and-viz/npe-nle-model-misspec/artifacts/join_ood_posterior.py`.
+
+⚠️ **Gatekeeper charset**: every `--args` token must match `[A-Za-z0-9][A-Za-z0-9_.-]*` or
+`--[a-z-]*` (≤ 32 tokens) — no `/`, `*` or `=`. So `--data-patterns GLOB`, `--variate-glob NAME=GLOB`
+and `--base-path DIR` are LOCAL-only; on the cluster use `--data-store <dir name under the gpu5
+datasets root>` and `--fixed-test-ids <bare lock name>` (resolved to `config/fixed_test_sets/<name>.json`).
+`--test-id-source all` (every on-disk cosmology of each variate) is the mode for a model that never
+trained on the variate's suite, and for a real-data file.
+
 ## CLI pass-through plumbing (for reference)
 
 The `eval-submit` arg pass-through (charset-validated tokens after `<mods>`) lives in
