@@ -883,6 +883,29 @@ kids_legacy_bgp_experiments[f"gower_npe_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT
         f"gower_npe_finetune_nla_m_bgp_z8_r{_ABLATION_REPEAT}_ens1")
 
 
+# --- P1: the PRODUCTION misspecification encoder pack — 5 single-model finetunes ----------------
+# Task `eval-and-viz/production-model-misspec` (user 2026-09-04). Five independently-seeded
+# single-model (`ensemble_repeats=1`) Gower NPE finetunes on the `nla_m` foundation, 300 train/val
+# cosmologies with the 200-id lock held out — the encoder pack the production misspec matrix and
+# the multi-encoder summary-space OOD metric are both built on.
+#
+# ⭐ A FRESH EXPERIMENT NAME, NOT `..._r{0..4}_ens1`, and both reasons are load-bearing:
+#   1. `find_best_checkpoint` takes the GLOBAL MIN val_log_prob over every `.ckpt` in a run dir, and
+#      the train path does no torch seeding — so re-running repeat 4 under the A1 name would drop a
+#      SECOND init's checkpoints into `finetune_ncosmo300_4/` beside A1's and silently resolve
+#      whichever happened to score better. A virgin `checkpoints/<exp>/` tree removes the hazard.
+#   2. A1 is the `--sources` encoder for the `_adapt` (A2) row below and must stay byte-stable.
+# ⭐ ONE name carrying ALL FIVE repeats (not five names): `misspec.py`/`summaries.py` take a single
+# `--misspec-base` and loop `--repeat-indices`, so this is what lets the in-job CROSS-REPEAT
+# disagreement (`misspec_repeat_disagreement_*`) fire — that KL is the x-axis of the money plots.
+# Built from `_npe_finetune_bgp()` like A1, so the `_RESNET_MAPKW` trap documented on M3 cannot
+# re-open, and `ensemble_repeats=1` keeps the run dirs the unambiguous `finetune_ncosmo300_{r}`.
+kids_legacy_bgp_experiments["gower_npe_finetune_nla_m_bgp_z8_ens1"] = \
+    _assert_final_summary_dim(
+        {**_npe_finetune_bgp(), "ensemble_repeats": 1, "repeat_indices": [0, 1, 2, 3, 4]}, 8,
+        "gower_npe_finetune_nla_m_bgp_z8_ens1")
+
+
 # --- A2: the same Stage-A flow, fine-tuned on the ADAPTED encoder's embeddings ------------------
 # Identical to M4b r4 in every field except `match_num_cosmo`; the source encoder is swapped at the
 # CLI:  embed --cpu --target gower_nle_finetune_nla_m_bgp_z8_r4_ens9_adapt \

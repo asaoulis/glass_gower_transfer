@@ -819,8 +819,15 @@ def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names)
     analysis actually consumes:
 
       mean, std, theta0, z  [N, D] float32   with  z = (theta0 - mean) / std
+      cov                   [N, D, D] float32  the full per-event sample covariance
       sim_ids, aug_ids, test_files [N]        (the pairing keys; cf. _save_posterior_samples)
       params [D]
+
+    ``cov`` is what a MULTIVARIATE residual statistic needs — e.g. the combined-figure
+    Mahalanobis distance of the truth under the 3-D {omega_m, sigma_8, w0} posterior, which the
+    diagonal ``std`` cannot give because those parameters are strongly correlated (measured
+    rho(omega_m, sigma_8) ~ -0.79 on this arm). At D=9 it costs ~0.3 MB per variate, so carrying it
+    here means the whole downstream analysis reads KB-scale npz instead of the multi-GB sample dump.
 
     ``z`` follows the sign convention of the existing misspec z-score tooling
     (``first-npe-misspecification/artifacts/misspec_zscores.py``): positive z = the truth sits
@@ -835,9 +842,14 @@ def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names)
         std = samp.std(axis=0)
         with np.errstate(divide="ignore", invalid="ignore"):
             z = (theta - mean) / std
+        # Full per-event covariance over the sample axis: samp is [S, N, D], so centring once and
+        # contracting over S gives [N, D, D] with the (S - 1) normalisation np.cov uses.
+        centred = samp - mean[None, :, :]
+        cov = np.einsum("sni,snj->nij", centred, centred) / max(samp.shape[0] - 1, 1)
         payload = {
             "mean": mean.astype(np.float32), "std": std.astype(np.float32),
             "theta0": theta.astype(np.float32), "z": z.astype(np.float32),
+            "cov": cov.astype(np.float32),
             "params": np.array(list(param_names)),
         }
         if test_paths is not None and len(test_paths) == theta.shape[0]:
