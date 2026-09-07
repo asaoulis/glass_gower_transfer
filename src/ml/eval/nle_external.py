@@ -379,9 +379,30 @@ def run_reproduction_check(
 
     report: Dict[str, object] = {"experiment": experiment, "repeat": repeat, "match": match}
 
-    # ---- the production test split, rebuilt exactly as the production eval rebuilt it ----------
+    # ---- resolve the SOURCE ENCODERS first ------------------------------------------------------
+    # The order is load-bearing, not cosmetic. `prepare_data_parameters` resolves the HDF5 nested
+    # keys from `cfg.dataset_quantities`, and for a Stage-B row those RAW-DATA quantities come from
+    # the SOURCE ENCODER -- the Stage-B config itself describes embeddings, not maps. Production
+    # does exactly this order (embeddings/train.py:308-340): load_pretrained_models ->
+    # cfg.dataset_quantities -> prepare_data_parameters. Calling it any earlier leaves
+    # dataset_quantities unset, and `dict(config.dataset_nested_keys)` then raises on the None
+    # default from config/default.py.
     cfg = build_cfg_from_experiment_dict(experiment, merged[experiment], n_cosmo=n_cosmo)
-    cfg.match_string = match
+    if source_experiments is None:
+        source_experiments = resolve_source_experiments(experiment)
+    from ..embeddings.embeddings_utils import load_pretrained_models
+    match_num_cosmo = getattr(cfg, "match_num_cosmo", False)
+    src_match = match if match_num_cosmo else "None_" + match.split("_")[1]
+    source_models, dataset_quantities, _ = load_pretrained_models(
+        list(source_experiments), cfg_overrides=None, repeat_idx=repeat, match_string=src_match,
+        per_source_match_strings=getattr(cfg, "source_match_strings", None),
+    )
+
+    # ---- the production test split, rebuilt exactly as the production eval rebuilt it ----------
+    # Mirrors embeddings/train.py's `cfg_0` field for field -- note `match_string` is the SOURCE
+    # match, not the Stage-B one -- so the scalers fitted here are the ones the run trained with.
+    cfg.dataset_quantities = dataset_quantities
+    cfg.match_string = str(src_match)
     cfg.test_shape_noise_idx = [0]          # what embeddings/train.py sets; filters 4 of 16 per cosmo
     cfg.split_seed = 42
     set_seed_for_repeat_and_ensemble(cfg, repeat_idx=repeat, ensemble_idx=0)
@@ -427,15 +448,7 @@ def run_reproduction_check(
         print(f"[repro] CHECK 1/2 SKIPPED: no production dump at {npz_path}", flush=True)
 
     # ---- CHECK 3: raw z vs the cached emb_test.pt ----------------------------------------------
-    if source_experiments is None:
-        source_experiments = resolve_source_experiments(experiment)
-    from ..embeddings.embeddings_utils import load_pretrained_models
-    match_num_cosmo = getattr(cfg, "match_num_cosmo", False)
-    src_match = match if match_num_cosmo else "None_" + match.split("_")[1]
-    source_models, dataset_quantities, _ = load_pretrained_models(
-        list(source_experiments), cfg_overrides=None, repeat_idx=repeat, match_string=src_match,
-    )
-    cfg.dataset_quantities = dataset_quantities
+    # (source_models / cfg.dataset_quantities were resolved above -- see the ordering note.)
 
     def _raw_z(key_scalers, cosmo_scaler):
         loader, _ds = _build_external_embedding_loader_for_cfg(
