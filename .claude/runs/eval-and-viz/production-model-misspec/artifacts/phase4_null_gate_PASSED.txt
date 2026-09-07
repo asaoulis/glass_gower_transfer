@@ -1,0 +1,64 @@
+=== SPLIT-HALF NULL SELF-CHECK ===
+    null fit on even sim_ids, scored on odd; 200 cluster draws per KS.
+    VERDICT: (a) mean_p over 60 random cosmology splits within one
+             per-split sd of 0.5; (b) cluster-KS D below 1.36/sqrt(n_cos).
+    Parity split + naive row-level D are printed as DIAGNOSTICS only.
+
+[r0] _idtest n=1590 / 199 cosmologies | parity halfA: 880 rows / 110 cos | train-idtest cosmology overlap=0 (clean)
+[r0]         knn: ICC=0.403 n_eff= 186.2 | (a) random-split mean_p=0.4954+-0.0293 |bias|=0.0046 vs tol=0.0293 ok | (b) D_med=0.0903 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r0]              [diagnostic, no pass/fail] parity split: mean_p=0.4729 (pct 23 of the random-split reference) reject_frac=0.025 (ref 0.111+-0.144)
+[r0]              [diagnostic] naive row-level D=0.0471 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r0]              [+control gower_nla] mean_p=0.065 D_med=0.7691 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+[r0]    cond_knn: ICC=0.658 n_eff= 127.0 | (a) random-split mean_p=0.5010+-0.0281 |bias|=0.0010 vs tol=0.0281 ok | (b) D_med=0.0839 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r0]              [diagnostic, no pass/fail] parity split: mean_p=0.4799 (pct 20 of the random-split reference) reject_frac=0.010 (ref 0.087+-0.137)
+[r0]              [diagnostic] naive row-level D=0.0470 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r0]              [+control gower_nla] mean_p=0.043 D_med=0.8137 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+
+[r1] _idtest n=1590 / 199 cosmologies | parity halfA: 880 rows / 110 cos | train-idtest cosmology overlap=0 (clean)
+[r1]         knn: ICC=0.504 n_eff= 157.1 | (a) random-split mean_p=0.5005+-0.0275 |bias|=0.0005 vs tol=0.0275 ok | (b) D_med=0.0811 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r1]              [diagnostic, no pass/fail] parity split: mean_p=0.4858 (pct 28 of the random-split reference) reject_frac=0.025 (ref 0.099+-0.118)
+[r1]              [diagnostic] naive row-level D=0.0507 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r1]              [+control gower_nla] mean_p=0.069 D_med=0.7632 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+[r1]    cond_knn: ICC=0.767 n_eff= 111.7 | (a) random-split mean_p=0.4997+-0.0355 |bias|=0.0003 vs tol=0.0355 ok | (b) D_med=0.1102 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r1]              [diagnostic, no pass/fail] parity split: mean_p=0.4581 (pct 12 of the random-split reference) reject_frac=0.170 (ref 0.146+-0.237)
+[r1]              [diagnostic] naive row-level D=0.0801 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r1]              [+control gower_nla] mean_p=0.041 D_med=0.8091 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+
+[r2] _idtest n=1590 / 199 cosmologies | parity halfA: 880 rows / 110 cos | train-idtest cosmology overlap=0 (clean)
+[r2]         knn: ICC=0.558 n_eff= 145.0 | (a) random-split mean_p=0.5028+-0.0223 |bias|=0.0028 vs tol=0.0223 ok | (b) D_med=0.1014 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r2]              [diagnostic, no pass/fail] parity split: mean_p=0.4662 (pct 7 of the random-split reference) reject_frac=0.135 (ref 0.079+-0.074)
+[r2]              [diagnostic] naive row-level D=0.0659 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r2]              [+control gower_nla] mean_p=0.062 D_med=0.7795 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+[r2]    cond_knn: ICC=0.715 n_eff= 118.6 | (a) random-split mean_p=0.5002+-0.0299 |bias|=0.0002 vs tol=0.0299 ok | (b) D_med=0.1050 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r2]              [diagnostic, no pass/fail] parity split: mean_p=0.4610 (pct 8 of the random-split reference) reject_frac=0.165 (ref 0.106+-0.171)
+[r2]              [diagnostic] naive row-level D=0.0767 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r2]              [+control gower_nla] mean_p=0.039 D_med=0.8123 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+
+[r3] _idtest n=1590 / 199 cosmologies | parity halfA: 880 rows / 110 cos | train-idtest cosmology overlap=0 (clean)
+[r3]         knn: ICC=0.326 n_eff= 216.6 | (a) random-split mean_p=0.4984+-0.0303 |bias|=0.0016 vs tol=0.0303 ok | (b) D_med=0.1065 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r3]              [diagnostic, no pass/fail] parity split: mean_p=0.4616 (pct 10 of the random-split reference) reject_frac=0.140 (ref 0.116+-0.159)
+[r3]              [diagnostic] naive row-level D=0.0704 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r3]              [+control gower_nla] mean_p=0.064 D_med=0.7838 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+[r3]    cond_knn: ICC=0.671 n_eff= 124.9 | (a) random-split mean_p=0.4967+-0.0313 |bias|=0.0033 vs tol=0.0313 ok | (b) D_med=0.0999 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r3]              [diagnostic, no pass/fail] parity split: mean_p=0.4678 (pct 17 of the random-split reference) reject_frac=0.110 (ref 0.109+-0.171)
+[r3]              [diagnostic] naive row-level D=0.0595 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r3]              [+control gower_nla] mean_p=0.039 D_med=0.8216 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+
+[r4] _idtest n=1590 / 199 cosmologies | parity halfA: 880 rows / 110 cos | train-idtest cosmology overlap=0 (clean)
+[r4]         knn: ICC=0.500 n_eff= 158.2 | (a) random-split mean_p=0.5017+-0.0262 |bias|=0.0017 vs tol=0.0262 ok | (b) D_med=0.0887 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r4]              [diagnostic, no pass/fail] parity split: mean_p=0.4710 (pct 10 of the random-split reference) reject_frac=0.030 (ref 0.085+-0.115)
+[r4]              [diagnostic] naive row-level D=0.0584 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r4]              [+control gower_nla] mean_p=0.062 D_med=0.7897 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+[r4]    cond_knn: ICC=0.699 n_eff= 120.8 | (a) random-split mean_p=0.5063+-0.0286 |bias|=0.0063 vs tol=0.0286 ok | (b) D_med=0.1011 vs crit=0.144 (H0 median 0.088) ok  PASS
+[r4]              [diagnostic, no pass/fail] parity split: mean_p=0.4628 (pct 3 of the random-split reference) reject_frac=0.090 (ref 0.085+-0.143)
+[r4]              [diagnostic] naive row-level D=0.0724 on n=710 rows -- ANTICONSERVATIVE: crit~0.051 vs honest ~0.144 at n_eff=89 cosmologies (0.4x too strict)
+[r4]              [+control gower_nla] mean_p=0.042 D_med=0.8053 vs crit=0.144 reject_frac=1.000 (n=89 cos)  POWER OK
+
+=== VERDICT ===
+        knn: 5/5 repeats calibrated
+   cond_knn: 5/5 repeats calibrated
+  --- positive control (D must EXCEED the critical value; a pass here means the test has no power) ---
+        knn: 5/5 repeats rejected the control
+   cond_knn: 5/5 repeats rejected the control
+
+GATE PASSED - the null is calibrated and the test has power; Phase 6 may proceed.
