@@ -1,5 +1,6 @@
 import numpy as np
 import healpy as hp
+import re
 import h5py
 from pathlib import Path
 from collections import deque
@@ -249,10 +250,22 @@ def parse_args():
                              "and --no-augmentation, which already force outer_reps=1.")
 
     parser.add_argument("--gower-sim-set", type=str, default="full",
-                        choices=["full", "fixed_test"],
-                        help="gower_street sim_id selection: 'full' = np.arange(193,782) (589 ids); "
-                             "'fixed_test' = the committed 200-id lock-file "
-                             "config/fixed_test_sets/gower_test_ids.json. Ignored for glass/smoke.")
+                        help="gower_street sim_id SELECTION. Either 'full' (= np.arange(193,782), "
+                             "589 ids) or the BASENAME of a lock-file under "
+                             "config/fixed_test_sets/ (e.g. 'gower_test_ids', "
+                             "'gower_test_ids_100', 'gower_near_fiducial_10'). The lock's own "
+                             "'selection' / 'selection_params' fields document how its ids were "
+                             "chosen, so the criterion lives with the ids rather than in this "
+                             "file. 'fixed_test' is a legacy alias for 'gower_test_ids'. "
+                             "`--num-sims` beyond the lock size tops up from the complement "
+                             "(seeded, stable across resumes). Ignored for glass/smoke.")
+
+    parser.add_argument("--ia-prior-set", type=str, default="default",
+                        choices=sorted(IA_PRIOR_OVERRIDES),
+                        help="Named override set applied on top of IA_PRIOR_SPECS (and the matching "
+                             "NUISANCE_PINS). 'default' reproduces the historical priors exactly; "
+                             "'matched' pins the IA parameters so the effective alignment amplitude "
+                             "is identical across IA models — see IA_PRIOR_OVERRIDES.")
 
     return parser.parse_args()
 
@@ -432,6 +445,63 @@ IA_PRIOR_SPECS = {
     'nla_z': {'a_ia': ('uniform', -6.0, 6.0), 'b_z': ('normal', -3.7, 4.3)},
     'tatt':  {'a_ia': ('uniform', -6.0, 6.0), 'b_src': ('uniform', -0.5, 1.5)},
 }
+
+# --- Named IA prior OVERRIDE sets -------------------------------------------------------------
+# Applied per-parameter ON TOP of IA_PRIOR_SPECS by `resolve_ia_prior_spec`, selected with
+# `--ia-prior-set`. An override set is deliberately a partial dict: it states only the parameters it
+# changes, so IA_PRIOR_SPECS stays the single definition of each model's parameter LIST and the two
+# cannot drift apart.
+#
+# A degenerate uniform ('uniform', v, v) is the ONLY pin mechanism used here: `sample_ia_params`
+# (src/cosmology/sim_utils.py — PROTECTED) understands 'uniform' and 'normal' only, and
+# `rng.uniform(v, v)` returns v exactly while STILL CONSUMING one draw, so the backend RNG stream
+# stays byte-aligned with the un-pinned sets and `--rng-seed` pairing across prior sets holds.
+#
+# 'matched' — the matched-nuisance suite (task eval-and-viz/matched-nuisance-variate-corners).
+# Values from `scripts/match_ia_amplitudes.py`, which pins each IA model so the n(z)-weighted
+# EFFECTIVE alignment amplitude is IDENTICAL across nla_m / nla / nla_z. The anchor is the nla_m
+# forward-prior midpoint (a_ia 5.74, b_ia 0.44), giving Abar = +0.435641 (n_arcmin2-weighted; the
+# unweighted reduction gives +0.436899, a 0.3 % difference). Per-bin A_eff at that matched mean:
+#     nla_m  [+0.138 +0.399 +0.462 +0.777 +0.716 +0.129]   (f_red- and mass-weighted)
+#     nla    [+0.436 ...............................]      (flat by construction)
+#     nla_z  [-0.236 +0.138 +0.354 +0.708 +0.909 +1.154]   (redshift tilt at b_z = -3.7)
+# i.e. the MEAN is matched, not the per-bin profile — that residual shape difference IS the model
+# difference under test, and must be described as such.
+# `b_z` is fixed at the Wright et al. prior mean (-3.7) rather than 0: b_z = 0 also satisfies the
+# constraint but collapses NLA-z exactly onto plain NLA, destroying the variate.
+IA_PRIOR_OVERRIDES = {
+    'default': {},
+    'matched': {
+        'nla_m': {'a_ia': ('uniform', 5.740000, 5.740000),
+                  'b_ia': ('uniform', 0.440000, 0.440000)},
+        'nla':   {'a_ia': ('uniform', 0.435641, 0.435641)},
+        'nla_z': {'a_ia': ('uniform', -0.272397, -0.272397),
+                  'b_z':  ('uniform', -3.700000, -3.700000)},
+    },
+}
+
+# Non-IA-prior nuisances pinned by a prior set. `log10_M_eff` is NOT sampled by
+# `sample_ia_params` — it is drawn per (sim, outer, rot) block from the massdep MVN — so it is
+# pinned draw-then-overwrite at the draw site, which keeps the per-block RNG_STREAM_* contract
+# stable so a future `--rng-seed` pairing against a DEFAULT-set store still holds.
+NUISANCE_PINS = {
+    'default': {},
+    'matched': {'log10_M_eff': 'prior_mean'},   # multiplies the nla_m IA amplitude
+}
+
+
+def resolve_ia_prior_spec(ia_model, prior_set='default'):
+    """-> the forward-sampling prior spec for `ia_model` under the named override set."""
+    if prior_set not in IA_PRIOR_OVERRIDES:
+        raise ValueError(f"unknown --ia-prior-set {prior_set!r}; "
+                         f"choose from {sorted(IA_PRIOR_OVERRIDES)}")
+    base = IA_PRIOR_SPECS[ia_model]
+    override = IA_PRIOR_OVERRIDES[prior_set].get(ia_model, {})
+    unknown = set(override) - set(base)
+    if unknown:
+        raise ValueError(f"--ia-prior-set {prior_set!r} overrides parameters {sorted(unknown)} that "
+                         f"IA model {ia_model!r} does not take ({sorted(base)})")
+    return {**base, **override}
 
 
 SIM_TYPE_CONFIGS = {
@@ -630,12 +700,22 @@ if __name__ == "__main__":
 
         sim_samples = SIM_TYPE_CONFIGS[args.simulator_type]["get_sim_samples"]()
 
-        if args.simulator_type == "gower_street" and args.gower_sim_set == "fixed_test":
-            # Reduced Gower suite: use exactly the committed 200-id fixed test set instead of the
-            # full np.arange(193,782). Reads the repo lock-file (single source of truth; synced to
-            # the cluster checkout). Lazy import so the glass/smoke paths don't need the ml stack.
+        if args.simulator_type == "gower_street" and args.gower_sim_set != "full":
+            # Reduced Gower suite: use exactly the ids in a committed lock-file instead of the full
+            # np.arange(193,782). The flag carries the lock BASENAME, so adding a new selection
+            # criterion means adding a lock file (whose own `selection`/`selection_params` document
+            # it) — not another enum branch here. Lazy import so glass/smoke don't need the ml stack.
             from src.ml.data.fixed_test_set import load_fixed_test_ids_ordered
-            json_path = Path(__file__).resolve().parent / "config" / "fixed_test_sets" / "gower_test_ids.json"
+            lock_name = ("gower_test_ids" if args.gower_sim_set == "fixed_test"  # legacy alias
+                         else args.gower_sim_set)
+            if not re.fullmatch(r"gower_[A-Za-z0-9_]+", lock_name):
+                raise ValueError(f"--gower-sim-set {args.gower_sim_set!r}: expected 'full', "
+                                 f"'fixed_test', or a 'gower_*' lock basename")
+            json_path = (Path(__file__).resolve().parent / "config" / "fixed_test_sets"
+                         / f"{lock_name}.json")
+            if not json_path.exists():
+                raise FileNotFoundError(f"--gower-sim-set {args.gower_sim_set!r}: no lock file at "
+                                        f"{json_path}")
             # Order-preserving load: the lock-file stores the 200 ids in a maximally-separated
             # (farthest-point) order so a --num-sims N prefix stays well-spread across the param
             # space (sorting would cluster the prefix at the low sim_ids). The full-set gower runs
@@ -644,7 +724,7 @@ if __name__ == "__main__":
             full_gower_ids = SIM_TYPE_CONFIGS["gower_street"]["get_sim_samples"]()
             sim_samples = gower_fixed_test_with_topup(fixed_ids, args.num_sims, full_gower_ids)
             n_extra = len(sim_samples) - len(fixed_ids)
-            print(f"[rank 0] --gower-sim-set fixed_test: {len(fixed_ids)} fixed sim_ids from "
+            print(f"[rank 0] --gower-sim-set {args.gower_sim_set}: {len(fixed_ids)} sim_ids from "
                   f"{json_path.name} (min {min(fixed_ids)}, max {max(fixed_ids)}, first {fixed_ids[0]})"
                   + (f" + {n_extra} random top-up (seed {GOWER_TOPUP_SEED}) = {len(sim_samples)} total"
                      if n_extra > 0 else "."))
@@ -667,7 +747,12 @@ if __name__ == "__main__":
     SIMULATOR_TYPE = args.simulator_type
     SYSTEMATICS_MODEL = resolve_systematics_model(args)
     IA_MODEL = args.ia_model
-    ia_prior_spec = IA_PRIOR_SPECS[IA_MODEL]
+    IA_PRIOR_SET = args.ia_prior_set
+    ia_prior_spec = resolve_ia_prior_spec(IA_MODEL, IA_PRIOR_SET)
+    nuisance_pins = NUISANCE_PINS[IA_PRIOR_SET]
+    if IA_PRIOR_SET != 'default':
+        print(f"[rank {rank}] --ia-prior-set {IA_PRIOR_SET}: ia_prior_spec={ia_prior_spec} "
+              f"nuisance_pins={nuisance_pins}", flush=True)
     NO_ROTATIONS = args.no_rotations
     NO_AUGMENTATION = args.no_augmentation
     OVERWRITE = args.overwrite  # OFF (default) = resume: skip complete sims/blocks (see loop below)
@@ -925,6 +1010,11 @@ if __name__ == "__main__":
                               f"fixed-RNG seed={RNG_SEED} (streams split: sample/backend/postproc)",
                               flush=True)
                     log10_M_eff = rng.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
+                    if nuisance_pins.get('log10_M_eff') == 'prior_mean':
+                        # DRAW-then-overwrite, deliberately: the draw above is kept so this
+                        # block's RNG_STREAM_SAMPLE stays byte-aligned with an un-pinned run,
+                        # which is what makes --rng-seed pairing across prior sets valid.
+                        log10_M_eff = np.asarray(log10_M_eff_means, dtype=float).copy()
                     if USE_KIDS_MASK:
                         mask = load_kids_mask(data_dir).copy()
                         if SMOKE and hp.get_nside(mask) != nside:

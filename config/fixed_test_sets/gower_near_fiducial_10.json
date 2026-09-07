@@ -1,0 +1,31 @@
+{
+  "min_id": 251,
+  "max_id": 452,
+  "selection": "near_fiducial",
+  "selection_params": {
+    "pool": "config/fixed_test_sets/gower_test_ids_100.json",
+    "pool_rationale": "subset of the 200-id lock; held out by the nla_m flagship AND locked into test by every _hf variate arm, so no arm trained on these",
+    "w_filter": "abs(w + 1) <= 0.10",
+    "rank_metric": "sqrt(((Omega_m-0.315)/0.05)^2 + ((sigma_8-0.811)/0.06)^2)",
+    "reference": "Planck 2018 TT,TE,EE+lowE+lensing central values",
+    "unconstrained": "h, n_s, m_nu, Omega_b h^2 are whatever the fixed N-body suite has at these ids; each mock carries its own theta0"
+  },
+  "order": "rank_by_metric_ascending",
+  "source_csv": "kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv",
+  "n_target": 10,
+  "n_selected": 10,
+  "purpose": "The near-fiducial cosmologies for the matched-nuisance variate comparison (eval-and-viz/matched-nuisance-variate-corners). 16 mocks per cosmology per arm.",
+  "generated_by": "scripts/select_near_fiducial_gower.py",
+  "sim_ids": [
+    448,
+    395,
+    312,
+    307,
+    452,
+    284,
+    316,
+    251,
+    444,
+    322
+  ]
+}

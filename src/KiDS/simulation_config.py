@@ -30,6 +30,13 @@ GALAXY_BIAS_PRIORS = {
 	# Clip interaction is mild here — max 2.18 % of draws reach GALAXY_BIAS_CLIP (vs 10.38 % at
 	# kappa=3, which is why kappa=3 was considered and REJECTED; kappa=1 clips 0.00 %).
 	"flamingo_pt_diag_k2": {"kappa": 2.0},
+	# kappa=0 -- b_g PINNED at the Flamingo per-bin MEANS, no scatter. `rng.normal(means, 0)`
+	# returns the means exactly and the +-3 kappa sigma truncation / GALAXY_BIAS_CLIP are both
+	# no-ops, while the draw is still made so the RNG stream stays byte-aligned with the scattered
+	# presets. Used by the matched-nuisance suite, where b_g must not vary between arms.
+	# Named `_mean` (not `_fixed`) to avoid colliding with the `--galaxy-bias` fixed-SCALAR override,
+	# which the gatekeeper already treats as mutually exclusive with a prior preset.
+	"flamingo_pt_diag_mean": {"kappa": 0.0},
 }
 GALAXY_BIAS_CLIP = (0.3, 2.2)
 
