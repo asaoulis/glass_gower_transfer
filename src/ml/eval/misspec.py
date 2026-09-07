@@ -227,6 +227,13 @@ GOWER_BGP_VARIATES: List[Dict] = [
     {"name": "gower_gb1p0", "patterns": f"{_GPU5}/gower_bgp_gb1p0_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
     {"name": "gower_gb1p3", "patterns": f"{_GPU5}/gower_bgp_gb1p3_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
     {"name": "gower_vd", "patterns": f"{_GPU5}/gower_bgp_nla_m_vd_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
+    # kappa=2 galaxy-bias prior: same Flamingo per-bin MEANS as the kappa=1 training store but
+    # DOUBLE the sigmas (truncated at +-3*kappa*sigma), so a large fraction of its events fall
+    # outside the training support in the outer tomographic bins. Unlike the two fixed-b_g
+    # variates -- which are single points, one of them entirely inside the training prior --
+    # this store spans a CONTINUOUS range of b_g offsets over the full ~199 test cosmologies
+    # (15920 files), giving the b_g axis the same severity-sweep the IA axis already has.
+    {"name": "gower_gbk2", "patterns": f"{_GPU5}/gower_bgpk2_nla_m_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
 ]
 
 

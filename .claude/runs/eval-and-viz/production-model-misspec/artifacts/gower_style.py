@@ -26,6 +26,7 @@ COLORS = {
     "gower_vd":        "#009E73",   # green
     "gower_gb1p0":     "#0072B2",   # blue
     "gower_gb1p3":     "#CC79A7",   # purple
+    "gower_gbk2":      "#56B4E9",   # sky blue -- b_g family, wider prior
     # GLASS-side names, so the same module drives the validation figures built on the
     # local sc8a1 ladder (identical schema, different variate names).
     "glass_bgp_sc8a1": "black",
@@ -43,6 +44,7 @@ LABELS = {
     "gower_vd":        "variable depth",
     "gower_gb1p0":     r"$b_g = 1.0$ fixed",
     "gower_gb1p3":     r"$b_g = 1.3$ fixed",
+    "gower_gbk2":      r"$b_g$ prior $\kappa=2$",
     "glass_bgp_sc8a1": "in-distribution",
     "glass_gb0p7":     r"$b_g = 0.7$",
     "glass_gb1p0":     r"$b_g = 1.0$",
@@ -55,6 +57,7 @@ ORDER = [
     "gower_bgp_nla_m",
     "gower_gb1p0",
     "gower_gb1p3",
+    "gower_gbk2",
     "gower_vd",
     "gower_nla",
     "gower_nla_z",
