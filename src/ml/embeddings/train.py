@@ -340,16 +340,59 @@ def load_embedding_model_with_dataloader(
             scalers, _tr, _va, _te = prepare_data_parameters(cfg_0)
             del _tr, _va, _te
 
-            ext_loader, ext_raw_dataset = _build_external_embedding_loader_for_cfg(
-                cfg_0, source_models, external_paths,
-                scalers.get("data") if isinstance(scalers, dict) else scalers,
-                scalers.get("cosmo") if isinstance(scalers, dict) else None,
-                whiten_cfg=whiten_cfg,
-                pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
-                repeat_match=whiten_repeat_match,
-                batch_size=external_batch_size,
-            )
-            member_test_loaders = [ext_loader] * n_ens
+            refit_key = scalers.get("data") if isinstance(scalers, dict) else scalers
+            refit_cosmo = scalers.get("cosmo") if isinstance(scalers, dict) else None
+
+            # PER-MEMBER input frames. Each ensemble member was fitted on its OWN stochastic
+            # 1000-file subsample, so the nine members consumed nine DIFFERENT frames -- measured
+            # straight from their caches (z: ens0-ens1 1.205e-2, ens1-ens2 1.102e-2, while theta
+            # is identical at 0.000e+00). Scoring all nine through one frame is therefore ~1e-2
+            # off-frame for eight of them. Where a member's recovered frame has been persisted
+            # (scalers.pt, written by eval --mode recover-scalers), load and use it.
+            #
+            # Falls back to the single shared refit when nothing is persisted, so existing callers
+            # are unaffected; identical frames still share ONE loader, so the common case costs
+            # exactly one embedding pass as before.
+            import glob as _glob
+            import os
+            from ..data.scaling import load_scalers as _load_scalers
+
+            member_frames, n_persisted = [], 0
+            for j in range(n_ens):
+                mk, mc = refit_key, refit_cosmo
+                hits = _glob.glob(os.path.join(
+                    cfg.base_path, "checkpoints", experiment_name,
+                    f"*{match_string}*_ens{j}_*", "datasets", "scalers.pt"))
+                if hits:
+                    try:
+                        mk_p, mc_p, prov = _load_scalers(hits[0])
+                        mk, mc, n_persisted = mk_p, (mc_p or refit_cosmo), n_persisted + 1
+                        print(f"[nle-external] member {j}: persisted frame "
+                              f"({prov.get('method', '?')}, z_dev="
+                              f"{prov.get('z_dev_median_after', '?')})", flush=True)
+                    except Exception as e:                      # never silently score off-frame
+                        raise RuntimeError(
+                            f"member {j}: found {hits[0]} but could not load it ({e}). Refusing to "
+                            f"fall back to a refit frame, which would be ~1e-2 wrong."
+                        )
+                member_frames.append((mk, mc))
+            print(f"[nle-external] {n_persisted}/{n_ens} members using a persisted frame", flush=True)
+
+            loaders_by_frame, member_test_loaders, ext_raw_dataset = {}, [], None
+            for mk, mc in member_frames:
+                fid = id(mk)
+                if fid not in loaders_by_frame:
+                    loaders_by_frame[fid] = _build_external_embedding_loader_for_cfg(
+                        cfg_0, source_models, external_paths, mk, mc,
+                        whiten_cfg=whiten_cfg,
+                        pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
+                        repeat_match=whiten_repeat_match,
+                        batch_size=external_batch_size,
+                    )
+                ldr, raw = loaders_by_frame[fid]
+                member_test_loaders.append(ldr)
+                ext_raw_dataset = ext_raw_dataset or raw
+            ext_loader = member_test_loaders[0]
             model = build_ensemble_model_from_checkpoints(
                 cfg, test_loader=None, match_string=str(match_string),
                 member_test_loaders=member_test_loaders,

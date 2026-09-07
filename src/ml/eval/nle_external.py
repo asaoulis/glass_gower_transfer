@@ -634,6 +634,40 @@ def run_reproduction_check(
         report["z_check"] = "no-cache"
         print("[repro] CHECK 3 SKIPPED: no emb_test.pt found for this run", flush=True)
 
+    # ---- CHECK 4: the RECOVERED frame, if one has been persisted --------------------------------
+    # The generalisation test for scaler recovery. The fit only ever saw a few hundred events; this
+    # scores the recovered frame over the FULL split, so a frame that merely memorised its fitting
+    # subset shows up here as a deviation no better than the refit's.
+    if cache_hits:
+        sc_path = os.path.join(os.path.dirname(cache_hits[0]), "scalers.pt")
+        if os.path.exists(sc_path):
+            from ..data.scaling import load_scalers
+            rec_keys, rec_cosmo, rec_prov = load_scalers(sc_path)
+            z_rec, _th_rec = _raw_z(rec_keys, rec_cosmo or scalers_a["cosmo"])
+            if z_cached is not None and z_cached.shape == z_rec.shape:
+                dvr = ((z_rec - z_cached).abs() / sd)
+                report["z_dev_median_recovered"] = float(dvr.median())
+                report["z_dev_max_recovered"] = float(dvr.max())
+                report["recovered_provenance"] = {k: rec_prov.get(k)
+                                                  for k in ("method", "n_events", "z_dev_median_after")}
+                # Read the comparison numbers from the report, not from CHECK 3's locals:
+                # `dev`/`floor_med` only exist on that check's success branch.
+                refit_med = report.get("z_dev_median")
+                fl = report.get("refit_floor_median")
+                gain = (float(refit_med) / max(float(dvr.median()), 1e-30)) if refit_med else float("nan")
+                report["recovered_gain_vs_refit"] = gain
+                print(f"[repro] CHECK 4 RECOVERED frame over all {z_rec.shape[0]} events: "
+                      f"median |dz|/sd = {dvr.median():.3e} (max {dvr.max():.3e}) vs refit "
+                      f"{refit_med if refit_med is None else format(refit_med, '.3e')} -> "
+                      f"{gain:.0f}x closer, floor "
+                      f"{fl if fl is None else format(fl, '.3e')}", flush=True)
+            else:
+                print("[repro] CHECK 4 inconclusive: recovered-z shape mismatch", flush=True)
+        else:
+            report["z_dev_median_recovered"] = None
+            print(f"[repro] CHECK 4 SKIPPED: no persisted scalers.pt beside the cache "
+                  f"(run eval --mode recover-scalers first)", flush=True)
+
     print("[repro] REPORT " + json.dumps(_jsonable(report)), flush=True)
     return report
 
