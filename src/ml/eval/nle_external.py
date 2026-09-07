@@ -342,14 +342,20 @@ def run_reproduction_check(
 
     Three checks, cheapest first, no sampling:
 
-      1. **File-set equality** vs the production `ensemble_posterior_samples_<match>.npz`. This is
-         the one that catches a split/filter mistake, which is the failure that can silently change
-         WHICH events are scored.
-      2. **Row-wise `theta0s` / `sim_ids` / `aug_ids`** after aligning on basename. Order is NOT
-         required to match: production order comes from `split_by_cosmology`, this path preserves
-         the given path order.
-      3. **Raw `z` vs the run's cached `emb_test.pt`**, which is the actual embedding the trained
-         flow consumed.
+      1. **File-set equality** vs the production `ensemble_posterior_samples_<match>.npz` — plus a
+         row-count cross-check. ⚠️ Usually **UNAVAILABLE**: those dumps record only
+         ('samples', 'theta0s'), and the cached `emb_test.pt` serialises no paths either, so there
+         is nothing to compare basenames against. It is reported as `unavailable` rather than
+         skipped in silence, and CHECK 2 carries the weight instead.
+      2. ⭐ **EXACT split reproduction via `theta`**, against the run's cached `emb_test.pt`. This
+         is the load-bearing check. `theta` is read straight from the HDF5 files and scaled by the
+         DETERMINISTIC preset min/max cosmo scaler — no stochastic subsample anywhere on that path
+         — so rebuilding the same events in the same order must match bit for bit. A wrong split, a
+         wrong shape-noise filter, or a wrong ordering all fail here, and it runs before the
+         expensive second embedding pass. This tests exactly what CHECK 1 was specified to test,
+         but by value rather than by name, and without a tolerance.
+      3. **Raw `z` vs the same cached `emb_test.pt`**, which is the actual embedding the trained
+         flow consumed. Unlike 2 this CANNOT be exact — see below.
 
     ⚠️ Check 3 cannot be exact. `_fit_data_key_scalers_from_paths` subsamples 1000 files with the
     GLOBAL, unseeded RNG, so the training-time scalers are unrecoverable for an already-trained run.
@@ -407,45 +413,65 @@ def run_reproduction_check(
     cfg.split_seed = 42
     set_seed_for_repeat_and_ensemble(cfg, repeat_idx=repeat, ensemble_idx=0)
     scalers_a, _tr, _va, test_loader = prepare_data_parameters(cfg)
-    prod_paths = list(getattr(test_loader.dataset, "paths", []))
-    if not prod_paths:
-        prod_paths = list(getattr(getattr(test_loader.dataset, "dataset", None), "paths", []))
+    # `TransformingDataset` keeps the H5 dataset on `.base_ds`, NOT `.dataset`, so a naive
+    # getattr chain silently yields [] and the gate then "compares" nothing. Reuse the helper
+    # that already walks both wrappers rather than re-deriving the traversal here.
+    from ..models.sampling import get_dataset_paths
+    prod_paths = get_dataset_paths(test_loader) or []
     report["n_test_paths"] = len(prod_paths)
+    if not prod_paths:
+        # Fail loudly: an empty split makes every downstream check vacuously "fine".
+        raise RuntimeError(
+            "the production test split exposed no file paths, so the reproduction gate has "
+            "nothing to compare. Check that the test loader's dataset still carries `.paths` "
+            "(H5CosmoDataset.paths / TransformingDataset.base_ds.paths)."
+        )
     print(f"[repro] production test split: {len(prod_paths)} files", flush=True)
 
-    # ---- CHECK 1/2: against the production posterior dump --------------------------------------
+    # ---- CHECK 1: file-set equality vs the production posterior dump ----------------------------
+    # ⚠️ The plan specified this as THE load-bearing check, on the assumption that the dump records
+    # which files it scored. It does NOT: `ensemble_posterior_samples_*.npz` carries only
+    # ('samples', 'theta0s') -- verified on both the flagship and the _hf rows -- and the cached
+    # `emb_test.pt` stores no paths either (embeddings_utils only attaches `.paths` when the cache
+    # was freshly computed, and never serialises them). So a basename comparison is IMPOSSIBLE
+    # against the existing artifacts. Rather than let that pass silently -- the original bug, where
+    # a missing 'files' key skipped the check with no output at all -- say so, and carry the real
+    # weight on CHECK 2 below, which tests the SAME property (did we rebuild the same events, in
+    # the same order?) EXACTLY rather than by name.
     npz_path = os.path.join(cfg.base_path, "checkpoints", experiment,
                             f"ensemble_posterior_samples_{match}.npz")
+    prod_theta0s = None
     if os.path.exists(npz_path):
         d = _np.load(npz_path, allow_pickle=False)
-        prod_files = [str(x) for x in d["files"]] if "files" in d.files else None
-        ours = [os.path.basename(x) for x in prod_paths]
-        if prod_files is not None:
+        report["npz_keys"] = list(d.files)
+        if "theta0s" in d.files:
+            prod_theta0s = _np.asarray(d["theta0s"])
+            report["n_prod_rows"] = int(prod_theta0s.shape[0])
+        if "files" in d.files:
+            prod_files = [str(x) for x in d["files"]]
+            ours = [os.path.basename(x) for x in prod_paths]
             same = set(prod_files) == set(ours)
             report["file_set_equal"] = bool(same)
-            report["n_prod_files"] = len(prod_files)
             print(f"[repro] CHECK 1 file-set equality: {'PASS' if same else 'FAIL'} "
                   f"({len(ours)} ours vs {len(prod_files)} production)", flush=True)
             if not same:
-                only_o = sorted(set(ours) - set(prod_files))[:5]
-                only_p = sorted(set(prod_files) - set(ours))[:5]
-                report["only_ours"], report["only_prod"] = only_o, only_p
-                print(f"[repro]   only ours: {only_o}\n[repro]   only prod: {only_p}", flush=True)
-            else:
-                # CHECK 2: align on basename and compare truth row-wise.
-                idx = {f: i for i, f in enumerate(prod_files)}
-                order = [idx[f] for f in ours]
-                th_prod = _np.asarray(d["theta0s"])[order]
-                report["theta_rows"] = int(th_prod.shape[0])
-                for key in ("sim_ids", "aug_ids"):
-                    if key in d.files:
-                        report[f"{key}_present"] = True
-                report["theta_check"] = "aligned"
-                print(f"[repro] CHECK 2 basename alignment OK over {th_prod.shape[0]} rows",
-                      flush=True)
+                report["only_ours"] = sorted(set(ours) - set(prod_files))[:5]
+                report["only_prod"] = sorted(set(prod_files) - set(ours))[:5]
+                print(f"[repro]   only ours: {report['only_ours']}\n"
+                      f"[repro]   only prod: {report['only_prod']}", flush=True)
+        else:
+            report["file_set_equal"] = "unavailable"
+            print(f"[repro] CHECK 1 UNAVAILABLE: the production dump records no 'files' key "
+                  f"(has {list(d.files)}), so basenames cannot be compared. CHECK 2 below covers "
+                  f"the same property exactly.", flush=True)
+        if prod_theta0s is not None:
+            n_ok = prod_theta0s.shape[0] == len(prod_paths)
+            report["row_count_match"] = bool(n_ok)
+            print(f"[repro] CHECK 1b row count: {'PASS' if n_ok else 'FAIL'} "
+                  f"(ours {len(prod_paths)} vs dump {prod_theta0s.shape[0]})", flush=True)
     else:
         report["file_set_equal"] = None
-        print(f"[repro] CHECK 1/2 SKIPPED: no production dump at {npz_path}", flush=True)
+        print(f"[repro] CHECK 1 SKIPPED: no production dump at {npz_path}", flush=True)
 
     # ---- CHECK 3: raw z vs the cached emb_test.pt ----------------------------------------------
     # (source_models / cfg.dataset_quantities were resolved above -- see the ordering note.)
@@ -456,15 +482,55 @@ def run_reproduction_check(
             whiten_cfg=None,                      # RAW z: the cache stores pre-whitening embeddings
             batch_size=batch_size,
         )
-        zs = [b[0] for b in loader]
-        return _torch.cat(zs, dim=0)
+        zs, ths = [], []
+        for b in loader:                       # ONE pass: the embedding forward is the cost here
+            zs.append(b[0])
+            ths.append(b[1])
+        return _torch.cat(zs, dim=0), _torch.cat(ths, dim=0)
 
-    z_ours = _raw_z(scalers_a["data"], scalers_a["cosmo"])
+    z_ours, th_ours = _raw_z(scalers_a["data"], scalers_a["cosmo"])
+
+    # Locate the run's cached embeddings. An ensemble writes one per member
+    # (pretrain_<match>_ens<j>_<source>/datasets/emb_test.pt); they share the split and differ only
+    # by each member's own stochastic scaler fit, so compare against ONE and say which.
+    cache_hits = sorted(_glob.glob(os.path.join(cfg.base_path, "checkpoints", experiment,
+                                                f"*{match}*", "datasets", "emb_test.pt")))
+    report["n_cache_candidates"] = len(cache_hits)
+    cached = _torch.load(cache_hits[0], map_location="cpu") if cache_hits else None
+    if cached is not None:
+        report["cache_used"] = cache_hits[0]
+        print(f"[repro] cache: {len(cache_hits)} member caches found; comparing against "
+              f"{os.path.basename(os.path.dirname(os.path.dirname(cache_hits[0])))}", flush=True)
+
+    # ---- CHECK 2: EXACT split reproduction, via theta ------------------------------------------
+    # This is what actually carries the weight (CHECK 1 cannot run -- no paths are recorded
+    # anywhere). theta is read straight from the HDF5 files and scaled by the DETERMINISTIC preset
+    # min/max cosmo scaler -- no stochastic subsample anywhere in that path -- so if we rebuilt the
+    # same events in the same order it must match the cache BIT FOR BIT. A different split, a
+    # different shape-noise filter, or a different ordering all show up here immediately, before
+    # the expensive second embedding pass.
+    th_cached = cached.get("theta") if isinstance(cached, dict) else None
+    if th_cached is not None:
+        if tuple(th_cached.shape) != tuple(th_ours.shape):
+            report["theta_check"] = "FAIL-shape"
+            print(f"[repro] CHECK 2 theta: FAIL (shape) ours {tuple(th_ours.shape)} vs cached "
+                  f"{tuple(th_cached.shape)} -- the split does NOT reproduce; STOP.", flush=True)
+        else:
+            dth = (th_ours - th_cached).abs()
+            report["theta_max_abs_diff"] = float(dth.max())
+            exact = bool(_torch.allclose(th_ours, th_cached, rtol=0, atol=1e-6))
+            report["theta_check"] = "PASS" if exact else "FAIL"
+            print(f"[repro] CHECK 2 theta row-wise over {th_ours.shape[0]} rows: "
+                  f"max |dtheta| = {float(dth.max()):.3e} -> {'PASS' if exact else 'FAIL'}",
+                  flush=True)
+    else:
+        report["theta_check"] = "no-cache"
+        print("[repro] CHECK 2 SKIPPED: no cached theta to compare against", flush=True)
 
     # the irreducible floor: refit under a different global RNG state and re-embed
     _np.random.seed(20260907)
     scalers_b, _t2, _v2, _te2 = prepare_data_parameters(cfg)
-    z_refit = _raw_z(scalers_b["data"], scalers_b["cosmo"])
+    z_refit, _th_refit = _raw_z(scalers_b["data"], scalers_b["cosmo"])
     sd = z_ours.std(dim=0).clamp_min(1e-12)
     floor = ((z_ours - z_refit).abs() / sd)
     report["refit_floor_median"] = float(floor.median())
@@ -472,12 +538,7 @@ def run_reproduction_check(
     print(f"[repro] scaler-refit NOISE FLOOR: median |dz|/sd = {report['refit_floor_median']:.3e}, "
           f"max = {report['refit_floor_max']:.3e}", flush=True)
 
-    run_name = f"{experiment}/pretrain_{match}" if False else None
-    cache_hits = _glob.glob(os.path.join(cfg.base_path, "checkpoints", experiment,
-                                         f"*{match}*", "datasets", "emb_test.pt"))
-    report["cache_candidates"] = cache_hits[:5]
     if cache_hits:
-        cached = _torch.load(cache_hits[0], map_location="cpu")
         z_cached = cached["z"] if isinstance(cached, dict) and "z" in cached else None
         if z_cached is not None and z_cached.shape == z_ours.shape:
             dev = ((z_ours - z_cached).abs() / sd)
