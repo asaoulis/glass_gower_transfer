@@ -542,9 +542,16 @@ def run_reproduction_check(
         report["theta_check"] = "no-cache"
         print("[repro] CHECK 2 SKIPPED: no cached theta to compare against", flush=True)
 
-    # the irreducible floor: refit under a different global RNG state and re-embed
-    _np.random.seed(20260907)
+    # The irreducible floor: refit the scalers on a DIFFERENT 1000-file subsample and re-embed.
+    # This must vary `scaler_fit_seed`, not the global RNG: the fit no longer consumes the global
+    # stream (it takes a local Generator seeded from the config), so re-seeding numpy would leave
+    # the subsample identical and collapse the measured floor to exactly zero -- silently turning
+    # CHECK 3 into a comparison against nothing. The quantity we want is unchanged either way:
+    # how far does z move when the subsample choice moves?
+    _base_seed = int(getattr(cfg, "scaler_fit_seed", 0) or 0)
+    cfg.scaler_fit_seed = _base_seed + 20260907
     scalers_b, _t2, _v2, _te2 = prepare_data_parameters(cfg)
+    cfg.scaler_fit_seed = _base_seed
     z_refit, _th_refit = _raw_z(scalers_b["data"], scalers_b["cosmo"])
     sd = z_ours.std(dim=0).clamp_min(1e-12)
     floor = ((z_ours - z_refit).abs() / sd)

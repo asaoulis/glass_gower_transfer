@@ -111,6 +111,14 @@ def get_default_config():
     # Optional: limit training dataset size (None => no trimming)
     config.dataset_size = None
 
+    # Seed for the scaler fit's 1000-file subsample (src/ml/utils.py:_fit_data_key_scalers_from_paths).
+    # Historically that subsample came from the process-wide UNSEEDED RNG, which made every fitted
+    # scaler irreproducible: refitting the same split twice moves the resulting embeddings by ~1.1%
+    # of their sd (median), measured on the KiDS Gower Stage-B test set. Seeding it makes a fit
+    # reproducible run-to-run. Runs trained BEFORE this existed cannot have their scalers recovered
+    # at all -- that irreducible floor is what the reproduction gate measures and compares against.
+    config.scaler_fit_seed = 0
+
     # Scaling options
     # - data: per-key standard scaling (keys=None => scale all keys in dataset_nested_keys)
     # - cosmo: min/max scaling for cosmological parameter vectors

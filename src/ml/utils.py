@@ -109,19 +109,33 @@ def _fit_data_key_scalers_from_paths(
     nested_keys: Dict[str, Tuple[str, ...]],
     keys_to_scale: Optional[Sequence[str]] = None,
     max_obs : int = 1_000,
+    seed: int = 0,
 ) -> Dict[str, BaseScaler]:
     key_scalers: Dict[str, BaseScaler] = {}
     if keys_to_scale is None:
         keys_to_scale = list(nested_keys.keys())
+
+    # Subsampling RNG. This was `np.random.shuffle(train_paths)`, which did two bad things:
+    #   (1) it drew from the process-wide UNSEEDED stream, so every fitted scaler was
+    #       irreproducible -- measured on the KiDS Gower Stage-B test set at ~1.1% of sd (median)
+    #       on the resulting embeddings, i.e. a real effect, not a rounding artifact; and it was
+    #       the ONLY global-RNG consumer in the ML data path, so it also perturbed anything else
+    #       sharing that stream.
+    #   (2) it permuted the CALLER's list in place as a side effect.
+    # A local Generator fixes both. `seed` is threaded from `config.scaler_fit_seed` so a fit is
+    # reproducible by default, while a caller that needs to MEASURE the subsample sensitivity
+    # (the reproduction gate) can still vary it explicitly.
+    rng = np.random.default_rng(seed)
 
     for key in keys_to_scale:
         if key not in nested_keys:
             continue
         vals: List[np.ndarray] = []
         single_key = {key: nested_keys[key]}
-        # shuffle
-        np.random.shuffle(train_paths)
-        for p in train_paths[:max_obs]:
+        # Per-key permutation (each key historically saw a different subsample; keep that), but
+        # taken from the local generator and WITHOUT mutating `train_paths`.
+        order = rng.permutation(len(train_paths))[:max_obs]
+        for p in [train_paths[i] for i in order]:
             # Skip corrupt/truncated files or ones missing the requested group (robust to a
             # large, partially-generated out-of-core dataset) — same policy as H5CosmoDataset.
             try:
@@ -295,6 +309,7 @@ def prepare_data_parameters(config):
         scaler_fit_paths,
         nested_keys,
         keys_to_scale=data_keys_to_scale,
+        seed=int(getattr(config, 'scaler_fit_seed', 0) or 0),
     )
 
     cosmo_scaler = None
