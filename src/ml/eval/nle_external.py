@@ -721,7 +721,8 @@ def run_scaler_recovery(
             eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
         )
         print(f"[recover] --- {name}", flush=True)
-        res = recover_key_scalers(encoders, raw_loader, z_cached, frame.scalers,
+        # NB frame.scalers is {'data': {...}, 'cosmo': ...}; recovery wants the KEY scalers.
+        res = recover_key_scalers(encoders, raw_loader, z_cached, frame.scalers["data"],
                                   max_events=len(paths), steps=steps)
 
         ok = res.z_dev_median_after <= accept_dev

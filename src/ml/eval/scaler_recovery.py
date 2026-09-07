@@ -159,6 +159,15 @@ def recover_key_scalers(
 
     learn = torch.nn.ModuleDict({k: _LearnableScaler(s) for k, s in init_key_scalers.items()
                                  if k in batches[0]}).to(dev)
+    if len(learn) == 0:
+        # Without this the optimiser gets an empty parameter list, the encoder is fed RAW
+        # unscaled data, and the parity loop below iterates nothing and reports a vacuously
+        # perfect 0.000e+00 -- a check that cannot run looking exactly like one that passed.
+        raise ValueError(
+            f"no scaler key matched the data. init_key_scalers has {sorted(init_key_scalers)}, "
+            f"the loader yields {sorted(batches[0])}. Pass the KEY scalers "
+            f"(scalers['data']), not the full {{'data','cosmo'}} dict."
+        )
     params_initial = {k: m.params() for k, m in learn.items()}
 
     # Parity: the differentiable transform must equal the real fitted one at the init values.
