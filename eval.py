@@ -196,7 +196,7 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
     parser.add_argument("--mode",
-                        choices=["list", "misspec", "ebdiff", "summaries", "nle-external"],
+                        choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -259,6 +259,17 @@ def main(argv=None):
                              "score the model's own test set through the external path and check it "
                              "reproduces the production dump (file set, theta alignment, raw z vs "
                              "the cached embeddings, against the measured scaler-refit floor).")
+    parser.add_argument("--max-events", type=int, default=200,
+                        help="--mode recover-scalers: events used to fit the input frame. 6 scalar "
+                             "params against n_events x z_dim residuals, so a few hundred is "
+                             "already hugely overdetermined; start small to prove convergence.")
+    parser.add_argument("--recover-steps", type=int, default=40,
+                        help="--mode recover-scalers: LBFGS max_iter.")
+    parser.add_argument("--members", type=int, nargs="+", default=None,
+                        help="--mode recover-scalers: ensemble member indices (default: all). Each "
+                             "member had its OWN stochastic scaler fit, so each needs its own frame.")
+    parser.add_argument("--no-save", action="store_true",
+                        help="--mode recover-scalers: fit and report but do not write scalers.pt")
     parser.add_argument("--external-dry-run", action="store_true",
                         help="--mode nle-external: resolve the pipeline and stop before sampling.")
     parser.add_argument("--data-store", default=None,
@@ -361,6 +372,25 @@ def main(argv=None):
                     batch_size=args.emb_batch_size,
                     dry_run=args.external_dry_run,
                 )
+    elif mode == "recover-scalers":
+        # Recover the training-time input frame of an already-trained run and persist it per
+        # ensemble member. See src/ml/eval/scaler_recovery.py for why this is necessary and why
+        # matching z (rather than the "true" scalers) is the correct objective.
+        from src.ml.eval.nle_external import run_scaler_recovery
+
+        if not args.experiments:
+            raise SystemExit("--mode recover-scalers requires --experiments <stage_b_experiment>")
+        for exp in args.experiments:
+            for r in (args.repeat_indices or (0,)):
+                run_scaler_recovery(
+                    exp, r,
+                    members=args.members,
+                    max_events=args.max_events,
+                    steps=args.recover_steps,
+                    batch_size=args.emb_batch_size,
+                    save=not args.no_save,
+                )
+        return 0
     elif mode == "misspec":
         from src.ml.eval.misspec import run_misspecification_eval
         if args.test_id_source == "all":

@@ -100,12 +100,17 @@ class _LearnableScaler(torch.nn.Module):
         return {"mean": float(self.mean.detach()), "std": float(torch.exp(self.log_std).detach())}
 
 
-def _encoder_forward(encoder, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-    """The same cut point `compute_embeddings` uses, with grad enabled and AMP off."""
-    if getattr(encoder, "embedding_cut", None) == "hybrid_pre_head":
-        return encoder.get_frozen_features(data)
-    encoder.only_return_mu = True
-    return encoder(data)
+def _encoder_forward(encoders, data: Dict[str, torch.Tensor]) -> torch.Tensor:
+    """The same cut point and feature-wise concatenation `compute_embeddings` uses, with grad
+    enabled and AMP off. `encoders` is a list so a multi-source row recovers the same z layout."""
+    zs = []
+    for encoder in encoders:
+        if getattr(encoder, "embedding_cut", None) == "hybrid_pre_head":
+            zs.append(encoder.get_frozen_features(data))
+        else:
+            encoder.only_return_mu = True
+            zs.append(encoder(data))
+    return zs[0] if len(zs) == 1 else torch.cat(zs, dim=-1)
 
 
 def _load_raw_batches(raw_loader, max_events: Optional[int]) -> List[Dict[str, torch.Tensor]]:
@@ -121,7 +126,7 @@ def _load_raw_batches(raw_loader, max_events: Optional[int]) -> List[Dict[str, t
 
 
 def recover_key_scalers(
-    encoder,
+    encoders,
     raw_loader,
     z_target: torch.Tensor,
     init_key_scalers: Dict[str, object],
@@ -134,12 +139,16 @@ def recover_key_scalers(
     """Fit the data-key scalers that reproduce `z_target` through the frozen `encoder`.
 
     `raw_loader` must yield UNSCALED data (build it with empty `key_scalers`), in the SAME order as
-    `z_target`. Returns fitted scaler objects ready for `save_scalers`.
+    `z_target`. `encoders` is the list of frozen source encoders (as `compute_embeddings` takes).
+    Returns fitted scaler objects ready for `save_scalers`.
     """
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    encoder = encoder.to(dev).eval().to(torch.float32)
-    for p in encoder.parameters():
-        p.requires_grad_(False)
+    if not isinstance(encoders, (list, tuple)):
+        encoders = [encoders]
+    encoders = [e.to(dev).eval().to(torch.float32) for e in encoders]
+    for e in encoders:
+        for p in e.parameters():
+            p.requires_grad_(False)
 
     batches = _load_raw_batches(raw_loader, max_events)
     n_events = sum(next(iter(b.values())).shape[0] for b in batches)
@@ -173,7 +182,7 @@ def recover_key_scalers(
         outs = []
         for b in batches:
             scaled = {k: (learn[k](v.to(dev)) if k in learn else v.to(dev)) for k, v in b.items()}
-            outs.append(_encoder_forward(encoder, scaled))
+            outs.append(_encoder_forward(encoders, scaled))
         return torch.cat(outs, dim=0)
 
     def _dev_median(z: torch.Tensor) -> float:

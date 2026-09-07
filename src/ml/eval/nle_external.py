@@ -329,6 +329,85 @@ def run_external_nle_eval(
     return result
 
 
+@dataclass(frozen=True)
+class ProductionFrame:
+    """A Stage-B run's TRAINING frame, rebuilt exactly as `embeddings/train.py` built it."""
+    cfg: object
+    match: str
+    src_match: str
+    source_models: list
+    scalers: dict
+    paths: list
+
+
+def rebuild_production_frame(experiment: str, repeat: int = 0, *,
+                             source_experiments: Optional[Sequence[str]] = None) -> ProductionFrame:
+    """Rebuild the exact training frame of a Stage-B run: cfg, source encoders, scalers, test split.
+
+    ONE definition, used by both the reproduction gate and scaler recovery. They must agree
+    field for field -- the gate's entire value is that it mirrors production, and recovery fits a
+    frame against embeddings produced by that same production path, so two drifting copies of this
+    logic would make both meaningless while still looking green.
+
+    The ORDER here is load-bearing, not cosmetic. `prepare_data_parameters` resolves the HDF5
+    nested keys from `cfg.dataset_quantities`, and for a Stage-B row those RAW-DATA quantities come
+    from the SOURCE ENCODER -- the Stage-B config itself describes embeddings, not maps. Production
+    does exactly this (embeddings/train.py:308-340): load_pretrained_models ->
+    cfg.dataset_quantities -> prepare_data_parameters. Calling it any earlier leaves
+    dataset_quantities unset and `dict(config.dataset_nested_keys)` raises on the None default.
+
+    Note `match_string` is set to the SOURCE match (None_<r>), NOT the Stage-B match, because that
+    is what production's `cfg_0` uses; a cfg differing from `cfg_0` in ANY field would fit
+    different scalers.
+    """
+    from ..embeddings.train import build_cfg_from_experiment_dict
+    from ..embeddings.embeddings_utils import load_pretrained_models
+    from ..utils import prepare_data_parameters, set_seed_for_repeat_and_ensemble
+    from ..models.sampling import get_dataset_paths
+    from config.experiments import experiments as _exps
+    from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
+
+    merged = {**_exps, **_bgp}
+    if experiment not in merged:
+        raise KeyError(f"experiment {experiment!r} not found in the config tables")
+    match = match_string_for(experiment, repeat)
+
+    n_cosmo = None
+    _n = merged[experiment].get("max_trainval_cosmos", None)
+    if isinstance(_n, (list, tuple)) and len(_n) == 1:
+        _n = _n[0]
+    if isinstance(_n, int):
+        n_cosmo = _n
+
+    cfg = build_cfg_from_experiment_dict(experiment, merged[experiment], n_cosmo=n_cosmo)
+    if source_experiments is None:
+        source_experiments = resolve_source_experiments(experiment)
+    src_match = match if getattr(cfg, "match_num_cosmo", False) else "None_" + match.split("_")[1]
+    source_models, dataset_quantities, _ = load_pretrained_models(
+        list(source_experiments), cfg_overrides=None, repeat_idx=repeat, match_string=src_match,
+        per_source_match_strings=getattr(cfg, "source_match_strings", None),
+    )
+
+    cfg.dataset_quantities = dataset_quantities
+    cfg.match_string = str(src_match)
+    cfg.test_shape_noise_idx = [0]      # what embeddings/train.py sets; keeps 4 of 16 per cosmology
+    cfg.split_seed = 42
+    set_seed_for_repeat_and_ensemble(cfg, repeat_idx=repeat, ensemble_idx=0)
+    scalers, _tr, _va, test_loader = prepare_data_parameters(cfg)
+
+    # `TransformingDataset` keeps the H5 dataset on `.base_ds`, NOT `.dataset`, so a naive getattr
+    # chain silently yields [] and every downstream check becomes vacuously "fine". Reuse the
+    # helper that already walks both wrappers.
+    paths = get_dataset_paths(test_loader) or []
+    if not paths:
+        raise RuntimeError(
+            "the production test split exposed no file paths. Check that the test loader's "
+            "dataset still carries `.paths` (H5CosmoDataset.paths / TransformingDataset.base_ds.paths)."
+        )
+    return ProductionFrame(cfg=cfg, match=match, src_match=str(src_match),
+                           source_models=source_models, scalers=scalers, paths=list(paths))
+
+
 def run_reproduction_check(
     experiment: str,
     repeat: int = 0,
@@ -371,66 +450,16 @@ def run_reproduction_check(
     """
     import numpy as _np
     import torch as _torch
-    from ..embeddings.train import build_cfg_from_experiment_dict, _build_external_embedding_loader_for_cfg
-    from ..embeddings.embeddings_utils import _get_embedding_cache_paths, compute_embeddings
-    from ..utils import prepare_data_parameters, set_seed_for_repeat_and_ensemble
-    from config.experiments import experiments as _exps
-    from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
+    from ..embeddings.train import _build_external_embedding_loader_for_cfg
+    from ..utils import prepare_data_parameters
 
     match = match_string_for(experiment, repeat)
-    merged = {**_exps, **_bgp}
-    if experiment not in merged:
-        raise KeyError(f"experiment {experiment!r} not found in the config tables")
-    n_cosmo = None
-    _n = merged[experiment].get("max_trainval_cosmos", None)
-    if isinstance(_n, (list, tuple)) and len(_n) == 1:
-        _n = _n[0]
-    if isinstance(_n, int):
-        n_cosmo = _n
-
     report: Dict[str, object] = {"experiment": experiment, "repeat": repeat, "match": match}
 
-    # ---- resolve the SOURCE ENCODERS first ------------------------------------------------------
-    # The order is load-bearing, not cosmetic. `prepare_data_parameters` resolves the HDF5 nested
-    # keys from `cfg.dataset_quantities`, and for a Stage-B row those RAW-DATA quantities come from
-    # the SOURCE ENCODER -- the Stage-B config itself describes embeddings, not maps. Production
-    # does exactly this order (embeddings/train.py:308-340): load_pretrained_models ->
-    # cfg.dataset_quantities -> prepare_data_parameters. Calling it any earlier leaves
-    # dataset_quantities unset, and `dict(config.dataset_nested_keys)` then raises on the None
-    # default from config/default.py.
-    cfg = build_cfg_from_experiment_dict(experiment, merged[experiment], n_cosmo=n_cosmo)
-    if source_experiments is None:
-        source_experiments = resolve_source_experiments(experiment)
-    from ..embeddings.embeddings_utils import load_pretrained_models
-    match_num_cosmo = getattr(cfg, "match_num_cosmo", False)
-    src_match = match if match_num_cosmo else "None_" + match.split("_")[1]
-    source_models, dataset_quantities, _ = load_pretrained_models(
-        list(source_experiments), cfg_overrides=None, repeat_idx=repeat, match_string=src_match,
-        per_source_match_strings=getattr(cfg, "source_match_strings", None),
-    )
-
-    # ---- the production test split, rebuilt exactly as the production eval rebuilt it ----------
-    # Mirrors embeddings/train.py's `cfg_0` field for field -- note `match_string` is the SOURCE
-    # match, not the Stage-B one -- so the scalers fitted here are the ones the run trained with.
-    cfg.dataset_quantities = dataset_quantities
-    cfg.match_string = str(src_match)
-    cfg.test_shape_noise_idx = [0]          # what embeddings/train.py sets; filters 4 of 16 per cosmo
-    cfg.split_seed = 42
-    set_seed_for_repeat_and_ensemble(cfg, repeat_idx=repeat, ensemble_idx=0)
-    scalers_a, _tr, _va, test_loader = prepare_data_parameters(cfg)
-    # `TransformingDataset` keeps the H5 dataset on `.base_ds`, NOT `.dataset`, so a naive
-    # getattr chain silently yields [] and the gate then "compares" nothing. Reuse the helper
-    # that already walks both wrappers rather than re-deriving the traversal here.
-    from ..models.sampling import get_dataset_paths
-    prod_paths = get_dataset_paths(test_loader) or []
+    frame = rebuild_production_frame(experiment, repeat, source_experiments=source_experiments)
+    cfg, src_match = frame.cfg, frame.src_match
+    source_models, scalers_a, prod_paths = frame.source_models, frame.scalers, frame.paths
     report["n_test_paths"] = len(prod_paths)
-    if not prod_paths:
-        # Fail loudly: an empty split makes every downstream check vacuously "fine".
-        raise RuntimeError(
-            "the production test split exposed no file paths, so the reproduction gate has "
-            "nothing to compare. Check that the test loader's dataset still carries `.paths` "
-            "(H5CosmoDataset.paths / TransformingDataset.base_ds.paths)."
-        )
     print(f"[repro] production test split: {len(prod_paths)} files", flush=True)
 
     # ---- CHECK 1: file-set equality vs the production posterior dump ----------------------------
@@ -628,3 +657,93 @@ def _jsonable(o):
     if isinstance(o, (str, int, float, bool)) or o is None:
         return o
     return str(o)
+
+
+def run_scaler_recovery(
+    experiment: str,
+    repeat: int = 0,
+    *,
+    source_experiments: Optional[Sequence[str]] = None,
+    members: Optional[Sequence[int]] = None,
+    max_events: int = 200,
+    steps: int = 40,
+    batch_size: int = 32,
+    save: bool = True,
+    accept_dev: float = 1e-3,
+) -> Dict[str, object]:
+    """Recover and persist each ensemble member's TRAINING-TIME input frame.
+
+    Runs PER MEMBER on purpose. The nine members were each fitted on their own stochastic
+    1000-file subsample, so they consumed nine different frames -- measured directly from their
+    caches (z: ens0-ens1 1.205e-2, ens1-ens2 1.102e-2, while theta is identical to 0.000e+00).
+    One recovered frame would therefore be right for one member and ~1e-2 wrong for the other
+    eight, which is the very error this exists to remove.
+
+    Acceptance is `z_dev_median_after <= accept_dev` (default 1e-3), an order of magnitude BELOW
+    the ~1.1e-2 refit floor. Landing merely "under budget" at ~floor would mean the fit did not
+    find the training draw, and is reported as a FAIL rather than quietly accepted.
+    """
+    from ..data.data_augmentations import build_nested_keys_from_quantities
+    from ..data.scaling import save_scalers
+    from .misspec import _wrap_paths_as_loader
+    from .scaler_recovery import recover_key_scalers
+
+    frame = rebuild_production_frame(experiment, repeat, source_experiments=source_experiments)
+    cfg, match = frame.cfg, frame.match
+    paths = frame.paths[:max_events] if max_events else frame.paths
+    nested_keys = build_nested_keys_from_quantities(
+        list(cfg.dataset_quantities), eb_variant=getattr(cfg, "eb_map_variant", None),
+    )
+    encoders = [m.embedding_net for m in frame.source_models]
+
+    cache_hits = sorted(_glob.glob(os.path.join(cfg.base_path, "checkpoints", experiment,
+                                                f"*{match}*", "datasets", "emb_test.pt")))
+    if not cache_hits:
+        raise RuntimeError(f"no emb_test.pt caches found for {experiment} / {match}")
+    if members is not None:
+        cache_hits = [cache_hits[j] for j in members]
+
+    out: Dict[str, object] = {"experiment": experiment, "repeat": repeat, "match": match,
+                              "n_members": len(cache_hits), "max_events": len(paths), "members": []}
+    print(f"[recover] {experiment} {match}: {len(cache_hits)} member cache(s), "
+          f"{len(paths)} events each", flush=True)
+
+    for cache_path in cache_hits:
+        member_dir = os.path.dirname(os.path.dirname(cache_path))
+        name = os.path.basename(member_dir)
+        z_cached = torch.load(cache_path, map_location="cpu", weights_only=False)["z"]
+
+        # RAW loader: empty key_scalers => DataDictScalerTransform passes values straight through.
+        # Order must match the cache, which the reproduction gate proves (CHECK 2, theta exact).
+        raw_loader, _ = _wrap_paths_as_loader(
+            paths, nested_keys, list(cfg.cosmo_param_names), {}, None,
+            batch_size=batch_size, num_workers=2,
+            eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
+        )
+        print(f"[recover] --- {name}", flush=True)
+        res = recover_key_scalers(encoders, raw_loader, z_cached, frame.scalers,
+                                  max_events=len(paths), steps=steps)
+
+        ok = res.z_dev_median_after <= accept_dev
+        rec = {"member": name, "accepted": bool(ok), **res.as_dict()}
+        if save and ok:
+            p = save_scalers(
+                os.path.join(member_dir, "datasets", "scalers.pt"),
+                res.key_scalers, frame.scalers.get("cosmo"),
+                {"experiment": experiment, "match": match, "member": name,
+                 "source_experiments": list(source_experiments or resolve_source_experiments(experiment)),
+                 "cosmo_param_names": list(cfg.cosmo_param_names),
+                 "method": "recovered", "n_events": res.n_events,
+                 "z_dev_median_after": res.z_dev_median_after},
+            )
+            rec["saved"] = p
+        print(f"[recover] {name}: {res.z_dev_median_before:.3e} -> {res.z_dev_median_after:.3e} "
+              f"(accept <= {accept_dev:.0e}) -> {'ACCEPTED' if ok else 'REJECTED'}"
+              f"{'; saved' if rec.get('saved') else ''}", flush=True)
+        out["members"].append(rec)
+
+    n_ok = sum(1 for m in out["members"] if m["accepted"])
+    out["n_accepted"] = n_ok
+    print(f"[recover] REPORT " + json.dumps(_jsonable(out)), flush=True)
+    print(f"[recover] {n_ok}/{len(cache_hits)} members accepted", flush=True)
+    return out
