@@ -339,3 +339,101 @@ class LogNormalScaler(BaseScaler):
             return X
         Z = X * float(self.std) + float(self.mean)
         return self._pow10(Z)
+
+# --------------------------------------------------------------------------- #
+# Persistence
+# --------------------------------------------------------------------------- #
+# Fitted scalers were never saved anywhere: `_fit_data_key_scalers_from_paths` re-derived them on
+# every run from a 1000-file subsample. That made a trained model's INPUT FRAME unrecoverable --
+# measured at ~1.1e-2 median |dz|/sd on the KiDS Gower Stage-B embeddings, and confirmed
+# independently by the spread ACROSS the nine ensemble-member caches. For scoring a model on data
+# it was not trained on (a variate store, or the real KiDS observation) the frame has to be the
+# training one, so it has to be written down.
+#
+# State is captured as plain floats/lists, never a pickled instance, so a file stays readable if a
+# scaler class is refactored.
+
+_SCALER_REGISTRY = {
+    "MinMaxScaler": MinMaxScaler,
+    "StandardScaler": StandardScaler,
+    "PerDimStandardScaler": PerDimStandardScaler,
+    "LogNormalScaler": LogNormalScaler,
+}
+
+
+def _plain(v):
+    """numpy/torch -> json-able python, recursively."""
+    if v is None or isinstance(v, (bool, int, float, str)):
+        return v
+    if torch.is_tensor(v):
+        v = v.detach().cpu().numpy()
+    if isinstance(v, np.generic):
+        return v.item()
+    if isinstance(v, np.ndarray):
+        return {"__ndarray__": v.tolist(), "dtype": str(v.dtype)}
+    if isinstance(v, (list, tuple)):
+        return [_plain(x) for x in v]
+    if isinstance(v, dict):
+        return {str(k): _plain(x) for k, x in v.items()}
+    return v
+
+
+def _unplain(v):
+    if isinstance(v, dict):
+        if "__ndarray__" in v:
+            return np.asarray(v["__ndarray__"], dtype=np.dtype(v.get("dtype", "float64")))
+        return {k: _unplain(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_unplain(x) for x in v]
+    return v
+
+
+def scaler_to_state(scaler) -> Optional[dict]:
+    if scaler is None:
+        return None
+    cls = type(scaler).__name__
+    if cls not in _SCALER_REGISTRY:
+        raise TypeError(f"scaler class {cls!r} is not registered for persistence")
+    return {"cls": cls, "attrs": {k: _plain(v) for k, v in vars(scaler).items()}}
+
+
+def scaler_from_state(state) -> Optional["BaseScaler"]:
+    if state is None:
+        return None
+    cls_name = state["cls"]
+    if cls_name not in _SCALER_REGISTRY:
+        raise TypeError(f"unknown scaler class {cls_name!r} in persisted state")
+    obj = _SCALER_REGISTRY[cls_name].__new__(_SCALER_REGISTRY[cls_name])
+    for k, v in state["attrs"].items():
+        setattr(obj, k, _unplain(v))
+    return obj
+
+
+def save_scalers(path, key_scalers, cosmo_scaler=None, provenance=None):
+    """Write the fitted input frame next to the run's embedding cache.
+
+    `provenance` should identify what these scalers belong to (experiment, match string, source
+    encoders, cosmo_param_names, and how they were obtained) so a later load can refuse a
+    mismatched frame rather than silently scoring in the wrong one.
+    """
+    import os
+    payload = {
+        "version": 1,
+        "keys": {k: scaler_to_state(s) for k, s in (key_scalers or {}).items()},
+        "cosmo": scaler_to_state(cosmo_scaler),
+        "provenance": dict(provenance or {}),
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    tmp = f"{path}.tmp"
+    torch.save(payload, tmp)          # atomic: a torn file must never look like a valid frame
+    os.replace(tmp, path)
+    return path
+
+
+def load_scalers(path):
+    """-> (key_scalers, cosmo_scaler, provenance). Raises if the file is not a v1 payload."""
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    if not isinstance(payload, dict) or payload.get("version") != 1:
+        raise ValueError(f"{path}: not a version-1 scaler payload")
+    key_scalers = {k: scaler_from_state(s) for k, s in (payload.get("keys") or {}).items()}
+    return key_scalers, scaler_from_state(payload.get("cosmo")), dict(payload.get("provenance") or {})
