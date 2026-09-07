@@ -1,0 +1,47 @@
+--- gower_nla (N=1591) ---
+   omega_m: mean z =  +1.06 +- 0.04 | std z =  1.78 | same-sign =  71%
+   sigma_8: mean z =  -1.35 +- 0.06 | std z =  2.20 | same-sign =  74%
+        w0: mean z =  +0.24 +- 0.16 | std z =  6.20 | same-sign =  59%
+       mnu: mean z =  +0.16 +- 0.03 | std z =  1.11 | same-sign =  51%
+         h: mean z =  +0.26 +- 0.03 | std z =  1.02 | same-sign =  59%
+        ns: mean z =  -0.23 +- 0.02 | std z =  0.98 | same-sign =  60%
+     ombh2: mean z =  +0.32 +- 0.03 | std z =  1.00 | same-sign =  63%
+      a_ia: mean z =  -9.54 +- 0.17 | std z =  6.67 | same-sign =  99%
+      b_ia: (no truth on disk)
+--- gower_nla_z (N=1592) ---
+   omega_m: mean z =  +0.85 +- 0.04 | std z =  1.65 | same-sign =  69%
+   sigma_8: mean z =  -1.19 +- 0.05 | std z =  2.18 | same-sign =  70%
+        w0: mean z =  +0.54 +- 0.15 | std z =  5.83 | same-sign =  58%
+       mnu: mean z =  +0.14 +- 0.03 | std z =  1.11 | same-sign =  51%
+         h: mean z =  +0.23 +- 0.02 | std z =  0.99 | same-sign =  58%
+        ns: mean z =  -0.21 +- 0.02 | std z =  0.98 | same-sign =  61%
+     ombh2: mean z =  +0.28 +- 0.03 | std z =  1.01 | same-sign =  60%
+      a_ia: mean z =  -8.93 +- 0.16 | std z =  6.41 | same-sign = 100%
+      b_ia: (no truth on disk)
+wrote gower_misspec_zscores.png
+=== CLUSTER-MATCHED IN-DIST FLOOR (gower_bgp_nla_m: 1590 rows / 199 cosmologies; exact pipeline, 200 draws) ===
+    each draw takes the target's OWN (n_cosmologies x rows-per-cosmology),
+    NOT n random rows -- see the module docstring for why.
+  [ 40 cos x 2 rows =   80] matches gower_gb1p0,gower_gb1p3 (200 draws)
+      cal_full(9p)  = 0.0560 +- 0.0105  (95th pct 0.0734)
+      cal_om_s8_w0  = 0.1004 +- 0.0450  (95th pct 0.1849)
+  [199 cos x 8 rows = 1592] matches gower_vd,gower_nla,gower_nla_z (5 draws)
+      cal_full(9p)  = 0.0028 +- 0.0003  (95th pct 0.0032)
+      cal_om_s8_w0  = 0.0128 +- 0.0016  (95th pct 0.0148)
+  [row-matched N=80, WRONG but shown for contrast] cal_full = 0.0535 +- 0.0089
+  wrote gower_misspec_matched_floor.json
+  --- variate vs its CLUSTER-MATCHED floor (cal_full, 5-repeat mean) ---
+         gower_gb1p0: obs=0.0618 vs floor[40x2] 0.0560 +- 0.0105 (95th 0.0734)  ->  +0.6 sd  WITHIN the floor -- not a detection
+         gower_gb1p3: obs=0.0511 vs floor[40x2] 0.0560 +- 0.0105 (95th 0.0734)  ->  -0.5 sd  WITHIN the floor -- not a detection
+            gower_vd: obs=0.0029 vs floor[199x8] 0.0028 +- 0.0003 (95th 0.0032)  ->  +0.4 sd  WITHIN the floor -- not a detection
+           gower_nla: obs=1.0528 vs floor[199x8] 0.0028 +- 0.0003 (95th 0.0032)  ->  +3574.0 sd  ABOVE the floor
+         gower_nla_z: obs=0.9205 vs floor[199x8] 0.0028 +- 0.0003 (95th 0.0032)  ->  +3123.8 sd  ABOVE the floor
+=== EVENT ACCOUNTING ===
+  gower_bgp_nla_m: n_test=1590 dropped_nonfinite=0 missing=[] excluded=[]
+  gower_gb1p0: n_test=80 dropped_nonfinite=0 missing=[] excluded=[]
+  gower_gb1p3: n_test=80 dropped_nonfinite=0 missing=[] excluded=[]
+  gower_vd: n_test=1588 dropped_nonfinite=0 missing=[] excluded=[]
+  gower_nla: n_test=1591 dropped_nonfinite=1 missing=['b_ia'] excluded=['a_ia']
+  gower_nla_z: n_test=1592 dropped_nonfinite=0 missing=['b_ia'] excluded=['a_ia']
+
+[exited with code 0]
