@@ -109,6 +109,63 @@ datasets root>` and `--fixed-test-ids <bare lock name>` (resolved to `config/fix
 `--test-id-source all` (every on-disk cosmology of each variate) is the mode for a model that never
 trained on the variate's suite, and for a real-data file.
 
+## Gower BGP production misspecification suite (2026-09-07)
+
+The two recipes that produced the Gower `_bgp` misspecification + OOD results for
+`gower_npe_finetune_nla_m_bgp_z8_ens1` (5 independently-seeded ens1 encoders, fixed 200-id
+test lock). Both are charset-clean for the gatekeeper (`[A-Za-z0-9][A-Za-z0-9_.-]*` or
+`--[a-z-]*`, <=32 tokens, no `/`, `*`, `=`).
+
+**Posterior / calibration side (one job, so the in-job cross-repeat disagreement fires):**
+
+```
+python .claude/cluster/run_remote.py eval --gpu l40s --wall_h 24 --args "--mode misspec \
+  --misspec-base gower_npe_finetune_nla_m_bgp_z8_ens1 --variates gower_bgp \
+  --repeat-indices 0 1 2 3 4 --num-samples 4000"
+```
+
+**Summary-space OOD side (same held-out events, so the per-event join is exact):**
+
+```
+python .claude/cluster/run_remote.py eval --gpu l40s --wall_h 12 --args "--mode summaries \
+  --misspec-base gower_npe_finetune_nla_m_bgp_z8_ens1 --variates gower_bgp \
+  --repeat-indices 0 1 2 3 4 --max-train-files 20000"
+```
+
+`--test-id-source` defaults to `heldout`, which is what makes the two modes land on the same
+events. Run `misspec` and `summaries` as SEPARATE jobs; both fit on l40s under the cap-3 rule.
+
+### Why `--num-samples 4000`, and the fetch-size consequence
+
+4000 posterior samples per event is the smallest draw that keeps the TARP bootstrap and the
+per-event covariance stable, and it sets the fetch size: the samples npz is
+`4000 x n_events x 9` float32, i.e. **~205 MB per repeat per variate** and **~1 GB per variate**
+across the 5 repeats. A full `--rel misspec` pull for six variates is therefore **~4 GB**.
+
+Most analysis does NOT need that. `misspec_posterior_moments_<match>.npz` carries `mean`,
+`std`, `cov`, `z`, `theta0` and `test_files` at **~0.5 MB** — about **940x smaller** — and
+reproduces the Mahalanobis/z-score path to 3e-5 relative (float32 downcast only). Prefer
+`--rel misspec/<variate>` or the moments files unless you specifically need raw samples
+(TARP recomputation, or subsampled calibration floors, both of which do).
+
+### Analysis-side gotchas these outputs impose
+
+- **Rows are not independent events.** Each test cosmology contributes ~8 augmentations
+  (footprint rotation x shape noise); the fixed-b_g variates are 40 cosmologies x 2 rows.
+  `sim_ids`/`aug_ids` ride in every npz - **bootstrap and split by cosmology, never by row.**
+  A row-level KS on a ~710-row half is ~2.8x too strict and rejects a calibrated null.
+  Reference implementations:
+  `.claude/runs/eval-and-viz/production-model-misspec/artifacts/gower_null_selfcheck.py`
+  and `gower_multiencoder_ood.py` (`boot_cosmo`).
+- **`a_ia` is not comparable across IA models.** `nla`/`nla_z` store A_IA^total (centred on 0);
+  `nla_m` stores the raw prefactor in [4.48, 7.0]. Convert NLA-M with
+  `A_eff = a_ia * f_red * (10^log10M / 10^13.5)^b_ia` averaged over the six bins before any
+  shared axis - see `gower_aia_vs_kl.py:nla_m_effective`.
+- **A small-N calibration number needs a matched floor.** At 40 cosmologies the in-distribution
+  calibration floor is 0.0560 +- 0.0105, comparable to a real signal; match the floor draw to the
+  target's own (n_cosmologies x rows-per-cosmology) via `gower_misspec_zscores.py`.
+
+
 ## CLI pass-through plumbing (for reference)
 
 The `eval-submit` arg pass-through (charset-validated tokens after `<mods>`) lives in
