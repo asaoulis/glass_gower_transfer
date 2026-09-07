@@ -195,7 +195,9 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
-    parser.add_argument("--mode", choices=["list", "misspec", "ebdiff", "summaries"], default=None,
+    parser.add_argument("--mode",
+                        choices=["list", "misspec", "ebdiff", "summaries", "nle-external"],
+                        default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
                         help="list mode: experiment names (default: the DEFAULT_EXPERIMENTS list)")
@@ -234,6 +236,26 @@ def main(argv=None):
     parser.add_argument("--base-path", default=None,
                         help="summaries mode: override config.base_path (LOCAL self-tests: a dir whose "
                              "checkpoints/ holds the fetched ml-checkpoints tree)")
+    parser.add_argument("--data-tag", default=None,
+                        help="--mode nle-external: names the OUTPUT dir under checkpoints/<exp>/"
+                             "external/<tag>/. Defaults to --data-store. Decoupled from the glob so "
+                             "a real-observation run can be tagged e.g. kids_legacy_dr5.")
+    parser.add_argument("--prior-mode", default="gower",
+                        choices=["gower", "kids_s8_analytic", "LCDM_fixed_w0"],
+                        help="--mode nle-external: an NLE posterior is only defined WITH its prior, "
+                             "so this is recorded in the output filename. The real-data run uses "
+                             "kids_s8_analytic.")
+    parser.add_argument("--num-chains", type=int, default=1,
+                        help="--mode nle-external: MCMC chains per observation. num_samples is the "
+                             "TOTAL per observation and is split across chains, so raising this "
+                             "shortens each chain -- the parallelism knob for the N=1 case.")
+    parser.add_argument("--num-jobs", type=int, default=None,
+                        help="--mode nle-external: joblib pool size (batches sampled in parallel).")
+    parser.add_argument("--emb-batch-size", type=int, default=64,
+                        help="--mode nle-external: events per sampling work item. Smaller => more "
+                             "batches => more cores busy when the event count is small.")
+    parser.add_argument("--external-dry-run", action="store_true",
+                        help="--mode nle-external: resolve the pipeline and stop before sampling.")
     parser.add_argument("--data-store", default=None,
                         help="summaries mode: like --data-patterns but a bare dataset DIR NAME under the "
                              "gpu5 datasets root (cluster-safe: the gatekeeper forbids '/' and '*')")
@@ -301,6 +323,31 @@ def main(argv=None):
             fixed_test_ids_override=args.fixed_test_ids,
             max_trainval_cosmos_override=args.max_trainval_cosmos,
         )
+    elif mode == "nle-external":
+        # Score a trained Stage-B NLE ensemble on an EXTERNAL dataset (a variate store, or a single
+        # real observation) with the original training scalers + whitener injected, never refit.
+        # See src/ml/eval/nle_external.py and EVAL_RECIPES.md.
+        from src.ml.eval.nle_external import run_external_nle_eval
+
+        if not args.experiments:
+            raise SystemExit("--mode nle-external requires --experiments <stage_b_experiment>")
+        if not args.data_store:
+            raise SystemExit("--mode nle-external requires --data-store <gpu5 store name>")
+        for exp in args.experiments:
+            for r in (args.repeat_indices or (0,)):
+                from src.ml.eval.nle_external import match_string_for
+                match = match_string_for(exp, r)
+                run_external_nle_eval(
+                    exp, match,
+                    store=args.data_store,
+                    tag=args.data_tag or args.data_store,
+                    prior_mode=args.prior_mode,
+                    num_samples=args.num_samples,
+                    num_chains=args.num_chains,
+                    num_jobs=args.num_jobs,
+                    batch_size=args.emb_batch_size,
+                    dry_run=args.external_dry_run,
+                )
     elif mode == "misspec":
         from src.ml.eval.misspec import run_misspecification_eval
         if args.test_id_source == "all":

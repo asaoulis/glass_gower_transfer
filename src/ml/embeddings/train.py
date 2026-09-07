@@ -146,16 +146,94 @@ def _build_embedding_test_loader_for_cfg(
     return scalers, test_emb_loader
 
 
-def _build_embeddings_model_from_cfg_checkpoint(cfg, test_dataloader=None):
-    """Build NDE-on-embeddings model and load cfg.checkpoint_path when provided."""
+def _build_external_embedding_loader_for_cfg(
+    cfg,
+    source_models,
+    paths,
+    key_scalers,
+    cosmo_scaler,
+    *,
+    whiten_cfg=None,
+    pretrained_ckpt_path_or_dir=None,
+    repeat_match=None,
+    batch_size: int = 64,
+    num_workers: int = 4,
+):
+    """Embedding loader over an EXTERNAL, explicit list of files, with the training frame injected.
+
+    Sibling of `_build_embedding_test_loader_for_cfg`, for scoring a trained model on data it was
+    not trained on (a variate store, or a real observation). The difference is the whole point:
+
+      * the raw loader is built from an explicit `paths` list with the ORIGINAL training
+        `key_scalers` / `cosmo_scaler` INJECTED — never refit on the external data, which for a
+        10-cosmology store or a single observation would be meaningless;
+      * the whitener is RESOLVED and LOADED from the pretrain run, never fit;
+      * the embedding CACHE is bypassed entirely. `build_embedding_dataloaders` keys its cache on
+        the run, not on the data, so pointing it at external files would happily return embeddings
+        computed from a different dataset.
+
+    No split is performed: every path given is scored.
+    """
+    from ..eval.misspec import _wrap_paths_as_loader
+    from ..data.data_loaders import build_nested_keys_from_quantities
+    from .embeddings_utils import EmbeddingDataset, compute_embeddings, resolve_whitener_path
+    from ..data.scaling import WhitenPCAScaler
+
+    nested_keys = build_nested_keys_from_quantities(
+        list(cfg.dataset_quantities), eb_variant=getattr(cfg, "eb_map_variant", None),
+    )
+    raw_loader, _ = _wrap_paths_as_loader(
+        list(paths), nested_keys, list(cfg.cosmo_param_names), key_scalers, cosmo_scaler,
+        batch_size=batch_size, num_workers=num_workers,
+        eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
+    )
+
+    z, theta = compute_embeddings(list(source_models), raw_loader)
+
+    emb_scaler = None
+    scale_embeddings = bool(getattr(cfg, "scale_embeddings", False))
+    if whiten_cfg is not None:
+        k = int(whiten_cfg["k"])
+        whitener_path = resolve_whitener_path(pretrained_ckpt_path_or_dir, repeat_match)
+        if whitener_path is None:
+            raise RuntimeError(
+                "[whiten][external] whiten_embeddings is enabled but no persisted whitener.pt could "
+                f"be resolved from '{pretrained_ckpt_path_or_dir}' (repeat_match={repeat_match!r}). "
+                "Refusing to fit one on external data."
+            )
+        emb_scaler = WhitenPCAScaler.load(whitener_path)
+        if int(emb_scaler.k) != k:
+            raise RuntimeError(
+                f"[whiten][external] resolved whitener k={emb_scaler.k} != config k={k} "
+                f"at {whitener_path}."
+            )
+        print(f"[whiten][external] Reusing pretrain whitener k={emb_scaler.k} (fit on "
+              f"{emb_scaler.fit_n_train_samples} rows, "
+              f"source={emb_scaler.fit_source_experiment}) from {whitener_path}", flush=True)
+        scale_embeddings = True   # as in build_embedding_dataloaders: the whitener always applies
+
+    ds = EmbeddingDataset(z, theta, emb_scaler=emb_scaler, cosmo_scaler=None,
+                          scale_embeddings=scale_embeddings)
+    loader = torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
+    return loader, raw_loader.dataset
+
+
+def _build_embeddings_model_from_cfg_checkpoint(cfg, test_dataloader=None, emb_dim=None):
+    """Build NDE-on-embeddings model and load cfg.checkpoint_path when provided.
+
+    `emb_dim` may be supplied directly (e.g. from the resolved whitener's `k`) so the model can be
+    built without a dataloader; it defaults to reading one batch, which is the historical
+    behaviour and keeps every existing caller unchanged.
+    """
 
     from .embeddings_utils import build_nde_on_embeddings, load_embeddings_checkpoint
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if test_dataloader is None:
-        raise ValueError("Embeddings model builder requires a test_dataloader.")
+    if test_dataloader is None and emb_dim is None:
+        raise ValueError("Embeddings model builder requires a test_dataloader or an emb_dim.")
 
-    emb_dim = next(iter(test_dataloader))[0].shape[-1]
+    if emb_dim is None:
+        emb_dim = next(iter(test_dataloader))[0].shape[-1]
     model = build_nde_on_embeddings(emb_dim=emb_dim, base_cfg=cfg, test_loader=test_dataloader, device=device)
 
     checkpoint_path = getattr(cfg, "checkpoint_path", None)
@@ -175,6 +253,8 @@ def load_embedding_model_with_dataloader(
     *,
     source_experiments: Sequence[str],
     config_overrides: Optional[Dict[str, object]] = None,
+    external_paths: Optional[Sequence[str]] = None,
+    external_batch_size: int = 64,
 ) -> LoadedEmbeddingArtifacts:
     """Load one trained embeddings model and its matching embedding test loader.
 
@@ -183,6 +263,14 @@ def load_embedding_model_with_dataloader(
     - embedding dataloader construction,
     - NDE-on-embeddings model construction,
     - best-checkpoint selection for the provided match string.
+
+    `external_paths` swaps ONLY the data: the scalers are still fit once on the experiment's own
+    `data_patterns` and then INJECTED, and the ensemble/checkpoint/whitener/source resolution below
+    is byte-for-byte the production path. This is what makes an external-data eval (a variate store,
+    or a single real observation) trustworthy rather than a parallel implementation that can drift.
+    Note the members then SHARE one loader: `prepare_data_parameters` fits ensemble scalers on
+    train+val and members differ only by the train/val reshuffle, so their key scalers are identical
+    (asserted below).
     """
 
     if experiment_name not in experiments:
@@ -236,6 +324,48 @@ def load_embedding_model_with_dataloader(
         member_test_loaders = []
         scalers = None
 
+        if external_paths is not None:
+            # ONE loader for every member. Fit the scalers once on the experiment's OWN
+            # data_patterns (member 0's frame) and inject them; then assert the ensemble
+            # assumption that every member's key scalers agree, rather than trusting it.
+            cfg_0 = build_cfg_from_experiment_dict(experiment_name, exp_dict, n_cosmo=n_cosmo)
+            cfg_0.match_string = str(pretrained_models_match_string)
+            cfg_0.test_shape_noise_idx = [0]
+            if config_overrides:
+                for key, value in config_overrides.items():
+                    setattr(cfg_0, key, value)
+            cfg_0.dataset_quantities = dataset_quantities
+            cfg_0.split_seed = 42
+            set_seed_for_repeat_and_ensemble(cfg_0, repeat_idx=repeat_idx, ensemble_idx=0)
+            scalers, _tr, _va, _te = prepare_data_parameters(cfg_0)
+            del _tr, _va, _te
+
+            ext_loader, ext_raw_dataset = _build_external_embedding_loader_for_cfg(
+                cfg_0, source_models, external_paths,
+                scalers.get("data") if isinstance(scalers, dict) else scalers,
+                scalers.get("cosmo") if isinstance(scalers, dict) else None,
+                whiten_cfg=whiten_cfg,
+                pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
+                repeat_match=whiten_repeat_match,
+                batch_size=external_batch_size,
+            )
+            member_test_loaders = [ext_loader] * n_ens
+            model = build_ensemble_model_from_checkpoints(
+                cfg, test_loader=None, match_string=str(match_string),
+                member_test_loaders=member_test_loaders,
+                model_builder=_build_embeddings_model_from_cfg_checkpoint,
+            )
+            if model is None:
+                raise RuntimeError(
+                    f"Failed to build embeddings ensemble for experiment '{experiment_name}' "
+                    f"and match '{match_string}'."
+                )
+            model.external_raw_dataset = ext_raw_dataset
+            return LoadedEmbeddingArtifacts(
+                model=model, scalers=scalers, test_loader=ext_loader,
+                config=cfg, checkpoint_path=None,
+            )
+
         for j in range(n_ens):
             cfg_j = build_cfg_from_experiment_dict(experiment_name, exp_dict, n_cosmo=n_cosmo)
             cfg_j.match_string = str(pretrained_models_match_string)
@@ -280,14 +410,27 @@ def load_embedding_model_with_dataloader(
         checkpoint_path = None
         test_emb_loader = member_test_loaders[0]
     else:
-        scalers, test_emb_loader = _build_embedding_test_loader_for_cfg(
-            cfg,
-            source_models,
-            whiten_cfg=whiten_cfg,
-            is_pretrain_source=whiten_is_pretrain_source,
-            pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
-            repeat_match=whiten_repeat_match,
-        )
+        if external_paths is not None:
+            scalers, _tr, _va, _te = prepare_data_parameters(cfg)
+            del _tr, _va, _te
+            test_emb_loader, _ext_raw = _build_external_embedding_loader_for_cfg(
+                cfg, source_models, external_paths,
+                scalers.get("data") if isinstance(scalers, dict) else scalers,
+                scalers.get("cosmo") if isinstance(scalers, dict) else None,
+                whiten_cfg=whiten_cfg,
+                pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
+                repeat_match=whiten_repeat_match,
+                batch_size=external_batch_size,
+            )
+        else:
+            scalers, test_emb_loader = _build_embedding_test_loader_for_cfg(
+                cfg,
+                source_models,
+                whiten_cfg=whiten_cfg,
+                is_pretrain_source=whiten_is_pretrain_source,
+                pretrained_ckpt_path_or_dir=whiten_ckpt_dir,
+                repeat_match=whiten_repeat_match,
+            )
         # Same as the ensemble branch: the target experiment's own run folders are named
         # by the full run match string, not the source-encoder "None_" form.
         checkpoint_path = _select_best_checkpoint_for_match(cfg, str(match_string))

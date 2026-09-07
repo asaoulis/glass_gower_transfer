@@ -1900,3 +1900,17 @@ for _r in _K2_REPEATS:
         "kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc"
     HF_RETRAIN_SOURCES[f"gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{_r}_ens9_e150"] = \
         "kids_legacy_hybrid_nla_m_bgpk2_z16_warm_cyc"
+
+
+# --- Source encoders for the CLEAN (never-`_hf`) NLE chains ------------------------------------
+# `HF_RETRAIN_SOURCES` above covers only the four `_hf` retrain arms. The `nla_m` flagship and its
+# non-BGP reference predate that table but have exactly the same need: the frozen source encoder is
+# part of a chain's IDENTITY, and resolving it by guesswork at the eval site is the `e890aec` bug
+# class (a chain silently scored through the wrong encoder). Registering them here keeps every
+# Stage-B row's source in ONE config-side place, which `src/ml/eval/nle_external.py` reads.
+FLAGSHIP_NLE_SOURCES = {}
+for _r in range(5):
+    FLAGSHIP_NLE_SOURCES[f"gower_nle_finetune_nla_m_bgp_z8_r{_r}_ens9"] = \
+        "kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1"
+    FLAGSHIP_NLE_SOURCES[f"gower_nle_finetune_nla_m_z8_r{_r}_ens9"] = \
+        "kids_legacy_hybrid_nla_m_z8_resnet_sc8a1"
