@@ -1,0 +1,17 @@
+gb1p0: joint prior chi2 = 46.8 (6 dof), p = 2.06e-08
+gb1p3: joint prior chi2 = 11.0 (6 dof), p = 0.0888
+
+mean z = (truth - posterior mean)/posterior sd on the same 80 mocks, mean over 5 encoders [95% by-cosmology CI]
+  gower_bgp_nla_m  omega_m  +0.24 [+0.11, +0.37]  (sd over encoders 0.03)
+  gower_bgp_nla_m  sigma_8  -0.07 [-0.17, +0.04]  (sd over encoders 0.05)
+  gower_bgp_nla_m  w0       +0.09 [-0.04, +0.23]  (sd over encoders 0.06)
+  gower_gb1p0      omega_m  -0.79 [-0.91, -0.67]  (sd over encoders 0.04)
+  gower_gb1p0      sigma_8  +0.94 [+0.78, +1.10]  (sd over encoders 0.09)
+  gower_gb1p0      w0       +0.30 [+0.17, +0.44]  (sd over encoders 0.02)
+  gower_gb1p3      omega_m  +0.77 [+0.67, +0.88]  (sd over encoders 0.05)
+  gower_gb1p3      sigma_8  -0.88 [-0.98, -0.79]  (sd over encoders 0.09)
+  gower_gb1p3      w0       +0.05 [-0.07, +0.21]  (sd over encoders 0.06)
+  linear prediction at b_g=1.219 for omega_m: +0.35 (observed in-dist +0.24)
+  linear prediction at b_g=1.219 for sigma_8: -0.39 (observed in-dist -0.07)
+  linear prediction at b_g=1.219 for w0: +0.12 (observed in-dist +0.09)
+wrote 45 macros

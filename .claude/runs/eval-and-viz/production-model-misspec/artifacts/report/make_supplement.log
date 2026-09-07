@@ -1,0 +1,87 @@
+null probit corr(KL, kNN) = 0.066
+
+=== (1) KL + kNN Stouffer combination: AUROC [95% by-cosmology CI] ===
+  gower_nla    kl=0.887[0.869,0.904]  knn1=0.933[0.918,0.945]  knn5=0.940[0.926,0.951]  kl_plus_knn1=0.928[0.913,0.940]  kl_plus_knn5=0.930[0.915,0.943]
+  gower_nla_z  kl=0.898[0.881,0.914]  knn1=0.937[0.925,0.948]  knn5=0.944[0.932,0.955]  kl_plus_knn1=0.934[0.922,0.946]  kl_plus_knn5=0.936[0.925,0.948]
+  gower_gb1p0  kl=0.466[0.400,0.539]  knn1=0.531[0.472,0.596]  knn5=0.538[0.470,0.612]  kl_plus_knn1=0.489[0.428,0.555]  kl_plus_knn5=0.488[0.423,0.560]
+  gower_gb1p3  kl=0.489[0.422,0.552]  knn1=0.520[0.459,0.583]  knn5=0.523[0.454,0.594]  kl_plus_knn1=0.500[0.432,0.571]  kl_plus_knn5=0.501[0.428,0.575]
+  gower_vd     kl=0.498[0.476,0.518]  knn1=0.494[0.482,0.507]  knn5=0.493[0.479,0.508]  kl_plus_knn1=0.496[0.480,0.514]  kl_plus_knn5=0.497[0.479,0.515]
+
+=== (2) kNN AUROC vs reference-cloud size (mean over 5 encoders; sd over random subsets) ===
+  training cloud: 240 cosmologies, 19167 rows
+  cos=     5 (  400 rows) gower_nla    AUROC=0.875 sd_over_subsets=0.009
+  cos=     5 (  400 rows) gower_nla_z  AUROC=0.875 sd_over_subsets=0.011
+  cos=     5 (  400 rows) gower_gb1p0  AUROC=0.494 sd_over_subsets=0.013
+  cos=     5 (  400 rows) gower_gb1p3  AUROC=0.531 sd_over_subsets=0.021
+  cos=     5 (  400 rows) gower_vd     AUROC=0.494 sd_over_subsets=0.005
+  cos=    10 (  800 rows) gower_nla    AUROC=0.904 sd_over_subsets=0.008
+  cos=    10 (  800 rows) gower_nla_z  AUROC=0.906 sd_over_subsets=0.009
+  cos=    10 (  800 rows) gower_gb1p0  AUROC=0.510 sd_over_subsets=0.012
+  cos=    10 (  800 rows) gower_gb1p3  AUROC=0.525 sd_over_subsets=0.023
+  cos=    10 (  800 rows) gower_vd     AUROC=0.494 sd_over_subsets=0.004
+  cos=    20 ( 1600 rows) gower_nla    AUROC=0.918 sd_over_subsets=0.005
+  cos=    20 ( 1600 rows) gower_nla_z  AUROC=0.922 sd_over_subsets=0.005
+  cos=    20 ( 1600 rows) gower_gb1p0  AUROC=0.506 sd_over_subsets=0.009
+  cos=    20 ( 1600 rows) gower_gb1p3  AUROC=0.527 sd_over_subsets=0.015
+  cos=    20 ( 1600 rows) gower_vd     AUROC=0.496 sd_over_subsets=0.002
+  cos=    40 ( 3200 rows) gower_nla    AUROC=0.928 sd_over_subsets=0.002
+  cos=    40 ( 3200 rows) gower_nla_z  AUROC=0.932 sd_over_subsets=0.003
+  cos=    40 ( 3200 rows) gower_gb1p0  AUROC=0.525 sd_over_subsets=0.010
+  cos=    40 ( 3200 rows) gower_gb1p3  AUROC=0.516 sd_over_subsets=0.012
+  cos=    40 ( 3200 rows) gower_vd     AUROC=0.496 sd_over_subsets=0.002
+  cos=    80 ( 6400 rows) gower_nla    AUROC=0.933 sd_over_subsets=0.001
+  cos=    80 ( 6400 rows) gower_nla_z  AUROC=0.936 sd_over_subsets=0.001
+  cos=    80 ( 6400 rows) gower_gb1p0  AUROC=0.525 sd_over_subsets=0.005
+  cos=    80 ( 6400 rows) gower_gb1p3  AUROC=0.521 sd_over_subsets=0.005
+  cos=    80 ( 6400 rows) gower_vd     AUROC=0.495 sd_over_subsets=0.001
+  cos=   120 ( 9600 rows) gower_nla    AUROC=0.933 sd_over_subsets=0.001
+  cos=   120 ( 9600 rows) gower_nla_z  AUROC=0.937 sd_over_subsets=0.001
+  cos=   120 ( 9600 rows) gower_gb1p0  AUROC=0.527 sd_over_subsets=0.002
+  cos=   120 ( 9600 rows) gower_gb1p3  AUROC=0.516 sd_over_subsets=0.005
+  cos=   120 ( 9600 rows) gower_vd     AUROC=0.493 sd_over_subsets=0.001
+  cos=   240 (19167 rows) gower_nla    AUROC=0.934 sd_over_subsets=0.000
+  cos=   240 (19167 rows) gower_nla_z  AUROC=0.938 sd_over_subsets=0.000
+  cos=   240 (19167 rows) gower_gb1p0  AUROC=0.530 sd_over_subsets=0.000
+  cos=   240 (19167 rows) gower_gb1p3  AUROC=0.519 sd_over_subsets=0.000
+  cos=   240 (19167 rows) gower_vd     AUROC=0.494 sd_over_subsets=0.000
+  rows=    50 (   50 rows) gower_nla    AUROC=0.919 sd_over_subsets=0.003
+  rows=    50 (   50 rows) gower_nla_z  AUROC=0.922 sd_over_subsets=0.003
+  rows=    50 (   50 rows) gower_gb1p0  AUROC=0.520 sd_over_subsets=0.007
+  rows=    50 (   50 rows) gower_gb1p3  AUROC=0.511 sd_over_subsets=0.014
+  rows=    50 (   50 rows) gower_vd     AUROC=0.495 sd_over_subsets=0.003
+  rows=   100 (  100 rows) gower_nla    AUROC=0.923 sd_over_subsets=0.003
+  rows=   100 (  100 rows) gower_nla_z  AUROC=0.927 sd_over_subsets=0.003
+  rows=   100 (  100 rows) gower_gb1p0  AUROC=0.520 sd_over_subsets=0.010
+  rows=   100 (  100 rows) gower_gb1p3  AUROC=0.523 sd_over_subsets=0.010
+  rows=   100 (  100 rows) gower_vd     AUROC=0.495 sd_over_subsets=0.003
+  rows=   200 (  200 rows) gower_nla    AUROC=0.929 sd_over_subsets=0.002
+  rows=   200 (  200 rows) gower_nla_z  AUROC=0.932 sd_over_subsets=0.002
+  rows=   200 (  200 rows) gower_gb1p0  AUROC=0.524 sd_over_subsets=0.006
+  rows=   200 (  200 rows) gower_gb1p3  AUROC=0.516 sd_over_subsets=0.005
+  rows=   200 (  200 rows) gower_vd     AUROC=0.495 sd_over_subsets=0.001
+  rows=   500 (  500 rows) gower_nla    AUROC=0.931 sd_over_subsets=0.001
+  rows=   500 (  500 rows) gower_nla_z  AUROC=0.934 sd_over_subsets=0.001
+  rows=   500 (  500 rows) gower_gb1p0  AUROC=0.527 sd_over_subsets=0.005
+  rows=   500 (  500 rows) gower_gb1p3  AUROC=0.517 sd_over_subsets=0.005
+  rows=   500 (  500 rows) gower_vd     AUROC=0.495 sd_over_subsets=0.002
+  rows=  1000 ( 1000 rows) gower_nla    AUROC=0.932 sd_over_subsets=0.001
+  rows=  1000 ( 1000 rows) gower_nla_z  AUROC=0.936 sd_over_subsets=0.001
+  rows=  1000 ( 1000 rows) gower_gb1p0  AUROC=0.527 sd_over_subsets=0.005
+  rows=  1000 ( 1000 rows) gower_gb1p3  AUROC=0.516 sd_over_subsets=0.004
+  rows=  1000 ( 1000 rows) gower_vd     AUROC=0.496 sd_over_subsets=0.002
+  rows=  3000 ( 3000 rows) gower_nla    AUROC=0.934 sd_over_subsets=0.001
+  rows=  3000 ( 3000 rows) gower_nla_z  AUROC=0.937 sd_over_subsets=0.000
+  rows=  3000 ( 3000 rows) gower_gb1p0  AUROC=0.526 sd_over_subsets=0.005
+  rows=  3000 ( 3000 rows) gower_gb1p3  AUROC=0.520 sd_over_subsets=0.002
+  rows=  3000 ( 3000 rows) gower_vd     AUROC=0.495 sd_over_subsets=0.001
+  rows= 10000 (10000 rows) gower_nla    AUROC=0.934 sd_over_subsets=0.000
+  rows= 10000 (10000 rows) gower_nla_z  AUROC=0.938 sd_over_subsets=0.000
+  rows= 10000 (10000 rows) gower_gb1p0  AUROC=0.529 sd_over_subsets=0.003
+  rows= 10000 (10000 rows) gower_gb1p3  AUROC=0.520 sd_over_subsets=0.002
+  rows= 10000 (10000 rows) gower_vd     AUROC=0.494 sd_over_subsets=0.001
+  rows= 19167 (19167 rows) gower_nla    AUROC=0.934 sd_over_subsets=0.000
+  rows= 19167 (19167 rows) gower_nla_z  AUROC=0.938 sd_over_subsets=0.000
+  rows= 19167 (19167 rows) gower_gb1p0  AUROC=0.530 sd_over_subsets=0.000
+  rows= 19167 (19167 rows) gower_gb1p3  AUROC=0.519 sd_over_subsets=0.000
+  rows= 19167 (19167 rows) gower_vd     AUROC=0.494 sd_over_subsets=0.000
+wrote 263 macros
