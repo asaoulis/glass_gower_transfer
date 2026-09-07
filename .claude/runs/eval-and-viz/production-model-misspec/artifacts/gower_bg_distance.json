@@ -1,0 +1,24 @@
+{
+  "in-dist": {
+    "n": 200,
+    "median_d": 2.333666353179024,
+    "p90_d": 3.1984015236238736,
+    "max_d": 4.627117521042801,
+    "median_max_abs_z": 1.5943527556940134,
+    "frac_any_bin_outside_support": 0.005,
+    "frac_any_bin_abs_z_gt2": 0.27,
+    "b_g_min": 0.5270338733920663,
+    "b_g_max": 1.7029792390808272
+  },
+  "kappa2": {
+    "n": 200,
+    "median_d": 4.629600280812452,
+    "p90_d": 6.5294273285853786,
+    "max_d": 9.59980190075332,
+    "median_max_abs_z": 3.272237244520653,
+    "frac_any_bin_outside_support": 0.615,
+    "frac_any_bin_abs_z_gt2": 0.905,
+    "b_g_min": 0.3,
+    "b_g_max": 2.0987
+  }
+}
