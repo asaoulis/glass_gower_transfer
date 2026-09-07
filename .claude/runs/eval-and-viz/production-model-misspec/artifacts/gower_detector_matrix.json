@@ -1,0 +1,122 @@
+{
+  "gower_gb1p3": {
+    "cond_comparable": true,
+    "frac_a_ia_out_of_training_range": 0.0,
+    "n_mocks": 80,
+    "n_cosmologies": 40,
+    "kl_auroc": 0.48889150943396226,
+    "kl_ci": [
+      0.4217112039183174,
+      0.550103042870462
+    ],
+    "knn_auroc": 0.5194905660377358,
+    "knn_ci": [
+      0.4472368037202824,
+      0.5845768555288516
+    ],
+    "cond_knn_auroc": 0.5330613207547169,
+    "cond_knn_ci": [
+      0.45531647719872553,
+      0.610054283853673
+    ]
+  },
+  "gower_gb1p0": {
+    "cond_comparable": true,
+    "frac_a_ia_out_of_training_range": 0.0,
+    "n_mocks": 80,
+    "n_cosmologies": 40,
+    "kl_auroc": 0.46611635220125786,
+    "kl_ci": [
+      0.3975803914665321,
+      0.5365778853249018
+    ],
+    "knn_auroc": 0.5303600628930818,
+    "knn_ci": [
+      0.4616589614140878,
+      0.595190812344738
+    ],
+    "cond_knn_auroc": 0.5702908805031447,
+    "cond_knn_ci": [
+      0.5006967119558015,
+      0.6472306153366757
+    ]
+  },
+  "gower_gbk2": {
+    "cond_comparable": true,
+    "frac_a_ia_out_of_training_range": 0.0,
+    "n_mocks": 1592,
+    "n_cosmologies": 199,
+    "kl_auroc": 0.5366723554881325,
+    "kl_ci": [
+      0.5169299095709445,
+      0.5582373383298521
+    ],
+    "knn_auroc": 0.4989025315255523,
+    "knn_ci": [
+      0.48211484250776754,
+      0.5153448145838421
+    ],
+    "cond_knn_auroc": 0.5231257703612402,
+    "cond_knn_ci": [
+      0.5065679026265183,
+      0.5404459077357491
+    ]
+  },
+  "gower_vd": {
+    "cond_comparable": true,
+    "frac_a_ia_out_of_training_range": 0.0,
+    "n_mocks": 1588,
+    "n_cosmologies": 199,
+    "kl_auroc": 0.4975630911078371,
+    "kl_ci": [
+      0.47948615802621897,
+      0.5175785669700704
+    ],
+    "knn_auroc": 0.4936415411181344,
+    "knn_ci": [
+      0.47727706958233684,
+      0.508958694173159
+    ],
+    "cond_knn_auroc": 0.4914775913692315,
+    "cond_knn_ci": [
+      0.47334091022891966,
+      0.507573978635186
+    ]
+  },
+  "gower_nla": {
+    "cond_comparable": false,
+    "frac_a_ia_out_of_training_range": 0.8605527638190955,
+    "n_mocks": 1558,
+    "n_cosmologies": 199,
+    "kl_auroc": 0.8871493044622601,
+    "kl_ci": [
+      0.8686683614779199,
+      0.9045988651483746
+    ],
+    "knn_auroc": 0.9338431939572075,
+    "knn_ci": [
+      0.9200681287142937,
+      0.9466757738346999
+    ],
+    "cond_knn_auroc": null,
+    "cond_knn_ci": null
+  },
+  "gower_nla_z": {
+    "cond_comparable": false,
+    "frac_a_ia_out_of_training_range": 0.8505025125628141,
+    "n_mocks": 1562,
+    "n_cosmologies": 199,
+    "kl_auroc": 0.8975571553966452,
+    "kl_ci": [
+      0.8807721296331904,
+      0.913704340338923
+    ],
+    "knn_auroc": 0.9377070098922285,
+    "knn_ci": [
+      0.9255396340233821,
+      0.948726431631356
+    ],
+    "cond_knn_auroc": null,
+    "cond_knn_ci": null
+  }
+}
