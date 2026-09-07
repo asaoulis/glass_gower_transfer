@@ -18,6 +18,7 @@ from ..models.lightning_modules import (
 )
 from ..eval.utils import load_best_model_and_build_posterior
 from ..eval.loading_model import get_best_checkpoint
+from ..tmpdir import redirect_tempdir
 from ..data.scaling import BaseScaler, PerDimStandardScaler, WhitenPCAScaler
 from ..utils import _build_cosmo_preset_scaler
 from ..data.constants import COSMO_PARAM_PRESET_MINMAX
@@ -1146,6 +1147,9 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
     )
 
     wandb_logger_name = wandb_logger.name if wandb_logger else "no_logger"
+    # This path builds its own ModelCheckpoint/Trainer rather than routing through
+    # fit_model, so it needs the errno-28 temp-dir redirect too (src/ml/tmpdir.py).
+    redirect_tempdir(base_cfg.base_path)
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=f"{monitor_string}",
         dirpath=f"{base_cfg.base_path}/checkpoints/{wandb_logger_name}",

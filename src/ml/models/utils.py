@@ -3,6 +3,7 @@ import torch
 import wandb
 import pytorch_lightning as pl
 from ..eval.loading_model import get_best_checkpoint
+from ..tmpdir import redirect_tempdir
 from ..utils import prepare_data_and_model, set_seed_for_repeat_and_ensemble
 
 def create_run_name(config, match_string_logger):
@@ -68,6 +69,10 @@ def fit_model(
     base_path,
     accumulate_grad_batches=1
 ):
+    # Stage fsspec's checkpoint temp files on the models filesystem, not the
+    # compute node's small /tmp (see src/ml/tmpdir.py -- this is the errno-28 fix).
+    redirect_tempdir(base_path)
+
     # Accelerator / strategy
     num_gpus = torch.cuda.device_count()
     accelerator = "gpu" if num_gpus > 0 else "cpu"
