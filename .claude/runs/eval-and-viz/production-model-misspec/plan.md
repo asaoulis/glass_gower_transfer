@@ -303,14 +303,20 @@ the `COLORS` / `LABELS` / `IN_DIST` / `ORDER` dicts gain the six `gower_bgp_nla_
       Build the floor band by subsampling the in-dist events **matched on CLUSTER STRUCTURE, not
       row count**: `gower_gb1p0`/`gower_gb1p3` are **40 cosmologies × 2 rows**, so draw 40 in-dist
       cosmologies and 2 rows from each (≥200 draws). Drawing 80 random in-dist ROWS would span ~80
-      cosmologies and so carry ~8× the effective sample, giving a floor band that is far too narrow
-      and would make the gb points look more significant than they are. Put the resulting band on
-      the two gb diamonds in the combined figure.
+      cosmologies and so carry ~8× the effective sample, which risks a floor band that is too
+      narrow. **Measured outcome (2026-09-07): the effect was small** — row-matched
+      0.0535 ± 0.0089 vs cluster-matched 0.0560 ± 0.0105 — so the correction is right in
+      principle but changed no verdict here; what actually mattered was the DRAW COUNT (200 vs a
+      2-draw probe, which understated the floor and wrongly put `gb1p0` above its 95th
+      percentile). Put the resulting band on the two gb diamonds in the combined figure.
       **Without this the gb points are not interpretable.**
 - [ ] Check whether `gower_gb1p0` and `gower_gb1p3` are **paired** (same `--rng-seed`): compare
       their `sim_ids`/`aug_ids` arrays in the samples npz. If they match, add the paired
       Δz = z(b_g=1.3) − z(b_g=1.0) statistic (as on the GLASS ladder) — it removes cosmic variance
-      and is far more sensitive than either absolute z at N=80.
+      and is far more sensitive than either absolute z at N=80. **Also report the shift in PHYSICAL
+      units** (`gower_paired_physical.py`): Δz is in units of each event's own posterior width, so
+      it is not comparable to a published bound such as DES Y3's |Δθ(Ω_m)| < 0.007, and posterior
+      width and bias move together (`vare-fragility-tracks-sharpness`).
 - [ ] Save all figures + the JSON tables into `artifacts/`; record the numbers in `log.md`.
 
 ---

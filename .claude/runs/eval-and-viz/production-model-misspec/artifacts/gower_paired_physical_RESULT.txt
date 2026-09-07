@@ -1,0 +1,12 @@
+=== PAIRED Delta-theta (gower_gb1p3 minus gower_gb1p0), PHYSICAL units ===
+    paired posterior means differenced per event, rescaled by the
+    COSMO_PARAM_PRESET_MINMAX box width; sigma_post is the in-distribution mean.
+
+    param | Delta_theta (phys) | sd over encoders | in-dist sigma_post | ratio
+    --------------------------------------------------------------------------
+    omega_m  |            -0.0489 |           0.0032 |             0.0329 | -1.49 sigma
+    sigma_8  |            +0.0757 |           0.0069 |             0.0411 | +1.84 sigma
+    w0       |            +0.0408 |           0.0074 |             0.1447 | +0.28 sigma
+
+    For context, DES Y3 (Jeffrey 2025 sec 7.3.1) quote their b_g bound as a shift
+    in Omega_m itself: |Delta_theta(omega_m)| < 0.007.

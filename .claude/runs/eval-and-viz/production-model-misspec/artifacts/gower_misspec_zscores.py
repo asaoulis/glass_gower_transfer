@@ -239,10 +239,14 @@ def main():
                         continue
                     sd = fl["cal_full_sd"] or 1e-12
                     above = obs > fl["cal_full_p95"]
-                    print(f"    {n:>16}: obs={obs:.4f} vs floor[{key}] "
+                    # a z built from a few-draw floor sd is meaningless once obs is orders
+                    # of magnitude above the floor -- report the ratio there instead
+                    zc = (obs - fl["cal_full_mean"]) / sd
+                    mag = f"{zc:+.1f} sd" if abs(zc) <= 20 else \
+                          f"{obs / fl['cal_full_mean']:.0f}x the floor"
+                    print(f"    {n:16s}: obs={obs:.4f} vs floor[{key}] "
                           f"{fl['cal_full_mean']:.4f} +- {fl['cal_full_sd']:.4f} "
-                          f"(95th {fl['cal_full_p95']:.4f})  ->  "
-                          f"{(obs - fl['cal_full_mean']) / sd:+.1f} sd  "
+                          f"(95th {fl['cal_full_p95']:.4f})  ->  {mag}  "
                           f"{'ABOVE the floor' if above else 'WITHIN the floor -- not a detection'}")
         else:
             print("\n  (pass --summary-json gower_misspec_cal_vs_disagreement.json "
