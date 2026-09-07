@@ -254,6 +254,11 @@ def main(argv=None):
     parser.add_argument("--emb-batch-size", type=int, default=64,
                         help="--mode nle-external: events per sampling work item. Smaller => more "
                              "batches => more cores busy when the event count is small.")
+    parser.add_argument("--repro-check", action="store_true",
+                        help="--mode nle-external: run the REPRODUCTION GATE instead of an eval -- "
+                             "score the model's own test set through the external path and check it "
+                             "reproduces the production dump (file set, theta alignment, raw z vs "
+                             "the cached embeddings, against the measured scaler-refit floor).")
     parser.add_argument("--external-dry-run", action="store_true",
                         help="--mode nle-external: resolve the pipeline and stop before sampling.")
     parser.add_argument("--data-store", default=None,
@@ -331,6 +336,14 @@ def main(argv=None):
 
         if not args.experiments:
             raise SystemExit("--mode nle-external requires --experiments <stage_b_experiment>")
+        if args.repro_check:
+            # The anti-refit proof: run over the model's OWN test set and compare with what the
+            # production eval already produced. No sampling, no external store needed.
+            from src.ml.eval.nle_external import run_reproduction_check
+            for exp in args.experiments:
+                for r in (args.repeat_indices or (0,)):
+                    run_reproduction_check(exp, r, batch_size=args.emb_batch_size)
+            return 0
         if not args.data_store:
             raise SystemExit("--mode nle-external requires --data-store <gpu5 store name>")
         for exp in args.experiments:

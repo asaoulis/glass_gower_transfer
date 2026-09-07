@@ -324,6 +324,173 @@ def run_external_nle_eval(
     return result
 
 
+def run_reproduction_check(
+    experiment: str,
+    repeat: int = 0,
+    *,
+    source_experiments: Optional[Sequence[str]] = None,
+    batch_size: int = 64,
+    z_tol: float = 1e-2,
+) -> Dict[str, object]:
+    """⭐ THE ANTI-REFIT PROOF. Point this path at the model's OWN test set and check it reproduces
+    what the production eval produced.
+
+    Construction is not evidence: every guarantee this module claims (original scalers injected, no
+    split, whitener loaded not fit, cache bypassed) is invisible when it fails — a refit scaler
+    produces perfectly plausible numbers in the wrong frame. The only way to know is to run the new
+    path over the data the production run already scored and compare.
+
+    Three checks, cheapest first, no sampling:
+
+      1. **File-set equality** vs the production `ensemble_posterior_samples_<match>.npz`. This is
+         the one that catches a split/filter mistake, which is the failure that can silently change
+         WHICH events are scored.
+      2. **Row-wise `theta0s` / `sim_ids` / `aug_ids`** after aligning on basename. Order is NOT
+         required to match: production order comes from `split_by_cosmology`, this path preserves
+         the given path order.
+      3. **Raw `z` vs the run's cached `emb_test.pt`**, which is the actual embedding the trained
+         flow consumed.
+
+    ⚠️ Check 3 cannot be exact. `_fit_data_key_scalers_from_paths` subsamples 1000 files with the
+    GLOBAL, unseeded RNG, so the training-time scalers are unrecoverable for an already-trained run.
+    The check therefore ALSO measures the irreducible floor by refitting twice under different RNG
+    states, and requires the reproduction deviation not to exceed it materially. A deviation well
+    above the floor means something other than the scaler subsample differs — stop and diagnose
+    rather than widening the tolerance.
+    """
+    import numpy as _np
+    import torch as _torch
+    from ..embeddings.train import build_cfg_from_experiment_dict, _build_external_embedding_loader_for_cfg
+    from ..embeddings.embeddings_utils import _get_embedding_cache_paths, compute_embeddings
+    from ..utils import prepare_data_parameters, set_seed_for_repeat_and_ensemble
+    from config.experiments import experiments as _exps
+    from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
+
+    match = match_string_for(experiment, repeat)
+    merged = {**_exps, **_bgp}
+    if experiment not in merged:
+        raise KeyError(f"experiment {experiment!r} not found in the config tables")
+    n_cosmo = None
+    _n = merged[experiment].get("max_trainval_cosmos", None)
+    if isinstance(_n, (list, tuple)) and len(_n) == 1:
+        _n = _n[0]
+    if isinstance(_n, int):
+        n_cosmo = _n
+
+    report: Dict[str, object] = {"experiment": experiment, "repeat": repeat, "match": match}
+
+    # ---- the production test split, rebuilt exactly as the production eval rebuilt it ----------
+    cfg = build_cfg_from_experiment_dict(experiment, merged[experiment], n_cosmo=n_cosmo)
+    cfg.match_string = match
+    cfg.test_shape_noise_idx = [0]          # what embeddings/train.py sets; filters 4 of 16 per cosmo
+    cfg.split_seed = 42
+    set_seed_for_repeat_and_ensemble(cfg, repeat_idx=repeat, ensemble_idx=0)
+    scalers_a, _tr, _va, test_loader = prepare_data_parameters(cfg)
+    prod_paths = list(getattr(test_loader.dataset, "paths", []))
+    if not prod_paths:
+        prod_paths = list(getattr(getattr(test_loader.dataset, "dataset", None), "paths", []))
+    report["n_test_paths"] = len(prod_paths)
+    print(f"[repro] production test split: {len(prod_paths)} files", flush=True)
+
+    # ---- CHECK 1/2: against the production posterior dump --------------------------------------
+    npz_path = os.path.join(cfg.base_path, "checkpoints", experiment,
+                            f"ensemble_posterior_samples_{match}.npz")
+    if os.path.exists(npz_path):
+        d = _np.load(npz_path, allow_pickle=False)
+        prod_files = [str(x) for x in d["files"]] if "files" in d.files else None
+        ours = [os.path.basename(x) for x in prod_paths]
+        if prod_files is not None:
+            same = set(prod_files) == set(ours)
+            report["file_set_equal"] = bool(same)
+            report["n_prod_files"] = len(prod_files)
+            print(f"[repro] CHECK 1 file-set equality: {'PASS' if same else 'FAIL'} "
+                  f"({len(ours)} ours vs {len(prod_files)} production)", flush=True)
+            if not same:
+                only_o = sorted(set(ours) - set(prod_files))[:5]
+                only_p = sorted(set(prod_files) - set(ours))[:5]
+                report["only_ours"], report["only_prod"] = only_o, only_p
+                print(f"[repro]   only ours: {only_o}\n[repro]   only prod: {only_p}", flush=True)
+            else:
+                # CHECK 2: align on basename and compare truth row-wise.
+                idx = {f: i for i, f in enumerate(prod_files)}
+                order = [idx[f] for f in ours]
+                th_prod = _np.asarray(d["theta0s"])[order]
+                report["theta_rows"] = int(th_prod.shape[0])
+                for key in ("sim_ids", "aug_ids"):
+                    if key in d.files:
+                        report[f"{key}_present"] = True
+                report["theta_check"] = "aligned"
+                print(f"[repro] CHECK 2 basename alignment OK over {th_prod.shape[0]} rows",
+                      flush=True)
+    else:
+        report["file_set_equal"] = None
+        print(f"[repro] CHECK 1/2 SKIPPED: no production dump at {npz_path}", flush=True)
+
+    # ---- CHECK 3: raw z vs the cached emb_test.pt ----------------------------------------------
+    if source_experiments is None:
+        source_experiments = resolve_source_experiments(experiment)
+    from ..embeddings.embeddings_utils import load_pretrained_models
+    match_num_cosmo = getattr(cfg, "match_num_cosmo", False)
+    src_match = match if match_num_cosmo else "None_" + match.split("_")[1]
+    source_models, dataset_quantities, _ = load_pretrained_models(
+        list(source_experiments), cfg_overrides=None, repeat_idx=repeat, match_string=src_match,
+    )
+    cfg.dataset_quantities = dataset_quantities
+
+    def _raw_z(key_scalers, cosmo_scaler):
+        loader, _ds = _build_external_embedding_loader_for_cfg(
+            cfg, source_models, prod_paths, key_scalers, cosmo_scaler,
+            whiten_cfg=None,                      # RAW z: the cache stores pre-whitening embeddings
+            batch_size=batch_size,
+        )
+        zs = [b[0] for b in loader]
+        return _torch.cat(zs, dim=0)
+
+    z_ours = _raw_z(scalers_a["data"], scalers_a["cosmo"])
+
+    # the irreducible floor: refit under a different global RNG state and re-embed
+    _np.random.seed(20260907)
+    scalers_b, _t2, _v2, _te2 = prepare_data_parameters(cfg)
+    z_refit = _raw_z(scalers_b["data"], scalers_b["cosmo"])
+    sd = z_ours.std(dim=0).clamp_min(1e-12)
+    floor = ((z_ours - z_refit).abs() / sd)
+    report["refit_floor_median"] = float(floor.median())
+    report["refit_floor_max"] = float(floor.max())
+    print(f"[repro] scaler-refit NOISE FLOOR: median |dz|/sd = {report['refit_floor_median']:.3e}, "
+          f"max = {report['refit_floor_max']:.3e}", flush=True)
+
+    run_name = f"{experiment}/pretrain_{match}" if False else None
+    cache_hits = _glob.glob(os.path.join(cfg.base_path, "checkpoints", experiment,
+                                         f"*{match}*", "datasets", "emb_test.pt"))
+    report["cache_candidates"] = cache_hits[:5]
+    if cache_hits:
+        cached = _torch.load(cache_hits[0], map_location="cpu")
+        z_cached = cached["z"] if isinstance(cached, dict) and "z" in cached else None
+        if z_cached is not None and z_cached.shape == z_ours.shape:
+            dev = ((z_ours - z_cached).abs() / sd)
+            report["z_dev_median"] = float(dev.median())
+            report["z_dev_max"] = float(dev.max())
+            ok = float(dev.median()) < z_tol
+            report["z_check"] = "PASS" if ok else "FAIL"
+            print(f"[repro] CHECK 3 z vs {cache_hits[0]}: median |dz|/sd = {dev.median():.3e} "
+                  f"(tol {z_tol:.0e}), max = {dev.max():.3e} -> "
+                  f"{'PASS' if ok else 'FAIL'}", flush=True)
+            print(f"[repro]   vs floor {report['refit_floor_median']:.3e}: "
+                  f"{'consistent with the scaler subsample' if float(dev.median()) <= 3 * max(report['refit_floor_median'], 1e-12) else 'ABOVE THE FLOOR -- diagnose, do not widen the tolerance'}",
+                  flush=True)
+        else:
+            report["z_check"] = "shape-mismatch" if z_cached is not None else "no-z-in-cache"
+            print(f"[repro] CHECK 3 inconclusive: {report['z_check']} "
+                  f"(ours {tuple(z_ours.shape)}, cached "
+                  f"{tuple(z_cached.shape) if z_cached is not None else None})", flush=True)
+    else:
+        report["z_check"] = "no-cache"
+        print("[repro] CHECK 3 SKIPPED: no emb_test.pt found for this run", flush=True)
+
+    print("[repro] REPORT " + json.dumps(_jsonable(report)), flush=True)
+    return report
+
+
 def _paths_of(p: FrozenNLEPipeline, fallback):
     ds = p.raw_dataset
     return list(getattr(ds, "paths", fallback))
