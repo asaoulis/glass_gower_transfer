@@ -37,6 +37,6 @@ CLAUDE.md
 .glass_matter_cache/
 *.pt
 # local analysis working state (shear-replay sweeps, fetched checkpoints, rank dumps)
-ml-checkpoints/
+ml-checkpoints
 steps_*.jsonl
 rank_table.txt
