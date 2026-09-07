@@ -84,7 +84,11 @@ def main():
     ap.add_argument("--root", required=True)
     ap.add_argument("--match", default="ncosmo300_0")
     ap.add_argument("--out-prefix", default="misspec")
-    ap.add_argument("--floor-reps", type=int, default=8)
+    ap.add_argument("--floor-reps", type=int, default=200,
+                    help="draws for the SMALL cluster shapes, where the floor actually matters")
+    ap.add_argument("--summary-json", default=None,
+                    help="gower_misspec_cal_vs_disagreement.json - supplies the observed "
+                         "5-repeat cal_full_mean per variate for the floor comparison")
     ap.add_argument("--indist", default="nla_m")
     args = ap.parse_args()
 
@@ -173,8 +177,12 @@ def main():
             if ncos > len(cos0):
                 print(f"  [{ncos} x {rpc}] SKIP - more cosmologies than the in-dist set has.")
                 continue
+            # cost scales with n_rows; the large shapes' floor is essentially the in-dist
+            # value itself, so spend the draws on the small shapes where the floor is the
+            # whole point.
+            reps = args.floor_reps if ncos * rpc <= 200 else max(4, args.floor_reps // 40)
             fulls, subs = [], []
-            for _ in range(args.floor_reps):
+            for _ in range(reps):
                 pick = rng.choice(cos0, size=ncos, replace=False)
                 sel = np.concatenate([
                     rng.choice(idx_by_cos0[c], size=min(rpc, len(idx_by_cos0[c])), replace=False)
@@ -185,13 +193,14 @@ def main():
             s_m, s_s = float(np.mean(subs)), float(np.std(subs))
             floors[f"{ncos}x{rpc}"] = {
                 "n_cosmologies": ncos, "rows_per_cosmology": rpc, "n_rows": ncos * rpc,
-                "variates": who, "reps": args.floor_reps,
+                "variates": who, "reps": reps,
                 "cal_full_mean": f_m, "cal_full_sd": f_s,
                 "cal_full_p95": float(np.percentile(fulls, 95)),
                 "cal3_mean": s_m, "cal3_sd": s_s,
                 "cal3_p95": float(np.percentile(subs, 95)),
             }
-            print(f"  [{ncos:3d} cos x {rpc} rows = {ncos * rpc:4d}] matches {','.join(who)}")
+            print(f"  [{ncos:3d} cos x {rpc} rows = {ncos * rpc:4d}] matches {','.join(who)} "
+                  f"({reps} draws)")
             print(f"      cal_full(9p)  = {f_m:.4f} +- {f_s:.4f}  (95th pct {np.percentile(fulls, 95):.4f})")
             print(f"      cal_om_s8_w0  = {s_m:.4f} +- {s_s:.4f}  (95th pct {np.percentile(subs, 95):.4f})")
 
@@ -200,9 +209,10 @@ def main():
             N = ncos * rpc
             if N >= n0:
                 continue
+            nrep = args.floor_reps if N <= 200 else max(4, args.floor_reps // 40)
             fulls = [calibration_error(s0[:, sel, :], th0[sel])
                      for sel in (rng.choice(n0, size=N, replace=False)
-                                 for _ in range(max(args.floor_reps // 4, 4)))]
+                                 for _ in range(nrep))]
             print(f"  [row-matched N={N}, WRONG but shown for contrast] "
                   f"cal_full = {np.mean(fulls):.4f} +- {np.std(fulls):.4f}")
 
@@ -212,22 +222,31 @@ def main():
         print(f"  wrote {fp}")
 
         # where the real variates sit relative to their own floor
-        print("\n  --- variate vs its cluster-matched floor (cal_full) ---")
-        for (ncos, rpc), who in sorted(shapes.items()):
-            key = f"{ncos}x{rpc}"
-            if key not in floors:
-                continue
-            fl = floors[key]
-            for n in who:
-                j = data[n].get("json", {})
-                obs = j.get("calibration_error")
-                if obs is None:
+        summ = {}
+        if args.summary_json and os.path.exists(args.summary_json):
+            with open(args.summary_json) as f:
+                summ = json.load(f)
+        if summ:
+            print("\n  --- variate vs its CLUSTER-MATCHED floor (cal_full, 5-repeat mean) ---")
+            for (ncos, rpc), who in sorted(shapes.items()):
+                key = f"{ncos}x{rpc}"
+                if key not in floors:
                     continue
-                sd = fl["cal_full_sd"] or 1e-12
-                print(f"    {n:>16}: obs={obs:.4f} vs floor {fl['cal_full_mean']:.4f}"
-                      f" +- {fl['cal_full_sd']:.4f} -> "
-                      f"{(obs - fl['cal_full_mean']) / sd:+.1f} sd"
-                      f"{'  (ABOVE 95th pct)' if obs > fl['cal_full_p95'] else '  (within floor)'}")
+                fl = floors[key]
+                for n in who:
+                    obs = (summ.get(n) or {}).get("cal_full_mean")
+                    if obs is None:
+                        continue
+                    sd = fl["cal_full_sd"] or 1e-12
+                    above = obs > fl["cal_full_p95"]
+                    print(f"    {n:>16}: obs={obs:.4f} vs floor[{key}] "
+                          f"{fl['cal_full_mean']:.4f} +- {fl['cal_full_sd']:.4f} "
+                          f"(95th {fl['cal_full_p95']:.4f})  ->  "
+                          f"{(obs - fl['cal_full_mean']) / sd:+.1f} sd  "
+                          f"{'ABOVE the floor' if above else 'WITHIN the floor -- not a detection'}")
+        else:
+            print("\n  (pass --summary-json gower_misspec_cal_vs_disagreement.json "
+                  "for the variate-vs-floor comparison)")
 
     # ---------------- drop accounting ----------------
     print("\n=== EVENT ACCOUNTING ===")
