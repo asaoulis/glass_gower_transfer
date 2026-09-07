@@ -1,0 +1,93 @@
+[stage0] loaded cache /home/alex/work/glass_gower_transfer/.claude/runs/eval-and-viz/production-model-misspec/artifacts/phase6/stage0_scores.npz
+_idtest: 1590 rows / 199 cosmologies; 60 random splits of 99 fit-cosmologies
+[crit1] split 0/60 done
+[crit1] split 10/60 done
+[crit1] split 20/60 done
+[crit1] split 30/60 done
+[crit1] split 40/60 done
+[crit1] split 50/60 done
+
+=== CRITERION 1: calibration on held-out half B (100 cosmologies; crit=0.136, H0 median 0.083) ===
+      meanp: (a) mean_p=0.4973+-0.0321 ok | (b) D_med=0.0899 (97% splits < crit) ok | +control gower_nla: D_med=0.584 mean_p=0.137 POWER OK  PASS
+     fisher: (a) mean_p=0.4970+-0.0320 ok | (b) D_med=0.0895 (95% splits < crit) ok | +control gower_nla: D_med=0.583 mean_p=0.137 POWER OK  PASS
+      dose5: (a) mean_p=0.4961+-0.0194 ok | (b) D_med=0.0841 (100% splits < crit) ok | +control gower_nla: D_med=0.360 mean_p=0.307 POWER OK  PASS
+     dose10: (a) mean_p=0.4898+-0.0175 ok | (b) D_med=0.0855 (100% splits < crit) ok | +control gower_nla: D_med=0.497 mean_p=0.244 POWER OK  PASS
+        gls: (a) mean_p=0.4971+-0.0321 ok | (b) D_med=0.0907 (95% splits < crit) ok | +control gower_nla: D_med=0.583 mean_p=0.135 POWER OK  PASS
+   stouffer: (a) mean_p=0.4973+-0.0319 ok | (b) D_med=0.0896 (95% splits < crit) ok | +control gower_nla: D_med=0.587 mean_p=0.135 POWER OK  PASS
+    tippett: (a) mean_p=0.4958+-0.0321 ok | (b) D_med=0.0895 (95% splits < crit) ok | +control gower_nla: D_med=0.584 mean_p=0.143 POWER OK  PASS
+    single0: (a) mean_p=0.4977+-0.0282 ok | (b) D_med=0.0897 (98% splits < crit) ok | +control gower_nla: D_med=0.506 mean_p=0.169 POWER OK  PASS
+    single1: (a) mean_p=0.4969+-0.0317 ok | (b) D_med=0.0921 (93% splits < crit) ok | +control gower_nla: D_med=0.559 mean_p=0.153 POWER OK  PASS
+    single2: (a) mean_p=0.4973+-0.0306 ok | (b) D_med=0.0892 (95% splits < crit) ok | +control gower_nla: D_med=0.566 mean_p=0.148 POWER OK  PASS
+    single3: (a) mean_p=0.4983+-0.0282 ok | (b) D_med=0.0857 (95% splits < crit) ok | +control gower_nla: D_med=0.572 mean_p=0.143 POWER OK  PASS
+    single4: (a) mean_p=0.4983+-0.0338 ok | (b) D_med=0.0871 (90% splits < crit) ok | +control gower_nla: D_med=0.507 mean_p=0.165 POWER OK  PASS
+
+=== CRITERION 2: AUROC(_idtest vs variate), by-cosmology bootstrap sd / 95% CI ===
+  gower_bgp_nla_m  n_cos=199 n=1590: single=0.500+-0.000 single_best=0.500+-0.000 meanp=0.500+-0.000 fisher=0.500+-0.000 dose5=0.500+-0.000 dose10=0.500+-0.000 gls=0.500+-0.000 stouffer=0.500+-0.000 tippett=0.500+-0.000
+  gower_nla        n_cos=199 n=1592: single=0.847+-0.011 single_best=0.859+-0.010 meanp=0.866+-0.011 fisher=0.865+-0.011 dose5=0.691+-0.015 dose10=0.749+-0.012 gls=0.868+-0.010 stouffer=0.867+-0.010 tippett=0.856+-0.011
+  gower_nla_z      n_cos=199 n=1592: single=0.851+-0.011 single_best=0.861+-0.011 meanp=0.872+-0.011 fisher=0.872+-0.010 dose5=0.700+-0.015 dose10=0.758+-0.012 gls=0.873+-0.010 stouffer=0.874+-0.011 tippett=0.867+-0.010
+  gower_vd         n_cos=199 n=1588: single=0.492+-0.009 single_best=0.497+-0.009 meanp=0.490+-0.008 fisher=0.491+-0.008 dose5=0.512+-0.010 dose10=0.509+-0.009 gls=0.490+-0.008 stouffer=0.489+-0.008 tippett=0.496+-0.008
+  gower_gb1p0      n_cos=40 n=80: single=0.568+-0.037 single_best=0.582+-0.037 meanp=0.580+-0.037 fisher=0.579+-0.037 dose5=0.449+-0.032 dose10=0.416+-0.034 gls=0.579+-0.036 stouffer=0.579+-0.036 tippett=0.579+-0.036
+  gower_gb1p3      n_cos=40 n=80: single=0.532+-0.041 single_best=0.562+-0.040 meanp=0.537+-0.043 fisher=0.536+-0.041 dose5=0.473+-0.040 dose10=0.434+-0.037 gls=0.539+-0.041 stouffer=0.537+-0.039 tippett=0.532+-0.042
+
+=== CRITERION 3: Spearman rho(-log p_combined, |z_post(truth)|), mean over the 5 posteriors; by-cosmology bootstrap sd ===
+  [join] gower_nla r0: 1 summaries rows have no posterior moments -> dropped from rho
+  [join] gower_nla r2: 30 summaries rows have no posterior moments -> dropped from rho
+  [join] gower_nla r3: 7 summaries rows have no posterior moments -> dropped from rho
+  [join] gower_nla_z r2: 27 summaries rows have no posterior moments -> dropped from rho
+  [join] gower_nla_z r3: 6 summaries rows have no posterior moments -> dropped from rho
+  gower_bgp_nla_m : single=(+0.106,+0.087) meanp=(+0.101,+0.081) fisher=(+0.105,+0.084) dose5=(+0.015,+0.027) dose10=(+0.010,+0.053) gls=(+0.101,+0.081) stouffer=(+0.103,+0.082) tippett=(+0.111,+0.087)
+  gower_nla       : single=(+0.385,+0.535) meanp=(+0.406,+0.535) fisher=(+0.406,+0.539) dose5=(+0.284,+0.425) dose10=(+0.275,+0.416) gls=(+0.404,+0.543) stouffer=(+0.406,+0.539) tippett=(+0.372,+0.533)
+  gower_nla_z     : single=(+0.357,+0.534) meanp=(+0.373,+0.543) fisher=(+0.377,+0.552) dose5=(+0.275,+0.449) dose10=(+0.225,+0.401) gls=(+0.379,+0.555) stouffer=(+0.376,+0.550) tippett=(+0.356,+0.535)
+  gower_vd        : single=(+0.071,+0.095) meanp=(+0.074,+0.093) fisher=(+0.077,+0.093) dose5=(+0.001,-0.012) dose10=(+0.019,+0.007) gls=(+0.074,+0.092) stouffer=(+0.075,+0.091) tippett=(+0.077,+0.089)
+  gower_gb1p0     : single=(+0.045,+0.207) meanp=(+0.035,+0.195) fisher=(+0.032,+0.182) dose5=(-0.013,-0.029) dose10=(-0.011,-0.003) gls=(+0.037,+0.198) stouffer=(+0.042,+0.200) tippett=(+0.031,+0.147)
+  gower_gb1p3     : single=(+0.080,-0.071) meanp=(+0.064,-0.111) fisher=(+0.063,-0.100) dose5=(-0.004,-0.027) dose10=(+0.030,+0.112) gls=(+0.075,-0.106) stouffer=(+0.076,-0.106) tippett=(+0.097,-0.082)
+
+[recommend] candidates beating mean-p on all hard variates by > 1 sd AND on Spearman: none -> combined_p = meanp
+[write] per-set npz -> /home/alex/work/glass_gower_transfer/.claude/runs/eval-and-viz/production-model-misspec/artifacts/phase6/multiencoder_ood_<set>.npz (combined_p = meanp)
+# Phase 6 acceptance tables (seed 0, 60 splits, 1000 cosmology bootstraps)
+
+Recommended combiner written to `combined_p`: **meanp**
+
+
+## Criterion 1 - calibrated null on held-out half B (100 cosmologies; KS crit 0.136, H0 median 0.083); +control = gower_nla
+
+| method | mean_p (per-split sd) | (a) | median cluster-KS D | (b) | control D | power | verdict |
+|---|---|---|---|---|---|---|---|
+| single encoder, avg (baseline) | 0.4977 (0.0305) | ok | 0.086-0.092 | ok | 0.51-0.57 | ok | PASS (5 encoders) |
+| single encoder, best [oracle] | 0.4977 (0.0305) | ok | 0.086-0.092 | ok | 0.51-0.57 | ok | PASS (5 encoders) |
+| mean-p (baseline) | 0.4973 (0.0321) | ok | 0.090 | ok | 0.58 | ok | PASS |
+| Fisher (baseline) | 0.4970 (0.0320) | ok | 0.089 | ok | 0.58 | ok | PASS |
+| (a) DoSE-5 Mahalanobis | 0.4961 (0.0194) | ok | 0.084 | ok | 0.36 | ok | PASS |
+| (a) DoSE-10 (knn+cond) | 0.4898 (0.0175) | ok | 0.085 | ok | 0.50 | ok | PASS |
+| (b) GLS-Stouffer (Lin-Sullivan) | 0.4971 (0.0321) | ok | 0.091 | ok | 0.58 | ok | PASS |
+| Stouffer | 0.4973 (0.0319) | ok | 0.090 | ok | 0.59 | ok | PASS |
+| Tippett (min p) | 0.4958 (0.0321) | ok | 0.089 | ok | 0.58 | ok | PASS |
+
+## Criterion 2 - AUROC(_idtest vs variate) +- by-cosmology bootstrap sd  [split-to-split sd in brackets]
+
+| method | gower_bgp_nla_m (n_cos=199) | gower_nla (n_cos=199) | gower_nla_z (n_cos=199) | gower_vd (n_cos=199) | gower_gb1p0 (n_cos=40) | gower_gb1p3 (n_cos=40) |
+|---|---|---|---|---|---|---|
+| single encoder, avg (baseline) | 0.500 +- 0.000 | 0.847 +- 0.011 | 0.851 +- 0.011 | 0.492 +- 0.009 | 0.568 +- 0.037 | 0.532 +- 0.041 |
+| single encoder, best [oracle] | 0.500 +- 0.000 (r1) | 0.859 +- 0.010 (r3) | 0.861 +- 0.011 (r2) | 0.497 +- 0.009 (r1) | 0.582 +- 0.037 (r1) | 0.562 +- 0.040 (r4) |
+| mean-p (baseline) | 0.500 +- 0.000 [0.000] | 0.866 +- 0.011 [0.001] | 0.872 +- 0.011 [0.001] | 0.490 +- 0.008 [0.000] | 0.580 +- 0.037 [0.002] | 0.537 +- 0.043 [0.002] |
+| Fisher (baseline) | 0.500 +- 0.000 [0.000] | 0.865 +- 0.011 [0.001] | 0.872 +- 0.010 [0.001] | 0.491 +- 0.008 [0.000] | 0.579 +- 0.037 [0.002] | 0.536 +- 0.041 [0.002] |
+| (a) DoSE-5 Mahalanobis | 0.500 +- 0.000 [0.000] | 0.691 +- 0.015 [0.004] | 0.700 +- 0.015 [0.004] | 0.512 +- 0.010 [0.001] | 0.449 +- 0.032 [0.006] | 0.473 +- 0.040 [0.006] |
+| (a) DoSE-10 (knn+cond) | 0.500 +- 0.000 [0.000] | 0.749 +- 0.012 [0.004] | 0.758 +- 0.012 [0.004] | 0.509 +- 0.009 [0.001] | 0.416 +- 0.034 [0.006] | 0.434 +- 0.037 [0.007] |
+| (b) GLS-Stouffer (Lin-Sullivan) | 0.500 +- 0.000 [0.000] | 0.868 +- 0.010 [0.001] | 0.873 +- 0.010 [0.001] | 0.490 +- 0.008 [0.000] | 0.579 +- 0.036 [0.002] | 0.539 +- 0.041 [0.002] |
+| Stouffer | 0.500 +- 0.000 [0.000] | 0.867 +- 0.010 [0.001] | 0.874 +- 0.011 [0.001] | 0.489 +- 0.008 [0.000] | 0.579 +- 0.036 [0.002] | 0.537 +- 0.039 [0.002] |
+| Tippett (min p) | 0.500 +- 0.000 [0.000] | 0.856 +- 0.011 [0.002] | 0.867 +- 0.010 [0.002] | 0.496 +- 0.008 [0.001] | 0.579 +- 0.036 [0.003] | 0.532 +- 0.042 [0.002] |
+
+## Criterion 3 - Spearman rho(-log p, |z_post(truth)|) for (omega_m, sigma_8), mean over the 5 posteriors, +- by-cosmology bootstrap sd
+
+| method | gower_bgp_nla_m | gower_nla | gower_nla_z | gower_vd | gower_gb1p0 | gower_gb1p3 |
+|---|---|---|---|---|---|---|
+| single encoder, avg (baseline) | +0.106+-0.036, +0.087+-0.027 | +0.385+-0.027, +0.535+-0.021 | +0.357+-0.027, +0.534+-0.022 | +0.071+-0.034, +0.095+-0.032 | +0.045+-0.111, +0.207+-0.118 | +0.080+-0.091, -0.071+-0.082 |
+| single encoder, best [oracle] | +0.100+-0.035, +0.087+-0.029 (r2) | +0.394+-0.026, +0.546+-0.021 (r4) | +0.370+-0.026, +0.551+-0.022 (r4) | +0.083+-0.035, +0.100+-0.031 (r3) | +0.097+-0.116, +0.219+-0.113 (r2) | +0.123+-0.098, +0.016+-0.091 (r3) |
+| mean-p (baseline) | +0.101+-0.040, +0.081+-0.031 | +0.406+-0.027, +0.535+-0.022 | +0.373+-0.026, +0.543+-0.021 | +0.074+-0.038, +0.093+-0.032 | +0.035+-0.128, +0.195+-0.128 | +0.064+-0.102, -0.111+-0.085 |
+| Fisher (baseline) | +0.105+-0.036, +0.084+-0.031 | +0.406+-0.028, +0.539+-0.022 | +0.377+-0.028, +0.552+-0.024 | +0.077+-0.035, +0.093+-0.033 | +0.032+-0.127, +0.182+-0.130 | +0.063+-0.105, -0.100+-0.091 |
+| (a) DoSE-5 Mahalanobis | +0.015+-0.031, +0.027+-0.029 | +0.284+-0.028, +0.425+-0.025 | +0.275+-0.027, +0.449+-0.024 | +0.001+-0.032, -0.012+-0.025 | -0.013+-0.108, -0.029+-0.114 | -0.004+-0.115, -0.027+-0.113 |
+| (a) DoSE-10 (knn+cond) | +0.010+-0.030, +0.053+-0.027 | +0.275+-0.030, +0.416+-0.026 | +0.225+-0.027, +0.401+-0.026 | +0.019+-0.029, +0.007+-0.025 | -0.011+-0.113, -0.003+-0.119 | +0.030+-0.106, +0.112+-0.100 |
+| (b) GLS-Stouffer (Lin-Sullivan) | +0.101+-0.036, +0.081+-0.031 | +0.404+-0.027, +0.543+-0.022 | +0.379+-0.026, +0.555+-0.023 | +0.074+-0.039, +0.092+-0.034 | +0.037+-0.126, +0.198+-0.132 | +0.075+-0.110, -0.106+-0.084 |
+| Stouffer | +0.103+-0.038, +0.082+-0.033 | +0.406+-0.029, +0.539+-0.021 | +0.376+-0.026, +0.550+-0.022 | +0.075+-0.038, +0.091+-0.035 | +0.042+-0.120, +0.200+-0.131 | +0.076+-0.110, -0.106+-0.088 |
+| Tippett (min p) | +0.111+-0.037, +0.087+-0.030 | +0.372+-0.030, +0.533+-0.023 | +0.356+-0.028, +0.535+-0.025 | +0.077+-0.036, +0.089+-0.034 | +0.031+-0.135, +0.147+-0.142 | +0.097+-0.107, -0.082+-0.091 |
+[figs] /home/alex/work/glass_gower_transfer/.claude/runs/eval-and-viz/production-model-misspec/artifacts/phase6/phase6_auroc.png, phase6_spearman.png
