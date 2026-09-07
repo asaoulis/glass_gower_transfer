@@ -1,3 +1,8 @@
+[stage0+] gower_gbk2 r0: scored 1592 rows, dims=9
+[stage0+] gower_gbk2 r1: scored 1592 rows, dims=9
+[stage0+] gower_gbk2 r2: scored 1592 rows, dims=9
+[stage0+] gower_gbk2 r3: scored 1592 rows, dims=9
+[stage0+] gower_gbk2 r4: scored 1592 rows, dims=9
 
 === HEAD-TO-HEAD AUROC (variate vs in-distribution), 95% by-cosmology CI ===
   gower_gb1p0    kl        AUROC=0.466 [0.401, 0.538] sd=0.035
@@ -5,166 +10,215 @@
   gower_gb1p0    cond_knn  AUROC=0.570 [0.508, 0.640] sd=0.033  per-encoder [0.555, 0.585, 0.579, 0.569, 0.563]
   gower_gb1p0    meanp     AUROC=0.580 [0.512, 0.657] sd=0.037
   gower_gb1p0    kl        power@5%FPR=0.050 [0.012, 0.100]
+  gower_gb1p0    kl        power@1%FPR=0.013 [0.000, 0.043]
   gower_gb1p0    meanp     power@5%FPR=0.050 [0.000, 0.115]
+  gower_gb1p0    meanp     power@1%FPR=0.000 [0.000, 0.000]
   gower_gb1p0    knn       power@5%FPR=0.053 [0.021, 0.092]
+  gower_gb1p0    knn       power@1%FPR=0.005 [0.000, 0.017]
   gower_gb1p0    cond_knn  power@5%FPR=0.050 [0.019, 0.090]
+  gower_gb1p0    cond_knn  power@1%FPR=0.003 [0.000, 0.008]
   gower_gb1p0    Spearman(KL, -p_meanp) = +0.129
   gower_gb1p3    kl        AUROC=0.489 [0.424, 0.553] sd=0.033
   gower_gb1p3    knn       AUROC=0.519 [0.453, 0.584] sd=0.033  per-encoder [0.51, 0.504, 0.526, 0.503, 0.554]
   gower_gb1p3    cond_knn  AUROC=0.533 [0.462, 0.599] sd=0.037  per-encoder [0.52, 0.526, 0.53, 0.527, 0.563]
   gower_gb1p3    meanp     AUROC=0.537 [0.454, 0.610] sd=0.042
   gower_gb1p3    kl        power@5%FPR=0.037 [0.000, 0.100]
+  gower_gb1p3    kl        power@1%FPR=0.000 [0.000, 0.000]
   gower_gb1p3    meanp     power@5%FPR=0.062 [0.000, 0.144]
+  gower_gb1p3    meanp     power@1%FPR=0.037 [0.000, 0.103]
   gower_gb1p3    knn       power@5%FPR=0.082 [0.018, 0.163]
+  gower_gb1p3    knn       power@1%FPR=0.025 [0.002, 0.058]
   gower_gb1p3    cond_knn  power@5%FPR=0.075 [0.014, 0.154]
+  gower_gb1p3    cond_knn  power@1%FPR=0.037 [0.000, 0.100]
   gower_gb1p3    Spearman(KL, -p_meanp) = +0.270
-  gower_vd       kl        AUROC=0.498 [0.477, 0.518] sd=0.011
-  gower_vd       knn       AUROC=0.494 [0.481, 0.505] sd=0.006  per-encoder [0.497, 0.496, 0.492, 0.492, 0.492]
-  gower_vd       cond_knn  AUROC=0.491 [0.477, 0.505] sd=0.007  per-encoder [0.487, 0.496, 0.492, 0.486, 0.496]
-  gower_vd       meanp     AUROC=0.490 [0.472, 0.505] sd=0.008
+  gower_gbk2     kl        AUROC=0.537 [0.518, 0.559] sd=0.011
+  gower_gbk2     knn       AUROC=0.498 [0.485, 0.512] sd=0.007  per-encoder [0.501, 0.496, 0.498, 0.494, 0.5]
+  gower_gbk2     cond_knn  AUROC=0.522 [0.508, 0.537] sd=0.007  per-encoder [0.519, 0.527, 0.523, 0.513, 0.528]
+  gower_gbk2     meanp     AUROC=0.525 [0.508, 0.542] sd=0.008
+  gower_gbk2     kl        power@5%FPR=0.073 [0.060, 0.085]
+  gower_gbk2     kl        power@1%FPR=0.021 [0.014, 0.028]
+  gower_gbk2     meanp     power@5%FPR=0.061 [0.038, 0.086]
+  gower_gbk2     meanp     power@1%FPR=0.014 [0.003, 0.027]
+  gower_gbk2     knn       power@5%FPR=0.054 [0.038, 0.074]
+  gower_gbk2     knn       power@1%FPR=0.014 [0.006, 0.024]
+  gower_gbk2     cond_knn  power@5%FPR=0.067 [0.045, 0.088]
+  gower_gbk2     cond_knn  power@1%FPR=0.013 [0.004, 0.023]
+  gower_gbk2     Spearman(KL, -p_meanp) = +0.101
+  gower_vd       kl        AUROC=0.498 [0.475, 0.519] sd=0.011
+  gower_vd       knn       AUROC=0.494 [0.481, 0.506] sd=0.006  per-encoder [0.497, 0.496, 0.492, 0.492, 0.492]
+  gower_vd       cond_knn  AUROC=0.491 [0.478, 0.505] sd=0.007  per-encoder [0.487, 0.496, 0.492, 0.486, 0.496]
+  gower_vd       meanp     AUROC=0.490 [0.474, 0.505] sd=0.008
   gower_vd       kl        power@5%FPR=0.056 [0.045, 0.069]
-  gower_vd       meanp     power@5%FPR=0.051 [0.029, 0.074]
-  gower_vd       knn       power@5%FPR=0.045 [0.029, 0.065]
-  gower_vd       cond_knn  power@5%FPR=0.048 [0.030, 0.068]
+  gower_vd       kl        power@1%FPR=0.018 [0.011, 0.025]
+  gower_vd       meanp     power@5%FPR=0.051 [0.031, 0.074]
+  gower_vd       meanp     power@1%FPR=0.009 [0.001, 0.021]
+  gower_vd       knn       power@5%FPR=0.045 [0.029, 0.064]
+  gower_vd       knn       power@1%FPR=0.011 [0.003, 0.022]
+  gower_vd       cond_knn  power@5%FPR=0.048 [0.032, 0.066]
+  gower_vd       cond_knn  power@1%FPR=0.009 [0.002, 0.021]
   gower_vd       Spearman(KL, -p_meanp) = +0.041
-  gower_nla      kl        AUROC=0.887 [0.869, 0.904] sd=0.009
-  gower_nla      knn       AUROC=0.933 [0.919, 0.945] sd=0.007  per-encoder [0.932, 0.927, 0.934, 0.933, 0.937]
-  gower_nla      cond_knn  AUROC=0.845 [0.824, 0.865] sd=0.011  per-encoder [0.832, 0.847, 0.852, 0.856, 0.836]
-  gower_nla      meanp     AUROC=0.863 [0.841, 0.883] sd=0.011
-  gower_nla      kl        power@5%FPR=0.736 [0.702, 0.769]
-  gower_nla      meanp     power@5%FPR=0.516 [0.476, 0.557]
-  gower_nla      knn       power@5%FPR=0.803 [0.772, 0.834]
-  gower_nla      cond_knn  power@5%FPR=0.494 [0.459, 0.529]
+  gower_nla      kl        AUROC=0.887 [0.869, 0.903] sd=0.009
+  gower_nla      knn       AUROC=0.933 [0.919, 0.946] sd=0.007  per-encoder [0.932, 0.927, 0.934, 0.933, 0.937]
+  gower_nla      cond_knn  AUROC=0.845 [0.824, 0.867] sd=0.011  per-encoder [0.832, 0.847, 0.852, 0.856, 0.836]
+  gower_nla      meanp     AUROC=0.863 [0.841, 0.884] sd=0.011
+  gower_nla      kl        power@5%FPR=0.736 [0.701, 0.770]
+  gower_nla      kl        power@1%FPR=0.679 [0.641, 0.716]
+  gower_nla      meanp     power@5%FPR=0.516 [0.476, 0.556]
+  gower_nla      meanp     power@1%FPR=0.392 [0.357, 0.426]
+  gower_nla      knn       power@5%FPR=0.803 [0.770, 0.831]
+  gower_nla      knn       power@1%FPR=0.722 [0.685, 0.754]
+  gower_nla      cond_knn  power@5%FPR=0.494 [0.458, 0.527]
+  gower_nla      cond_knn  power@1%FPR=0.396 [0.361, 0.430]
   gower_nla      Spearman(KL, -p_meanp) = +0.802
-  gower_nla_z    kl        AUROC=0.898 [0.879, 0.914] sd=0.009
-  gower_nla_z    knn       AUROC=0.937 [0.924, 0.948] sd=0.006  per-encoder [0.937, 0.933, 0.938, 0.935, 0.939]
-  gower_nla_z    cond_knn  AUROC=0.849 [0.828, 0.871] sd=0.011  per-encoder [0.84, 0.853, 0.858, 0.857, 0.838]
-  gower_nla_z    meanp     AUROC=0.869 [0.847, 0.890] sd=0.011
-  gower_nla_z    kl        power@5%FPR=0.752 [0.716, 0.785]
-  gower_nla_z    meanp     power@5%FPR=0.511 [0.470, 0.550]
-  gower_nla_z    knn       power@5%FPR=0.817 [0.788, 0.844]
-  gower_nla_z    cond_knn  power@5%FPR=0.471 [0.434, 0.507]
+  gower_nla_z    kl        AUROC=0.898 [0.880, 0.914] sd=0.009
+  gower_nla_z    knn       AUROC=0.937 [0.925, 0.947] sd=0.006  per-encoder [0.937, 0.933, 0.938, 0.935, 0.939]
+  gower_nla_z    cond_knn  AUROC=0.849 [0.828, 0.869] sd=0.011  per-encoder [0.84, 0.853, 0.858, 0.857, 0.838]
+  gower_nla_z    meanp     AUROC=0.869 [0.849, 0.891] sd=0.011
+  gower_nla_z    kl        power@5%FPR=0.752 [0.717, 0.783]
+  gower_nla_z    kl        power@1%FPR=0.698 [0.661, 0.733]
+  gower_nla_z    meanp     power@5%FPR=0.511 [0.471, 0.550]
+  gower_nla_z    meanp     power@1%FPR=0.355 [0.319, 0.395]
+  gower_nla_z    knn       power@5%FPR=0.817 [0.790, 0.842]
+  gower_nla_z    knn       power@1%FPR=0.731 [0.699, 0.762]
+  gower_nla_z    cond_knn  power@5%FPR=0.471 [0.436, 0.508]
+  gower_nla_z    cond_knn  power@1%FPR=0.365 [0.331, 0.401]
   gower_nla_z    Spearman(KL, -p_meanp) = +0.795
 
 === COST CURVE: AUROC vs number of encoders ===
   gower_nla    KL   K=2: 0.853 [0.836,0.870]  (10 subsets)
   gower_nla    KL   K=3: 0.872 [0.855,0.890]  (10 subsets)
-  gower_nla    KL   K=4: 0.882 [0.864,0.900]  (5 subsets)
-  gower_nla    KL   K=5: 0.887 [0.869,0.906]  (1 subsets)
-  gower_nla    cond_knn K=1: 0.845 [0.824,0.864]
-  gower_nla    cond_knn K=2: 0.856 [0.834,0.876]
+  gower_nla    KL   K=4: 0.882 [0.864,0.899]  (5 subsets)
+  gower_nla    KL   K=5: 0.887 [0.870,0.904]  (1 subsets)
+  gower_nla    cond_knn K=1: 0.845 [0.823,0.864]
+  gower_nla    cond_knn K=2: 0.856 [0.834,0.875]
   gower_nla    cond_knn K=3: 0.860 [0.838,0.880]
-  gower_nla    cond_knn K=4: 0.862 [0.841,0.882]
-  gower_nla    cond_knn K=5: 0.863 [0.842,0.883]
+  gower_nla    cond_knn K=4: 0.862 [0.840,0.882]
+  gower_nla    cond_knn K=5: 0.863 [0.841,0.883]
   gower_nla    knn      K=1: 0.933 [0.919,0.945]
-  gower_nla    knn      K=2: 0.937 [0.924,0.949]
+  gower_nla    knn      K=2: 0.937 [0.923,0.949]
   gower_nla    knn      K=3: 0.938 [0.925,0.951]
   gower_nla    knn      K=4: 0.939 [0.926,0.951]
-  gower_nla    knn      K=5: 0.940 [0.927,0.952]
-  gower_gb1p0  KL   K=2: 0.473 [0.440,0.510]  (10 subsets)
-  gower_gb1p0  KL   K=3: 0.468 [0.422,0.518]  (10 subsets)
-  gower_gb1p0  KL   K=4: 0.466 [0.409,0.528]  (5 subsets)
-  gower_gb1p0  KL   K=5: 0.466 [0.397,0.541]  (1 subsets)
-  gower_gb1p0  cond_knn K=1: 0.571 [0.514,0.629]
-  gower_gb1p0  cond_knn K=2: 0.578 [0.516,0.641]
-  gower_gb1p0  cond_knn K=3: 0.580 [0.518,0.647]
-  gower_gb1p0  cond_knn K=4: 0.581 [0.518,0.649]
-  gower_gb1p0  cond_knn K=5: 0.583 [0.519,0.652]
-  gower_gb1p0  knn      K=1: 0.531 [0.475,0.595]
-  gower_gb1p0  knn      K=2: 0.533 [0.472,0.603]
-  gower_gb1p0  knn      K=3: 0.534 [0.472,0.606]
-  gower_gb1p0  knn      K=4: 0.535 [0.471,0.607]
-  gower_gb1p0  knn      K=5: 0.535 [0.470,0.608]
-  gower_nla_z  KL   K=2: 0.863 [0.845,0.878]  (10 subsets)
-  gower_nla_z  KL   K=3: 0.883 [0.865,0.898]  (10 subsets)
-  gower_nla_z  KL   K=4: 0.892 [0.874,0.907]  (5 subsets)
-  gower_nla_z  KL   K=5: 0.898 [0.879,0.913]  (1 subsets)
-  gower_nla_z  cond_knn K=1: 0.850 [0.827,0.869]
-  gower_nla_z  cond_knn K=2: 0.862 [0.840,0.882]
-  gower_nla_z  cond_knn K=3: 0.867 [0.844,0.887]
-  gower_nla_z  cond_knn K=4: 0.869 [0.846,0.889]
-  gower_nla_z  cond_knn K=5: 0.871 [0.847,0.891]
+  gower_nla    knn      K=5: 0.940 [0.926,0.952]
+  gower_gb1p0  KL   K=2: 0.473 [0.441,0.505]  (10 subsets)
+  gower_gb1p0  KL   K=3: 0.468 [0.422,0.514]  (10 subsets)
+  gower_gb1p0  KL   K=4: 0.466 [0.408,0.525]  (5 subsets)
+  gower_gb1p0  KL   K=5: 0.466 [0.396,0.538]  (1 subsets)
+  gower_gb1p0  cond_knn K=1: 0.571 [0.508,0.628]
+  gower_gb1p0  cond_knn K=2: 0.578 [0.509,0.639]
+  gower_gb1p0  cond_knn K=3: 0.580 [0.510,0.643]
+  gower_gb1p0  cond_knn K=4: 0.581 [0.510,0.645]
+  gower_gb1p0  cond_knn K=5: 0.583 [0.511,0.647]
+  gower_gb1p0  knn      K=1: 0.531 [0.467,0.597]
+  gower_gb1p0  knn      K=2: 0.533 [0.465,0.605]
+  gower_gb1p0  knn      K=3: 0.534 [0.463,0.607]
+  gower_gb1p0  knn      K=4: 0.535 [0.463,0.608]
+  gower_gb1p0  knn      K=5: 0.535 [0.462,0.609]
+  gower_nla_z  KL   K=2: 0.863 [0.847,0.879]  (10 subsets)
+  gower_nla_z  KL   K=3: 0.883 [0.867,0.898]  (10 subsets)
+  gower_nla_z  KL   K=4: 0.892 [0.876,0.908]  (5 subsets)
+  gower_nla_z  KL   K=5: 0.898 [0.880,0.913]  (1 subsets)
+  gower_nla_z  cond_knn K=1: 0.850 [0.829,0.871]
+  gower_nla_z  cond_knn K=2: 0.862 [0.840,0.884]
+  gower_nla_z  cond_knn K=3: 0.867 [0.845,0.888]
+  gower_nla_z  cond_knn K=4: 0.869 [0.847,0.890]
+  gower_nla_z  cond_knn K=5: 0.871 [0.848,0.892]
   gower_nla_z  knn      K=1: 0.937 [0.925,0.947]
   gower_nla_z  knn      K=2: 0.941 [0.929,0.951]
-  gower_nla_z  knn      K=3: 0.942 [0.930,0.952]
+  gower_nla_z  knn      K=3: 0.942 [0.931,0.952]
   gower_nla_z  knn      K=4: 0.943 [0.931,0.953]
-  gower_nla_z  knn      K=5: 0.943 [0.931,0.953]
-  gower_gb1p3  KL   K=2: 0.501 [0.467,0.533]  (10 subsets)
-  gower_gb1p3  KL   K=3: 0.495 [0.449,0.540]  (10 subsets)
-  gower_gb1p3  KL   K=4: 0.491 [0.436,0.544]  (5 subsets)
-  gower_gb1p3  KL   K=5: 0.489 [0.425,0.550]  (1 subsets)
-  gower_gb1p3  cond_knn K=1: 0.533 [0.462,0.606]
-  gower_gb1p3  cond_knn K=2: 0.536 [0.457,0.614]
-  gower_gb1p3  cond_knn K=3: 0.537 [0.456,0.618]
-  gower_gb1p3  cond_knn K=4: 0.537 [0.455,0.619]
-  gower_gb1p3  cond_knn K=5: 0.537 [0.455,0.620]
-  gower_gb1p3  knn      K=1: 0.520 [0.448,0.584]
-  gower_gb1p3  knn      K=2: 0.521 [0.444,0.590]
-  gower_gb1p3  knn      K=3: 0.521 [0.441,0.593]
-  gower_gb1p3  knn      K=4: 0.521 [0.439,0.594]
-  gower_gb1p3  knn      K=5: 0.521 [0.437,0.594]
-  gower_vd     KL   K=2: 0.494 [0.485,0.503]  (10 subsets)
-  gower_vd     KL   K=3: 0.495 [0.482,0.508]  (10 subsets)
-  gower_vd     KL   K=4: 0.496 [0.480,0.513]  (5 subsets)
-  gower_vd     KL   K=5: 0.498 [0.479,0.518]  (1 subsets)
-  gower_vd     cond_knn K=1: 0.492 [0.477,0.506]
-  gower_vd     cond_knn K=2: 0.491 [0.475,0.506]
-  gower_vd     cond_knn K=3: 0.490 [0.474,0.506]
-  gower_vd     cond_knn K=4: 0.490 [0.473,0.506]
-  gower_vd     cond_knn K=5: 0.490 [0.473,0.505]
-  gower_vd     knn      K=1: 0.494 [0.481,0.507]
+  gower_nla_z  knn      K=5: 0.943 [0.932,0.953]
+  gower_gb1p3  KL   K=2: 0.501 [0.466,0.537]  (10 subsets)
+  gower_gb1p3  KL   K=3: 0.495 [0.447,0.545]  (10 subsets)
+  gower_gb1p3  KL   K=4: 0.491 [0.432,0.551]  (5 subsets)
+  gower_gb1p3  KL   K=5: 0.489 [0.420,0.557]  (1 subsets)
+  gower_gb1p3  cond_knn K=1: 0.533 [0.453,0.606]
+  gower_gb1p3  cond_knn K=2: 0.536 [0.450,0.615]
+/home/alex/.local/lib/python3.10/site-packages/numpy/lib/_nanfunctions_impl.py:1409: RuntimeWarning: All-NaN slice encountered
+  return _nanquantile_unchecked(
+  gower_gb1p3  cond_knn K=3: 0.537 [0.448,0.618]
+  gower_gb1p3  cond_knn K=4: 0.537 [0.447,0.619]
+  gower_gb1p3  cond_knn K=5: 0.537 [0.447,0.620]
+  gower_gb1p3  knn      K=1: 0.520 [0.449,0.587]
+  gower_gb1p3  knn      K=2: 0.521 [0.443,0.592]
+  gower_gb1p3  knn      K=3: 0.521 [0.441,0.595]
+  gower_gb1p3  knn      K=4: 0.521 [0.440,0.596]
+  gower_gb1p3  knn      K=5: 0.521 [0.438,0.596]
+  gower_vd     KL   K=2: 0.494 [0.484,0.503]  (10 subsets)
+  gower_vd     KL   K=3: 0.495 [0.481,0.509]  (10 subsets)
+  gower_vd     KL   K=4: 0.496 [0.479,0.513]  (5 subsets)
+  gower_vd     KL   K=5: 0.498 [0.477,0.518]  (1 subsets)
+  gower_vd     cond_knn K=1: 0.492 [0.476,0.506]
+  gower_vd     cond_knn K=2: 0.491 [0.474,0.506]
+  gower_vd     cond_knn K=3: 0.490 [0.472,0.506]
+  gower_vd     cond_knn K=4: 0.490 [0.472,0.506]
+  gower_vd     cond_knn K=5: 0.490 [0.472,0.506]
+  gower_vd     knn      K=1: 0.494 [0.481,0.508]
   gower_vd     knn      K=2: 0.493 [0.479,0.508]
-  gower_vd     knn      K=3: 0.493 [0.478,0.508]
+  gower_vd     knn      K=3: 0.493 [0.479,0.508]
   gower_vd     knn      K=4: 0.493 [0.478,0.508]
-  gower_vd     knn      K=5: 0.493 [0.478,0.509]
+  gower_vd     knn      K=5: 0.493 [0.478,0.508]
+  gower_gbk2   KL   K=2: 0.526 [0.515,0.535]  (10 subsets)
+  gower_gbk2   KL   K=3: 0.530 [0.515,0.544]  (10 subsets)
+  gower_gbk2   KL   K=4: 0.533 [0.515,0.551]  (5 subsets)
+  gower_gbk2   KL   K=5: 0.537 [0.515,0.557]  (1 subsets)
+  gower_gbk2   cond_knn K=1: 0.522 [0.508,0.536]
+  gower_gbk2   cond_knn K=2: 0.523 [0.508,0.539]
+  gower_gbk2   cond_knn K=3: 0.524 [0.508,0.540]
+  gower_gbk2   cond_knn K=4: 0.524 [0.508,0.540]
+  gower_gbk2   cond_knn K=5: 0.525 [0.508,0.540]
+  gower_gbk2   knn      K=1: 0.498 [0.483,0.512]
+  gower_gbk2   knn      K=2: 0.498 [0.481,0.512]
+  gower_gbk2   knn      K=3: 0.497 [0.480,0.513]
+  gower_gbk2   knn      K=4: 0.497 [0.480,0.513]
+  gower_gbk2   knn      K=5: 0.497 [0.479,0.513]
 
 === DETECTABILITY vs A_IA^total ===
   NLA-M training support A_IA^total: median 0.430, 5-95% [0.312,0.597]
   gower_nla    kl     power>=0.5: up crossing at A=+1.90 [+1.70,+2.25]  |dA|=1.47
   gower_nla    kl     power>=0.5: dn crossing at A=-0.55 [-0.65,-0.45]  |dA|=0.98
-  gower_nla    kl     power>=0.8: up crossing at A=+3.65 [+2.25,+3.95]  |dA|=3.22
+  gower_nla    kl     power>=0.8: up crossing at A=+3.65 [+2.25,+3.90]  |dA|=3.22
   gower_nla    kl     power>=0.8: dn crossing at A=-0.90 [-1.00,-0.75]  |dA|=1.33
-  gower_nla    kl     power at A=median-1*0.5 (-0.05): 0.091 [0.036,0.157]
-  gower_nla    kl     power at A=median+1*0.5 (+0.95): 0.179 [0.091,0.286]
-  gower_nla    kl     onset (lower CI > 0.05): up +0.85, dn -0.20; in-band power 0.100 [0.012,0.208] (n=50)
+  gower_nla    kl     power at A=median-1*0.5 (-0.05): 0.091 [0.031,0.160]
+  gower_nla    kl     power at A=median+1*0.5 (+0.95): 0.179 [0.089,0.290]
+  gower_nla    kl     onset (lower CI > 0.05): up +0.80, dn -0.20; in-band power 0.100 [0.021,0.217] (n=50)
   gower_nla    meanp  power>=0.5: up crossing at A=+nan [+2.40,+6.00]  |dA|=nan
   gower_nla    meanp  power>=0.5: dn crossing at A=-0.80 [-1.15,-0.65]  |dA|=1.23
-  gower_nla    meanp  power>=0.8: up crossing at A=+nan [+5.90,+5.90]  |dA|=nan
+  gower_nla    meanp  power>=0.8: up crossing at A=+nan [+nan,+nan]  |dA|=nan
   gower_nla    meanp  power>=0.8: dn crossing at A=-1.65 [-2.50,-1.25]  |dA|=2.08
   gower_nla    meanp  power at A=median-1*0.5 (-0.05): 0.030 [0.000,0.103]
-  gower_nla    meanp  power at A=median+1*0.5 (+0.95): 0.141 [0.040,0.266]
-  gower_nla    meanp  onset (lower CI > 0.05): up +1.15, dn -0.35; in-band power 0.020 [0.000,0.065] (n=50)
+  gower_nla    meanp  power at A=median+1*0.5 (+0.95): 0.141 [0.042,0.267]
+  gower_nla    meanp  onset (lower CI > 0.05): up +1.15, dn -0.35; in-band power 0.020 [0.000,0.068] (n=50)
   gower_nla    knn    power>=0.5: up crossing at A=+1.50 [+1.15,+1.65]  |dA|=1.07
-  gower_nla    knn    power>=0.5: dn crossing at A=-0.35 [-0.55,-0.30]  |dA|=0.78
-  gower_nla    knn    power>=0.8: up crossing at A=+2.35 [+1.85,+3.00]  |dA|=1.92
-  gower_nla    knn    power>=0.8: dn crossing at A=-0.70 [-0.80,-0.55]  |dA|=1.13
-  gower_nla    knn    power at A=median-1*0.5 (-0.05): 0.215 [0.097,0.366]
-  gower_nla    knn    power at A=median+1*0.5 (+0.95): 0.308 [0.193,0.438]
-  gower_nla    knn    onset (lower CI > 0.05): up +0.55, dn +0.15; in-band power 0.076 [0.014,0.171] (n=50)
+  gower_nla    knn    power>=0.5: dn crossing at A=-0.35 [-0.50,-0.30]  |dA|=0.78
+  gower_nla    knn    power>=0.8: up crossing at A=+2.35 [+1.85,+2.95]  |dA|=1.92
+  gower_nla    knn    power>=0.8: dn crossing at A=-0.70 [-0.80,-0.60]  |dA|=1.13
+  gower_nla    knn    power at A=median-1*0.5 (-0.05): 0.215 [0.094,0.361]
+  gower_nla    knn    power at A=median+1*0.5 (+0.95): 0.308 [0.197,0.443]
+  gower_nla    knn    onset (lower CI > 0.05): up +0.55, dn +0.15; in-band power 0.076 [0.010,0.174] (n=50)
   gower_nla    binned-median KL minimum 0.175 at A=+0.35
   gower_nla_z  kl     power>=0.5: up crossing at A=+1.80 [+1.35,+2.15]  |dA|=1.37
   gower_nla_z  kl     power>=0.5: dn crossing at A=-0.90 [-1.05,-0.65]  |dA|=1.33
   gower_nla_z  kl     power>=0.8: up crossing at A=+2.65 [+2.35,+4.00]  |dA|=2.22
   gower_nla_z  kl     power>=0.8: dn crossing at A=-1.30 [-1.50,-1.05]  |dA|=1.73
-  gower_nla_z  kl     power at A=median-1*0.5 (-0.05): 0.087 [0.030,0.149]
-  gower_nla_z  kl     power at A=median+1*0.5 (+0.95): 0.235 [0.121,0.364]
-  gower_nla_z  kl     onset (lower CI > 0.05): up +0.45, dn +0.45; in-band power 0.167 [0.000,0.346] (n=30)
-  gower_nla_z  meanp  power>=0.5: up crossing at A=+4.70 [+3.20,+5.45]  |dA|=4.27
+  gower_nla_z  kl     power at A=median-1*0.5 (-0.05): 0.087 [0.032,0.150]
+  gower_nla_z  kl     power at A=median+1*0.5 (+0.95): 0.235 [0.122,0.367]
+  gower_nla_z  kl     onset (lower CI > 0.05): up +0.45, dn +0.45; in-band power 0.167 [0.000,0.350] (n=30)
+  gower_nla_z  meanp  power>=0.5: up crossing at A=+4.70 [+1.89,+5.40]  |dA|=4.27
   gower_nla_z  meanp  power>=0.5: dn crossing at A=-1.45 [-1.60,-0.65]  |dA|=1.88
-  gower_nla_z  meanp  power>=0.8: up crossing at A=+nan [+4.85,+5.66]  |dA|=nan
+  gower_nla_z  meanp  power>=0.8: up crossing at A=+nan [+4.90,+5.95]  |dA|=nan
   gower_nla_z  meanp  power>=0.8: dn crossing at A=-2.55 [-2.70,-1.60]  |dA|=2.98
-  gower_nla_z  meanp  power at A=median-1*0.5 (-0.05): 0.013 [0.000,0.042]
-  gower_nla_z  meanp  power at A=median+1*0.5 (+0.95): 0.088 [0.000,0.195]
-  gower_nla_z  meanp  onset (lower CI > 0.05): up +1.15, dn -0.45; in-band power 0.067 [0.000,0.222] (n=30)
-  gower_nla_z  knn    power>=0.5: up crossing at A=+1.25 [+0.90,+1.65]  |dA|=0.82
-  gower_nla_z  knn    power>=0.5: dn crossing at A=-0.65 [-0.85,-0.50]  |dA|=1.08
+  gower_nla_z  meanp  power at A=median-1*0.5 (-0.05): 0.013 [0.000,0.045]
+  gower_nla_z  meanp  power at A=median+1*0.5 (+0.95): 0.088 [0.000,0.194]
+  gower_nla_z  meanp  onset (lower CI > 0.05): up +1.15, dn -0.45; in-band power 0.067 [0.000,0.231] (n=30)
+  gower_nla_z  knn    power>=0.5: up crossing at A=+1.25 [+0.90,+1.60]  |dA|=0.82
+  gower_nla_z  knn    power>=0.5: dn crossing at A=-0.65 [-0.90,-0.50]  |dA|=1.08
   gower_nla_z  knn    power>=0.8: up crossing at A=+2.40 [+1.80,+2.60]  |dA|=1.97
   gower_nla_z  knn    power>=0.8: dn crossing at A=-1.05 [-1.30,-0.90]  |dA|=1.48
-  gower_nla_z  knn    power at A=median-1*0.5 (-0.05): 0.082 [0.039,0.133]
-  gower_nla_z  knn    power at A=median+1*0.5 (+0.95): 0.400 [0.297,0.528]
-  gower_nla_z  knn    onset (lower CI > 0.05): up +0.45, dn +0.45; in-band power 0.220 [0.050,0.396] (n=30)
+  gower_nla_z  knn    power at A=median-1*0.5 (-0.05): 0.082 [0.038,0.133]
+  gower_nla_z  knn    power at A=median+1*0.5 (+0.95): 0.400 [0.292,0.521]
+  gower_nla_z  knn    onset (lower CI > 0.05): up +0.45, dn +0.45; in-band power 0.220 [0.060,0.400] (n=30)
   gower_nla_z  binned-median KL minimum 0.203 at A=+0.40
   gb1p0: b_g z-scores [-0.1, -0.47, -1.04, -2.55, -3.89, -4.88]
   gb1p3: b_g z-scores [1.57, 1.54, 1.36, 0.6, -0.77, -1.83]
 
-wrote 632 macros to numbers.tex
+wrote 802 macros to numbers.tex

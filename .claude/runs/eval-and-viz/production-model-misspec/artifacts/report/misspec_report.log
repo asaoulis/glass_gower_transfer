@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.22 (TeX Live 2022/dev/Debian) (preloaded format=pdflatex 2026.5.13)  7 SEP 2026 16:43
+This is pdfTeX, Version 3.141592653-2.6-1.40.22 (TeX Live 2022/dev/Debian) (preloaded format=pdflatex 2026.5.13)  7 SEP 2026 17:03
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -420,15 +420,15 @@ LaTeX Font Info:    ... okay on input line 33.
 * layout: <same size as paper>
 * layoutoffset:(h,v)=(0.0pt,0.0pt)
 * modes: 
-* h-part:(L,W,R)=(44.80704pt, 524.68092pt, 44.80704pt)
-* v-part:(T,H,B)=(43.36243pt, 704.6325pt, 46.97505pt)
+* h-part:(L,W,R)=(41.91672pt, 530.46156pt, 41.91672pt)
+* v-part:(T,H,B)=(39.74872pt, 711.85884pt, 43.36243pt)
 * \paperwidth=614.295pt
 * \paperheight=794.96999pt
-* \textwidth=524.68092pt
-* \textheight=704.6325pt
-* \oddsidemargin=-27.46295pt
-* \evensidemargin=-27.46295pt
-* \topmargin=-65.90756pt
+* \textwidth=530.46156pt
+* \textheight=711.85884pt
+* \oddsidemargin=-30.35327pt
+* \evensidemargin=-30.35327pt
+* \topmargin=-69.52127pt
 * \headheight=12.0pt
 * \headsep=25.0pt
 * \topskip=9.0pt
@@ -533,50 +533,72 @@ File: mt-msb.cfg 2005/06/01 v1.0 microtype config. file: AMS symbols (b) (RS)
 <fig_headtohead.pdf, id=32, 505.89pt x 162.6075pt>
 File: fig_headtohead.pdf Graphic file (type pdf)
 <use fig_headtohead.pdf>
-Package pdftex.def Info: fig_headtohead.pdf  used on input line 61.
-(pdftex.def)             Requested size: 524.68092pt x 168.65126pt.
+Package pdftex.def Info: fig_headtohead.pdf  used on input line 62.
+(pdftex.def)             Requested size: 530.46156pt x 170.50967pt.
  [1{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}
 
 
 ]
-<fig_detectability.pdf, id=79, 505.89pt x 169.8345pt>
+<fig_detectability.pdf, id=78, 505.89pt x 169.8345pt>
 File: fig_detectability.pdf Graphic file (type pdf)
 <use fig_detectability.pdf>
-Package pdftex.def Info: fig_detectability.pdf  used on input line 168.
-(pdftex.def)             Requested size: 524.68092pt x 176.14687pt.
-<fig_knn_refsize.pdf, id=84, 245.718pt x 155.38051pt>
+Package pdftex.def Info: fig_detectability.pdf  used on input line 175.
+(pdftex.def)             Requested size: 530.46156pt x 178.08788pt.
+
+Underfull \vbox (badness 3601) has occurred while \output is active []
+
+ [2 <./fig_headtohead.pdf>]
+<fig_knn_refsize.pdf, id=120, 245.718pt x 155.38051pt>
 File: fig_knn_refsize.pdf Graphic file (type pdf)
 <use fig_knn_refsize.pdf>
-Package pdftex.def Info: fig_knn_refsize.pdf  used on input line 208.
-(pdftex.def)             Requested size: 254.84045pt x 161.15802pt.
- [2 <./fig_headtohead.pdf>]
+Package pdftex.def Info: fig_knn_refsize.pdf  used on input line 235.
+(pdftex.def)             Requested size: 257.73077pt x 162.99547pt.
+
 Underfull \vbox (badness 10000) has occurred while \output is active []
 
  [3 <./fig_detectability.pdf> <./fig_knn_refsize.pdf>]
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
+[leftcolumn badness]: 1000000 on 71.69998pt
+[rightcolumn badness]: 1000000 on 71.69998pt
 - LAST -
 Extra skip:0.0pt
-Left:547.22478pt/1.75pt
-Right:558.57486pt/1.75pt
-Split: 553.87482pt
-Output:553.87482pt
-Pageshrink: 14.77498pt
-Pagestretch: 29.64996pt
-@colht:704.6325pt
-FLUSHEND [output]: 553.87482pt
-FLUSHEND [leftcolumn badness]: 24
-FUSHEND [rightcolumn badness]: 6
- [4] (./misspec_report.aux)
+Left:712.42473pt/0.0pt
+Right:693.87482pt/0.0pt
+Split: 712.12477pt
+Output:712.12477pt
+Pageshrink: 17.77498pt
+Pagestretch: 35.64996pt
+@colht:711.85884pt
+FLUSHEND [output]: 712.12477pt
+FLUSHEND [leftcolumn badness]: 6
+FUSHEND [rightcolumn badness]: 21
+ [4] [5
+
+] (./misspec_report.aux)
 Package rerunfilecheck Info: File `misspec_report.out' has not changed.
 (rerunfilecheck)             Checksum: 21792DE4803D4FD64FB7A2C79230799D;1237.
  ) 
 Here is how much of TeX's memory you used:
- 15008 strings out of 478287
- 245153 string characters out of 5849289
- 596020 words of memory out of 5000000
- 32799 multiletter control sequences out of 15000+600000
- 483550 words of font info for 154 fonts, out of 8000000 for 9000
+ 15187 strings out of 478287
+ 248540 string characters out of 5849289
+ 618703 words of memory out of 5000000
+ 32969 multiletter control sequences out of 15000+600000
+ 483668 words of font info for 158 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 74i,10n,68p,1038b,437s stack positions out of 5000i,500n,10000p,200000b,80000s
+ 73i,10n,67p,1089b,437s stack positions out of 5000i,500n,10000p,200000b,80000s
 </usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb></us
 r/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx8.pfb></usr/share
 /texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx9.pfb></usr/share/texliv
@@ -591,17 +613,18 @@ cmr5.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr6.pfb
 ></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr7.pfb></usr/s
 hare/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmr8.pfb></usr/share/tex
 live/texmf-dist/fonts/type1/public/amsfonts/cm/cmr9.pfb></usr/share/texlive/tex
-mf-dist/fonts/type1/public/amsfonts/cm/cmsy6.pfb></usr/share/texlive/texmf-dist
-/fonts/type1/public/amsfonts/cm/cmsy8.pfb></usr/share/texlive/texmf-dist/fonts/
-type1/public/amsfonts/cm/cmsy9.pfb></usr/share/texlive/texmf-dist/fonts/type1/p
-ublic/amsfonts/cm/cmti7.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/a
-msfonts/cm/cmti9.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts
-/symbols/msam10.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/
-symbols/msbm10.pfb>
-Output written on misspec_report.pdf (4 pages, 439904 bytes).
+mf-dist/fonts/type1/public/amsfonts/cm/cmsy5.pfb></usr/share/texlive/texmf-dist
+/fonts/type1/public/amsfonts/cm/cmsy6.pfb></usr/share/texlive/texmf-dist/fonts/
+type1/public/amsfonts/cm/cmsy8.pfb></usr/share/texlive/texmf-dist/fonts/type1/p
+ublic/amsfonts/cm/cmsy9.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/a
+msfonts/cm/cmti7.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts
+/cm/cmti9.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/symbol
+s/msam10.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/symbols
+/msbm10.pfb>
+Output written on misspec_report.pdf (5 pages, 452038 bytes).
 PDF statistics:
- 300 PDF objects out of 1000 (max. 8388607)
- 202 compressed objects within 3 object streams
- 39 named destinations out of 1000 (max. 500000)
+ 309 PDF objects out of 1000 (max. 8388607)
+ 208 compressed objects within 3 object streams
+ 40 named destinations out of 1000 (max. 500000)
  28744 words of extra memory for PDF output out of 29859 (max. 10000000)
 

@@ -1,5 +1,5 @@
 \documentclass[9pt,twocolumn]{extarticle}
-\usepackage[margin=0.62in,top=0.6in,bottom=0.65in]{geometry}
+\usepackage[margin=0.58in,top=0.55in,bottom=0.6in]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{graphicx}
 \usepackage{booktabs}
@@ -40,13 +40,14 @@ internal warning. We compare two label-free misspecification detectors on a prod
 KiDS-Legacy-like field-level model trained on Gower Street $N$-body mocks: the disagreement (a
 Kullback--Leibler statistic) between the posteriors of five independently seeded encoders, and an
 out-of-distribution (OOD) score of the observation's learned 8-dimensional summary against the training
-summary cloud. Six paired test suites probe the intrinsic-alignment (IA) model, survey depth and the
-source galaxy bias $\bg$. On the IA suites the single-encoder kNN OOD score wins (AUROC $\NNlaAurocKnn$
-vs.\ $\NNlaAurocKl$ for the five-encoder KL; power $\NNlaPowerKnn$ vs.\ $\NNlaPowerKl$ at 5\% false
-alarms) at a fifth of the training cost, and needs only a few hundred reference summaries. An IA
-amplitude offset of $\dAia\simeq0.8$--$1.0$ from the training median is detected in half of all mocks,
-$\simeq1.1$--$1.3$ in 80\%; a change of IA model form at matched amplitude is invisible. Depth and $\bg$
-variations are not detected. The $\bg$ suites are at most mildly outside the training prior and their
+summary cloud. Seven paired test suites probe the intrinsic-alignment (IA) model, survey depth and the
+source galaxy bias $\bg$. The winner depends on the axis. On the IA suites the single-encoder kNN OOD
+score wins (AUROC $\NNlaAurocKnn$ vs.\ $\NNlaAurocKl$ for the five-encoder KL; power $\NNlaPowerKnn$
+vs.\ $\NNlaPowerKl$ at 5\% false alarms) at a fifth of the training cost; an IA amplitude offset of
+$\dAia\simeq0.8$--$1.0$ from the training median is detected in half of all mocks, and a change of IA
+model form at matched amplitude is invisible. A broadened $\bg$ prior is registered only by the KL
+($\NGbkTwoAurocKl$ [$\NGbkTwoAurocKlLo$, $\NGbkTwoAurocKlHi$]); depth and fixed-$\bg$ slices are not
+detected. The $\bg$ suites are at most mildly outside the training prior and their
 calibration is at the in-distribution floor, so the implicit marginalisation over $\bg$ has not failed;
 yet the posterior mean tracks the true $\bg$, shifting by $0.8\,\sigma_{\rm post}$ in $\Om$ and $\sig$
 in opposite directions for $\bg=1.0$ and $1.3$ ($\Delta\Om=\NDthetaOmegaM$ between them, seven times the
@@ -64,6 +65,7 @@ each test suite from the in-distribution mocks (0.5 = no separation; whiskers ar
 bootstrap intervals over cosmologies). Black: cross-encoder KL from five encoders; blues:
 single-encoder kNN and conditional-kNN OOD scores (mean over the five encoders, each scored
 alone); orange: the five encoders' calibrated conditional-kNN $p$-values combined.
+For the $\kappa=2$ suite the combined score is the un-recalibrated mean of five conditional-kNN $p$-values.
 (b) AUROC as a function of the number of trained encoders $K$ (KL is defined for $K\ge2$; the
 OOD scores combine $K$ encoders' $p$-values), for the NLA suite (solid) and the $\bg=1.0$ suite
 (dashed); bands are the same bootstrap intervals.}
@@ -78,7 +80,9 @@ suites' size $\NFloorFourZeroMean\pm\NFloorFourZeroSd$). AUROC: point estimate w
 interval; kNN and conditional kNN (c-kNN) are single-encoder scores averaged over the five encoders;
 mean-$p$ combines the five. Power: fraction of variate mocks detected at a 5\% false-alarm rate. All detectors are
 scored on the mocks with finite posteriors in all five encoders ($\NNlaNCommon$ of $\NNlaNRows$ for NLA,
-$\NNlaZNCommon$ for NLA-$z$; the other suites are complete).}
+$\NNlaZNCommon$ for NLA-$z$; the other suites are complete). $^\dagger$For the $\kappa=2$ suite the
+combined score is the plain mean of the five conditional-kNN $p$-values, without the null
+recalibration, which does not change a rank statistic.}
 \label{tab:main}
 \begin{tabular}{lrrrlllllrr}
 \toprule
@@ -88,6 +92,7 @@ suite & $N_{\rm cos}$ & $N$ & $\overline{\rm KL}$ & $\mathcal{C}$ & KL (5 enc.) 
 \midrule
 $\bg=1.3$ fixed & $\NGbOnePThreeNCos$ & $\NGbOnePThreeNRows$ & $\NGbOnePThreeKlMean$ & $\NGbOnePThreeCalMean\pm\NGbOnePThreeCalSd$ & \ci{$\NGbOnePThreeAurocKl$}{$\NGbOnePThreeAurocKlLo$}{$\NGbOnePThreeAurocKlHi$} & \ci{$\NGbOnePThreeAurocKnn$}{$\NGbOnePThreeAurocKnnLo$}{$\NGbOnePThreeAurocKnnHi$} & \ci{$\NGbOnePThreeAurocCondKnn$}{$\NGbOnePThreeAurocCondKnnLo$}{$\NGbOnePThreeAurocCondKnnHi$} & \ci{$\NGbOnePThreeAurocMeanp$}{$\NGbOnePThreeAurocMeanpLo$}{$\NGbOnePThreeAurocMeanpHi$} & $\NGbOnePThreePowerKl$ & $\NGbOnePThreePowerKnn$\\
 $\bg=1.0$ fixed & $\NGbOnePZeroNCos$ & $\NGbOnePZeroNRows$ & $\NGbOnePZeroKlMean$ & $\NGbOnePZeroCalMean\pm\NGbOnePZeroCalSd$ & \ci{$\NGbOnePZeroAurocKl$}{$\NGbOnePZeroAurocKlLo$}{$\NGbOnePZeroAurocKlHi$} & \ci{$\NGbOnePZeroAurocKnn$}{$\NGbOnePZeroAurocKnnLo$}{$\NGbOnePZeroAurocKnnHi$} & \ci{$\NGbOnePZeroAurocCondKnn$}{$\NGbOnePZeroAurocCondKnnLo$}{$\NGbOnePZeroAurocCondKnnHi$} & \ci{$\NGbOnePZeroAurocMeanp$}{$\NGbOnePZeroAurocMeanpLo$}{$\NGbOnePZeroAurocMeanpHi$} & $\NGbOnePZeroPowerKl$ & $\NGbOnePZeroPowerKnn$\\
+$\bg$ prior $\times2$ & $\NGbkTwoNCos$ & $\NGbkTwoNRows$ & $\NGbkTwoKlMean$ & $\NGbkTwoCalMean\pm\NGbkTwoCalSd$ & \ci{$\NGbkTwoAurocKl$}{$\NGbkTwoAurocKlLo$}{$\NGbkTwoAurocKlHi$} & \ci{$\NGbkTwoAurocKnn$}{$\NGbkTwoAurocKnnLo$}{$\NGbkTwoAurocKnnHi$} & \ci{$\NGbkTwoAurocCondKnn$}{$\NGbkTwoAurocCondKnnLo$}{$\NGbkTwoAurocCondKnnHi$} & \ci{$\NGbkTwoAurocMeanp$}{$\NGbkTwoAurocMeanpLo$}{$\NGbkTwoAurocMeanpHi$}$^\dagger$ & $\NGbkTwoPowerKl$ & $\NGbkTwoPowerKnn$\\
 variable depth & $\NVdNCos$ & $\NVdNRows$ & $\NVdKlMean$ & $\NVdCalMean\pm\NVdCalSd$ & \ci{$\NVdAurocKl$}{$\NVdAurocKlLo$}{$\NVdAurocKlHi$} & \ci{$\NVdAurocKnn$}{$\NVdAurocKnnLo$}{$\NVdAurocKnnHi$} & \ci{$\NVdAurocCondKnn$}{$\NVdAurocCondKnnLo$}{$\NVdAurocCondKnnHi$} & \ci{$\NVdAurocMeanp$}{$\NVdAurocMeanpLo$}{$\NVdAurocMeanpHi$} & $\NVdPowerKl$ & $\NVdPowerKnn$\\
 NLA & $\NNlaNCos$ & $\NNlaNRows$ & $\NNlaKlMean$ & $\NNlaCalMean\pm\NNlaCalSd$ & \ci{$\NNlaAurocKl$}{$\NNlaAurocKlLo$}{$\NNlaAurocKlHi$} & \ci{$\NNlaAurocKnn$}{$\NNlaAurocKnnLo$}{$\NNlaAurocKnnHi$} & \ci{$\NNlaAurocCondKnn$}{$\NNlaAurocCondKnnLo$}{$\NNlaAurocCondKnnHi$} & \ci{$\NNlaAurocMeanp$}{$\NNlaAurocMeanpLo$}{$\NNlaAurocMeanpHi$} & $\NNlaPowerKl$ & $\NNlaPowerKnn$\\
 NLA-$z$ & $\NNlaZNCos$ & $\NNlaZNRows$ & $\NNlaZKlMean$ & $\NNlaZCalMean\pm\NNlaZCalSd$ & \ci{$\NNlaZAurocKl$}{$\NNlaZAurocKlLo$}{$\NNlaZAurocKlHi$} & \ci{$\NNlaZAurocKnn$}{$\NNlaZAurocKnnLo$}{$\NNlaZAurocKnnHi$} & \ci{$\NNlaZAurocCondKnn$}{$\NNlaZAurocCondKnnLo$}{$\NNlaZAurocCondKnnHi$} & \ci{$\NNlaZAurocMeanp$}{$\NNlaZAurocMeanpLo$}{$\NNlaZAurocMeanpHi$} & $\NNlaZPowerKl$ & $\NNlaZPowerKnn$\\
@@ -126,6 +131,9 @@ every comparison is paired at the cosmology level. \emph{In-distribution}: the t
 alignment model, without and with a redshift power law, at amplitudes $\Aia\in[-6,6]$.
 \emph{Variable depth}: position-dependent survey depth. \emph{$\bg=1.0$} and \emph{$\bg=1.3$}: the
 galaxy bias pinned to one value in all six bins ($\NGbOnePZeroNCos$ cosmologies $\times$ 2 mocks).
+\emph{$\bg$ prior $\times2$} ($\kappa=2$): the per-bin biases drawn from a prior with the training
+means but doubled widths (truncated at $\pm3\kappa\sigma$), a population whose core is the training
+distribution and whose tails are out of support, over all $\NGbkTwoNCos$ cosmologies ($\NGbkTwoNRows$ mocks).
 Amplitudes are compared in the KiDS-Legacy $\Aia$ convention: the NLA suites store it directly, and
 the NLA-M training amplitude is converted per mock,
 $\Aia=\langle A_{\rm IA} f_{\rm red}^{(i)}(\bar M_h^{(i)}/10^{13.5})^{\beta_{\rm IA}}\rangle_i$, giving a
@@ -145,9 +153,8 @@ needs $\theta$ (the truth in simulations, posterior draws on real data). Scores 
 empirical $p$-values against the held-out in-distribution null. Summaries of different encoders are not
 commensurable, so the only cross-encoder combination is of $p$-values; the recommended combiner is the
 mean of the five calibrated $p$-values, recalibrated against the null (``mean-$p$''). Fisher, Stouffer,
-GLS-weighted Stouffer \cite{linsullivan2009} and density-of-states \cite{morningstar2021} combiners
-were also tested and none beats it by more than one bootstrap standard deviation. The ceiling is
-structural: the five encoders' scores of the same mock are correlated at $\rho=\NRhoCrossEncoderNull$
+GLS-weighted \cite{linsullivan2009} and density-of-states \cite{morningstar2021} combiners do no
+better. The ceiling is structural: the five encoders' scores of the same mock are correlated at $\rho=\NRhoCrossEncoderNull$
 (the scatter is the mock's own shape noise and cosmic variance, seen by every encoder), so any
 five-view combination gains at most $\sqrt{5/(1+4\rho)}=\NSnrGainFive$ in signal-to-noise.
 
@@ -155,7 +162,7 @@ five-view combination gains at most $\sqrt{5/(1+4\rho)}=\NSnrGainFive$ in signal
 \cite{bradley1997}) of variate against in-distribution mocks, and by its detection power at a 5\%
 false-alarm rate (the fraction of variate mocks above the null's 95th percentile). Rows are correlated
 augmentations of far fewer cosmologies, so all intervals are a paired cluster bootstrap over
-cosmologies \cite{efron1993}: 1000 draws resample the $\NNNullCos$ cosmologies and take all their
+cosmologies \cite{efron1993}: 1000 draws resample the $\NNNullCos$ cosmologies with all their
 in-distribution and variate rows (row-level intervals would be $\sim$3$\times$ too narrow). As a
 truth-requiring, suite-level reference we also quote the TARP \cite{lemos2023} calibration error
 $\mathcal{C}$.
@@ -202,6 +209,26 @@ conditional null. It is, however, the only score with a hint of signal on $\bg=1
 mean-$p$ $\NGbOnePZeroAurocMeanp$~[$\NGbOnePZeroAurocMeanpLo$, $\NGbOnePZeroAurocMeanpHi$]), with the
 lower bound just above 0.5. Every other interval on $\bg=1.0$, $\bg=1.3$ and variable depth contains
 0.5, and the detection powers equal the false-alarm rate: clean null results (Sec.~\ref{sec:bg}).
+(Conditioning on the stored NLA amplitude instead, which the NLA-M scaling maps outside the
+training range, inflates the conditional-kNN AUROC far above the kNN value: an extrapolation artefact
+of the amplitude convention, not physics.)
+
+The $\kappa=2$ suite reverses the ranking. Its population contains the training distribution and only
+its tails are out of support, so an AUROC near 0.5 is the expected value even with a real tail signal;
+the question is which detector registers the tail. The KL does: $\NGbkTwoAurocKl$
+[$\NGbkTwoAurocKlLo$, $\NGbkTwoAurocKlHi$], an interval that excludes 0.5, with a tail excess at a 1\%
+false-alarm rate of $\NGbkTwoPowerOneKl$ [$\NGbkTwoPowerOneKlLo$, $\NGbkTwoPowerOneKlHi$] (in-distribution
+0.01). The kNN score sits at chance, $\NGbkTwoAurocKnn$ [$\NGbkTwoAurocKnnLo$, $\NGbkTwoAurocKnnHi$], with
+$\NGbkTwoPowerOneKnn$ [$\NGbkTwoPowerOneKnnLo$, $\NGbkTwoPowerOneKnnHi$] at 1\%; the conditional kNN is
+between ($\NGbkTwoAurocCondKnn$ [$\NGbkTwoAurocCondKnnLo$, $\NGbkTwoAurocCondKnnHi$]). The
+truth-requiring calibration agrees: the $(\Om,\sig,w_0)$ TARP error is $\NGbkTwoCalsubMean\pm\NGbkTwoCalsubSd$
+against a floor of $\NFloorOneNineNineSubMean\pm\NFloorOneNineNineSubSd$ (+$\NGbkTwoCalsubZfloor$~sd), while
+the nine-parameter error stays at the floor ($\NGbkTwoCalMean$ vs $\NFloorOneNineNineMean$). The
+mechanism is the difference between a slice and a population: a fixed $\bg$ moves every mock's
+posterior mean coherently but leaves each summary inside the training cloud, whereas a broadened prior
+puts a fraction of mocks in the tails of $\bg$, where the five encoders extrapolate differently and
+their posteriors disagree, while the marginal density of the summaries, which is all kNN sees, is
+barely altered.
 
 \begin{figure}[t]
 \centering
@@ -214,7 +241,7 @@ $\SNTrainCos$ cosmologies, $\SNTrainRows$ summaries.}
 \end{figure}
 \paragraph{Cost.} The KL needs at least two encoders and improves slowly with more
 (Fig.~\ref{fig:h2h}b: $\NCostNlaKlKTwo$ at $K=2$, $\NCostNlaKlKThree$ at $K=3$, $\NCostNlaKlKFive$ at
-$K=5$). One encoder's kNN score already beats five encoders' KL, and pooling five encoders' kNN
+$K=5$ on NLA; $\NCostGbkTwoKlKTwo$, $\NCostGbkTwoKlKThree$, $\NCostGbkTwoKlKFive$ on $\kappa=2$). One encoder's kNN score already beats five encoders' KL, and pooling five encoders' kNN
 $p$-values adds only $+0.007$ ($\NCostNlaKnnKFive$), the $1.14\times$ ceiling above. The reference
 cloud can be tiny (Fig.~\ref{fig:refsize}): refitting the whitening and tree on random subsets of the
 training summaries, the NLA AUROC is $\SRefcosNlaNFive$ with 5 training cosmologies
@@ -324,12 +351,14 @@ $\bg$--$\Om$ degeneracy and let the conditional OOD score see a pinned bias as a
 
 \section{Conclusions}
 \begin{enumerate}\setlength{\itemsep}{1pt}
-\item \textbf{OOD beats KL, at a fifth of the cost.} One encoder's kNN distance in its own summary
-space separates IA-misspecified mocks with AUROC $\NNlaAurocKnn$ and 80\% power at 5\% false alarms;
-the five-encoder posterior-disagreement KL reaches $\NNlaAurocKl$ and $\NNlaPowerKl$. Both flag the
-same mocks and neither adds to the other; the kNN reference needs only a few hundred training
-summaries. The KL remains useful when no summary cloud is retained, but needs $\ge2$ encoders and is the
-weaker statistic.
+\item \textbf{Which detector wins depends on the axis.} On the IA axis one encoder's kNN distance in
+its own summary space beats the five-encoder KL (AUROC $\NNlaAurocKnn$ vs.\ $\NNlaAurocKl$; 80\% vs.\
+74\% power at 5\% false alarms) at a fifth of the cost, both flag the same mocks, and the kNN reference
+needs only a few hundred training summaries. On the galaxy-bias axis the ranking reverses: a broadened
+$\bg$ prior is registered only by the KL ($\NGbkTwoAurocKl$ [$\NGbkTwoAurocKlLo$, $\NGbkTwoAurocKlHi$],
+tail excess $\NGbkTwoPowerOneKl$ at 1\% false alarms) while kNN is at chance. Disagreement between
+encoders and distance in summary space are complementary, not redundant, and a production diagnostic
+should carry both.
 \item \textbf{The detection threshold is about one unit of $\Aia$}: 50\% detection at
 $\dAia\approx0.8$--$1.0$ from the training median, 80\% at $\approx1.1$--$1.3$ towards zero and
 $\approx2$ (kNN) to $3$ (KL) upward; a change of IA model form at matched amplitude is undetectable.
@@ -343,9 +372,8 @@ posterior at fixed $\bg$, partly the response to a coherent across-bin $\bg$ con
 rarely produces. Neither is flagged by any OOD statistic, and both must be addressed on the inference
 side (an explicit or wider $\bg$ model), not with a better detector.
 \item \textbf{Limitations.} Results hold for this encoder family at 300 training cosmologies; the
-dependence on \emph{training}-set size (as opposed to reference-cloud size) was not measured. The $\bg$
-suites have 40 cosmologies, so AUROC differences below $\sim$0.07 are unresolved there. On real data the
-kNN score is evaluated as is; the conditional score needs posterior draws of $\theta$.
+dependence on \emph{training}-set size (as opposed to reference-cloud size) was not measured. The fixed-$\bg$
+suites have 40 cosmologies, so AUROC differences below $\sim$0.07 are unresolved there.
 \end{enumerate}
 
 \begin{thebibliography}{99}\footnotesize\setlength{\itemsep}{0pt}

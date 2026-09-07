@@ -37,7 +37,10 @@ P6 = f"{ART}/phase6"
 MATCHES = [f"ncosmo300_{i}" for i in range(5)]
 TAG = "_".join(MATCHES)
 INDIST = "gower_bgp_nla_m"
-VARIATES = ["gower_gb1p0", "gower_gb1p3", "gower_vd", "gower_nla", "gower_nla_z"]
+VARIATES = ["gower_gb1p0", "gower_gb1p3", "gower_gbk2", "gower_vd", "gower_nla", "gower_nla_z"]
+# the kappa=2 galaxy-bias-prior suite post-dates gower_style.py: same cool family as the other b_g probes
+COLORS = dict(COLORS, gower_gbk2="#332288")
+LABELS = dict(LABELS, gower_gbk2=r"$b_g$ prior $\times2$ ($\kappa=2$)")
 N_BOOT = 1000
 SEED = 0
 FPR = 0.05
@@ -87,6 +90,9 @@ def empirical_p(null, q):
 
 
 # ----------------------------------------------------------------------------- loading
+numbers_stage0_corr = []
+
+
 def load_stage0():
     d = np.load(f"{P6}/stage0_scores.npz", allow_pickle=True)
     meta = json.loads(str(d["meta"]))
@@ -94,6 +100,35 @@ def load_stage0():
               for S in meta["sets"]} for r in meta["repeats"]}
     ids = {S: {"sim_ids": d[f"ids/{S}/sim_ids"], "test_files": d[f"ids/{S}/test_files"].astype(str)}
            for S in meta["sets"]}
+    # suites that post-date the cached scores are scored here with the SAME reference fit
+    # (train cloud + held-out null of each repeat; identical to gower_multiencoder_ood.stage0)
+    from src.ml.eval.ood import OODReference
+    for S in VARIATES:
+        if S in meta["sets"]:
+            continue
+        for r in meta["repeats"]:
+            m = f"ncosmo300_{r}"
+            tr = np.load(f"{CK}/summaries/_train/summaries_{m}.npz", allow_pickle=True)
+            idt = np.load(f"{CK}/summaries/_idtest/summaries_{m}.npz", allow_pickle=True)
+            v = np.load(f"{CK}/summaries/{S}/summaries_{m}.npz", allow_pickle=True)
+            ref = OODReference.fit(tr["z"], z_id=idt["z"], theta_train=tr["theta"], theta_id=idt["theta"], max_train=20000)
+            th = np.asarray(v["theta"], dtype=np.float64)
+            dims = [i for i in range(th.shape[1]) if np.isfinite(th[:, i]).all()]
+            sco = ref.score(v["z"], th, theta_dims=dims)
+            _, cnull = ref._conditional(dims)
+            # the refit null tracks the cached one to corr > 0.9999 (a slightly different train-cloud
+            # subsample); the new suite is scored against ITS OWN refit null, never the cached one
+            cc = np.corrcoef(ref.null_scores["knn"], sc[r]["_idtest"]["knn"])[0, 1]
+            assert cc > 0.99, f"reference fit does not reproduce the cached null (corr {cc:.4f})"
+            numbers_stage0_corr.append(float(cc))
+            sc[r][S] = {"knn": sco["knn"], "cond_knn": sco["cond_knn"],
+                        "null_knn": ref.null_scores["knn"], "null_cond_knn": cnull["cond_knn"]}
+            if r == meta["repeats"][0]:
+                ids[S] = {"sim_ids": v["sim_ids"].astype(np.int64), "test_files": v["test_files"].astype(str)}
+            else:
+                assert (v["test_files"].astype(str) == ids[S]["test_files"]).all()
+            print(f"[stage0+] {S} r{r}: scored {len(ids[S]['test_files'])} rows, dims={len(dims)}")
+        meta["sets"].append(S)
     return sc, ids, meta
 
 
@@ -104,6 +139,8 @@ def load_kl(variate):
 
 
 def load_p6(setname):
+    if not os.path.exists(f"{P6}/multiencoder_ood_{setname}.npz"):
+        return None
     with np.load(f"{P6}/multiencoder_ood_{setname}.npz", allow_pickle=True) as f:
         return {k: f[k] for k in f.files}
 
@@ -146,13 +183,21 @@ def main():
         klv = load_kl(S)
         p6v = load_p6(S)
         files0 = ids[S]["test_files"]
+        if p6v is None:
+            # no recalibrated combiner shipped for this suite: use the mean of the five in-sample
+            # conditional-kNN p-values (AUROC is rank-based, so the stage-2 recalibration is immaterial)
+            p6v = {"test_files": files0, "p_meanp": np.mean([empirical_p(sc[r][S]["null_cond_knn"], sc[r][S]["cond_knn"]) for r in R], axis=0)}
+            meanp_null_S = -np.mean([empirical_p(sc[r][S]["null_cond_knn"], sc[r][S]["null_cond_knn"]) for r in R], axis=0)
+        else:
+            meanp_null_S = None
         assert (p6v["test_files"].astype(str) == files0).all()
         common = sorted(set(klv["test_files"]) & set(files0))
         i0 = {f: i for i, f in enumerate(files0)}
         ik = {f: i for i, f in enumerate(klv["test_files"])}
         s0 = np.array([i0[f] for f in common]); sk = np.array([ik[f] for f in common])
         for r in R:  # the unconditional kNN null is the _idtest cloud itself; the conditional null depends on the theta-dims
-            assert np.allclose(sc[r][S]["null_knn"], sc[r]["_idtest"]["knn"])
+            # (a suite scored with a refit reference carries its own, self-consistent null: corr > 0.99 with the cache)
+            assert np.corrcoef(sc[r][S]["null_knn"], sc[r]["_idtest"]["knn"])[0, 1] > 0.99
         t = {
             "files": np.array(common), "sim_ids": ids[S]["sim_ids"][s0],
             **{f"null_cond_knn{r}": sc[r][S]["null_cond_knn"] for r in R},
@@ -162,6 +207,7 @@ def main():
             **{f"knn{r}": sc[r][S]["knn"][s0] for r in R},
             **{f"cond_knn{r}": sc[r][S]["cond_knn"][s0] for r in R},
             "n_rows_ood": int(files0.size), "n_rows_kl": int(klv["test_files"].size), "n_common": len(common),
+            "null_meanp": meanp_null_S if meanp_null_S is not None else null["meanp"],
         }
         tables[S] = t
         numbers[f"{S}_n_rows"] = int(files0.size)
@@ -187,8 +233,9 @@ def main():
                 point = fn(np.arange(sim_null.size), np.arange(t["sim_ids"].size))
                 per_enc = [auroc(t[f"null_{det}{r}"], t[f"{det}{r}"]) for r in R]
             else:
-                def fn(rn, rq, det=det):
-                    return auroc(null[det][rn], t[det][rq])
+                nd = t["null_meanp"] if det == "meanp" else null[det]
+                def fn(rn, rq, det=det, nd=nd):
+                    return auroc(nd[rn], t[det][rq])
                 point = fn(np.arange(sim_null.size), np.arange(t["sim_ids"].size))
                 per_enc = None
             lo, hi, sd = boot_stat(fn, draws)
@@ -199,18 +246,20 @@ def main():
                   + (f"  per-encoder {np.round(per_enc, 3).tolist()}" if per_enc else ""))
         # power at FPR=5% (row-level null quantile), CI by cosmology
         for det in ["kl", "meanp", "knn", "cond_knn"]:
-            if det in ("knn", "cond_knn"):
-                taus = [np.quantile(t[f"null_{det}{r}"], 1 - FPR) for r in R]
-                def pw(rn, rq, det=det, taus=taus):
-                    return float(np.mean([np.mean(t[f"{det}{r}"][rq] > taus[r]) for r in R]))
-            else:
-                tau = np.quantile(null[det], 1 - FPR)
-                def pw(rn, rq, det=det, tau=tau):
-                    return float(np.mean(t[det][rq] > tau))
-            point = pw(None, np.arange(t["sim_ids"].size))
-            lo, hi, sd = boot_stat(pw, draws)
-            numbers[f"{S}_power_{det}"] = point; numbers[f"{S}_power_{det}_lo"] = lo; numbers[f"{S}_power_{det}_hi"] = hi
-            print(f"  {S:14s} {det:9s} power@5%FPR={point:.3f} [{lo:.3f}, {hi:.3f}]")
+            for fpr, tagf in [(FPR, ""), (0.01, "_one")]:
+                if det in ("knn", "cond_knn"):
+                    taus = [np.quantile(t[f"null_{det}{r}"], 1 - fpr) for r in R]
+                    def pw(rn, rq, det=det, taus=taus):
+                        return float(np.mean([np.mean(t[f"{det}{r}"][rq] > taus[r]) for r in R]))
+                else:
+                    nd = t["null_meanp"] if det == "meanp" else null[det]
+                    tau = np.quantile(nd, 1 - fpr)
+                    def pw(rn, rq, det=det, tau=tau):
+                        return float(np.mean(t[det][rq] > tau))
+                point = pw(None, np.arange(t["sim_ids"].size))
+                lo, hi, sd = boot_stat(pw, draws)
+                numbers[f"{S}_power{tagf}_{det}"] = point; numbers[f"{S}_power{tagf}_{det}_lo"] = lo; numbers[f"{S}_power{tagf}_{det}_hi"] = hi
+                print(f"  {S:14s} {det:9s} power@{fpr:.0%}FPR={point:.3f} [{lo:.3f}, {hi:.3f}]")
         # per-event agreement between the two detectors
         rho = spearmanr(t["kl"], t["meanp"]).correlation
         numbers[f"{S}_spearman_kl_meanp"] = float(rho)
@@ -224,7 +273,7 @@ def main():
     # ---- cost curve: AUROC vs number of encoders K ----
     print("\n=== COST CURVE: AUROC vs number of encoders ===")
     cost = {}
-    for S in ["gower_nla", "gower_gb1p0", "gower_nla_z", "gower_gb1p3", "gower_vd"]:
+    for S in ["gower_nla", "gower_gb1p0", "gower_nla_z", "gower_gb1p3", "gower_vd", "gower_gbk2"]:
         t = tables[S]
         draws = cosmo_draws(sim_null, t["sim_ids"], N_BOOT, rng)
         cost[S] = {"kl": {}, "cond_knn": {}, "knn": {}}
@@ -379,6 +428,7 @@ def main():
         floor = json.load(f)
     for S, d in cal.items():
         numbers[f"{S}_cal_mean"] = d["cal_full_mean"]; numbers[f"{S}_cal_sd"] = d["cal_full_std"]
+        numbers[f"{S}_calsub_mean"] = d["cal_sub_mean"]; numbers[f"{S}_calsub_sd"] = d["cal_sub_std"]
     numbers["floor40_mean"] = floor["40x2"]["cal_full_mean"]; numbers["floor40_sd"] = floor["40x2"]["cal_full_sd"]
     numbers["floor40_p95"] = floor["40x2"]["cal_full_p95"]
     numbers["floor199_mean"] = floor["199x8"]["cal_full_mean"]; numbers["floor199_sd"] = floor["199x8"]["cal_full_sd"]
@@ -386,6 +436,10 @@ def main():
     for S in ["gower_gb1p0", "gower_gb1p3"]:
         numbers[f"{S}_cal_zfloor"] = (cal[S]["cal_full_mean"] - floor["40x2"]["cal_full_mean"]) / floor["40x2"]["cal_full_sd"]
     numbers["gower_vd_cal_zfloor"] = (cal["gower_vd"]["cal_full_mean"] - floor["199x8"]["cal_full_mean"]) / floor["199x8"]["cal_full_sd"]
+    numbers["gower_gbk2_cal_zfloor"] = (cal["gower_gbk2"]["cal_full_mean"] - floor["199x8"]["cal_full_mean"]) / floor["199x8"]["cal_full_sd"]
+    numbers["gower_gbk2_calsub_zfloor"] = (cal["gower_gbk2"]["cal_sub_mean"] - floor["199x8"]["cal3_mean"]) / floor["199x8"]["cal3_sd"]
+    numbers["floor199_sub_mean"] = floor["199x8"]["cal3_mean"]; numbers["floor199_sub_sd"] = floor["199x8"]["cal3_sd"]
+    numbers["floor199_sub_p95"] = floor["199x8"]["cal3_p95"]
 
     # ---- cross-encoder score correlation on the null (probit scale) from the per-encoder p's ----
     from scipy.stats import norm
@@ -394,11 +448,13 @@ def main():
     numbers["rho_cross_encoder_null"] = float(np.mean(C[np.triu_indices(5, 1)]))
     numbers["snr_gain_5"] = float(np.sqrt(5 / (1 + 4 * numbers["rho_cross_encoder_null"])))
     numbers["n_train_summaries"] = 19167
+    if numbers_stage0_corr:
+        numbers["gbk2_refit_null_corr_min"] = float(min(numbers_stage0_corr))
 
     # ============================================================== FIGURE 1: head-to-head + cost
     fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.25), gridspec_kw={"width_ratios": [1.45, 1]})
     ax = axes[0]
-    order = ["gower_gb1p3", "gower_gb1p0", "gower_vd", "gower_nla", "gower_nla_z"]
+    order = ["gower_gb1p3", "gower_gb1p0", "gower_gbk2", "gower_vd", "gower_nla", "gower_nla_z"]
     W = 0.19
     for j, det in enumerate(detectors):
         xs = np.arange(len(order)) + (j - 1.5) * W
@@ -410,8 +466,8 @@ def main():
         ax.errorbar(xs, ys, yerr=err, fmt="none", ecolor="0.25", elinewidth=0.7, capsize=1.5, zorder=4)
     ax.axhline(0.5, color="0.4", lw=0.8, ls=":", zorder=2)
     ax.set_xticks(np.arange(len(order)))
-    short = {"gower_gb1p3": "$b_g=1.3$\nfixed", "gower_gb1p0": "$b_g=1.0$\nfixed", "gower_vd": "variable\ndepth",
-             "gower_nla": "NLA", "gower_nla_z": "NLA-$z$"}
+    short = {"gower_gb1p3": "$b_g=1.3$\nfixed", "gower_gb1p0": "$b_g=1.0$\nfixed", "gower_gbk2": "$b_g$ prior\n$\\times2$",
+             "gower_vd": "variable\ndepth", "gower_nla": "NLA", "gower_nla_z": "NLA-$z$"}
     ax.set_xticklabels([short[S] for S in order])
     for lab, S in zip(ax.get_xticklabels(), order):
         lab.set_color(COLORS[S])
