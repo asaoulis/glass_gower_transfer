@@ -22,7 +22,9 @@ fidelity       rel-RMS comparison of a built observation against a stored ``outp
 geometry       the fixed survey/sim geometry (production vs smoke) and the map-variant presets.
 """
 from .geometry import Geometry, MapVariants  # noqa: F401
-from .catalogue_io import Catalogue, load_catalogue, apply_weights, apply_m_bias, apply_c_terms  # noqa: F401
+from .catalogue_io import (Catalogue, load_catalogue, apply_weights, apply_m_bias, apply_c_terms,  # noqa: F401
+                           fold_weights_for_mean_norm, weight_summary)
+from .build import estimator_accepts_weights  # noqa: F401
 from .build import build_observation  # noqa: F401
 from .fidelity import compare_observation_to_mock, rel_rms  # noqa: F401
 from .bake import bake_observation, baked_filename, obs_id_for, ARM_BAKES  # noqa: F401

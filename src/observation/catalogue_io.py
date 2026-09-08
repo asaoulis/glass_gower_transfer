@@ -61,6 +61,13 @@ class Catalogue:
     def counts_per_bin(self, nbins: int) -> list:
         return [int(np.sum(self.data["ZBIN"] == i)) for i in range(nbins)]
 
+    @property
+    def estimator_weights(self) -> Optional[np.ndarray]:
+        """The per-galaxy weights the estimator must use: ``weight`` only when ``apply_weights``
+        recorded mode='lensfit'; None otherwise (the unweighted forward model)."""
+        mode = self.provenance.get("treatment", {}).get("weights", {}).get("mode", "ignore")
+        return self.weight if mode == "lensfit" else None
+
 
 def _file_fingerprint(path: str, nbytes: int = 1 << 20) -> dict:
     h = hashlib.sha256()
@@ -70,13 +77,25 @@ def _file_fingerprint(path: str, nbytes: int = 1 << 20) -> dict:
             "sha256_first_MiB": h.hexdigest()}
 
 
-def _validate(data: np.ndarray, nbins: int) -> dict:
-    """Range checks + a NaN/out-of-range drop with counts (never silent)."""
+def _validate(data: np.ndarray, nbins: int, weight: Optional[np.ndarray] = None):
+    """Range checks + a NaN/out-of-range drop with counts (never silent).
+
+    Returns ``(stats, data, keep)`` where ``keep`` is the boolean row mask applied, so a weight
+    column is filtered with the IDENTICAL mask (spec §5.1). A non-finite or non-positive weight
+    drops its row too. The drop order and the RA wrap are unchanged from the unweighted path, so a
+    sim catalogue (no weight column) is processed bit-identically."""
     n0 = data.shape[0]
     ok = np.isfinite(data["RA"]) & np.isfinite(data["DEC"]) & np.isfinite(data["E1"]) & np.isfinite(data["E2"])
     ok &= (np.abs(data["DEC"]) <= 90.0)
     ok &= (np.hypot(data["E1"], data["E2"]) < 1.5)
     ok &= (data["ZBIN"] >= 0) & (data["ZBIN"] < nbins)
+    n_bad_weight = 0
+    if weight is not None:
+        if weight.shape[0] != n0:
+            raise ValueError(f"weight column has {weight.shape[0]} rows, catalogue has {n0}")
+        wok = np.isfinite(weight) & (weight > 0)
+        n_bad_weight = int(np.sum(ok & ~wok))
+        ok &= wok
     dropped = int(n0 - ok.sum())
     if dropped:
         data = data[ok]
@@ -84,7 +103,9 @@ def _validate(data: np.ndarray, nbins: int) -> dict:
     data["RA"] = np.mod(data["RA"], 360.0)
     if data.shape[0] == 0:
         raise ValueError("catalogue is empty after validation")
-    return {"n_in": int(n0), "n_dropped": dropped, "n_out": int(data.shape[0])}, data
+    stats = {"n_in": int(n0), "n_dropped": dropped, "n_out": int(data.shape[0]),
+             "n_dropped_bad_weight": n_bad_weight}
+    return stats, data, ok
 
 
 def load_catalogue(path: str, *, column_map: Optional[dict] = None, nbins: int = 6,
@@ -132,7 +153,13 @@ def load_catalogue(path: str, *, column_map: Optional[dict] = None, nbins: int =
         data["E2"] = (-1.0 if cm["flip_e2"] else 1.0) * cols["e2"]
         data["Z_TRUE"] = cols["z_true"] if cols.get("z_true") is not None else np.nan
         if cols.get("zbin") is not None:
-            data["ZBIN"] = np.asarray(cols["zbin"]).astype(int) - int(cm["zbin_offset"])
+            zraw = np.asarray(cols["zbin"]).astype(int)
+            if int(cm["zbin_offset"]) == 0 and zraw.min() == 1:
+                # KiDS TOMOBIN is 1-based: with offset 0 every galaxy moves up one bin, bin 0 is
+                # empty and bin `nbins` is silently dropped by _validate. Refuse rather than guess.
+                raise ValueError(f"zbin column runs {zraw.min()}..{zraw.max()} with zbin_offset=0 -- looks 1-based; "
+                                 "set 'zbin_offset': 1 in the column map (KiDS TOMOBIN)")
+            data["ZBIN"] = zraw - int(cm["zbin_offset"])
         elif cols.get("z_b") is not None and cm["zbin_edges"] is not None:
             edges = np.asarray(cm["zbin_edges"], dtype=float)
             # bin i <- edges[i] <= z_B < edges[i+1]; outside -> -1 (dropped by _validate)
@@ -145,11 +172,11 @@ def load_catalogue(path: str, *, column_map: Optional[dict] = None, nbins: int =
         if weight is not None:
             weight = np.asarray(weight, dtype=float)
 
-    stats, data = _validate(data, nbins)
+    stats, data, keep = _validate(data, nbins, weight)
     if weight is not None and stats["n_dropped"]:
-        # re-apply the same row filter to the weights (recompute mask on the validated array
-        # is not possible, so filter alongside): rebuild from a boolean index computed above
-        raise NotImplementedError("row drops with a weight column present: filter weights first")
+        weight = weight[keep]                      # the SAME row mask, so rows and weights stay aligned
+    if weight is not None:
+        assert weight.shape[0] == data.shape[0], (weight.shape, data.shape)
     prov["validation"] = stats
     prov["counts_per_bin"] = [int(np.sum(data["ZBIN"] == i)) for i in range(nbins)]
     prov["treatment"] = {}
@@ -188,44 +215,116 @@ def _read_columns(path: str, kind: str, cm: dict) -> dict:
 # ----------------------------------------------------------------------------------------------
 # DEFERRED treatment hooks — one call each; identity by default; always logged.
 # ----------------------------------------------------------------------------------------------
-def apply_weights(cat: Catalogue, mode: str = "ignore", **kw) -> Catalogue:
-    """Lensfit-weight treatment. DEFERRED (user, 2026-09-08).
+# Survey constants for the REPORTED weight summary only (spec §2.2; never enter an estimator).
+# frac-weighted area of the repo mask (N 495.79 + S 471.59) and np.sum(mask) at nside 1024.
+KIDS_AREA_DEG2 = 967.39
+KIDS_NPIX_NORM = 295070.25
 
-    mode='ignore'  (default) the forward model is unweighted (``map_shears(..., gal_wht=None)`` in
-                   the protected ``make_alm_shear_convergence``), so weights are set aside.
-    Future modes (e.g. 'resample_to_neff', 'weighted_maps') plug in HERE and nowhere else.
+
+def weight_summary(cat: "Catalogue", nbins: int, area_deg2: float = KIDS_AREA_DEG2,
+                   npix_norm: float = KIDS_NPIX_NORM) -> dict:
+    """Per-bin weight bookkeeping (spec §2.2 / gate 5): N, sum w, sum w^2, N_eff = (sum w)^2/sum w^2,
+    n_eff per arcmin^2 over ``area_deg2`` (compare to ``src/KiDS/tomo.py`` n_arcmin2) and the
+    Eq.-11 scalar W_i under normalisation (b) (sum w~ = N_eff): W_i = N_eff / N_pix, which is what
+    the mocks' mean count per pixel is. Reported only -- the estimators are scale-free (§2.1)."""
+    w = cat.weight
+    out = {"per_bin": [], "area_deg2": float(area_deg2), "npix_norm": float(npix_norm)}
+    for i in range(nbins):
+        sel = cat.data["ZBIN"] == i
+        n = int(sel.sum())
+        if w is None or n == 0:
+            out["per_bin"].append({"bin": i, "n": n})
+            continue
+        wi = w[sel]
+        sw, sw2 = float(wi.sum()), float((wi * wi).sum())
+        neff = sw * sw / sw2 if sw2 > 0 else 0.0
+        out["per_bin"].append({"bin": i, "n": n, "sum_w": sw, "sum_w2": sw2, "n_eff": neff,
+                               "mean_w": sw / n, "n_eff_per_arcmin2": neff / (area_deg2 * 3600.0),
+                               "W_i_neff_norm": neff / npix_norm, "W_i_raw": sw / npix_norm})
+    return out
+
+
+def apply_weights(cat: Catalogue, mode: str = "ignore", nbins: Optional[int] = None, **kw) -> Catalogue:
+    """Lensfit-weight treatment (spec .claude/plans/shear_normalisation_spec.md §5.1).
+
+    mode='ignore'   (default) identity: the estimator runs unweighted (``gal_wht=None``), the
+                    weight column is kept aside. This is the mock path.
+    mode='lensfit'  carry ``cat.weight`` (= shear_weight_only * gold_weight_only) through to the
+                    estimator as ``weights=`` (spec §5.2). Requires a weight column. NO rescaling
+                    is applied: every normalisation mode is invariant under w -> alpha*w (§2.1),
+                    so a "safety" normalisation would be a no-op with a bin-indexing hazard.
+    Either way the per-bin weight summary (N, sum w, N_eff, n_eff/arcmin^2, W_i) is recorded.
     """
-    if mode != "ignore":
-        raise NotImplementedError(f"apply_weights mode {mode!r} is not implemented yet (deferred)")
-    cat.provenance["treatment"]["weights"] = {"mode": mode, "had_weight_column": cat.weight is not None}
+    if mode not in ("ignore", "lensfit"):
+        raise NotImplementedError(f"apply_weights mode {mode!r} is not implemented (ignore | lensfit)")
+    if mode == "lensfit" and cat.weight is None:
+        raise ValueError("apply_weights(mode='lensfit') needs a weight column (column_map['weight'])")
+    nb = int(nbins or cat.provenance.get("nbins", 6))
+    cat.provenance["treatment"]["weights"] = {"mode": mode, "had_weight_column": cat.weight is not None,
+                                              "rescaled": False, "summary": weight_summary(cat, nb)}
     return cat
+
+
+def fold_weights_for_mean_norm(cat: Catalogue, nbins: Optional[int] = None) -> Catalogue:
+    """Spec §4.1: the 'mean'-normalisation ingestion transform, for CROSS-CHECKS only.
+
+    Replaces e by  e~ = (N_i / sum_i w) * w * (e - <e>_w,i)  per bin, so the UNWEIGHTED estimator with
+    normalization='mean' (and the mask passed!) returns exactly S_p / W_i. The weighted per-bin mean is
+    subtracted here, so the estimator's own mean subtraction becomes a true no-op. Does NOT generalise
+    to 'counts' / 'smoothed_counts' (their denominator is per pixel). Production never calls this."""
+    if cat.weight is None:
+        raise ValueError("fold_weights_for_mean_norm needs a weight column")
+    nb = int(nbins or cat.provenance.get("nbins", 6))
+    data = cat.data.copy()
+    w = cat.weight
+    for i in range(nb):
+        sel = data["ZBIN"] == i
+        if not sel.any():
+            continue
+        ww = w[sel]
+        k = sel.sum() / ww.sum()
+        for comp in ("E1", "E2"):
+            v = data[comp][sel]
+            data[comp][sel] = k * ww * (v - (ww * v).sum() / ww.sum())
+    prov = dict(cat.provenance)
+    prov["treatment"] = dict(prov.get("treatment", {}))
+    prov["treatment"]["weights"] = {"mode": "folded_mean_norm", "had_weight_column": True,
+                                    "note": "spec 4.1 ingestion transform; run the estimator with "
+                                            "normalization='mean' and the mask; weights NOT passed"}
+    return Catalogue(data=data, weight=None, provenance=prov)
 
 
 def apply_m_bias(cat: Catalogue, m_bias=None, source: str = "auto") -> np.ndarray:
     """Return the per-bin multiplicative-bias vector handed to ``make_alm_shear_convergence``,
     whose estimator divides the shears by ``(1 + m)`` (``map_shears.py``).
 
-    USER DECISION (2026-09-08, afternoon): the real shear catalogue arrives ALREADY m- and
-    c-corrected -- that correction step is what the forward model simulates -- so the estimator
-    must not de-bias it again: a real catalogue gets ``m = 0``. A SIM catalogue (mock-as-real) is
-    the raw product of the simulator and is processed exactly as the master does it, with its
-    realised ``m_bias_for_shear`` (this is what the bit-identity gate reproduces).
+    SETTLED (audit .claude/background/real_catalogue_audit.md finding 1; spec §3, 2026-09-08 evening):
+    the real KiDS-Legacy catalogue is NOT m-corrected -- sigma_e,w/(1+m) reproduces
+    ``systematics.py:sigma_e`` to 0.02 % in all six bins -- so it is de-biased with the FIDUCIAL
+    vector ``src/KiDS/systematics.py:m_bias``, exactly as the simulator de-biases its mocks (it
+    injects ``m_bias_realised`` and divides by the fiducial vector, leaving the m-uncertainty as a
+    residual in the mocks). A SIM catalogue (mock-as-real) uses its realised ``m_bias_for_shear``,
+    which is what the bit-identity gate reproduces. Apply 1/(1+m) ONCE: here (via the estimator),
+    never also at ingestion.
 
-    source='auto'   sim catalogue -> its ``m_bias_for_shear``; anything else -> zeros;
-    source='given'  use ``m_bias`` verbatim; source='zero' -> zeros;
-    source='fiducial' -> ``src.KiDS.systematics.m_bias`` (only for a catalogue that is NOT corrected).
+    source='auto'      sim catalogue -> its ``m_bias_for_shear``; real catalogue -> fiducial;
+    source='fiducial'  ``src.KiDS.systematics.m_bias``;
+    source='given'     use ``m_bias`` verbatim;  source='zero' -> zeros (an ALREADY m-corrected input only).
     """
     nbins = int(cat.provenance.get("nbins", 6))
+    attrs = cat.provenance.get("sim_attrs", {})
     if source == "given":
         m = np.asarray(m_bias, dtype=float)
     elif source == "zero":
         m = np.zeros(nbins)
     elif source == "auto":
-        attrs = cat.provenance.get("sim_attrs", {})
         if "m_bias_for_shear" in attrs:
             m = np.asarray(attrs["m_bias_for_shear"], dtype=float)
+            source = "auto->sim"
         else:
-            m = np.zeros(nbins)            # real catalogue: already m-corrected (user, 2026-09-08)
+            from src.KiDS.systematics import m_bias as _fid
+            m = np.asarray(_fid, dtype=float)
+            source = "auto->fiducial"
     elif source == "fiducial":
         from src.KiDS.systematics import m_bias as _fid
         m = np.asarray(_fid, dtype=float)
@@ -238,21 +337,53 @@ def apply_m_bias(cat: Catalogue, m_bias=None, source: str = "auto") -> np.ndarra
     return m
 
 
+def _patch_of(dec: np.ndarray) -> np.ndarray:
+    """KiDS-North (DEC ~ -5..+5) vs KiDS-South (DEC ~ -36..-26): a diagnostic split only."""
+    return np.where(dec > -15.0, "N", "S")
+
+
 def apply_c_terms(cat: Catalogue, mode: str = "global_mean_only", **kw) -> Catalogue:
     """Additive c-term treatment.
 
-    USER DECISION (2026-09-08, afternoon): the real catalogue arrives c-corrected; nothing is
-    applied here. mode='global_mean_only' (default) only RECORDS the per-bin means that the
-    production estimator subtracts anyway inside ``make_alm_shear_convergence`` (identically for
-    the mocks, which inject per-N/S c-terms). Future modes (per-patch, per-bin c-map) plug in HERE.
+    SETTLED (spec §3, 2026-09-08 evening): the per-bin mean subtraction stays GLOBAL over N+S and is
+    done by the estimator (weighted when weights are passed, unweighted otherwise), exactly as for
+    the mocks, which inject per-patch c-terms and remove only a global mean. Nothing is subtracted
+    here. mode='global_mean_only' RECORDS: the per-bin means the estimator will remove (weighted
+    when mode='lensfit', else unweighted) and, as a leakage diagnostic, the per-patch (N/S)
+    residual means that stay in the data after the global subtraction. Do not pre-clean per patch:
+    the mocks keep a ~3-10e-4 per-patch offset, and a cleaner data vector is a one-sided bias.
     """
     if mode != "global_mean_only":
         raise NotImplementedError(f"apply_c_terms mode {mode!r} is not implemented yet (deferred)")
     nb = int(cat.provenance.get("nbins", 6))
-    means = [[float(np.mean(cat.data["E1"][cat.data["ZBIN"] == i])) if np.any(cat.data["ZBIN"] == i) else 0.0,
-              float(np.mean(cat.data["E2"][cat.data["ZBIN"] == i])) if np.any(cat.data["ZBIN"] == i) else 0.0]
-             for i in range(nb)]
-    cat.provenance["treatment"]["c_terms"] = {"mode": mode, "per_bin_mean_e1_e2_removed_by_estimator": means}
+    w = cat.estimator_weights
+    patch = _patch_of(cat.data["DEC"])
+    means, per_patch = [], []
+    for i in range(nb):
+        sel = cat.data["ZBIN"] == i
+        if not sel.any():
+            means.append([0.0, 0.0]); per_patch.append({}); continue
+        ww = None if w is None else w[sel]
+        def _mean(v, m=None):
+            if ww is None:
+                return float(np.mean(v if m is None else v[m]))
+            wm = ww if m is None else ww[m]
+            return float((wm * (v if m is None else v[m])).sum() / wm.sum()) if wm.sum() > 0 else 0.0
+        e1, e2 = cat.data["E1"][sel], cat.data["E2"][sel]
+        g = [_mean(e1), _mean(e2)]
+        means.append(g)
+        pp = {}
+        for name in ("N", "S"):
+            m = patch[sel] == name
+            if m.any():
+                pp[name] = {"n": int(m.sum()), "residual_mean_e1": _mean(e1, m) - g[0],
+                            "residual_mean_e2": _mean(e2, m) - g[1]}
+        per_patch.append(pp)
+    cat.provenance["treatment"]["c_terms"] = {
+        "mode": mode, "weighted": w is not None,
+        "per_bin_mean_e1_e2_removed_by_estimator": means,
+        "per_patch_residual_after_global_subtraction": per_patch,
+    }
     return cat
 
 

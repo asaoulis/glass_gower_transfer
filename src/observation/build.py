@@ -77,14 +77,35 @@ def _save_dict(h5group, dictionary):
             h5group.create_dataset(str(key), data=arr)
 
 
+def estimator_accepts_weights() -> bool:
+    """True once the protected §5.2 patch (``make_alm_shear_convergence(..., weights=)``) is in."""
+    import inspect
+    from src.cosmology.map_shears import make_alm_shear_convergence
+    return "weights" in inspect.signature(make_alm_shear_convergence).parameters
+
+
+WEIGHTS_PATCH_NOTE = ("the estimator has no `weights=` keyword: the protected patch of "
+                      ".claude/plans/shear_normalisation_spec.md §5.2 (prepared as "
+                      ".claude/plans/map_shears_weights.patch) is not applied. Weighted 'counts' / "
+                      "'smoothed_counts' maps are unreachable without it; refusing to build an "
+                      "UNWEIGHTED observation under a weighted provenance.")
+
+
 def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, label: str,
                       geometry: Geometry, variants: Optional[MapVariants] = None,
                       rng_seed: int = 20260908, rng=None, mask=None, verbose: bool = True,
-                      extra_provenance: Optional[Dict] = None) -> str:
+                      extra_provenance: Optional[Dict] = None, weights: Optional[np.ndarray] = None,
+                      normalization: str = "counts") -> str:
     """Build ``out_path`` from a loaded catalogue. Returns the written path.
 
+    ``weights``: per-galaxy weights for the estimator (``cat.estimator_weights`` after
+    ``apply_weights(mode='lensfit')``); None = the unweighted forward model (the mock path, which
+    must stay bit-identical). Passing weights requires the protected §5.2 patch; without it this
+    RAISES rather than silently building an unweighted observation.
+    ``normalization``: the bandpower branch's mode ('counts' in production; 'mean' = paper Eq. 11 for
+    cross-checks, which REQUIRES ``mask`` -- with mask=None npix_norm is the full sphere, 42x wrong).
     ``mask``: passed through to make_alm_shear_convergence, which does NOT apply it to the maps
-    (it only enters the 'mean' normalisation, unused here) -- so None is safe and is the default.
+    (it only enters the 'mean' normalisation) -- so None is safe for 'counts'/'smoothed_counts'.
     ``rng_seed``: seeds the random-rotation noise meter (a pure shape-noise realisation); the
     observable maps themselves are deterministic given the catalogue, and the bandpowers depend on
     it only through the high-ell shape-noise debias. ``rng``: an explicit Generator that overrides
@@ -109,11 +130,28 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
     postproc_rng = rng if rng is not None else np.random.default_rng(int(rng_seed))
     rng_note = "explicit generator" if rng is not None else f"default_rng({int(rng_seed)})"
 
+    if normalization not in ("counts", "mean"):
+        raise ValueError(f"normalization must be 'counts' (production) or 'mean' (Eq. 11 cross-check), got {normalization!r}")
+    if normalization == "mean" and mask is None:
+        raise ValueError("normalization='mean' needs mask=load_kids_mask(...): with mask=None the "
+                         "estimator's npix_norm is the full sphere (12*nside^2), ~42x too large")
+    wkw = {}
+    if weights is not None:
+        weights = np.asarray(weights, dtype=float)
+        if weights.shape != (cat.n_gal,):
+            raise ValueError(f"weights shape {weights.shape} != (n_gal={cat.n_gal},)")
+        if not estimator_accepts_weights():
+            raise RuntimeError(WEIGHTS_PATCH_NOTE)
+        wkw = {"weights": weights}
+    weights_note = ("per-galaxy lensfit weights passed to the estimator (weighted numerator, "
+                    "weighted denominator, weighted per-bin mean)" if weights is not None
+                    else "unweighted (forward-model convention)")
+
     # 1-2. counts branch -> bandpowers (EE) + BB + per-ell cls
     log(f"[obs:{label}] counts-branch alms (nside={g.nside}, lmax={g.lmax}, n_gal={cat.n_gal:,})")
     alm, alm_rand = make_alm_shear_convergence(
         cat.data, m_bias, g.nbins, g.nside, g.lmax, nosh=False, mask=mask,
-        normalization="counts", rng=postproc_rng)
+        normalization=normalization, rng=postproc_rng, **wkw)
     mixed_cls = denoise_shear_cls(g.nbins, alm, alm_rand, g.lmax)
     mixed_cut = mixed_cls[:, :, :, g.lower_lscale:g.upper_lscale + 1]
     cll_bands, mixed_bandpowers = compute_cl_bandpowers(mixed_cut, g.nbins, g.lower_lscale,
@@ -128,7 +166,7 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
         alm_sc8, alm_rand_sc8 = make_alm_shear_convergence(
             cat.data, m_bias, g.nbins, g.nside, g.lmax, nosh=False, mask=mask,
             normalization="smoothed_counts",
-            smoothed_counts_fwhm_arcmin=variants.a3s8_fwhm_arcmin, rng=sc8_rng)
+            smoothed_counts_fwhm_arcmin=variants.a3s8_fwhm_arcmin, rng=sc8_rng, **wkw)
 
     map_types: Dict[str, np.ndarray] = {}
     noise_std: Dict[str, dict] = {}
@@ -201,6 +239,9 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
         "counts_per_bin": json.dumps(cat.counts_per_bin(g.nbins)),
         "geometry": json.dumps(g.as_dict()), "variants": json.dumps(variants.as_dict()),
         "m_bias_used": np.asarray(m_bias, dtype=float),
+        "bandpower_normalization": str(normalization),
+        "weights": weights_note,
+        "weights_used": bool(weights is not None),
         "catalogue_provenance": json.dumps(scrub_provenance(cat.provenance), default=str),
     }
     if extra_provenance:

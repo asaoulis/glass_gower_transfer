@@ -46,7 +46,11 @@ def main(argv=None):
     ap.add_argument("--variants", default="production", choices=["production", "full", "a1only"])
     ap.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero", "fiducial"])
     ap.add_argument("--m-bias", default=None, help="comma-separated per-bin m (with --m-bias-source given)")
-    ap.add_argument("--weights-mode", default="ignore")
+    ap.add_argument("--weights-mode", default="ignore", choices=["ignore", "lensfit"],
+                    help="lensfit = pass the catalogue weights to the estimator (needs the protected weights patch)")
+    ap.add_argument("--normalization", default="counts", choices=["counts", "mean"],
+                    help="bandpower-branch normalisation; 'mean' (paper Eq. 11) is a cross-check and loads the KiDS mask")
+    ap.add_argument("--mask-data-dir", default=None, help="data dir for load_kids_mask (required with --normalization mean)")
     ap.add_argument("--c-terms-mode", default="global_mean_only")
     ap.add_argument("--rng-seed", type=int, default=20260908)
     ap.add_argument("--fidelity-mock", default=None, help="stored output_*.h5 to compare against (P0 gate)")
@@ -60,7 +64,7 @@ def main(argv=None):
 
     column_map = json.load(open(args.column_map)) if args.column_map else None
     cat = load_catalogue(args.catalogue, column_map=column_map, nbins=args.nbins, kind=args.kind)
-    cat = apply_weights(cat, mode=args.weights_mode)
+    cat = apply_weights(cat, mode=args.weights_mode, nbins=args.nbins)
     m_given = None if args.m_bias is None else [float(x) for x in args.m_bias.split(",")]
     m_bias = apply_m_bias(cat, m_bias=m_given, source=args.m_bias_source)
     cat = apply_c_terms(cat, mode=args.c_terms_mode)
@@ -82,10 +86,17 @@ def main(argv=None):
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    mask = None
+    if args.normalization == "mean":
+        if not args.mask_data_dir:
+            raise SystemExit("--normalization mean needs --mask-data-dir (load_kids_mask)")
+        from src.KiDS.simulation_config import load_kids_mask
+        mask = load_kids_mask(args.mask_data_dir)
     out = build_observation(cat, m_bias, out_path=str(out_dir / f"observation_{args.label}.h5"),
                             label=args.label, geometry=geometry, variants=variants,
                             rng_seed=args.rng_seed, rng=rng_factory(), verbose=not args.quiet,
-                            extra_provenance={"cli": vars(args)})
+                            extra_provenance={"cli": vars(args)}, weights=cat.estimator_weights,
+                            normalization=args.normalization, mask=mask)
     print(f"observation: {out}")
 
     if args.fidelity_mock:

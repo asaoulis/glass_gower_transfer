@@ -86,6 +86,8 @@ def add_observe_args(parser) -> None:
     g.add_argument("--jitter-floor", action="store_true")
     g.add_argument("--rng-seed", type=int, default=20260908)
     g.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero", "fiducial"])
+    g.add_argument("--weights-mode", default="ignore", choices=["ignore", "lensfit"],
+                   help="lensfit = weighted estimator (needs the protected weights patch on the cluster checkout)")
 
 
 
@@ -412,7 +414,7 @@ def run_observe_build(args) -> int:
     print(f"[observe-build] catalogue={cat_path}\n[observe-build] sibling mock={mock_path}", flush=True)
 
     cat = load_catalogue(cat_path, column_map=column_map, kind=args.kind)
-    cat = apply_weights(cat)
+    cat = apply_weights(cat, mode=getattr(args, "weights_mode", "ignore"))
     m_bias = apply_m_bias(cat, source=args.m_bias_source)
     cat = apply_c_terms(cat)
     attrs = cat.provenance.get("sim_attrs", {})
@@ -433,7 +435,8 @@ def run_observe_build(args) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     obs = build_observation(cat, m_bias, out_path=str(out_dir / f"observation_{label}.h5"), label=label,
                             geometry=geometry, variants=variants, rng_seed=args.rng_seed, rng=rng_factory(),
-                            extra_provenance={"cli": {k: v for k, v in vars(args).items() if v is not None}})
+                            extra_provenance={"cli": {k: v for k, v in vars(args).items() if v is not None}},
+                            weights=cat.estimator_weights)
 
     rc = 0
     if args.fidelity:
