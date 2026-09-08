@@ -1060,6 +1060,65 @@ def _summarise_variate_inputs(name: str, test_paths: Sequence[str], loader, n_ra
     return stats
 
 
+
+def _finish_no_truth_variate(name, cfg, variate, repeat_index, theta0s, samples, test_paths,
+                             param_names, missing_params, exclude_params, n_bad_events,
+                             num_samples, input_stats, meta, out_dir):
+    """The observation branch of `_eval_one_variate`: no truth vector => no TARP/FoM/bias/dMI.
+
+    Writes the same JSON/npz family as the truth branch (with ``metrics=None`` and
+    ``has_truth=False``) so downstream readers find the files, and returns the per-event
+    posterior moments for the cross-repeat disagreement (KL). Prints counts only."""
+    payload = {
+        "variate": name,
+        "experiment": cfg.experiment_name,
+        "match_string": cfg.match_string,
+        "repeat_index": int(repeat_index),
+        "data_patterns": variate["patterns"],
+        "n_test_files": len(test_paths),
+        "n_test_cosmologies": meta["n_test_cosmologies"],
+        "n_dropped_nonfinite": n_bad_events,
+        "test_ids_from_fixed_lock": meta["test_ids_from_fixed_lock"],
+        "missing_params": missing_params,
+        "excluded_params": exclude_params,
+        "dropped_from_calibration": list(param_names),
+        "num_posterior_samples": int(num_samples),
+        "input_stats": input_stats,
+        "has_truth": False,
+        "metrics": None,
+        "metrics_skipped": "no finite truth vector (observation); nothing scored against theta0",
+    }
+    os.makedirs(out_dir, exist_ok=True)
+    with open(os.path.join(out_dir, f"misspec_evaluation_results_{cfg.match_string}.json"), "w") as f:
+        json.dump(_to_json_compatible(payload), f, indent=4)
+    _save_posterior_samples(
+        os.path.join(out_dir, f"misspec_posterior_samples_{cfg.match_string}.npz"),
+        theta0s, samples, test_paths,
+    )
+    _save_posterior_moments(
+        os.path.join(out_dir, f"misspec_posterior_moments_{cfg.match_string}.npz"),
+        theta0s, samples, test_paths, param_names,
+    )
+    print(f"[misspec] {name}: no truth vector (observation): metrics skipped; "
+          f"{len(test_paths)} event(s) sampled, samples/moments written to the blind dir.",
+          flush=True)
+    samp_np = samples.detach().cpu().numpy() if hasattr(samples, "detach") else np.asarray(samples)
+    per_event = {
+        "mu": samp_np.mean(axis=0).astype(np.float32),
+        "var": samp_np.var(axis=0).astype(np.float32),
+        "test_files": [os.path.basename(p) for p in test_paths],
+    }
+    return {
+        "n_test_files": len(test_paths),
+        "n_dropped_nonfinite": n_bad_events,
+        "available_params": [],
+        "cal_full": float("nan"),
+        "cal_om_s8_w0": float("nan"),
+        "has_truth": False,
+        "out_dir": out_dir,
+        "_per_event": per_event,
+    }
+
 def _eval_one_variate(
     variate: Dict,
     model,
@@ -1164,6 +1223,16 @@ def _eval_one_variate(
     available_idx = [i for i, p in enumerate(param_names)
                      if finite[i] and p not in exclude_params]
     dropped = [p for i, p in enumerate(param_names) if i not in available_idx]
+    if not bool(finite.any()):
+        # An OBSERVATION (empty cosmo_dict -> every truth entry NaN): nothing metric-shaped
+        # exists. Persist the blind intermediates (samples/moments live under the caller's
+        # out_dir, which for obs-score is the unblinding_blind subtree) and hand back the
+        # per-event moments the cross-repeat KL needs. BLIND RULE for stdout: this branch
+        # prints COUNTS ONLY -- no moment, width, FoM or calibration number of the observation
+        # may reach the job log (the log is readable outside the blind store).
+        return _finish_no_truth_variate(name, cfg, variate, repeat_index, theta0s, samples,
+                                        test_paths, param_names, missing_params, exclude_params,
+                                        n_bad_events, num_samples, input_stats, meta, out_dir)
     if not available_idx:
         raise RuntimeError("no finite/included cosmo params to calibrate on")
 

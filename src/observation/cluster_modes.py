@@ -12,7 +12,7 @@ Roots (overridable by env for LOCAL tests):
 
 Mode ``observe-build``
     --catalogue-store NAME [--catalogue-root gpu4|gpu5] (--catalogue-index N | --catalogue-file BASENAME)
-    --obs-label L --obs-store NAME [--bake-arms sc8a1 a1] [--variants production|full]
+    --obs-label L --obs-store NAME [--bake-arms sc8a1 a0_tagged] [--variants production|full]
     [--fidelity] [--exact-rng] [--jitter-floor] [--rng-seed N] [--column-map BASENAME] [--kind auto|sim|h5|fits]
   Builds  MODELS_ROOT/checkpoints/unblinding/<obs-store>/observation_<L>.h5 (+ provenance, fidelity JSON;
           under checkpoints/ so `run_remote.py fetch --exp unblinding --rel <obs-store>` can pull it) and
@@ -32,6 +32,8 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+from src.observation.bake import ARM_BAKES
 
 REPO = Path(__file__).resolve().parents[2]
 
@@ -76,7 +78,7 @@ def add_observe_args(parser) -> None:
     g.add_argument("--kind", default="auto", choices=["auto", "sim", "h5", "fits"])
     g.add_argument("--obs-label", default=None, help="opaque label (A/B/C)")
     g.add_argument("--obs-store", default=None, help="bare name prefix for the baked stores under DATASETS_ROOT")
-    g.add_argument("--bake-arms", nargs="+", default=["sc8a1", "a1"])
+    g.add_argument("--bake-arms", nargs="+", default=["sc8a1", "a0_tagged"], choices=list(ARM_BAKES))
     g.add_argument("--variants", default="production", choices=["production", "full", "a1only"])
     g.add_argument("--fidelity", action="store_true")
     g.add_argument("--exact-rng", action="store_true")
@@ -84,6 +86,117 @@ def add_observe_args(parser) -> None:
     g.add_argument("--rng-seed", type=int, default=20260908)
     g.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero"])
 
+
+
+# ---------------------------------------------------------------------------------------------
+# observe-strip: a CLEAN in-distribution control -- one held-out flagship mock, stripped of its
+# truth, dropped into an observation store. GATE 0b's catalogue (glass_paired_bg1p0_cats, a
+# pre-BGP GLASS mock at fixed b_g) is a legitimate known-OOD control for the Gower nla_m BGP
+# cloud; Tier 1 / GATE 3b / GATE 4 also need a mock-as-real that IS in distribution.
+# ---------------------------------------------------------------------------------------------
+def add_strip_args(parser) -> None:
+    g = parser.add_argument_group("observe-strip")
+    g.add_argument("--strip-store", default=None, help="bare BAKED store (gpu5) to take the mock from")
+    g.add_argument("--strip-root", default="gpu5", choices=["gpu4", "gpu5"])
+    g.add_argument("--strip-index", type=int, default=0,
+                   help="index into the SORTED list of candidate files (fixed-lock test cosmologies only)")
+    g.add_argument("--strip-lock", default="gower_test_ids",
+                   help="fixed test lock (config/fixed_test_sets/<name>.json) restricting the candidates")
+    g.add_argument("--strip-arm", default="sc8a1", help="which arm store the baked mock corresponds to")
+    g.add_argument("--strip-raw-store", default=None,
+                   help="bare RAW store carrying the same basename: copies cls (EE/BB) and re-bins bb_bandpowers")
+    g.add_argument("--strip-raw-root", default="gpu4", choices=["gpu4", "gpu5"])
+
+
+def run_obs_strip(args) -> int:
+    """Copy one held-out mock into ``<obs-store>_<label>_<arm>/output_<obs_id>_out0_rot0_0.h5``
+    with an EMPTY ``cosmo_dict`` and an ``observation/`` provenance group; the source basename,
+    sim id and the stripped cosmo_dict go to the ``_truthkey/`` sidecar only. Stdout never names
+    the chosen file."""
+    import h5py
+    from src.observation.bake import baked_filename, obs_id_for
+    from src.observation.build import _git_rev, bb_bandpowers_from_cls
+    from src.observation.geometry import Geometry
+    from src.ml.data.data_selection import extract_cosmo_index
+
+    label = _bare(args.obs_label, "--obs-label")
+    obs_store = _bare(args.obs_store, "--obs-store")
+    src_store = _bare(args.strip_store, "--strip-store")
+    arm = _bare(args.strip_arm, "--strip-arm")
+    src_dir = os.path.join(datasets_root(args.strip_root), src_store)
+    files = sorted(glob.glob(os.path.join(src_dir, "output_*.h5")))
+    if not files:
+        raise SystemExit(f"no output_*.h5 under {src_dir}")
+    lock_ids = None
+    if args.strip_lock and args.strip_lock != "none":
+        lock_path = REPO / "config" / "fixed_test_sets" / f"{_bare(args.strip_lock, '--strip-lock')}.json"
+        with open(lock_path) as fh:
+            lock = json.load(fh)
+        ids = lock.get("sim_ids", lock) if isinstance(lock, dict) else lock
+        lock_ids = {int(i) for i in ids}
+        files = [f for f in files if extract_cosmo_index(f) in lock_ids]
+    if not files:
+        raise SystemExit("no candidate files after the lock filter")
+    if not 0 <= args.strip_index < len(files):
+        raise SystemExit(f"--strip-index out of range: {len(files)} candidates")
+    src = files[args.strip_index]
+    print(f"[observe-strip] label={label} source_store={src_store} arm={arm} candidates={len(files)} "
+          f"(lock={args.strip_lock}) index={args.strip_index}", flush=True)
+
+    store_dir = os.path.join(datasets_root("gpu5"), f"{obs_store}_{label}_{arm}")
+    os.makedirs(store_dir, exist_ok=True)
+    dst = os.path.join(store_dir, baked_filename(label))
+    truth = {"label": label, "source_store": src_store, "source_file": os.path.basename(src),
+             "sim_id": int(extract_cosmo_index(src)), "cosmo_dict": {}}
+    prov = {"label": label, "kind": "stripped_mock", "arm": arm, "source_store": src_store,
+            "git_rev": _git_rev(), "obs_id": int(obs_id_for(label)), "lock": args.strip_lock,
+            "raw_store": args.strip_raw_store or ""}
+    g = Geometry.production()
+    tmp = dst + ".tmp"
+    with h5py.File(src, "r") as fi, h5py.File(tmp, "w") as fo:
+        for key in fi:
+            if key == "cosmo_dict":
+                continue
+            fi.copy(key, fo)
+        for a, v in fi.attrs.items():
+            if a not in ("sim_id", "cosmo", "cosmology"):
+                fo.attrs[a] = v
+        if "cosmo_dict" in fi:
+            truth["cosmo_dict"] = {k: (fi["cosmo_dict"][k][()].tolist() if hasattr(fi["cosmo_dict"][k][()], "tolist")
+                                       else str(fi["cosmo_dict"][k][()])) for k in fi["cosmo_dict"]}
+        fo.create_group("cosmo_dict")                       # EMPTY: the observation contract
+        if args.strip_raw_store:
+            raw = os.path.join(datasets_root(args.strip_raw_root), _bare(args.strip_raw_store, "--strip-raw-store"),
+                               os.path.basename(src))
+            with h5py.File(raw, "r") as fr:
+                cls = np.asarray(fr["cls_results/full/cls"])          # (nbins, nbins, >=2, n_ell)
+            cr = fo.require_group("cls_results/full")
+            if "cls" in cr:
+                del cr["cls"]
+            cr.create_dataset("cls", data=cls[:, :, :2])
+            cut = cls[:, :, :, g.lower_lscale:g.upper_lscale + 1]
+            if "bb_bandpowers" in cr:
+                del cr["bb_bandpowers"]
+            cr.create_dataset("bb_bandpowers",
+                              data=bb_bandpowers_from_cls(cut, g.nbins, g.lower_lscale, g.upper_lscale, g.nbands))
+        og = fo.require_group("observation")   # a source that is itself an observation bake keeps its group
+        for k, v in prov.items():
+            og.attrs[k] = v
+    os.replace(tmp, dst)
+
+    out_dir = unblinding_root() / obs_store
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tk_dir = out_dir / "_truthkey"
+    tk_dir.mkdir(exist_ok=True)
+    with open(tk_dir / f"observation_{label}_truthkey.json", "w") as fh:
+        json.dump(truth, fh, indent=2, default=str)
+    with open(out_dir / f"observation_{label}_provenance.json", "w") as fh:
+        json.dump(prov, fh, indent=2)
+    with open(out_dir / f"observation_{label}_stores.json", "w") as fh:
+        json.dump({"label": label, "observation": None, "kind": "stripped_mock", "baked": {arm: dst},
+                   "data_store_names": {arm: f"{obs_store}_{label}_{arm}"}}, fh, indent=2)
+    print(f"[observe-strip] wrote {dst} (+ provenance, truthkey sidecar under {out_dir})", flush=True)
+    return 0
 
 def add_reference_args(parser) -> None:
     g = parser.add_argument_group("obs-reference")
@@ -139,9 +252,31 @@ def add_score_args(parser) -> None:
     g.add_argument("--score-num-samples", type=int, default=4000)
     g.add_argument("--score-skip-summaries", action="store_true")
     g.add_argument("--score-skip-misspec", action="store_true")
+    g.add_argument("--score-knn-k", type=int, default=10, help="k of the summary-space kNN (summaries.py default)")
 
 
 BLIND_SUBDIR = "unblinding_blind"     # under checkpoints/<exp>/ -- denied to the agent by guard_blind
+
+
+
+def _idtest_meanp_null(sdir: str, matches, *, k: int = 10) -> np.ndarray:
+    """Null distribution of the encoder-averaged kNN p over the common ID held-out files."""
+    from src.ml.eval.ood import TrainWhitener, empirical_pvalues, knn_scores
+    per = {}
+    for m in matches:
+        ftr = os.path.join(sdir, "_train", f"summaries_{m}.npz")
+        fid = os.path.join(sdir, "_idtest", f"summaries_{m}.npz")
+        if not (os.path.exists(ftr) and os.path.exists(fid)):
+            raise FileNotFoundError(f"missing _train/_idtest summaries for {m}")
+        dtr, did = np.load(ftr), np.load(fid)
+        wh = TrainWhitener.fit(np.asarray(dtr["z"], dtype=np.float64))
+        null = knn_scores(wh(np.asarray(dtr["z"], dtype=np.float64)), wh(np.asarray(did["z"], dtype=np.float64)), k=k)
+        p = empirical_pvalues(null, null)
+        per[m] = dict(zip([str(x) for x in did["test_files"]], p))
+    common = sorted(set.intersection(*(set(d) for d in per.values())))
+    if not common:
+        raise RuntimeError("no common ID held-out files across encoders")
+    return np.mean(np.stack([[per[m][f] for f in common] for m in matches]), axis=0)
 
 
 def run_obs_score(args) -> int:
@@ -193,14 +328,17 @@ def run_obs_score(args) -> int:
             pv.append(float(d["ood_knn_p"][0]))
     if pv:
         out["meanp_raw"] = float(np.mean(pv))
-        # recalibrate the mean-p statistic against the ID-test null of the same encoders
-        idp = []
-        for m in matches:
-            f = os.path.join(sdir, "_idtest", f"summaries_{m}.npz")
-            if os.path.exists(f):
-                idp.append(np.load(f)["ood_knn_p"])
-        if len(idp) == len(pv):
-            null_meanp = np.mean(np.stack(idp), axis=0)
+        # Recalibrate the mean-p statistic against the ID-test null of the same encoders. The
+        # _idtest npz carries the held-out summary vectors z (not p-values), so the per-event
+        # kNN p of every ID event is rebuilt here exactly as OODReference.fit did it (whitener on
+        # the train cloud, kNN k=10 vs the train cloud, empirical p vs the ID null itself) and
+        # averaged over encoders per test file (the fixed lock makes the ID split common).
+        try:
+            null_meanp = _idtest_meanp_null(sdir, matches, k=int(args.score_knn_k))
+        except Exception as ex:  # recalibration is a bonus; the raw mean-p is the record
+            null_meanp = None
+            out["notes"].append(f"mean-p recalibration unavailable: {type(ex).__name__}: {ex}")
+        if null_meanp is not None and null_meanp.size:
             # LOW mean-p = OOD, so the recalibrated p is the LEFT tail
             out["meanp_recalibrated"] = float(empirical_pvalues(-null_meanp, np.array([-out["meanp_raw"]]))[0])
             out["n_idtest_null"] = int(len(null_meanp))

@@ -20,8 +20,10 @@ Arm table (ASSESSMENT_hf.md, 2026-09-07) -> Stage-B experiment name per repeat r
   vd           gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150
   k2           gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150   (repeats 0-3 only)
 Each arm reads the sc8a1 baked observation store `<store-prefix>_<label>_sc8a1` EXCEPT nla_m_nobgp,
-which was trained on the plain-counts product and reads `<store-prefix>_<label>_a1` (F9: verify
-the bake flags of that arm's training store before trusting its posterior).
+whose training store `gower_mocks_nla_m_f16_fwhm4_lmin56_lcut1400` was baked with
+`--eb-variant fwhm4_lmin56_lcut1400 --keep-variant-tag` and NO `--noise-norm` (prebake log in
+.claude/runs/training-runs/vicreg-nle-first-test/plan.md; config `_GOWER_EB_VARIANT_FWHM4`, no
+`eb_noise_norm`), i.e. the `a0_tagged` bake: it reads `<store-prefix>_<label>_a0_tagged`.
 
 Cost: ~14 h wall per (arm, repeat, label) at 25k samples on CPU (Stage-B burn-in dominates; see
 memory nle-sampling-burnin); 3 labels x 29 (arm,repeat) = 87 jobs. Use --num-samples 2000 and
@@ -40,7 +42,7 @@ RUN_REMOTE = REPO / ".claude" / "cluster" / "run_remote.py"
 
 ARMS = {
     "nla_m": ("gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9", "sc8a1", (0, 1, 2, 3, 4)),
-    "nla_m_nobgp": ("gower_nle_finetune_nla_m_z8_r{r}_ens9", "a1", (0, 1, 2, 3, 4)),
+    "nla_m_nobgp": ("gower_nle_finetune_nla_m_z8_r{r}_ens9", "a0_tagged", (0, 1, 2, 3, 4)),
     "nla": ("gower_nle_finetune_nla_bgp_z8_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3, 4)),
     "nla_z": ("gower_nle_finetune_nla_z_bgp_z8_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3, 4)),
     "vd": ("gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3, 4)),
