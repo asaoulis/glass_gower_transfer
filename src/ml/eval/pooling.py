@@ -446,7 +446,15 @@ def gate_tarp_identity(pooled_npz, experiment, fcache_npz, *, set_name="full", n
     d = np.load(pooled_npz, allow_pickle=False)
     samples = np.asarray(d["samples"], dtype=np.float32)
     theta = np.asarray(d["theta0s"], dtype=np.float32)
-    ecp, alpha = get_tarp_coverage(samples.transpose(1, 0, 2), theta, num_alpha_bins=100,
+    # ⚠️ NO TRANSPOSE. `get_tarp_coverage` wants (n_samples, n_sims, n_dims) and that is EXACTLY
+    # how the npz stores `samples` -- production permutes only because its in-memory tensor is
+    # sims-first (`evaluate_models._to_tarp_shapes`), which the dump is not. Transposing here made
+    # num_sims = 24000 against a 2000-row theta and raised IndexError; a dump whose S happened to
+    # be <= N would have silently scored garbage instead.
+    assert samples.shape[1] == theta.shape[0], (
+        "pooled dump is (S=%d, N=%d, D=%d) but theta has %d rows -- axis order is wrong"
+        % (samples.shape + (theta.shape[0],)))
+    ecp, alpha = get_tarp_coverage(samples, theta, num_alpha_bins=100,
                                    bootstrap=True, num_bootstrap=n_ref, seed=None)
     ours = ecp.mean(axis=0)
 
