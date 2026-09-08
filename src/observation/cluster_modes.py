@@ -27,6 +27,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -192,10 +193,13 @@ def run_obs_strip(args) -> int:
         json.dump(truth, fh, indent=2, default=str)
     with open(out_dir / f"observation_{label}_provenance.json", "w") as fh:
         json.dump(prov, fh, indent=2)
+    # a fetchable copy (DATASETS_ROOT is outside `fetch`'s reach; Tier 1 runs locally on this file)
+    shutil.copyfile(dst, out_dir / f"observation_{label}_baked.h5")
     with open(out_dir / f"observation_{label}_stores.json", "w") as fh:
         json.dump({"label": label, "observation": None, "kind": "stripped_mock", "baked": {arm: dst},
+                   "baked_copy": str(out_dir / f"observation_{label}_baked.h5"),
                    "data_store_names": {arm: f"{obs_store}_{label}_{arm}"}}, fh, indent=2)
-    print(f"[observe-strip] wrote {dst} (+ provenance, truthkey sidecar under {out_dir})", flush=True)
+    print(f"[observe-strip] wrote {dst} (+ fetchable copy, provenance, truthkey sidecar under {out_dir})", flush=True)
     return 0
 
 def add_reference_args(parser) -> None:
