@@ -19,7 +19,8 @@ Figures (all standardised; axes in sigma units of SOME posterior, never physical
   battery/<label>_<arm>_corner.png    per-arm full-parameter corner (self frame)
   battery/<label>_shared_corner.png   all arms over-plotted on the shared parameters (flagship frame)
   labels_overplot.png     the 2-3 blinded labels' flagship posteriors in label-A's frame (blinds A/B/C)
-Colours and label order are randomised per run so nothing about provenance is encoded.
+Colours are pinned by ARM (src.viz.style; --palette picks the option); only the label order of
+labels_overplot.png is randomised, so nothing about a label's provenance is encoded.
 """
 from __future__ import annotations
 
@@ -33,11 +34,11 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
+import re  # noqa: E402
+
 import numpy as np  # noqa: E402
 
-LABELS_TEX = {"omega_m": r"$\Omega_{\rm m}$", "sigma_8": r"$\sigma_8$", "S8": r"$S_8$", "w0": r"$w_0$",
-              "mnu": r"$\sum m_\nu$", "h": r"$h$", "ns": r"$n_s$", "ombh2": r"$\Omega_b h^2$",
-              "a_ia": r"$A_{\rm IA}$", "b_ia": r"$\beta_{\rm IA}$", "b_z": r"$B_{\rm IA}$"}
+from src.viz import style as S  # noqa: E402
 
 
 def _arm_key(experiment: str) -> str:
@@ -59,37 +60,41 @@ def _arm_key(experiment: str) -> str:
 
 
 def _tex(p: str) -> str:
-    if p in LABELS_TEX:
-        return LABELS_TEX[p]
-    if p.startswith("b_g_bin"):
-        return r"$b_g^{(%s)}$" % p[len("b_g_bin"):]
-    return p.replace("_", " ")     # never feed a raw underscore to mathtext
+    return S.label(p)
 
 
-def _chain(z, names, params, name, **kw):
-    import pandas as pd
-    from chainconsumer import Chain
+def _rep(match: str) -> str:
+    """'ncosmo300_1' / 'ncosmoNone_3' -> 'r1' / 'r3' (a legend name that is LaTeX-safe)."""
+    m = re.search(r"_(\d+)$", match or "")
+    return f"r{m.group(1)}" if m else S.tex(match or "")
+
+
+def _chain(z, names, params, name, role="outline", colour=None, **kw):
+    """One chain for `_plot`: (name, samples, TeX columns, Chain kwargs by ROLE)."""
     cols = [_tex(p) for p in params]
     idx = [list(names).index(p) for p in params]
-    df = pd.DataFrame(z[:, idx], columns=cols)
-    return Chain(samples=df, parameters=cols, name=name, **kw)
+    return (name, np.asarray(z)[:, idx], cols, S.chain_kwargs(role, colour, name=PALETTE, **kw))
 
 
-def _plot(chains, out_png, title=None, figsize=None):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    from chainconsumer import ChainConsumer, PlotConfig
-    c = ChainConsumer()
-    for ch in chains:
-        c.add_chain(ch)
-    c.set_plot_config(PlotConfig(flip=False, tick_font_size=10, label_font_size=12, serif=True, usetex=False,
-                                 legend_kwargs={"loc": "upper right"}))
-    fig = c.plotter.plot(figsize=figsize)
+def _plot(chains, out_png, title=None, figsize=None, formats=("png", "pdf")):
+    """The paper's corner (src.viz.style.plot_chains) on standardised chains: fixed +-4 sigma
+    extents on every panel, smooth=10 on <=4-param corners (cell 11), none on full corners."""
+    samples = {n: z for n, z, _, _ in chains}
+    columns = {n: c for n, _, c, _ in chains}
+    kwargs = {n: k for n, _, _, k in chains}
+    n_par = max(len(c) for c in columns.values())
+    extents = S.standardised_extents({c for cs in columns.values() for c in cs})
+    fig = S.plot_chains(samples, columns, plotting_kwargs=kwargs, extents=extents,
+                        figsize=figsize or (S.FIGSIZE_CORNER if n_par <= 4 else S.FIGSIZE_CORNER_FULL),
+                        smooth=S.CORNER_SMOOTH if n_par <= 4 else None, prune_ticks=n_par <= 4,
+                        legend_loc="upper right", palette_name=PALETTE, savefig=None, close=False)
     if title:
-        fig.suptitle(title, fontsize=11)
-    fig.savefig(out_png, dpi=120, bbox_inches="tight")
-    plt.close(fig)
+        with S.context(PALETTE):
+            fig.suptitle(S.tex(title), fontsize=13, y=1.0)
+    S.save(fig, out_png, formats=formats)
+
+
+PALETTE = S.DEFAULT_PALETTE
 
 
 def main(argv=None):
@@ -108,7 +113,11 @@ def main(argv=None):
     ap.add_argument("--mock-events", type=int, nargs="+", default=[0, 1, 2], help="events of the mock dump to overlay")
     ap.add_argument("--seed", type=int, default=None, help="colour/order randomisation seed (default: random)")
     ap.add_argument("--max-samples", type=int, default=20000)
+    ap.add_argument("--palette", default=S.DEFAULT_PALETTE, choices=list(S.PALETTES),
+                    help="colour option from src.viz.style (arms keep their identity in every option)")
     args = ap.parse_args(argv)
+    global PALETTE
+    PALETTE = args.palette
 
     from src.blind import BLIND_ROOT, STANDARDISED_ROOT
     from src.blind.standardise import (list_raw_runs, standardise_in_real_frame, standardise_self,
@@ -123,7 +132,8 @@ def main(argv=None):
     labels = sorted({r["label"] for r in all_runs})
 
     def _tag(r):
-        return f"{r['arm'] or _arm_key(r['experiment'])} {'POOLED' if r['pooled'] else r['match']}"
+        arm = S.arm_name(r["arm"] or _arm_key(r["experiment"]))
+        return f"{arm}, pooled" if r["pooled"] else f"{arm}, {_rep(r['match'])}"
 
     def headline_runs(label):
         """One posterior per arm: the pooled one when it exists (the final analysis), else the repeats."""
@@ -144,8 +154,7 @@ def main(argv=None):
     if not runs:
         raise SystemExit(f"no headline runs (--use {args.use}) with prior={args.prior} under {root}")
     rng = np.random.default_rng(args.seed)
-    palette = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b", "#17becf", "#7f7f7f"]
-    rng.shuffle(palette)
+    armc = lambda r: S.arm_colour(r["arm"] or _arm_key(r["experiment"]), PALETTE)   # noqa: E731
     manifest = {"prior": args.prior, "use": args.use, "labels": labels, "figures": [], "standardised": [],
                 "headline": [{"label": r["label"], "arm": r["arm"], "pooled": r["pooled"], "match": r["match"]} for r in runs]}
     flag_label = args.flagship_label or labels[0]
@@ -166,10 +175,10 @@ def main(argv=None):
             z = st.z[:args.max_samples]
             arm = r["arm"] or _arm_key(r["experiment"])
             chains.append(_chain(z, st.names, [q for q in args.params if q in st.names],
-                                 _tag(r), color=palette[i % len(palette)], linewidth=1.2))
-            _plot([_chain(z, st.names, [q for q in st.names], _tag(r), color=palette[i % len(palette)])],
+                                 _tag(r), "outline", armc(r)))
+            _plot([_chain(z, st.names, [q for q in st.names], _tag(r), "flagship", armc(r))],
                   str(out / "battery" / f"{label}_{arm}_{r['match']}_corner.png"),
-                  title=f"label {label} | arm {arm} | {'POOLED' if r['pooled'] else r['match']} | self-standardised (all params)")
+                  title=f"label {label}: {_tag(r)}, self-standardised (all parameters)", formats=("png",))
         _plot(chains, str(out / f"plotA_{label}.png"), title=f"Plot A: label {label}, each posterior standardised to N(0,1)")
         manifest["figures"].append(str(out / f"plotA_{label}.png"))
 
@@ -181,8 +190,9 @@ def main(argv=None):
                 st = standardise_in_real_frame(r["path"], r["experiment"], fr["path"], fr["experiment"], subtract="real")
                 p = write_standardised(st, str(std_dir / label / r["experiment"]), f"flagframe_{args.prior}_{r['match']}")
                 manifest["standardised"].append(p)
+                is_flag = r["experiment"] == fr["experiment"] and r["pooled"] == fr["pooled"]
                 chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
-                                     _tag(r), color=palette[i % len(palette)], linewidth=1.2))
+                                     _tag(r), "flagship" if is_flag else "outline", armc(r)))
             _plot(chains, str(out / f"plotBprime_{label}.png"),
                   title=f"Plot B': label {label}, all arms in the flagship frame (offsets in sigma of the flagship)")
             manifest["figures"].append(str(out / f"plotBprime_{label}.png"))
@@ -194,10 +204,9 @@ def main(argv=None):
             chains = []
             for i, r in enumerate(lruns):
                 st = standardise_in_real_frame(r["path"], r["experiment"], fr["path"], fr["experiment"], subtract="real")
-                chains.append(_chain(st.z[:args.max_samples], st.names, shared, _tag(r),
-                                     color=palette[i % len(palette)]))
+                chains.append(_chain(st.z[:args.max_samples], st.names, shared, _tag(r), "outline", armc(r)))
             _plot(chains, str(out / "battery" / f"{label}_shared_corner.png"),
-                  title=f"label {label}: all arms, shared parameters, flagship frame")
+                  title=f"label {label}: all arms, shared parameters, flagship frame", formats=("png",))
 
         # ---- Plot D: seed spread -- every repeat in the POOLED frame of its arm ------------
         # Diagnostic for the final (pooled) posterior: pooling can only ADD spread across seeds, so
@@ -211,13 +220,16 @@ def main(argv=None):
                 continue
             stp = standardise_self(pr["path"], pr["experiment"])
             chains = [_chain(stp.z[:args.max_samples], stp.names, [q for q in args.params if q in stp.names],
-                             f"{arm} POOLED", color="black", linewidth=2.0)]
-            for i, r in enumerate(sorted(reps, key=lambda r: r["match"])):
+                             f"{S.arm_name(arm)}, pooled", "real")]
+            reps = sorted(reps, key=lambda r: r["match"])
+            ramp = S.sequential(max(len(reps), 2))
+            for i, r in enumerate(reps):
                 st = standardise_in_real_frame(r["path"], r["experiment"], pr["path"], pr["experiment"], subtract="real")
                 p = write_standardised(st, str(std_dir / label / r["experiment"]), f"pooledframe_{args.prior}_{r['match']}")
                 manifest["standardised"].append(p)
                 chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
-                                     f"{arm} {r['match']}", color=palette[i % len(palette)], linewidth=0.9))
+                                     f"{S.arm_name(arm)}, {_rep(r['match'])}", "outline", ramp[i], linewidth=1.1))
+            chains = chains[1:] + chains[:1]          # repeats underneath, the pooled posterior on top
             _plot(chains, str(out / f"plotD_{label}_{arm}.png"),
                   title=f"Plot D: label {label}, arm {arm}: repeats in the POOLED frame (seed spread in sigma of the pooled)")
             manifest["figures"].append(str(out / f"plotD_{label}_{arm}.png"))
@@ -226,14 +238,16 @@ def main(argv=None):
         if fr is not None and args.matched_mocks:
             st_real = standardise_self(fr["path"], fr["experiment"])
             chains = [_chain(st_real.z[:args.max_samples], st_real.names, [q for q in args.params if q in st_real.names],
-                             f"label {label} (flagship{' POOLED' if fr['pooled'] else ''})", color="black", linewidth=2.0)]
+                             f"label {label}, flagship{', pooled' if fr['pooled'] else ''}", "real")]
             for i, tok in enumerate(args.matched_mocks):
                 arm, rest = tok.split("=", 1)
                 mpath, mexp = rest.rsplit(":", 1)
                 for ev in args.mock_events:
                     st = standardise_in_real_frame(mpath, mexp, fr["path"], fr["experiment"], subtract="own", event=ev)
                     chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
-                                         f"mock {arm} ev{ev}", color=palette[(i + 1) % len(palette)], linewidth=0.8))
+                                         f"matched mock {ev + 1} ({S.arm_name(arm)})", "mock",
+                                         S.role_colour("mock", PALETTE) if i == 0 else S.arm_colour(arm, PALETTE)))
+            chains = chains[1:] + chains[:1]          # mocks underneath, the observation on top
             _plot(chains, str(out / f"plotB_{label}.png"),
                   title=f"Plot B: label {label} flagship (own frame) vs matched mocks (own mean, flagship std)")
             manifest["figures"].append(str(out / f"plotB_{label}.png"))
@@ -250,7 +264,7 @@ def main(argv=None):
                 continue
             st = standardise_in_real_frame(fr["path"], fr["experiment"], fa["path"], fa["experiment"], subtract="real")
             chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
-                                 f"label {label}", color=palette[i % len(palette)]))
+                                 f"label {label}", "outline", S.label_colour(label, PALETTE)))
         _plot(chains, str(out / "labels_overplot.png"), title=f"flagship posteriors of all labels in label {flag_label}'s frame")
         manifest["figures"].append(str(out / "labels_overplot.png"))
 

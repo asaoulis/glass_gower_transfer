@@ -211,10 +211,10 @@ if not UNBLIND:
     display(Markdown("### 🔒 blind — set `UNBLIND = True` by hand to draw the physical posteriors"))
 else:
     import pandas as pd
-    from chainconsumer import Chain, ChainConsumer, PlotConfig
+    from src.viz import style as S                                     # the paper's corner convention
     from src.blind.standardise import _load_physical, list_raw_runs   # raw access: user-run cell only
     runs = [r for r in list_raw_runs(BLIND_ROOT) if r["label"] == LABEL]
-    cols = {"omega_m": r"$\Omega_{\rm m}$", "sigma_8": r"$\sigma_8$", "S8": r"$S_8$", "w0": r"$w_0$"}
+    cols = {n: S.label(n) for n in ("omega_m", "sigma_8", "S8", "w0")}
     def _df(r):
         x, names = _load_physical(r["path"], r["experiment"])
         keep = [n for n in cols if n in names]
@@ -224,25 +224,31 @@ else:
         reps = [r for r in runs if r["prior"] == prior and not r["pooled"]]
         # (i) the FINAL posteriors: one pooled chain per arm
         if pooled:
-            c = ChainConsumer()
+            sd, cc, kw = {}, {}, {}
             for r in pooled:
                 df, keep, _, _ = _df(r)
-                c.add_chain(Chain(samples=df, parameters=[cols[n] for n in keep], name=f"{r['arm']} POOLED"))
-            c.set_plot_config(PlotConfig(serif=True, usetex=False, label_font_size=12, tick_font_size=9))
-            fig = c.plotter.plot(figsize=(9, 9)); fig.suptitle(f"UNBLINDED (final = pooled): label {LABEL}, prior {prior}"); plt.show()
+                nm = f"{S.arm_name(r['arm'])}, pooled"
+                sd[nm] = df.values; cc[nm] = list(df.columns)
+                kw[nm] = S.chain_kwargs("flagship" if r["arm"] == "nla_m" else "outline", S.arm_colour(r["arm"]))
+            fig = S.plot_chains(sd, cc, plotting_kwargs=kw, figsize=(9, 9), smooth=S.CORNER_SMOOTH, close=False)
+            fig.suptitle(S.tex(f"UNBLINDED (final = pooled): label {LABEL}, prior {prior}"), fontsize=13, y=1.0); plt.show()
         else:
             display(Markdown(f"⚠️ no POOLED run for prior {prior}: run `scripts/sample_observation.py pool` + `fetch --what pooled`"))
         # (ii) diagnostic: per-repeat chains of each arm with the pooled one
         for arm in sorted({r["arm"] for r in reps}):
-            c = ChainConsumer()
+            sd, cc, kw = {}, {}, {}
+            arm_reps = sorted([r for r in reps if r["arm"] == arm], key=lambda r: r["match"])
+            ramp = S.sequential(max(len(arm_reps), 2))
+            for i, r in enumerate(arm_reps):
+                df, keep, _, _ = _df(r)
+                nm = f"{S.arm_name(arm)}, repeat {i}"
+                sd[nm] = df.values; cc[nm] = list(df.columns); kw[nm] = S.chain_kwargs("outline", ramp[i], linewidth=1.1)
             for r in [r for r in pooled if r["arm"] == arm]:
                 df, keep, _, _ = _df(r)
-                c.add_chain(Chain(samples=df, parameters=[cols[n] for n in keep], name=f"{arm} POOLED", color="black"))
-            for r in [r for r in reps if r["arm"] == arm]:
-                df, keep, _, _ = _df(r)
-                c.add_chain(Chain(samples=df, parameters=[cols[n] for n in keep], name=f"{arm} {r['match']}"))
-            c.set_plot_config(PlotConfig(serif=True, usetex=False, label_font_size=12, tick_font_size=9))
-            fig = c.plotter.plot(figsize=(8, 8)); fig.suptitle(f"diagnostic: label {LABEL}, arm {arm}, prior {prior}: repeats vs pooled"); plt.show()
+                nm = f"{S.arm_name(arm)}, pooled"
+                sd[nm] = df.values; cc[nm] = list(df.columns); kw[nm] = S.chain_kwargs("real")
+            fig = S.plot_chains(sd, cc, plotting_kwargs=kw, figsize=(8, 8), smooth=S.CORNER_SMOOTH, close=False)
+            fig.suptitle(S.tex(f"diagnostic: label {LABEL}, arm {arm}, prior {prior}: repeats vs pooled"), fontsize=13, y=1.0); plt.show()
         # summary table (pooled first)
         rows = []
         for r in pooled + reps:
