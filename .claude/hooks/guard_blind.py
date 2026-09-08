@@ -33,10 +33,14 @@ DENY_PATTERNS = [
     (r"_truthkey/", "a truth-key sidecar"),
     (r"unblinding_blind/", "the cluster blind subdir"),
     (r"external_posterior_samples_", "a raw observation posterior file"),
+    (r"pooled_posterior_samples_", "a raw POOLED observation posterior file"),
+    (r"checkpoints/pooled/[^/\s]+/external/", "the cluster pooled-observation dir"),
 ]
 ALLOWED_ENTRY = [
     r"-m\s+src\.blind\.standardise", r"scripts/plot_blind_posteriors\.py", r"scripts/sample_observation\.py",
     r"run_remote\.py\s+fetch\b", r"src/blind/standardise\.py\s*$",
+    # Tier-1 report: opens the sidecar for its sim_id ONLY (never printed) to drop that cosmology from the null
+    r"scripts/tier1_report\.py",
 ]
 # read-only listing verbs are fine on the blind store (filenames only)
 LISTING_ONLY = re.compile(r"^\s*(ls|find|du|tree|stat|wc\s+-l)\b")

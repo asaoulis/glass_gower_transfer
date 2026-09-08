@@ -79,6 +79,10 @@ OT1 renders them as inverted punctuation), and converts `χ² σ Ω → ≥ ≤ 
 `S.probe_tex()` renders one string up front so a broken TeX install fails fast. For an
 environment without TeX use `context(usetex=False)` (`no-latex` + STIX math).
 
+**`font.size` leaks.** `use_scienceplots()` sets the paper's 18 pt globally before the style
+context snapshots rcParams, so `S.context()` leaves 18 pt behind on exit (the notebooks' behaviour).
+Reset it yourself (`plt.rcParams["font.size"] = 11`) in a notebook cell drawn afterwards.
+
 **Save inside the context.** Text objects remember `usetex` from creation, but LaTeX reads the
 font *family* from `rcParams` at draw time: a `fig.savefig` after the `with` block exits renders
 every word in CM Sans. `S.save()` re-enters the context, so use it (or save inside the block).
@@ -107,6 +111,8 @@ writes `figures_ensembled_restyled/<palette>/` without touching the originals.
 
 ## 7. Blind-analysis rules for plotting code
 
+* Chain names are passed through `S.tex()` inside `plot_chains`; an observation label is never
+  coloured by its name (`label_colour` -> black for anything but the mock controls T/S).
 * `plot_chains` forces `summarise=False` and silences ChainConsumer's "parameter X is not
   constrained" log; never add `Truth` markers to a chain from the blind store.
 * Nothing in `src.viz` prints chain statistics. Keep it that way (stdout audit rule).
