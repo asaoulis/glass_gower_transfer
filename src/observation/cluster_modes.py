@@ -16,8 +16,8 @@ Mode ``observe-build``
     [--fidelity] [--exact-rng] [--jitter-floor] [--rng-seed N] [--column-map BASENAME] [--kind auto|sim|h5|fits]
   Builds  MODELS_ROOT/checkpoints/unblinding/<obs-store>/observation_<L>.h5 (+ provenance, fidelity JSON;
           under checkpoints/ so `run_remote.py fetch --exp unblinding --rel <obs-store>` can pull it) and
-  bakes   DATASETS_ROOT/<obs-store>_<arm>/output_<id>_out0_rot0_0.h5 for each arm, so a sampling job
-  can use ``--data-store <obs-store>_<arm> --data-tag <L>``.
+  bakes   DATASETS_ROOT/<obs-store>_<L>_<arm>/output_<id>_out0_rot0_0.h5 for each arm, so a sampling job
+  can use ``--data-store <obs-store>_<L>_<arm> --data-tag <L>`` (scripts/sample_observation.py).
   With --fidelity the sibling ``output_*.h5`` of a SIM catalogue (same store, same block name) is the
   reference and the report is written next to the observation.
 """
@@ -301,7 +301,8 @@ def run_observe_build(args) -> int:
 
     baked = {}
     for arm in args.bake_arms:
-        store_dir = os.path.join(datasets_root("gpu5"), f"{obs_store}_{arm}")
+        # store name = <obs-store>_<label>_<arm>, the contract scripts/sample_observation.py assumes
+        store_dir = os.path.join(datasets_root("gpu5"), f"{obs_store}_{label}_{arm}")
         try:
             baked[arm] = bake_observation(obs, store_dir, arm=arm, label=label, overwrite=True)
             print(f"[observe-build] baked {arm}: {baked[arm]}", flush=True)
@@ -309,5 +310,5 @@ def run_observe_build(args) -> int:
             print(f"[observe-build] bake {arm} SKIPPED: {ex}", flush=True)
     with open(out_dir / f"observation_{label}_stores.json", "w") as fh:
         json.dump({"label": label, "observation": obs, "baked": baked,
-                   "data_store_names": {arm: f"{obs_store}_{arm}" for arm in baked}}, fh, indent=2)
+                   "data_store_names": {arm: f"{obs_store}_{label}_{arm}" for arm in baked}}, fh, indent=2)
     return rc
