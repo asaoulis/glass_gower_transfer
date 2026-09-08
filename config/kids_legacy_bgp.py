@@ -1912,5 +1912,10 @@ FLAGSHIP_NLE_SOURCES = {}
 for _r in range(5):
     FLAGSHIP_NLE_SOURCES[f"gower_nle_finetune_nla_m_bgp_z8_r{_r}_ens9"] = \
         "kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1"
+    # non-BGP reference chain: its pretrain was launched as
+    #   embed --target glass_nle_pretrain_nla_m_z8_r{r} --sources kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8
+    # (training-runs logbook, 2026-07-03), i.e. the plain-counts lmin50/fwhm4 foundation encoder.
+    # The name first registered here ("kids_legacy_hybrid_nla_m_z8_resnet_sc8a1") never existed;
+    # caught by the first nle-external run of this arm (job 1358164, 2026-09-08).
     FLAGSHIP_NLE_SOURCES[f"gower_nle_finetune_nla_m_z8_r{_r}_ens9"] = \
-        "kids_legacy_hybrid_nla_m_z8_resnet_sc8a1"
+        "kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"
