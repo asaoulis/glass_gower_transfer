@@ -14,6 +14,7 @@ In order to simulate DR3 catalogs we will use the following specs all else the s
 - footprint: 14.000 sqr degree reactangle along the equator
 - galaxy number density: 6.2 galaxies per square arcminute
 - ellipticity dispersion: 0.26
+
 We want to run our forecast assuming Planck 2018 cosmology as the ground truth.
 
 ## Obstacles
