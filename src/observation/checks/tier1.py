@@ -118,7 +118,16 @@ def _shrink_whitener(x_fit: np.ndarray, shrinkage: Optional[float] = None) -> Tr
 
 def _score_block(x_fit: np.ndarray, x_null: np.ndarray, x_obs: np.ndarray, *, k: int = 10,
                  pca: Optional[int] = None) -> Dict:
-    """Whiten on fit, score null + obs (Mahalanobis, kNN), return per-obs scores + empirical p."""
+    """Whiten on fit, score null + obs (Mahalanobis, kNN), return per-obs scores + empirical p.
+
+    Columns are first put in fit-half scatter units: the raw bandpowers are ~1e-9, so any absolute
+    ridge in the whitener would otherwise dominate their covariance and the "whitened" statistic
+    would silently degrade to a Euclidean one weighted by the largest-amplitude bands (found on
+    the first production report, 2026-09-08). Scale-free inputs (the MAD-standardised map
+    summaries) are unaffected."""
+    sd = np.asarray(x_fit, dtype=np.float64).std(0)
+    sd = np.where(sd > 0, sd, 1.0)
+    x_fit, x_null, x_obs = (np.asarray(a, dtype=np.float64) / sd for a in (x_fit, x_null, x_obs))
     w = _shrink_whitener(x_fit)
     zf, zn, zo = w(x_fit), w(x_null), w(x_obs)
     if pca:
@@ -157,13 +166,15 @@ def twopoint_check(cloud: Cloud, obs_bp: np.ndarray, *, seed: int = 0, exclude_s
     per_spec = []
     labs = spectrum_labels()
     for s in range(N_SPECTRA):
-        xs_fit = cloud.bandpowers[fit, s, :]
-        xs_null = cloud.bandpowers[null, s, :]
+        sd_s = cloud.bandpowers[fit, s, :].std(0) + 1e-30          # scatter units (see _score_block)
+        xs_fit = cloud.bandpowers[fit, s, :] / sd_s
+        xs_null = cloud.bandpowers[null, s, :] / sd_s
+        xo = np.asarray(obs_bp)[:, s, :] / sd_s
         mu = xs_fit.mean(0)
-        cov = np.cov(xs_fit, rowvar=False) + 1e-12 * np.eye(nb)
+        cov = np.cov(xs_fit, rowvar=False) + 1e-8 * np.eye(nb)
         ci = np.linalg.inv(cov)
         chi2_null = np.einsum("ni,ij,nj->n", xs_null - mu, ci, xs_null - mu)
-        chi2_obs = np.einsum("ni,ij,nj->n", np.asarray(obs_bp)[:, s, :] - mu, ci, np.asarray(obs_bp)[:, s, :] - mu)
+        chi2_obs = np.einsum("ni,ij,nj->n", xo - mu, ci, xo - mu)
         per_spec.append({"spectrum": labs[s], "chi2": chi2_obs.tolist(),
                          "pte_empirical": empirical_pvalues(chi2_null, chi2_obs).tolist(),
                          "null_chi2_median": float(np.median(chi2_null))})
@@ -184,11 +195,18 @@ def bmode_check(cloud: Cloud, obs_bb: np.ndarray, *, seed: int = 0, exclude_sim_
     O = np.asarray(obs_bb).reshape(len(obs_bb), -1)
     sim_ids = getattr(cloud, "bb_sim_ids", cloud.sim_ids)
     fit, null = cosmology_split(sim_ids, seed=seed, exclude=exclude_sim_ids)
-    mu = B[fit].mean(0)
     d = B.shape[1]
     n_fit_rows = len(fit)
     n_fit_cosmo = len(set(sim_ids[fit].tolist()))
-    cov = np.cov(B[fit], rowvar=False) + 1e-12 * np.eye(d)
+    # Work in SCATTER-NORMALISED units. BB bandpowers are ~1e-9, their covariance ~1e-18, and an
+    # absolute ridge (the 1e-12*I first used here) swamped it -- the "chi^2" then read 3-5 for
+    # 168 dof (found on the T report, 2026-09-08). Dividing every entry by its fit-half scatter
+    # makes the ridge negligible (1e-8 on a unit diagonal) and the statistic the chi^2 it claims.
+    sd = B[fit].std(0) + 1e-30
+    B = B / sd
+    O = O / sd
+    mu = B[fit].mean(0)
+    cov = np.cov(B[fit], rowvar=False) + 1e-8 * np.eye(d)
     ci = np.linalg.inv(cov)
     # Hartlap factor with the CONSERVATIVE count (cosmologies, not rows) -- reported, and applied
     # only to the analytic PTE; the empirical PTE needs no correction.
@@ -220,14 +238,16 @@ def bmode_check(cloud: Cloud, obs_bb: np.ndarray, *, seed: int = 0, exclude_sim_
     autos = [s for s, l in enumerate(labs) if l.split("-")[0] == l.split("-")[1]]
     nb = cloud.bb.shape[-1]
     per_auto = []
+    Bs = B.reshape(len(B), N_SPECTRA, -1)            # scatter-normalised, as above
+    Os = O.reshape(len(O), N_SPECTRA, -1)
     for s in autos:
-        xs_fit = cloud.bb[fit, s, :]
-        xs_null = cloud.bb[null, s, :]
+        xs_fit = Bs[fit, s, :]
+        xs_null = Bs[null, s, :]
         m = xs_fit.mean(0)
-        c = np.cov(xs_fit, rowvar=False) + 1e-14 * np.eye(nb)
+        c = np.cov(xs_fit, rowvar=False) + 1e-8 * np.eye(nb)
         cinv = np.linalg.inv(c)
         cn = np.einsum("ni,ij,nj->n", xs_null - m, cinv, xs_null - m)
-        co = np.einsum("ni,ij,nj->n", np.asarray(obs_bb)[:, s, :] - m, cinv, np.asarray(obs_bb)[:, s, :] - m)
+        co = np.einsum("ni,ij,nj->n", Os[:, s, :] - m, cinv, Os[:, s, :] - m)
         per_auto.append({"spectrum": labs[s], "chi2": co.tolist(), "pte_empirical": empirical_pvalues(cn, co).tolist()})
     out["per_auto"] = per_auto
     return out
