@@ -73,9 +73,42 @@ _GPU5 = "/share/gpu5/asaoulis/transfer_datasets"
 # --------------------------------------------------------------------------------------------
 PRIOR_MODES = ("gower", "kids_s8_analytic", "LCDM_fixed_w0")
 
+# prior mode -> the parameters it PINS, {name: physical value}. Empty for a mode that samples the
+# full vector. This table is the single source of truth for two things that must never disagree:
+# what `build_prior_for_mode` pins at sampling time, and what `free_param_names` tells a READER to
+# expect in the dump (see the warning on that function).
+FIXED_BY_PRIOR_MODE = {
+    "gower": {},
+    "kids_s8_analytic": {},
+    "LCDM_fixed_w0": {"w0": -1.0},
+}
+
+
+def free_param_names(prior_mode: str, param_names):
+    """-> the parameters actually SAMPLED under `prior_mode`, in dump-column order.
+
+    ⚠️ READ THIS BEFORE UNSCALING A DUMP. When a prior mode pins a parameter, sbi's
+    `conditional_potential` samples only `dims_to_sample`, so the saved ``samples`` array has one
+    column PER FREE PARAMETER — the pinned column is absent, not constant. ``theta0s`` is written
+    by the loader and keeps the FULL vector. So a dump from `LCDM_fixed_w0` has
+    ``samples.shape[-1] == len(param_names) - 1`` while ``theta0s.shape[-1] == len(param_names)``,
+    and unscaling ``samples`` with the full min/max box is a shape error at best and a silent
+    column shift at worst.
+
+    Readers should DROP the pinned names rather than re-insert the pinned value: a constant column
+    has zero variance, which turns every standardisation into NaN and breaks KDE-based corner
+    plots. Everything downstream aligns parameters by NAME, so dropping composes cleanly.
+    """
+    fixed = FIXED_BY_PRIOR_MODE.get(prior_mode, {})
+    return [n for n in param_names if n not in fixed]
+
 
 def build_prior_for_mode(prior_mode: str, param_names, *, preset_overrides=None):
-    """-> (prior, fixed_parameters). `prior_mode` is one of PRIOR_MODES."""
+    """-> (prior, fixed_parameters). `prior_mode` is one of PRIOR_MODES.
+
+    When `fixed_parameters` is not None the resulting dump is missing those columns — see
+    `free_param_names`.
+    """
     from ..embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX, _build_cosmo_preset_scaler
     from .utils import build_gower_prior, build_s8_analytic_prior
 
@@ -90,7 +123,8 @@ def build_prior_for_mode(prior_mode: str, param_names, *, preset_overrides=None)
         from gen_samples import _build_fixed_parameters_list
         scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, param_names)
         prior = build_s8_analytic_prior(param_names, scaler, return_restricted=False)
-        return prior, _build_fixed_parameters_list({"w0": -1.0}, param_names, space="physical")
+        return prior, _build_fixed_parameters_list(dict(FIXED_BY_PRIOR_MODE[prior_mode]),
+                                                   param_names, space="physical")
     raise ValueError(f"unknown prior mode {prior_mode!r}; choose from {PRIOR_MODES}")
 
 

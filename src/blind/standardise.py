@@ -43,12 +43,45 @@ class Standardised:
 # --------------------------------------------------------------------------------------------
 # raw access (private)
 # --------------------------------------------------------------------------------------------
-def _scaler_box(experiment: str):
+def prior_of_dump(path: str) -> str:
+    """The prior tag encoded in a sample-dump FILENAME, '' when it carries none.
+
+    Both dump families put the prior in the name because an NLE posterior is only defined together
+    with its prior — and, more sharply, because the prior decides the dump's COLUMN SET (see
+    `_scaler_box`). The two shapes are
+    ``external_posterior_samples_<prior>_ncosmo<...>_<repeat>.npz`` (per repeat, also the matched
+    mock dumps) and ``pooled_posterior_samples_<prior>.npz`` (pooled).
+    """
+    base = os.path.basename(path)
+    if not base.endswith(".npz"):
+        return ""
+    for stem, has_match in (("external_" + "posterior_samples_", True),
+                            ("pooled_" + "posterior_samples_", False)):
+        if base.startswith(stem):
+            body = base[len(stem):-4]
+            return body.split("_ncosmo", 1)[0] if has_match else body
+    return ""
+
+
+def _scaler_box(experiment: str, prior_mode: Optional[str] = None):
+    """-> (names, min, max) of the columns a dump of `experiment` under `prior_mode` actually has.
+
+    ⚠️ `prior_mode` is load-bearing, not decoration. A mode that PINS a parameter (`LCDM_fixed_w0`
+    pins w0) is sampled through sbi's `conditional_potential`, which returns only the free
+    dimensions — so the dump has one column FEWER than `cfg.cosmo_param_names` and unscaling it
+    with the full box is a broadcast error (or, for an unlucky arm, a silent column shift). The
+    pinned name is DROPPED rather than re-inserted as a constant: a zero-variance column makes
+    every standardised frame NaN. Everything downstream aligns by name, so this composes.
+    ``theta0s`` keeps the full vector — use ``prior_mode=None`` for truth.
+    """
     import eval as _eval
     cfg, _ = _eval.load_config(experiment)
     from src.ml.utils import _build_cosmo_preset_scaler
     from src.ml.data.constants import COSMO_PARAM_PRESET_MINMAX
     names = list(cfg.cosmo_param_names)
+    if prior_mode:
+        from src.ml.eval.nle_external import free_param_names
+        names = free_param_names(prior_mode, names)
     preset = dict(getattr(cfg, "scaler_options", {}).get("cosmo", {}).get("preset_overrides", {}) or {})
     sc = _build_cosmo_preset_scaler({**COSMO_PARAM_PRESET_MINMAX, **preset}, names)
     return names, np.asarray(sc.min, dtype=np.float64), np.asarray(sc.max, dtype=np.float64)
@@ -56,11 +89,17 @@ def _scaler_box(experiment: str):
 
 def _load_physical(path: str, experiment: str, event: int = 0) -> Tuple[np.ndarray, List[str]]:
     """[S, D+1] physical samples (S8 appended) of ONE event of a sample dump. PRIVATE."""
-    names, lo, hi = _scaler_box(experiment)
+    names, lo, hi = _scaler_box(experiment, prior_of_dump(path))
     with np.load(path, allow_pickle=False) as d:
         S = np.asarray(d["samples"])            # [S, N, D] scaled
         if S.ndim == 2:
             S = S[:, None, :]
+        if S.shape[-1] != len(names):
+            raise ValueError(
+                "%s has %d sampled columns but the '%s' prior box for %s has %d (%s); the dump's "
+                "prior tag and the experiment's parameter vector disagree"
+                % (os.path.basename(path), S.shape[-1], prior_of_dump(path) or "gower",
+                   experiment, len(names), ", ".join(names)))
         x = S[:, event, :].astype(np.float64) * (hi - lo) + lo
     io_, is_ = names.index("omega_m"), names.index("sigma_8")
     s8 = x[:, is_] * np.sqrt(x[:, io_] / 0.3)
@@ -149,14 +188,14 @@ def list_raw_runs(root: str = BLIND_ROOT) -> List[Dict[str, str]]:
             if f.startswith("external_posterior_samples_") and f.endswith(".npz"):
                 label, exp = (rel[0], rel[1]) if len(rel) >= 2 else (rel[0], "")
                 body = f[len("external_posterior_samples_"):-4]
-                prior, match = body.split("_ncosmo", 1)
+                prior, match = prior_of_dump(f), body.split("_ncosmo", 1)[1]
                 out.append({"label": label, "arm": _arm_of(exp), "experiment": exp, "prior": prior,
                             "match": "ncosmo" + match, "pooled": False, "path": os.path.join(dirpath, f)})
             elif f.startswith("pooled_posterior_samples_") and f.endswith(".npz"):
                 label = rel[0]
                 arm_dir = next((d for d in rel[1:] if d.startswith("pooled_")), "")
                 arm = arm_dir[len("pooled_"):]
-                prior = f[len("pooled_posterior_samples_"):-4]
+                prior = prior_of_dump(f)
                 try:
                     from src.ml.eval.arms import ARMS
                     exp = ARMS[arm][0].format(r=ARMS[arm][2][0])
@@ -176,6 +215,21 @@ def _selftest():
     z = (x - mu) / sd
     assert np.allclose(z.mean(0), 0, atol=1e-12) and np.allclose(z.std(0, ddof=1), 1, atol=1e-12)
     assert set(Standardised.__dataclass_fields__) == {"z", "names", "frame", "source", "n_samples"}
+
+    # --- the fixed-parameter contract (regression: LCDM_fixed_w0 dumps are D-1 wide) ------------
+    # sbi samples only the free dimensions under a pinning prior, so a reader that unscales with
+    # the full parameter box either crashes or shifts every column. These two asserts are the only
+    # gate on that; `_load_physical` is exercised end-to-end by the plot battery, which until
+    # 2026-09-08 had only ever been run on the `gower` prior, where the bug is invisible.
+    assert prior_of_dump("external_" + "posterior_samples_LCDM_fixed_w0_ncosmoNone_0.npz") == "LCDM_fixed_w0"
+    assert prior_of_dump("external_" + "posterior_samples_kids_s8_analytic_ncosmo300_2.npz") == "kids_s8_analytic"
+    assert prior_of_dump("pooled_" + "posterior_samples_gower.npz") == "gower"
+    assert prior_of_dump("notadump.txt") == ""
+    from src.ml.eval.nle_external import free_param_names
+    p9 = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"]
+    assert free_param_names("gower", p9) == p9
+    assert free_param_names("kids_s8_analytic", p9) == p9
+    assert free_param_names("LCDM_fixed_w0", p9) == [n for n in p9 if n != "w0"]
     print("blind.standardise selftest OK")
 
 
