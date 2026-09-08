@@ -78,6 +78,51 @@ def add_observe_args(parser) -> None:
     g.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero"])
 
 
+def add_reference_args(parser) -> None:
+    g = parser.add_argument_group("obs-reference")
+    g.add_argument("--ref-store", default=None, help="bare BAKED store name (gpu5): bandpowers + E-map summaries")
+    g.add_argument("--ref-raw-store", default=None, help="bare RAW store name: BB bandpowers from cls (+ sc8 E if --ref-raw-emap)")
+    g.add_argument("--ref-raw-root", default="gpu4", choices=["gpu4", "gpu5"])
+    g.add_argument("--ref-raw-variant", default="sc8_fwhm4_lmin56_lcut1400",
+                   help="E_<variant>/noise_std_<variant> groups to replicate the bake from a RAW store")
+    g.add_argument("--ref-raw-emap", action="store_true", help="also extract E-map summaries from the raw store")
+    g.add_argument("--ref-max-files", type=int, default=None, help="cap on the baked store (whole cosmologies)")
+    g.add_argument("--ref-max-raw-files", type=int, default=4000, help="cap on the raw store (whole cosmologies)")
+    g.add_argument("--ref-out", default=None, help="bare output name under MODELS_ROOT/unblinding/reference/")
+    g.add_argument("--ref-workers", type=int, default=16)
+
+
+def run_obs_reference(args) -> int:
+    """ONE pass producing the Tier-1 reference clouds: reference_baked.npz (bandpowers + emap over
+    the baked store) and reference_raw.npz (BB bandpowers [+ emap] over a raw-store subset)."""
+    import json
+    from .reference import extract_reference
+    out_name = _bare(args.ref_out, "--ref-out")
+    out_dir = Path(models_root()) / "unblinding" / "reference" / out_name
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary = {}
+    if args.ref_store:
+        store = os.path.join(datasets_root("gpu5"), _bare(args.ref_store, "--ref-store"))
+        paths = sorted(glob.glob(os.path.join(store, "output_*.h5")))
+        print(f"[obs-reference] baked store {store}: {len(paths)} files", flush=True)
+        summary["baked"] = extract_reference(paths, str(out_dir / "reference_baked.npz"), workers=args.ref_workers,
+                                             max_files=args.ref_max_files, eb_variant=None, noise_norm=None,
+                                             want=("bandpowers", "emap"))
+        print(f"[obs-reference] baked: {summary['baked']}", flush=True)
+    if args.ref_raw_store:
+        store = os.path.join(datasets_root(args.ref_raw_root), _bare(args.ref_raw_store, "--ref-raw-store"))
+        paths = sorted(glob.glob(os.path.join(store, "output_*.h5")))
+        print(f"[obs-reference] raw store {store}: {len(paths)} files", flush=True)
+        want = ("bandpowers", "bb") + (("emap",) if args.ref_raw_emap else ())
+        summary["raw"] = extract_reference(paths, str(out_dir / "reference_raw.npz"), workers=args.ref_workers,
+                                           max_files=args.ref_max_raw_files, eb_variant=args.ref_raw_variant,
+                                           noise_norm="rand", want=want)
+        print(f"[obs-reference] raw: {summary['raw']}", flush=True)
+    with open(out_dir / "reference_summary.json", "w") as fh:
+        json.dump(summary, fh, indent=2, default=str)
+    return 0
+
+
 def _resolve_catalogue(args) -> tuple:
     store = _bare(args.catalogue_store, "--catalogue-store")
     root = datasets_root(args.catalogue_root)

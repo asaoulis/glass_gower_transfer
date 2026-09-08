@@ -242,6 +242,19 @@ def parse_args():
              "~0.0625 matches nside-256 pixel occupancy to production's ~13-21 gal/pixel "
              "(~1.9M galaxies, ~2 min/mock). No effect on non-smoke runs.")
 
+    parser.add_argument(
+        "--smoke-geometry", choices=["smoke", "production"], default="smoke",
+        help="SMOKE ONLY: 'production' runs the smoke backend at the PRODUCTION map/ell geometry "
+             "(nside 1024, lmax 2048, nside_out 512, bands 56-1500/8) -- the physics stays "
+             "smoke-scale (few shells), so the output is for pipeline-identity validation only "
+             "(src/observation fidelity gate), never for science. Default keeps the cheap smoke.")
+    parser.add_argument(
+        "--catalogue-dtype", choices=["float32", "float64"], default="float32",
+        help="--save-catalogues column dtype for RA/DEC/Z_TRUE/E1/E2 (default float32, the "
+             "compact on-disk contract). float64 doubles the file but makes the dump a BIT-EXACT "
+             "copy of the in-memory catalogue, so an offline re-processing can be checked for "
+             "identity with this run's own maps/bandpowers.")
+
     parser.add_argument("--outer-reps", type=int, default=None,
                         help="Override the per-sim OUTER shape-noise realisation count (default: the "
                              "OUTER_NUM_SHAPE_NOISE_REALISATIONS[simulator] config value; glass=4, "
@@ -762,6 +775,9 @@ if __name__ == "__main__":
     gower_data_dir = args.gower_data_dir
     data_dir = args.data_dir
     SMOKE = (SIMULATOR_TYPE == "smoke")
+    if args.catalogue_dtype == "float64":
+        for _col in ("RA", "DEC", "Z_TRUE", "E1", "E2"):
+            CATALOGUE_DTYPES[_col] = np.float64
     if SMOKE:
         # Reduced-cost local pre-flight: fixed cosmo + tiny in-process CAMB->GLASS backend,
         # so no Gower prior CSV is needed. Fall back to the in-repo fixtures when the
@@ -800,6 +816,15 @@ if __name__ == "__main__":
             # (tomo_nz scaling, VD dndz_scale, prepare_smoke_backend). Default None keeps
             # the config value — the sim smoke gate stays byte-identical.
             SMOKE_CONFIG["n_eff_scale"] = float(args.smoke_n_eff_scale)
+        if args.smoke_geometry == "production":
+            # Production map/ell geometry on the smoke physics (validation of the OFFLINE
+            # observation builder against this script's own processing). Mutating the module
+            # dict propagates to prepare_smoke_backend (nside/lmax) and every consumer below.
+            SMOKE_CONFIG.update({"nside": 1024, "lmax": 2048, "nside_out": 512,
+                                 "lower_lscale": 56, "upper_lscale": 1500, "nbands": 8})
+            if rank == 0:
+                print("[rank 0] --smoke-geometry production: nside 1024 / lmax 2048 / nside_out 512 "
+                      "/ bands 56-1500 (smoke physics, validation only)", flush=True)
         nside = SMOKE_CONFIG["nside"]
         lmax = SMOKE_CONFIG["lmax"]
         zmax = SMOKE_CONFIG["zmax"]
