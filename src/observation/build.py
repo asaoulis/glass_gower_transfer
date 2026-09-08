@@ -225,7 +225,9 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
         tk_dir = Path(out_path).parent / "_truthkey"
         tk_dir.mkdir(exist_ok=True)
         with open(tk_dir / f"observation_{label}_truthkey.json", "w") as fh:
-            json.dump({k: sim_attrs[k] for k in TRUTHKEY_KEYS if k in sim_attrs}, fh, indent=2, default=str)
+            tk = {k: sim_attrs[k] for k in TRUTHKEY_KEYS if k in sim_attrs}
+            tk["catalogue_path"] = cat.provenance.get("source", {}).get("path")
+            json.dump(tk, fh, indent=2, default=str)
     log(f"[obs:{label}] wrote {out_path}")
     return out_path
 
@@ -246,4 +248,12 @@ def scrub_provenance(prov: dict) -> dict:
             return {k: _clean(v) for k, v in d.items()
                     if not any(str(k).lower().startswith(c) for c in _COSMO_LIKE)}
         return d
-    return _clean(prov)
+    out = _clean(prov)
+    # A SIM catalogue's path names its store (galaxy bias, variate, era): that is truth-key
+    # material for a mock-as-real observation, so it is hidden here and written to the
+    # _truthkey/ sidecar instead (see build_observation). Real catalogues keep their path.
+    if out.get("kind") == "sim" or "sim_attrs" in prov:
+        src = dict(out.get("source", {}))
+        src["path"] = "<sim catalogue: path in _truthkey/>"
+        out["source"] = src
+    return out
