@@ -189,6 +189,15 @@ def main(argv=None):
 
         # ---- Plot B-prime: all arms in the flagship frame ----------------------------------
         fr = flagship_run(label)
+        if fr is None:
+            # Plots B and B' are the flagship-frame figures, so without a flagship run they are
+            # simply absent -- and an absent figure looks the same as a figure nobody asked for.
+            # Say so: `--flagship-experiment` defaults to the r0 experiment name, so a prior whose
+            # r0 has not landed yet (or a mistyped name) silently produced a battery with no Plot B.
+            print("  ! label %s: no run matching --flagship-experiment %s under prior %r "
+                  "(available: %s) -- Plots B and B' skipped"
+                  % (label, args.flagship_experiment, args.prior,
+                     ", ".join(sorted({r["experiment"] for r in lruns})) or "none"))
         if fr is not None:
             chains = []
             for i, r in enumerate(lruns):
