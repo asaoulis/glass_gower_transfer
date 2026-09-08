@@ -231,8 +231,8 @@ def fig_tier1_bmodes(res, out_dir, index):
         ax.axvspan(b["null_chi2_p95"], 300, color=R("stop"), alpha=0.10)
         ax.set_xlim(100, 300); ax.set_ylim(0, stats.chi2.pdf(d - 2, d) * 1.9); ax.set_yticks([])
         ax.set_xlabel(T("$\\chi^2$ of the 168 BB bandpowers (mock-B mean and covariance)"))
-        ax.legend(loc="upper left", fontsize=10.5)
-        S.panel_label(ax, "(a)", x=0.92)
+        ax.legend(loc="upper right", fontsize=10.5)
+        S.panel_label(ax, "(a)")
         ax = axes[1]
         for lab in labels:
             pa = res[lab]["bmodes"]["per_auto"]
@@ -337,7 +337,7 @@ def fig_tier2_detectors(rows, scores, out_dir, index):
             ax.axvline(v, color=LC(lab), lw=2.4, label=T(f"label {lab}: mean-$p$ = {v:.2f}"))
         ax.axvspan(0, 0.01, color=R("stop"), alpha=0.18); ax.axvspan(0.01, 0.05, color=R("stop"), alpha=0.08)
         ax.set_xlim(0, 1); ax.set_yticks([]); ax.set_xlabel(T("5-encoder mean kNN $p$ (recalibrated; low = out of support)"))
-        ax.legend(loc="upper center", fontsize=10.5)
+        ax.legend(loc="upper right", fontsize=10.5)
         S.panel_label(ax, "(a)")
         ax = axes[1]
         kl = rows["kl"][idm]; kl = kl[np.isfinite(kl)]
@@ -389,8 +389,8 @@ def fig_tier2_bias(rows, scores, out_dir, index):
                 ax.axvline(b, color=LC(lab), lw=2.4, alpha=0.8, label=T(f"label {lab} reads bin {b}"))
             ax.set_ylim(0, 1.0); ax.set_ylabel(T("$P(|z_{S_8}| > t)$"))
             ax.set_xlabel(T("mean-$p$ bin (low = OOD)" if det == "meanp" else "KL bin (high = OOD)"))
-            ax.legend(fontsize=9.5, loc="upper center", bbox_to_anchor=(0.5, -0.3), ncol=2)
-            S.panel_label(ax, f"({'ab'[k]})")
+            ax.legend(fontsize=9.5, loc="lower left" if det == "meanp" else "upper left", ncol=1)
+            S.panel_label(ax, f"({'ab'[k]})", x=0.92 if det == "meanp" else 0.02, y=0.96 if det == "meanp" else 0.5)
     _save(fig, out_dir, "08_tier2_bias_tables.png", index,
           "Tier 2, what a detector reading buys: P(|z| > t) for S8 from 40,499 mock posteriors (5 encoders x 7 "
           "variates), binned by (a) the kNN mean p and (b) the cross-encoder KL, with the bin each label reads. "
@@ -403,7 +403,8 @@ def fig_tier2_bias(rows, scores, out_dir, index):
 TIER3 = [("plotB_S", "09_tier3_widths_vs_matched_mocks_S",
           "Tier 3, Plot B: the flagship (pooled) posterior of label S in its own standardised frame against "
           "near-fiducial matched mocks standardised with the flagship's width and their own mean. Sizes and "
-          "degeneracy directions are comparable; the location is hidden."),
+          "degeneracy directions are comparable; the location is hidden. Pilot caveat: the S pool here has "
+          "4000 draws (2 x 2000), hence the noisy w row; the production pool has 5 x 25k."),
          ("plotD_S_nla_m", "10_tier3_pooled_vs_repeats_S",
           "Tier 3, Plot D: the repeats of the flagship arm in the frame of the POOLED posterior (seed spread "
           "in sigma of the pooled)."),
@@ -428,7 +429,7 @@ def copy_tier3(plots_dir: Path, out_dir, index):
 
 def _readme(out: Path, index):
     lines = ["# Unblinding figure set", "",
-             "Style: `src/viz/style.py` (see `src/viz/STYLE_GUIDE.md`), palette option `%s`. " % PAL +
+             "Style: `src/viz/style.py` (see `.claude/runs/eval-and-viz/unblinding-prep/artifacts/STYLE_GUIDE.md (copy next to the figures: /data/alex/unblinding/figures/STYLE_GUIDE.md)`), palette option `%s`. " % PAL +
              "Controls: T = GLASS b_g=1 catalogue (known-OOD for the Gower nla_m cloud), S = held-out flagship N-body mock "
              "(in distribution). All Tier-3 panels are in sigma units of a standardised posterior; no physical "
              "posterior location appears anywhere. Every figure is also written as PDF.", ""]

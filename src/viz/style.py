@@ -204,12 +204,11 @@ def arm_colours(name: str = DEFAULT_PALETTE) -> dict[str, str]:
 
 
 def label_colour(label: str, name: str = DEFAULT_PALETTE) -> str:
-    """Mock-label colour: T and S are pinned; any other label takes a spare cycle colour."""
-    if label in ROLES[name]:
+    """Label colour: the mock controls T and S are pinned; ANY other label is an observation and
+    takes the `real` role (black). Never derived from a hash (process-salted, non-deterministic)."""
+    if label in ("T", "S"):
         return role_colour(label, name)
-    used = {ROLES[name]["T"], ROLES[name]["S"]}
-    spare = [i for i in range(len(PALETTES[name]["cycle"])) if i not in used]
-    return _resolve(spare[hash(label) % len(spare)], name)
+    return role_colour("real", name)
 
 
 def sequential(n: int, cmap: str = SEQUENTIAL_CMAP, lo: float = 0.12, hi: float = 0.82):
@@ -424,7 +423,7 @@ def plot_chains(samples_dict: Mapping[str, np.ndarray], columns, truth: Mapping 
         if name in colors:
             kw["color"] = colors[name]
         kw.setdefault("color", cycle[zorder % len(cycle)])
-        c.add_chain(Chain(samples=df, parameters=list(cols), name=name, zorder=zorder, **kw))
+        c.add_chain(Chain(samples=df, parameters=list(cols), name=tex(str(name)), zorder=zorder, **kw))
 
     if smooth is not None:
         c.set_override(ChainConfig(smooth=smooth))

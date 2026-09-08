@@ -76,7 +76,10 @@ def _chain(z, names, params, name, role="outline", colour=None, **kw):
     return (name, np.asarray(z)[:, idx], cols, S.chain_kwargs(role, colour, name=PALETTE, **kw))
 
 
-def _plot(chains, out_png, title=None, figsize=None, formats=("png", "pdf")):
+NO_TITLES = False
+
+
+def _plot(chains, out_png, title=None, figsize=None, formats=("png", "pdf"), battery=False):
     """The paper's corner (src.viz.style.plot_chains) on standardised chains: fixed +-4 sigma
     extents on every panel, smooth=10 on <=4-param corners (cell 11), none on full corners."""
     samples = {n: z for n, z, _, _ in chains}
@@ -88,7 +91,7 @@ def _plot(chains, out_png, title=None, figsize=None, formats=("png", "pdf")):
                         figsize=figsize or (S.FIGSIZE_CORNER if n_par <= 4 else S.FIGSIZE_CORNER_FULL),
                         smooth=S.CORNER_SMOOTH if n_par <= 4 else None, prune_ticks=n_par <= 4,
                         legend_loc="upper right", palette_name=PALETTE, savefig=None, close=False)
-    if title:
+    if title and (battery or not NO_TITLES):
         with S.context(PALETTE):
             fig.suptitle(S.tex(title), fontsize=13, y=1.0)
     S.save(fig, out_png, formats=formats)
@@ -113,11 +116,13 @@ def main(argv=None):
     ap.add_argument("--mock-events", type=int, nargs="+", default=[0, 1, 2], help="events of the mock dump to overlay")
     ap.add_argument("--seed", type=int, default=None, help="colour/order randomisation seed (default: random)")
     ap.add_argument("--max-samples", type=int, default=20000)
+    ap.add_argument("--no-titles", action="store_true", help="no suptitles on the headline plots A/B/B'/D (captions live in the figure-set README)")
     ap.add_argument("--palette", default=S.DEFAULT_PALETTE, choices=list(S.PALETTES),
                     help="colour option from src.viz.style (arms keep their identity in every option)")
     args = ap.parse_args(argv)
-    global PALETTE
+    global PALETTE, NO_TITLES
     PALETTE = args.palette
+    NO_TITLES = args.no_titles
 
     from src.blind import BLIND_ROOT, STANDARDISED_ROOT
     from src.blind.standardise import (list_raw_runs, standardise_in_real_frame, standardise_self,
@@ -178,7 +183,7 @@ def main(argv=None):
                                  _tag(r), "outline", armc(r)))
             _plot([_chain(z, st.names, [q for q in st.names], _tag(r), "flagship", armc(r))],
                   str(out / "battery" / f"{label}_{arm}_{r['match']}_corner.png"),
-                  title=f"label {label}: {_tag(r)}, self-standardised (all parameters)", formats=("png",))
+                  title=f"label {label}: {_tag(r)}, self-standardised (all parameters)", formats=("png",), battery=True)
         _plot(chains, str(out / f"plotA_{label}.png"), title=f"Plot A: label {label}, each posterior standardised to N(0,1)")
         manifest["figures"].append(str(out / f"plotA_{label}.png"))
 
@@ -206,7 +211,7 @@ def main(argv=None):
                 st = standardise_in_real_frame(r["path"], r["experiment"], fr["path"], fr["experiment"], subtract="real")
                 chains.append(_chain(st.z[:args.max_samples], st.names, shared, _tag(r), "outline", armc(r)))
             _plot(chains, str(out / "battery" / f"{label}_shared_corner.png"),
-                  title=f"label {label}: all arms, shared parameters, flagship frame", formats=("png",))
+                  title=f"label {label}: all arms, shared parameters, flagship frame", formats=("png",), battery=True)
 
         # ---- Plot D: seed spread -- every repeat in the POOLED frame of its arm ------------
         # Diagnostic for the final (pooled) posterior: pooling can only ADD spread across seeds, so
@@ -244,9 +249,11 @@ def main(argv=None):
                 mpath, mexp = rest.rsplit(":", 1)
                 for ev in args.mock_events:
                     st = standardise_in_real_frame(mpath, mexp, fr["path"], fr["experiment"], subtract="own", event=ev)
+                    first = ev == args.mock_events[0]
                     chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
-                                         f"matched mock {ev + 1} ({S.arm_name(arm)})", "mock",
-                                         S.role_colour("mock", PALETTE) if i == 0 else S.arm_colour(arm, PALETTE)))
+                                         f"matched mocks, {S.arm_name(arm)}" if first else f"matched mock {ev + 1}, {S.arm_name(arm)}",
+                                         "mock", S.role_colour("mock", PALETTE) if i == 0 else S.arm_colour(arm, PALETTE),
+                                         show_label_in_legend=first))
             chains = chains[1:] + chains[:1]          # mocks underneath, the observation on top
             _plot(chains, str(out / f"plotB_{label}.png"),
                   title=f"Plot B: label {label} flagship (own frame) vs matched mocks (own mean, flagship std)")
