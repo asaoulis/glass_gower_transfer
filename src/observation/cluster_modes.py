@@ -123,6 +123,95 @@ def run_obs_reference(args) -> int:
     return 0
 
 
+def add_score_args(parser) -> None:
+    g = parser.add_argument_group("obs-score")
+    g.add_argument("--score-store", default=None, help="bare BAKED sc8a1 observation store (gpu5), e.g. obs_A_sc8a1")
+    g.add_argument("--score-label", default=None, help="opaque label; names the BLIND subdir")
+    g.add_argument("--score-base", default="gower_npe_finetune_nla_m_bgp_z8_ens1", help="the NPE encoder pack")
+    g.add_argument("--score-repeats", type=int, nargs="+", default=[0, 1, 2, 3, 4])
+    g.add_argument("--score-num-samples", type=int, default=4000)
+    g.add_argument("--score-skip-summaries", action="store_true")
+    g.add_argument("--score-skip-misspec", action="store_true")
+
+
+BLIND_SUBDIR = "unblinding_blind"     # under checkpoints/<exp>/ -- denied to the agent by guard_blind
+
+
+def run_obs_score(args) -> int:
+    """Score ONE observation store through both Tier-2 detectors with the 5-encoder NPE pack:
+
+      (i)  summary-space kNN: ``summaries.run_summary_extraction`` with the observation as an ad-hoc
+           variate (``test_id_source='all'``) -> per-encoder knn p vs that encoder's ID null;
+      (ii) cross-encoder KL: ``misspec.run_misspecification_eval`` over the 5 repeats (its
+           test-id pool falls back to ALL on-disk ids since obs ids 9001+ are in no lock) ->
+           misspec_repeat_disagreement (kl_score).
+
+    Every per-observation intermediate (summary vectors z, posterior samples/moments) is an
+    UNBLINDING ARTEFACT and is written under ``checkpoints/<base>/unblinding_blind/<label>/``.
+    Only SCALARS (knn score/p per encoder, mean-p raw + recalibrated against the ID null, kl) go
+    to ``MODELS_ROOT/unblinding/<store>/obs_score_<label>.json``.
+    """
+    import json
+    import numpy as np
+    from src.ml.eval.ood import empirical_pvalues
+    store = _bare(args.score_store, "--score-store")
+    label = _bare(args.score_label, "--score-label")
+    base = _bare(args.score_base, "--score-base")
+    patterns = os.path.join(datasets_root("gpu5"), store, "output_*.h5")
+    variate = [{"name": f"obs_{label}", "patterns": patterns, "exclude_params": []}]
+    ckpt_root = os.path.join(models_root(), "checkpoints", base)
+    blind_root = os.path.join(BLIND_SUBDIR, label)
+    reps = [int(r) for r in args.score_repeats]
+    matches = [f"ncosmo300_{r}" for r in reps]
+
+    if not args.score_skip_summaries:
+        from src.ml.eval.summaries import run_summary_extraction
+        run_summary_extraction(base, repeat_indices=reps, variates=variate, test_id_source="all",
+                               out_subdir=os.path.join(blind_root, "summaries"), run_ood=True)
+    if not args.score_skip_misspec:
+        from src.ml.eval.misspec import run_misspecification_eval
+        run_misspecification_eval(base, repeat_indices=reps, variates=variate, num_samples=args.score_num_samples,
+                                  out_subdir=os.path.join(blind_root, "misspec"), test_id_source="heldout")
+
+    # ---- scalars only -------------------------------------------------------------------------
+    out = {"label": label, "store": store, "base": base, "repeats": reps, "per_encoder": {}, "notes": []}
+    sdir = os.path.join(ckpt_root, blind_root, "summaries")
+    pv = []
+    for m in matches:
+        f = os.path.join(sdir, f"obs_{label}", f"summaries_{m}.npz")
+        if os.path.exists(f):
+            d = np.load(f)
+            out["per_encoder"][m] = {k: float(d[k][0]) for k in ("ood_knn_score", "ood_knn_p", "ood_mahalanobis_score",
+                                                                  "ood_mahalanobis_p") if k in d.files}
+            pv.append(float(d["ood_knn_p"][0]))
+    if pv:
+        out["meanp_raw"] = float(np.mean(pv))
+        # recalibrate the mean-p statistic against the ID-test null of the same encoders
+        idp = []
+        for m in matches:
+            f = os.path.join(sdir, "_idtest", f"summaries_{m}.npz")
+            if os.path.exists(f):
+                idp.append(np.load(f)["ood_knn_p"])
+        if len(idp) == len(pv):
+            null_meanp = np.mean(np.stack(idp), axis=0)
+            # LOW mean-p = OOD, so the recalibrated p is the LEFT tail
+            out["meanp_recalibrated"] = float(empirical_pvalues(-null_meanp, np.array([-out["meanp_raw"]]))[0])
+            out["n_idtest_null"] = int(len(null_meanp))
+    mdir = os.path.join(ckpt_root, blind_root, "misspec", f"obs_{label}")
+    for f in glob.glob(os.path.join(mdir, "misspec_repeat_disagreement_*.npz")):
+        d = np.load(f)
+        if d["mu"].shape[0] == len(reps):
+            out["kl"] = float(d["kl_score"][0])
+    out["notes"].append("posterior moments/samples and summary vectors live under "
+                        f"checkpoints/{base}/{blind_root}/ (BLIND); this file carries scalars only")
+    res_dir = Path(models_root()) / "unblinding" / store
+    res_dir.mkdir(parents=True, exist_ok=True)
+    with open(res_dir / f"obs_score_{label}.json", "w") as fh:
+        json.dump(out, fh, indent=2)
+    print(f"[obs-score] {json.dumps({k: v for k, v in out.items() if k != 'notes'})}", flush=True)
+    return 0
+
+
 def _resolve_catalogue(args) -> tuple:
     store = _bare(args.catalogue_store, "--catalogue-store")
     root = datasets_root(args.catalogue_root)

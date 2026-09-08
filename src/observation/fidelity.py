@@ -80,6 +80,20 @@ def compare_observation_to_mock(obs_path: str, mock_path: str, tol: Optional[Dic
             for sub in po[name].keys():
                 if sub in pm[name]:
                     res[f"{name}/{sub}"] = rel_rms(po[name][sub][()], pm[name][sub][()])
+    # exact (bit-level) equality per dataset, for the identity gate record
+    exact: Dict[str, bool] = {}
+    with h5py.File(obs_path, "r") as fo, h5py.File(mock_path, "r") as fm:
+        cf_o, cf_m = fo["cls_results"]["full"], fm["cls_results"]["full"]
+        for k in ("bandpower_ls", "mixed_bandpowers", "cls"):
+            if k in cf_o and k in cf_m:
+                exact[k] = bool(np.array_equal(cf_o[k][()], cf_m[k][()]))
+        po, pm = fo["pixelised_results"], fm["pixelised_results"]
+        for name in po.keys():
+            if name.startswith("_") or name not in pm:
+                continue
+            for sub in po[name].keys():
+                if sub in pm[name]:
+                    exact[f"{name}/{sub}"] = bool(np.array_equal(po[name][sub][()], pm[name][sub][()]))
     failures = []
     for name, v in res.items():
         fam = _family(name.split("/")[0])
@@ -89,7 +103,7 @@ def compare_observation_to_mock(obs_path: str, mock_path: str, tol: Optional[Dic
         if t is not None and not (np.isfinite(v) and v <= t):
             failures.append((name, v, t))
     return {"per_dataset": res, "pass": not failures, "failures": failures, "missing": missing,
-            "floor_used": floor is not None}
+            "floor_used": floor is not None, "exact": exact, "all_exact": bool(exact) and all(exact.values())}
 
 
 def jitter_floor(cat, m_bias, *, geometry, variants, rng_factory, workdir: str, seed: int = 3) -> Dict[str, float]:
@@ -121,5 +135,6 @@ def format_report(rep: Dict) -> str:
         lines.append(f"MISSING: {m}")
     for name, v, t in rep["failures"]:
         lines.append(f"FAIL: {name} rel_rms={v:.3e} > tol={t:.1e}")
-    lines.append(("PASS" if rep["pass"] else "FAIL") + (" (jitter-floor gate)" if rep.get("floor_used") else " (absolute tolerances)"))
+    lines.append(("PASS" if rep["pass"] else "FAIL") + (" (jitter-floor gate)" if rep.get("floor_used") else " (absolute tolerances)")
+                 + ("; BIT-IDENTICAL on every compared dataset" if rep.get("all_exact") else ""))
     return "\n".join(lines)

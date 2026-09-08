@@ -197,7 +197,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
     parser.add_argument("--mode",
                         choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
-                                 "observe-build", "obs-reference"],
+                                 "observe-build", "obs-reference", "obs-score"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -290,9 +290,10 @@ def main(argv=None):
     # Unblinding front end (src/observation): catalogue -> observation -> baked per-arm stores.
     # Fail-soft: a bug in the (independent) observation package must never break the other modes.
     try:
-        from src.observation.cluster_modes import add_observe_args, add_reference_args
+        from src.observation.cluster_modes import add_observe_args, add_reference_args, add_score_args
         add_observe_args(parser)
         add_reference_args(parser)
+        add_score_args(parser)
     except Exception as _ex:  # pragma: no cover
         print(f"[eval] WARNING: observe-build args unavailable ({type(_ex).__name__}: {_ex})")
     args = parser.parse_args(argv)
@@ -304,6 +305,9 @@ def main(argv=None):
     if mode == "obs-reference":
         from src.observation.cluster_modes import run_obs_reference
         return run_obs_reference(args)
+    if mode == "obs-score":
+        from src.observation.cluster_modes import run_obs_score
+        return run_obs_score(args)
     if mode == "ebdiff":
         # Difference-map forensics on the paired b_g stores: no model, no training. Decides
         # whether the surviving b_g channel is signal-sector (red, coherent with the map) or
