@@ -353,6 +353,12 @@ def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
 DETERMINISTIC_METRIC_KEYS = ("mse", "bias", "std_dev", "width_68", "width_95")
 
 
+def _ecp_from_f(f, num_alpha_bins=100):
+    """`tarp._get_tarp_coverage_single`'s tail: the ECP curve for a set of credibilities."""
+    h, alpha = np.histogram(np.asarray(f), density=True, bins=num_alpha_bins, range=(0, 1))
+    return np.concatenate([[0.0], np.cumsum(h) * (alpha[1] - alpha[0])])
+
+
 def gate_pool_of_one(member_npz, experiment, workdir, *, production_json=None, atol=1e-6,
                      rows=256):
     """G1. Pooling ONE member must be the identity, and rescoring it must reproduce production.
@@ -454,9 +460,17 @@ def gate_tarp_identity(pooled_npz, experiment, fcache_npz, *, set_name="full", n
     assert samples.shape[1] == theta.shape[0], (
         "pooled dump is (S=%d, N=%d, D=%d) but theta has %d rows -- axis order is wrong"
         % (samples.shape + (theta.shape[0],)))
-    ecp, alpha = get_tarp_coverage(samples, theta, num_alpha_bins=100,
-                                   bootstrap=True, num_bootstrap=n_ref, seed=None)
-    ours = ecp.mean(axis=0)
+    # ⚠️ COMPARE LIKE WITH LIKE: `bootstrap=False`. The f-identity side below is a PLAIN ECP
+    # (no row resampling), and a row-bootstrap MEAN ECP is a systematically different curve --
+    # measured at 0.0048 max|dECP| on identical f values, which is most of the 0.0072 the first
+    # version of this gate reported and blamed on the pooling. Averaging over `n_ref` independent
+    # reference draws is the only averaging either side does.
+    curves = []
+    for _k in range(n_ref):
+        e, alpha = get_tarp_coverage(samples, theta, num_alpha_bins=100,
+                                     bootstrap=False, seed=None)
+        curves.append(np.asarray(e))
+    ours = np.mean(curves, axis=0)
 
     cached = np.load(fcache_npz, allow_pickle=False)
     keys = [k for k in cached.files if k.endswith("__" + set_name)]
@@ -464,12 +478,25 @@ def gate_tarp_identity(pooled_npz, experiment, fcache_npz, *, set_name="full", n
         raise ValueError("f-cache %s has no '%s' set (keys: %s)"
                          % (fcache_npz, set_name, sorted(cached.files)[:6]))
     f_pool = np.mean([cached[k] for k in keys], axis=0)          # [n_ref, n_rows], pooled by identity
-    theirs = np.mean([np.concatenate([[0.0], np.cumsum(
-        np.histogram(f_pool[k], density=True, bins=100, range=(0, 1))[0]) * 0.01])
-        for k in range(f_pool.shape[0])], axis=0)
+    theirs = np.mean([_ecp_from_f(f_pool[k]) for k in range(f_pool.shape[0])], axis=0)
 
     delta = float(np.abs(ours - theirs).max())
-    print("[gate G2] pooled-npz TARP vs f-identity curve: max |dECP| = %.4f over %d rows"
-          % (delta, theta.shape[0]), flush=True)
-    return {"gate": "tarp_identity", "max_abs_ecp_diff": delta,
+
+    # A bare max|dECP| is not a verdict: the two sides average DIFFERENT reference draws and never
+    # converge to each other. The floor is measured from the cache itself -- split its reference
+    # draws in two and see how far two disjoint averages of the SAME f already sit apart. Pure
+    # numpy on cached credibilities; no extra distance pass.
+    per_ref = np.array([_ecp_from_f(f_pool[k]) for k in range(f_pool.shape[0])])
+    rng = np.random.default_rng(0)
+    n_a = max(1, min(f_pool.shape[0] - 1, n_ref))
+    floor = np.array([
+        np.abs(per_ref[i[:n_a]].mean(0) - per_ref[i[n_a:]].mean(0)).max()
+        for i in (rng.permutation(per_ref.shape[0]) for _ in range(300))])
+    thresh = float(np.percentile(floor, 90))
+    verdict = "PASS" if delta <= thresh else "FAIL"
+    print("[gate G2] pooled-npz TARP vs f-identity curve: max |dECP| = %.4f over %d rows; "
+          "reference-draw floor %.4f +- %.4f (90th pct %.4f) -> %s"
+          % (delta, theta.shape[0], floor.mean(), floor.std(ddof=1), thresh, verdict), flush=True)
+    return {"gate": "tarp_identity", "max_abs_ecp_diff": delta, "floor_p90": thresh,
+            "floor_mean": float(floor.mean()), "verdict": verdict,
             "n_rows": int(theta.shape[0]), "set": set_name}
