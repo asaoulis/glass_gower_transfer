@@ -55,6 +55,9 @@ def assert_matches_sample_observation(path=None):
         tree = ast.parse(fh.read())
     other = None
     for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "src.ml.eval.arms" and any(
+                a.name == "ARMS" for a in node.names):
+            return []          # the script imports THIS table: lockstep by construction
         if isinstance(node, ast.Assign) and any(
                 isinstance(t, ast.Name) and t.id == "ARMS" for t in node.targets):
             other = ast.literal_eval(node.value)

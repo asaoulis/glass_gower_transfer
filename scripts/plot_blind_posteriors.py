@@ -99,6 +99,9 @@ def main(argv=None):
     ap.add_argument("--flagship-experiment", default="gower_nle_finetune_nla_m_bgp_z8_r0_ens9")
     ap.add_argument("--flagship-label", default=None, help="label whose flagship frame is the reference (default: first)")
     ap.add_argument("--prior", default="gower", help="prior tag of the runs to plot")
+    ap.add_argument("--use", default="auto", choices=["auto", "pooled", "repeats"],
+                    help="headline posterior per arm: the POOLED run (final analysis; auto = pooled when present, "
+                         "else the per-repeat runs), or the per-repeat runs only")
     ap.add_argument("--params", nargs="+", default=["omega_m", "sigma_8", "S8", "w0"])
     ap.add_argument("--matched-mocks", nargs="*", default=[], metavar="ARM=PATH:EXPERIMENT",
                     help="matched near-fiducial mock dumps per arm (Plot B)")
@@ -114,18 +117,42 @@ def main(argv=None):
     out = Path(args.out_dir)
     (out / "battery").mkdir(parents=True, exist_ok=True)
     std_dir = Path(STANDARDISED_ROOT)
-    runs = [r for r in list_raw_runs(root) if r["prior"] == args.prior]
-    if not runs:
+    all_runs = [r for r in list_raw_runs(root) if r["prior"] == args.prior]
+    if not all_runs:
         raise SystemExit(f"no raw runs with prior={args.prior} under {root}")
-    labels = sorted({r["label"] for r in runs})
+    labels = sorted({r["label"] for r in all_runs})
+
+    def _tag(r):
+        return f"{r['arm'] or _arm_key(r['experiment'])} {'POOLED' if r['pooled'] else r['match']}"
+
+    def headline_runs(label):
+        """One posterior per arm: the pooled one when it exists (the final analysis), else the repeats."""
+        lr = [r for r in all_runs if r["label"] == label]
+        if args.use == "repeats":
+            return [r for r in lr if not r["pooled"]]
+        out = []
+        for arm in sorted({r["arm"] or _arm_key(r["experiment"]) for r in lr}):
+            ar = [r for r in lr if (r["arm"] or _arm_key(r["experiment"])) == arm]
+            pooled = [r for r in ar if r["pooled"]]
+            if pooled:
+                out += pooled
+            elif args.use == "auto":
+                out += [r for r in ar if not r["pooled"]]
+        return out
+
+    runs = [r for label in labels for r in headline_runs(label)]
+    if not runs:
+        raise SystemExit(f"no headline runs (--use {args.use}) with prior={args.prior} under {root}")
     rng = np.random.default_rng(args.seed)
     palette = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e", "#8c564b", "#17becf", "#7f7f7f"]
     rng.shuffle(palette)
-    manifest = {"prior": args.prior, "labels": labels, "figures": [], "standardised": []}
+    manifest = {"prior": args.prior, "use": args.use, "labels": labels, "figures": [], "standardised": [],
+                "headline": [{"label": r["label"], "arm": r["arm"], "pooled": r["pooled"], "match": r["match"]} for r in runs]}
     flag_label = args.flagship_label or labels[0]
 
     def flagship_run(label):
-        cands = [r for r in runs if r["label"] == label and r["experiment"] == args.flagship_experiment]
+        pooled = [r for r in runs if r["label"] == label and r["pooled"] and r["experiment"] == args.flagship_experiment]
+        cands = pooled or [r for r in runs if r["label"] == label and r["experiment"] == args.flagship_experiment]
         return cands[0] if cands else None
 
     for label in labels:
@@ -137,12 +164,12 @@ def main(argv=None):
             p = write_standardised(st, str(std_dir / label / r["experiment"]), f"self_{args.prior}_{r['match']}")
             manifest["standardised"].append(p)
             z = st.z[:args.max_samples]
-            arm = _arm_key(r["experiment"])
+            arm = r["arm"] or _arm_key(r["experiment"])
             chains.append(_chain(z, st.names, [q for q in args.params if q in st.names],
-                                 f"{arm} {r['match']}", color=palette[i % len(palette)], linewidth=1.2))
-            _plot([_chain(z, st.names, [q for q in st.names], f"{arm} {r['match']}", color=palette[i % len(palette)])],
+                                 _tag(r), color=palette[i % len(palette)], linewidth=1.2))
+            _plot([_chain(z, st.names, [q for q in st.names], _tag(r), color=palette[i % len(palette)])],
                   str(out / "battery" / f"{label}_{arm}_{r['match']}_corner.png"),
-                  title=f"label {label} | arm {arm} | self-standardised (all params)")
+                  title=f"label {label} | arm {arm} | {'POOLED' if r['pooled'] else r['match']} | self-standardised (all params)")
         _plot(chains, str(out / f"plotA_{label}.png"), title=f"Plot A: label {label}, each posterior standardised to N(0,1)")
         manifest["figures"].append(str(out / f"plotA_{label}.png"))
 
@@ -154,9 +181,8 @@ def main(argv=None):
                 st = standardise_in_real_frame(r["path"], r["experiment"], fr["path"], fr["experiment"], subtract="real")
                 p = write_standardised(st, str(std_dir / label / r["experiment"]), f"flagframe_{args.prior}_{r['match']}")
                 manifest["standardised"].append(p)
-                arm = _arm_key(r["experiment"])
                 chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
-                                     f"{arm} {r['match']}", color=palette[i % len(palette)], linewidth=1.2))
+                                     _tag(r), color=palette[i % len(palette)], linewidth=1.2))
             _plot(chains, str(out / f"plotBprime_{label}.png"),
                   title=f"Plot B': label {label}, all arms in the flagship frame (offsets in sigma of the flagship)")
             manifest["figures"].append(str(out / f"plotBprime_{label}.png"))
@@ -168,16 +194,39 @@ def main(argv=None):
             chains = []
             for i, r in enumerate(lruns):
                 st = standardise_in_real_frame(r["path"], r["experiment"], fr["path"], fr["experiment"], subtract="real")
-                chains.append(_chain(st.z[:args.max_samples], st.names, shared, f"{_arm_key(r['experiment'])} {r['match']}",
+                chains.append(_chain(st.z[:args.max_samples], st.names, shared, _tag(r),
                                      color=palette[i % len(palette)]))
             _plot(chains, str(out / "battery" / f"{label}_shared_corner.png"),
                   title=f"label {label}: all arms, shared parameters, flagship frame")
+
+        # ---- Plot D: seed spread -- every repeat in the POOLED frame of its arm ------------
+        # Diagnostic for the final (pooled) posterior: pooling can only ADD spread across seeds, so
+        # the per-repeat offsets/widths in sigma of the pooled posterior show how much of the pooled
+        # width is seed disagreement. Blind-safe: everything is relative to the pooled location.
+        for pr in [r for r in lruns if r["pooled"]]:
+            arm = pr["arm"]
+            reps = [r for r in all_runs if r["label"] == label and not r["pooled"]
+                    and (r["arm"] or _arm_key(r["experiment"])) == arm]
+            if not reps:
+                continue
+            stp = standardise_self(pr["path"], pr["experiment"])
+            chains = [_chain(stp.z[:args.max_samples], stp.names, [q for q in args.params if q in stp.names],
+                             f"{arm} POOLED", color="black", linewidth=2.0)]
+            for i, r in enumerate(sorted(reps, key=lambda r: r["match"])):
+                st = standardise_in_real_frame(r["path"], r["experiment"], pr["path"], pr["experiment"], subtract="real")
+                p = write_standardised(st, str(std_dir / label / r["experiment"]), f"pooledframe_{args.prior}_{r['match']}")
+                manifest["standardised"].append(p)
+                chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
+                                     f"{arm} {r['match']}", color=palette[i % len(palette)], linewidth=0.9))
+            _plot(chains, str(out / f"plotD_{label}_{arm}.png"),
+                  title=f"Plot D: label {label}, arm {arm}: repeats in the POOLED frame (seed spread in sigma of the pooled)")
+            manifest["figures"].append(str(out / f"plotD_{label}_{arm}.png"))
 
         # ---- Plot B: flagship vs matched mocks (own mean, flagship std) ------------------
         if fr is not None and args.matched_mocks:
             st_real = standardise_self(fr["path"], fr["experiment"])
             chains = [_chain(st_real.z[:args.max_samples], st_real.names, [q for q in args.params if q in st_real.names],
-                             f"label {label} (flagship)", color="black", linewidth=2.0)]
+                             f"label {label} (flagship{' POOLED' if fr['pooled'] else ''})", color="black", linewidth=2.0)]
             for i, tok in enumerate(args.matched_mocks):
                 arm, rest = tok.split("=", 1)
                 mpath, mexp = rest.rsplit(":", 1)

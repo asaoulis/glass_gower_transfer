@@ -171,11 +171,26 @@ display(Image(os.path.join(TIER2_DIR, "bias_curves.png")))
 """)
 
 md("## 7. Standardised posteriors (blind): shapes, widths, arm consistency")
+md(r"""
+The FINAL posterior per arm is the **pooled** one — the equal-weight mixture of the 5 independent
+repeats, i.e. their concatenated draws (`eval.py --mode pool`; HANDOFF_pooling.md). Headline plots
+(A, B, B′, corner battery, labels) use the pooled run of each arm; **Plot D** shows every repeat in
+the pooled frame of its arm (seed spread in σ of the pooled posterior). Pooling can only add spread
+across seeds: a pooled 1-D width that looks calibrated says nothing about the joint calibration,
+which all seeds share (measured on the Gower mocks: pooled std(z) 1.09 → 1.00, joint TARP under-
+coverage survives).
+""")
 code(r"""
+man = json.load(open(os.path.join(PLOTS_DIR, "manifest.json"))) if os.path.exists(os.path.join(PLOTS_DIR, "manifest.json")) else {}
+hl = [h for h in man.get("headline", []) if h["label"] == LABEL]
+display(Markdown("**headline posteriors** (arm → pooled?): " + ", ".join(f"{h['arm']}: {'POOLED' if h['pooled'] else h['match']}" for h in hl)
+                 + (" — ⚠️ some arms are NOT pooled yet" if any(not h["pooled"] for h in hl) else "")))
 for name in (f"plotA_{LABEL}.png", f"plotB_{LABEL}.png", f"plotBprime_{LABEL}.png", "labels_overplot.png"):
     p = os.path.join(PLOTS_DIR, name)
     if os.path.exists(p):
         display(Markdown(f"**{name}**")); display(Image(p))
+for p in sorted(glob.glob(os.path.join(PLOTS_DIR, f"plotD_{LABEL}_*.png"))):
+    display(Markdown(f"**{os.path.basename(p)}** — seed-spread diagnostic (repeats in the pooled frame)")); display(Image(p))
 bat = sorted(glob.glob(os.path.join(PLOTS_DIR, "battery", f"{LABEL}_*_corner.png")))
 display(Markdown(f"corner battery: {len(bat)} figures under `{PLOTS_DIR}/battery/`"))
 for p in bat[:3]:
@@ -198,22 +213,41 @@ else:
     from src.blind.standardise import _load_physical, list_raw_runs   # raw access: user-run cell only
     runs = [r for r in list_raw_runs(BLIND_ROOT) if r["label"] == LABEL]
     cols = {"omega_m": r"$\Omega_{\rm m}$", "sigma_8": r"$\sigma_8$", "S8": r"$S_8$", "w0": r"$w_0$"}
+    def _df(r):
+        x, names = _load_physical(r["path"], r["experiment"])
+        keep = [n for n in cols if n in names]
+        return pd.DataFrame(x[:, [names.index(n) for n in keep]], columns=[cols[n] for n in keep]), keep, x, names
     for prior in sorted({r["prior"] for r in runs}):
-        c = ChainConsumer()
-        for r in [r for r in runs if r["prior"] == prior]:
-            x, names = _load_physical(r["path"], r["experiment"])
-            keep = [n for n in cols if n in names]
-            df = pd.DataFrame(x[:, [names.index(n) for n in keep]], columns=[cols[n] for n in keep])
-            c.add_chain(Chain(samples=df, parameters=[cols[n] for n in keep], name=f"{r['experiment']} {r['match']}"))
-        c.set_plot_config(PlotConfig(serif=True, usetex=False, label_font_size=12, tick_font_size=9))
-        fig = c.plotter.plot(figsize=(9, 9)); fig.suptitle(f"UNBLINDED: label {LABEL}, prior {prior}"); plt.show()
-        # summary table
+        pooled = [r for r in runs if r["prior"] == prior and r["pooled"]]
+        reps = [r for r in runs if r["prior"] == prior and not r["pooled"]]
+        # (i) the FINAL posteriors: one pooled chain per arm
+        if pooled:
+            c = ChainConsumer()
+            for r in pooled:
+                df, keep, _, _ = _df(r)
+                c.add_chain(Chain(samples=df, parameters=[cols[n] for n in keep], name=f"{r['arm']} POOLED"))
+            c.set_plot_config(PlotConfig(serif=True, usetex=False, label_font_size=12, tick_font_size=9))
+            fig = c.plotter.plot(figsize=(9, 9)); fig.suptitle(f"UNBLINDED (final = pooled): label {LABEL}, prior {prior}"); plt.show()
+        else:
+            display(Markdown(f"⚠️ no POOLED run for prior {prior}: run `scripts/sample_observation.py pool` + `fetch --what pooled`"))
+        # (ii) diagnostic: per-repeat chains of each arm with the pooled one
+        for arm in sorted({r["arm"] for r in reps}):
+            c = ChainConsumer()
+            for r in [r for r in pooled if r["arm"] == arm]:
+                df, keep, _, _ = _df(r)
+                c.add_chain(Chain(samples=df, parameters=[cols[n] for n in keep], name=f"{arm} POOLED", color="black"))
+            for r in [r for r in reps if r["arm"] == arm]:
+                df, keep, _, _ = _df(r)
+                c.add_chain(Chain(samples=df, parameters=[cols[n] for n in keep], name=f"{arm} {r['match']}"))
+            c.set_plot_config(PlotConfig(serif=True, usetex=False, label_font_size=12, tick_font_size=9))
+            fig = c.plotter.plot(figsize=(8, 8)); fig.suptitle(f"diagnostic: label {LABEL}, arm {arm}, prior {prior}: repeats vs pooled"); plt.show()
+        # summary table (pooled first)
         rows = []
-        for r in [r for r in runs if r["prior"] == prior]:
-            x, names = _load_physical(r["path"], r["experiment"])
+        for r in pooled + reps:
+            _, _, x, names = _df(r)
             for n in ("omega_m", "sigma_8", "S8"):
-                i = names.index(n); rows.append((r["experiment"], r["match"], n, x[:, i].mean(), x[:, i].std()))
-        display(pd.DataFrame(rows, columns=["experiment", "match", "param", "mean", "std"]))
+                i = names.index(n); rows.append((r["arm"], "POOLED" if r["pooled"] else r["match"], n, x[:, i].mean(), x[:, i].std()))
+        display(pd.DataFrame(rows, columns=["arm", "run", "param", "mean", "std"]))
 """)
 
 

@@ -120,19 +120,51 @@ def load_standardised(path: str) -> Standardised:
 # --------------------------------------------------------------------------------------------
 # registry of raw runs (FILENAMES only)
 # --------------------------------------------------------------------------------------------
+def _arm_of(experiment: str) -> str:
+    """Arm name of a per-repeat experiment (from the production arm table; '' if unknown)."""
+    try:
+        from src.ml.eval.arms import ARMS
+    except Exception:  # pragma: no cover
+        return ""
+    for arm, (tmpl, _bake, reps) in ARMS.items():
+        if any(tmpl.format(r=r) == experiment for r in reps):
+            return arm
+    return ""
+
+
 def list_raw_runs(root: str = BLIND_ROOT) -> List[Dict[str, str]]:
-    """Walk the blind store and return {label, experiment, prior, match, path} from FILENAMES."""
+    """Walk the blind store and return {label, arm, experiment, prior, match, pooled, path} from
+    FILENAMES only.
+
+    Two families live under the store (`scripts/sample_observation.py fetch`):
+      <root>/<label>/<experiment>/.../external_posterior_samples_<prior>_<match>.npz   per-repeat
+      <root>/<label>/pooled_<arm>/.../pooled_posterior_samples_<prior>.npz            POOLED (final)
+    A pooled entry carries ``match='pooled'`` and ``experiment`` = the arm's repeat-0 member, whose
+    scaler box is the shared frame of every member (`eval.py --mode pool` refuses mixed frames).
+    """
     out = []
     for dirpath, _, files in os.walk(root):
+        rel = os.path.relpath(dirpath, root).split(os.sep)
         for f in files:
             if f.startswith("external_posterior_samples_") and f.endswith(".npz"):
-                rel = os.path.relpath(dirpath, root).split(os.sep)
                 label, exp = (rel[0], rel[1]) if len(rel) >= 2 else (rel[0], "")
                 body = f[len("external_posterior_samples_"):-4]
                 prior, match = body.split("_ncosmo", 1)
-                out.append({"label": label, "experiment": exp, "prior": prior, "match": "ncosmo" + match,
-                            "path": os.path.join(dirpath, f)})
-    return sorted(out, key=lambda r: (r["label"], r["experiment"], r["prior"], r["match"]))
+                out.append({"label": label, "arm": _arm_of(exp), "experiment": exp, "prior": prior,
+                            "match": "ncosmo" + match, "pooled": False, "path": os.path.join(dirpath, f)})
+            elif f.startswith("pooled_posterior_samples_") and f.endswith(".npz"):
+                label = rel[0]
+                arm_dir = next((d for d in rel[1:] if d.startswith("pooled_")), "")
+                arm = arm_dir[len("pooled_"):]
+                prior = f[len("pooled_posterior_samples_"):-4]
+                try:
+                    from src.ml.eval.arms import ARMS
+                    exp = ARMS[arm][0].format(r=ARMS[arm][2][0])
+                except Exception:
+                    exp = ""
+                out.append({"label": label, "arm": arm, "experiment": exp, "prior": prior,
+                            "match": "pooled", "pooled": True, "path": os.path.join(dirpath, f)})
+    return sorted(out, key=lambda r: (r["label"], r["arm"], r["experiment"], r["prior"], r["match"]))
 
 
 def _selftest():

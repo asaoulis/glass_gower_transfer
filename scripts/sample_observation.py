@@ -12,6 +12,16 @@ job only if they share a store -- here one store per label, so one job per label
 `fetch` pulls checkpoints/<exp>/external/<label>/ into BLIND_ROOT/<label>/<exp>/ (the guard allows
 `run_remote.py fetch`; nothing here opens a sample file).
 
+    PYTHONPATH=. python scripts/sample_observation.py pool   --labels A B C --store-prefix obs_kids [--arms ...] [--repeats ...] [--priors ...]
+    PYTHONPATH=. python scripts/sample_observation.py fetch  --labels A --store-prefix obs_kids --what pooled
+
+`pool` submits ONE cheap CPU job per (label, arm, prior): `eval.py --mode pool --pool-arm <arm>
+--repeat-indices <reps> --data-tag <label> --prior-mode <prior>` (HANDOFF_pooling.md §3.2) -- the
+equal-weight seed mixture q_pool = (1/R) sum_r q_r, i.e. the concatenated draws. THE FINAL
+POSTERIORS ARE THE POOLED ONES (user, 2026-09-08); the per-repeat dumps stay as the seed-spread
+diagnostic. `fetch --what pooled` pulls checkpoints/pooled/<arm>/external/<label>/ into
+BLIND_ROOT/<label>/pooled_<arm>/ (`--what both` = repeats + pooled).
+
 Arm table (ASSESSMENT_hf.md, 2026-09-07) -> Stage-B experiment name per repeat r:
   nla_m        gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9                 (headline; notebook arm)
   nla_m_nobgp  gower_nle_finetune_nla_m_z8_r{r}_ens9
@@ -40,15 +50,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 RUN_REMOTE = REPO / ".claude" / "cluster" / "run_remote.py"
 
-ARMS = {
-    "nla_m": ("gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9", "sc8a1", (0, 1, 2, 3, 4)),
-    "nla_m_nobgp": ("gower_nle_finetune_nla_m_z8_r{r}_ens9", "a0_tagged", (0, 1, 2, 3, 4)),
-    "nla": ("gower_nle_finetune_nla_bgp_z8_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3, 4)),
-    "nla_z": ("gower_nle_finetune_nla_z_bgp_z8_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3, 4)),
-    "vd": ("gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3, 4)),
-    "k2": ("gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3)),
-}
-DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
+sys.path.insert(0, str(REPO))
+from src.ml.eval.arms import ARMS, DEFAULT_PRIORS  # noqa: E402  -- the ONE arm table (eval --mode pool reads the same)
 
 
 def jobs(args):
@@ -95,20 +98,64 @@ def cmd_submit(args):
     return 0
 
 
+def pool_jobs(args):
+    """(label, arm, prior, repeats-that-exist-and-were-requested) -- pooling needs >= 2 members."""
+    for label in args.labels:
+        for arm in args.arms:
+            _exp_t, _bake, reps_avail = ARMS[arm]
+            reps = [r for r in args.repeats if r in reps_avail]
+            if len(reps) < 2:
+                print(f"[{label} {arm}] SKIP pool: {len(reps)} member(s) requested/available (need >= 2)")
+                continue
+            for prior in args.priors:
+                yield {"label": label, "arm": arm, "prior": prior, "repeats": reps}
+
+
+def pool_args(j):
+    return " ".join(["--mode", "pool", "--pool-arm", j["arm"], "--repeat-indices", *map(str, j["repeats"]),
+                     "--data-tag", j["label"], "--prior-mode", j["prior"]])
+
+
+def cmd_pool(args):
+    js = list(pool_jobs(args))
+    for j in js:
+        cmd = [sys.executable, str(RUN_REMOTE)] + (["--dry-run"] if args.dry_run else []) + [
+            "eval", "--cpu", "--partition", args.partition, "--ncpu", "8", "--wall_h", "1",
+            "--mem-gb", "64", "--args", pool_args(j)]
+        print(f"[{j['label']} {j['arm']} {j['prior']} pool r{j['repeats']}] " + " ".join(shlex.quote(c) for c in cmd[2:]))
+        subprocess.check_call(cmd)
+    print(f"{len(js)} pool jobs submitted (seconds of work each; wall/mem are slack)")
+    return 0
+
+
 def cmd_fetch(args):
     from src.blind import BLIND_ROOT
+    root = Path(args.blind_root or BLIND_ROOT)
     seen = set()
-    for j in jobs(args):
-        key = (j["label"], j["experiment"])
-        if key in seen:
-            continue
-        seen.add(key)
-        out_dir = Path(args.blind_root or BLIND_ROOT) / j["label"] / j["experiment"]
-        out_dir.mkdir(parents=True, exist_ok=True)
-        cmd = [sys.executable, str(RUN_REMOTE)] + (["--dry-run"] if args.dry_run else []) + [
-            "fetch", "--exp", j["experiment"], "--rel", f"external/{j['label']}", "--out_dir", str(out_dir)]
-        print(" ".join(shlex.quote(c) for c in cmd[2:]))
-        subprocess.check_call(cmd)
+    if args.what in ("repeats", "both"):
+        for j in jobs(args):
+            key = (j["label"], j["experiment"])
+            if key in seen:
+                continue
+            seen.add(key)
+            out_dir = root / j["label"] / j["experiment"]
+            out_dir.mkdir(parents=True, exist_ok=True)
+            cmd = [sys.executable, str(RUN_REMOTE)] + (["--dry-run"] if args.dry_run else []) + [
+                "fetch", "--exp", j["experiment"], "--rel", f"external/{j['label']}", "--out_dir", str(out_dir)]
+            print(" ".join(shlex.quote(c) for c in cmd[2:]))
+            subprocess.check_call(cmd)
+    if args.what in ("pooled", "both"):
+        for label in args.labels:
+            for arm in args.arms:
+                out_dir = root / label / f"pooled_{arm}"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                cmd = [sys.executable, str(RUN_REMOTE)] + (["--dry-run"] if args.dry_run else []) + [
+                    "fetch", "--exp", "pooled", "--rel", f"{arm}/external/{label}", "--out_dir", str(out_dir)]
+                print(" ".join(shlex.quote(c) for c in cmd[2:]))
+                try:
+                    subprocess.check_call(cmd)
+                except subprocess.CalledProcessError:
+                    print(f"[{label} {arm}] no pooled dump on the cluster yet (run `pool` first)")
     print("fetched into the blind store (raw files are never opened here)")
     return 0
 
@@ -116,7 +163,7 @@ def cmd_fetch(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("plan", cmd_plan), ("submit", cmd_submit), ("fetch", cmd_fetch)):
+    for name, fn in (("plan", cmd_plan), ("submit", cmd_submit), ("fetch", cmd_fetch), ("pool", cmd_pool)):
         s = sub.add_parser(name)
         s.add_argument("--labels", nargs="+", required=True)
         s.add_argument("--store-prefix", required=True, help="observation store prefix; store = <prefix>_<label>_<bake>")
@@ -133,10 +180,10 @@ def main(argv=None):
         s.add_argument("--wall_h", type=float, default=24)
         s.add_argument("--mem-gb", type=int, default=64)
         s.add_argument("--blind-root", default=None)
+        s.add_argument("--what", default="both", choices=["repeats", "pooled", "both"], help="fetch: which family")
         s.add_argument("--dry-run", action="store_true")
         s.set_defaults(func=fn)
     args = ap.parse_args(argv)
-    sys.path.insert(0, str(REPO))
     return args.func(args)
 
 
