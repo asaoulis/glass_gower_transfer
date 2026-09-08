@@ -85,6 +85,8 @@ def eval_args(j, args):
                  "--mcmc-seed", str(args.mcmc_seed)]
     if args.warmup_steps is not None:
         toks += ["--warmup-steps", str(args.warmup_steps)]
+    if args.emb_batch_size is not None:
+        toks += ["--emb-batch-size", str(args.emb_batch_size)]   # multi-event stores: items = n_batches x mcmc_workers
     return " ".join(toks)
 
 
@@ -190,6 +192,8 @@ def main(argv=None):
         s.add_argument("--mcmc-threads", type=int, default=1)
         s.add_argument("--mcmc-seed", type=int, default=0)
         s.add_argument("--warmup-steps", type=int, default=None, help="MCMC warmup sweeps per chain (eval.py default 500)")
+        s.add_argument("--emb-batch-size", type=int, default=None,
+                       help="events per work item (eval.py default 64); for a 160-event matched store use ~8 so items ~ ncpu")
         s.add_argument("--partition", default="CORES64")
         s.add_argument("--ncpu", type=int, default=16)
         s.add_argument("--wall_h", type=float, default=24)
