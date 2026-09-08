@@ -35,9 +35,11 @@ whose training store `gower_mocks_nla_m_f16_fwhm4_lmin56_lcut1400` was baked wit
 .claude/runs/training-runs/vicreg-nle-first-test/plan.md; config `_GOWER_EB_VARIANT_FWHM4`, no
 `eb_noise_norm`), i.e. the `a0_tagged` bake: it reads `<store-prefix>_<label>_a0_tagged`.
 
-Cost: ~14 h wall per (arm, repeat, label) at 25k samples on CPU (Stage-B burn-in dominates; see
-memory nle-sampling-burnin); 3 labels x 29 (arm,repeat) = 87 jobs. Use --num-samples 2000 and
---repeats 0 for the GATE 3b pilot.
+Cost: ~14 h wall per (arm, repeat, label) at 25k samples on ONE core (the historical path; Stage-B
+burn-in dominates). With the N=1 sharding (--ncpu 64 --mcmc-workers 60 --num-jobs 60 on CORES64,
+or --ncpu 40 --mcmc-workers 36 --num-jobs 36 on CORES40) the same run is ~17 min at warmup 500
+(SAMPLING_PROFILE_N1.md). One label x 29 (arm,repeat) x 2 priors = 58 jobs. Use --num-samples 2000
+and --repeats 0 for a pilot.
 """
 from __future__ import annotations
 
@@ -74,6 +76,15 @@ def eval_args(j, args):
             "--num-samples", str(args.num_samples), "--num-chains", str(args.num_chains)]
     if args.num_jobs:
         toks += ["--num-jobs", str(args.num_jobs)]
+    # N=1 sampling knobs (SAMPLING_PROFILE_N1.md): shard ONE observation's sample budget over
+    # --mcmc-workers processes (each with --num-chains chains; pooled = one process with K*C chains,
+    # identical in distribution), 1 torch thread each, seeded per shard. 4.7x like-for-like on a
+    # 64-core node at 25k draws; keep warmup 500 for the blind run.
+    if args.mcmc_workers:
+        toks += ["--mcmc-workers", str(args.mcmc_workers), "--mcmc-threads", str(args.mcmc_threads),
+                 "--mcmc-seed", str(args.mcmc_seed)]
+    if args.warmup_steps is not None:
+        toks += ["--warmup-steps", str(args.warmup_steps)]
     return " ".join(toks)
 
 
@@ -174,7 +185,11 @@ def main(argv=None):
         s.add_argument("--priors", nargs="+", default=list(DEFAULT_PRIORS))
         s.add_argument("--num-samples", type=int, default=25000)
         s.add_argument("--num-chains", type=int, default=8)
-        s.add_argument("--num-jobs", type=int, default=None)
+        s.add_argument("--num-jobs", type=int, default=None, help="joblib work items in parallel (aim ~ ncpu with --mcmc-workers)")
+        s.add_argument("--mcmc-workers", type=int, default=None, help="shards per event (N=1 knob); e.g. 60 on CORES64, 36 on CORES40")
+        s.add_argument("--mcmc-threads", type=int, default=1)
+        s.add_argument("--mcmc-seed", type=int, default=0)
+        s.add_argument("--warmup-steps", type=int, default=None, help="MCMC warmup sweeps per chain (eval.py default 500)")
         s.add_argument("--partition", default="CORES64")
         s.add_argument("--ncpu", type=int, default=16)
         s.add_argument("--wall_h", type=float, default=24)
