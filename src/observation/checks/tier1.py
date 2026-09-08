@@ -317,8 +317,11 @@ def power_check(cloud_id: Cloud, cloud_ood: Cloud, *, which: str = "emap", seed:
         mad = np.where(mad > 0, mad, E.std(0))
         E, Q = (E - med) / mad, (Q - med) / mad
     else:
-        E = cloud_id.bandpowers.reshape(len(cloud_id.bandpowers), -1)
-        Q = cloud_ood.bandpowers.reshape(len(cloud_ood.bandpowers), -1)[q_idx]
+        E = np.asarray(cloud_id.bandpowers, dtype=np.float64).reshape(len(cloud_id.bandpowers), -1)
+        Q = np.asarray(cloud_ood.bandpowers, dtype=np.float64).reshape(len(cloud_ood.bandpowers), -1)[q_idx]
+        sd = E[fit].std(0)                       # scatter units before whitening (see _score_block)
+        sd = np.where(sd > 0, sd, 1.0)
+        E, Q = E / sd, Q / sd
     res = {}
     for tag, p in (("full", None), (f"pca{pca}", min(pca, E.shape[1]))):
         w = _shrink_whitener(E[fit])

@@ -99,8 +99,10 @@ def add_strip_args(parser) -> None:
     g = parser.add_argument_group("observe-strip")
     g.add_argument("--strip-store", default=None, help="bare BAKED store (gpu5) to take the mock from")
     g.add_argument("--strip-root", default="gpu5", choices=["gpu4", "gpu5"])
-    g.add_argument("--strip-index", type=int, default=0,
-                   help="index into the SORTED list of candidate files (fixed-lock test cosmologies only)")
+    g.add_argument("--strip-index", type=int, default=None,
+                   help="index into the SORTED list of candidate files (fixed-lock test cosmologies only); "
+                        "default: a random draw made INSIDE the job and written only to the truthkey (an "
+                        "explicit index is a name anyone can resolve to a Gower CSV row)")
     g.add_argument("--strip-lock", default="gower_test_ids",
                    help="fixed test lock (config/fixed_test_sets/<name>.json) restricting the candidates")
     g.add_argument("--strip-arm", default="sc8a1", help="which arm store the baked mock corresponds to")
@@ -138,17 +140,22 @@ def run_obs_strip(args) -> int:
         files = [f for f in files if extract_cosmo_index(f) in lock_ids]
     if not files:
         raise SystemExit("no candidate files after the lock filter")
-    if not 0 <= args.strip_index < len(files):
-        raise SystemExit(f"--strip-index out of range: {len(files)} candidates")
-    src = files[args.strip_index]
+    if args.strip_index is None:
+        idx = int(np.random.default_rng().integers(len(files)))   # unseeded on purpose: not reproducible from the CLI
+        how = "random"
+    else:
+        if not 0 <= args.strip_index < len(files):
+            raise SystemExit(f"--strip-index out of range: {len(files)} candidates")
+        idx, how = int(args.strip_index), "cli"
+    src = files[idx]
     print(f"[observe-strip] label={label} source_store={src_store} arm={arm} candidates={len(files)} "
-          f"(lock={args.strip_lock}) index={args.strip_index}", flush=True)
+          f"(lock={args.strip_lock}) index={'<random, in truthkey>' if how == 'random' else idx}", flush=True)
 
     store_dir = os.path.join(datasets_root("gpu5"), f"{obs_store}_{label}_{arm}")
     os.makedirs(store_dir, exist_ok=True)
     dst = os.path.join(store_dir, baked_filename(label))
     truth = {"label": label, "source_store": src_store, "source_file": os.path.basename(src),
-             "sim_id": int(extract_cosmo_index(src)), "cosmo_dict": {}}
+             "sim_id": int(extract_cosmo_index(src)), "candidate_index": idx, "index_source": how, "cosmo_dict": {}}
     prov = {"label": label, "kind": "stripped_mock", "arm": arm, "source_store": src_store,
             "git_rev": _git_rev(), "obs_id": int(obs_id_for(label)), "lock": args.strip_lock,
             "raw_store": args.strip_raw_store or ""}
