@@ -61,11 +61,11 @@ PLOTS_DIR = "/data/alex/unblinding/plots_" + LABEL                  # scripts/pl
 BLIND_ROOT = "/data/alex/unblinding/blind_store"                    # raw posteriors (Section 8 ONLY)
 FLAGSHIP_EXPERIMENT = "gower_nle_finetune_nla_m_bgp_z8_r0_ens9"
 UNBLIND = False                               # <- the gate. Flip by hand, once, after sign-off.
+REPO_ROOT = "/home/alex/work/glass_gower_transfer"
 
 import os, sys, json, glob
-if not os.path.exists("src") and os.path.exists(os.path.join("..", "src")):
-    os.chdir("..")                     # nbconvert/jupyter start the kernel in notebooks/; every relative path is repo-rooted
-sys.path.insert(0, os.path.abspath("."))
+os.chdir(REPO_ROOT)                    # the kernel starts wherever the .ipynb lives; every relative path here is repo-rooted
+sys.path.insert(0, REPO_ROOT)
 import numpy as np, h5py
 import matplotlib.pyplot as plt
 from IPython.display import Image, display, Markdown
