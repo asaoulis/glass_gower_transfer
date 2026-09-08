@@ -219,12 +219,23 @@ def sample_pipeline(
     num_chains: int = 1,
     num_jobs: Optional[int] = None,
     warmup_steps: int = 500,
+    mcmc_workers: Optional[int] = None,
+    mcmc_threads: Optional[int] = None,
+    mcmc_seed: Optional[int] = None,
 ):
     """Run the ensemble's MCMC over every row of `p.test_loader`.
 
     `num_samples` is TOTAL per observation (sbi's `sample_batched` splits it across `num_chains`),
     so raising `num_chains` shortens each chain rather than multiplying the work — which is what
     makes the N=1 case parallel without any cross-process replication.
+
+    ⭐ N=1 (the real-data run). The joblib fan-out is over EVENTS, so one observation = one work
+    item = ONE core busy on a 40/64-core node. `mcmc_workers=K` splits the sample budget of each
+    event across K processes instead (see `EnsembleLikelihoodNDELightningModule.generate_samples`);
+    combined with `num_chains` the per-chain length is `num_samples / (K * num_chains)`, which is
+    what actually moves the wall clock once `warmup_steps` stops dominating. Pooling K independent
+    chain groups is identical in distribution to one process with K x num_chains chains, so the
+    posterior is unchanged. `mcmc_threads=1` keeps the K processes from oversubscribing.
     """
     from .utils import _config_preset_overrides
 
@@ -242,6 +253,12 @@ def sample_pipeline(
         kw["fixed_parameters"] = fixed_parameters
     if num_jobs is not None:
         kw["num_jobs"] = num_jobs
+    if mcmc_workers is not None:
+        kw["mcmc_workers"] = mcmc_workers
+    if mcmc_threads is not None:
+        kw["mcmc_threads"] = mcmc_threads
+    if mcmc_seed is not None:
+        kw["mcmc_seed"] = mcmc_seed
     print(f"[nle-external] sampling: {kw and {k: v for k, v in kw.items() if k != 'prior'}} "
           f"prior={prior_mode}", flush=True)
     theta0s, samples = p.model.generate_samples(**kw)
@@ -264,6 +281,9 @@ def run_external_nle_eval(
     num_chains: int = 1,
     num_jobs: Optional[int] = None,
     warmup_steps: int = 500,
+    mcmc_workers: Optional[int] = None,
+    mcmc_threads: Optional[int] = None,
+    mcmc_seed: Optional[int] = None,
     batch_size: int = 64,
     source_experiments: Optional[Sequence[str]] = None,
     compute_metrics: Optional[bool] = None,
@@ -292,6 +312,7 @@ def run_external_nle_eval(
     theta0s, samples = sample_pipeline(
         p, prior_mode=prior_mode, num_samples=num_samples, num_chains=num_chains,
         num_jobs=num_jobs, warmup_steps=warmup_steps,
+        mcmc_workers=mcmc_workers, mcmc_threads=mcmc_threads, mcmc_seed=mcmc_seed,
     )
 
     # An observation has no truth. Everything metric-shaped is scored against theta0s, so it is
@@ -307,9 +328,17 @@ def run_external_nle_eval(
     _save_posterior_samples(npz, theta0s, samples, _paths_of(p, paths))
     print(f"[nle-external] wrote {npz}", flush=True)
 
+    # HOW the posterior was drawn is part of the record, not a runtime detail: for the blind run
+    # the provenance json is the only place the chain/warmup/shard geometry survives, and the
+    # between-shard R-hat a reader can compute from the npz needs `mcmc_workers` to know where
+    # the shard boundaries are (block s = rows [s*ceil(N/K), min((s+1)*ceil(N/K), N))).
     result = {"output_dir": out, "samples_npz": npz, "n_files": len(paths),
               "has_truth": has_truth, "prior": prior_mode,
               "experiment": experiment, "match_string": p.match_string,
+              "sampling": {"num_samples": num_samples, "num_chains": num_chains,
+                           "warmup_steps": warmup_steps, "num_jobs": num_jobs,
+                           "mcmc_workers": mcmc_workers, "mcmc_threads": mcmc_threads,
+                           "mcmc_seed": mcmc_seed},
               "provenance": p.provenance}
 
     if compute_metrics:

@@ -267,7 +267,27 @@ def main(argv=None):
                              "TOTAL per observation and is split across chains, so raising this "
                              "shortens each chain -- the parallelism knob for the N=1 case.")
     parser.add_argument("--num-jobs", type=int, default=None,
-                        help="--mode nle-external: joblib pool size (batches sampled in parallel).")
+                        help="--mode nle-external: joblib pool size (work items in parallel).")
+    parser.add_argument("--warmup-steps", type=int, default=500,
+                        help="--mode nle-external: MCMC warmup sweeps discarded per chain "
+                             "(sbi adds a further 50 hardcoded bracket-tuning sweeps). Every "
+                             "chain group pays this ONCE, so it is the floor on wall time.")
+    parser.add_argument("--mcmc-workers", type=int, default=None,
+                        help="--mode nle-external: shards per event batch. ⭐ THE N=1 KNOB: the "
+                             "joblib fan-out is over EVENTS, so one observation = one busy core. "
+                             "K here splits that observation's SAMPLE budget over K processes, "
+                             "each running its own num_chains chains; pooling them is identical "
+                             "in distribution to K*num_chains chains in one process. Default "
+                             "None = the historical event-only parallelism.")
+    parser.add_argument("--mcmc-threads", type=int, default=None,
+                        help="--mode nle-external: torch threads per sampling worker (also "
+                             "loky's inner_max_num_threads). 1 is normally fastest — the MCMC "
+                             "batch is only num_chains*num_members rows, where intra-op "
+                             "threading costs more than it saves — and stops --mcmc-workers "
+                             "processes from oversubscribing the node.")
+    parser.add_argument("--mcmc-seed", type=int, default=None,
+                        help="--mode nle-external: base seed for the samplers (numpy global RNG "
+                             "+ torch); shard i gets seed+i. Default None = unseeded, as before.")
     parser.add_argument("--emb-batch-size", type=int, default=64,
                         help="--mode nle-external: events per sampling work item. Smaller => more "
                              "batches => more cores busy when the event count is small.")
@@ -412,6 +432,10 @@ def main(argv=None):
                     num_samples=args.num_samples,
                     num_chains=args.num_chains,
                     num_jobs=args.num_jobs,
+                    warmup_steps=args.warmup_steps,
+                    mcmc_workers=args.mcmc_workers,
+                    mcmc_threads=args.mcmc_threads,
+                    mcmc_seed=args.mcmc_seed,
                     batch_size=args.emb_batch_size,
                     dry_run=args.external_dry_run,
                 )
