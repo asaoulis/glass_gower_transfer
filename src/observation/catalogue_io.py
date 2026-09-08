@@ -202,12 +202,18 @@ def apply_weights(cat: Catalogue, mode: str = "ignore", **kw) -> Catalogue:
 
 
 def apply_m_bias(cat: Catalogue, m_bias=None, source: str = "auto") -> np.ndarray:
-    """Return the per-bin multiplicative-bias vector handed to ``make_alm_shear_convergence``.
-    DEFERRED (user, 2026-09-08): only the plumbing exists.
+    """Return the per-bin multiplicative-bias vector handed to ``make_alm_shear_convergence``,
+    whose estimator divides the shears by ``(1 + m)`` (``map_shears.py``).
 
-    source='auto'   a sim catalogue's realised ``m_bias_for_shear`` attr if present, else the
-                    fiducial KiDS-Legacy vector ``src.KiDS.systematics.m_bias``;
-    source='given'  use ``m_bias`` verbatim; source='zero' -> no de-bias.
+    USER DECISION (2026-09-08, afternoon): the real shear catalogue arrives ALREADY m- and
+    c-corrected -- that correction step is what the forward model simulates -- so the estimator
+    must not de-bias it again: a real catalogue gets ``m = 0``. A SIM catalogue (mock-as-real) is
+    the raw product of the simulator and is processed exactly as the master does it, with its
+    realised ``m_bias_for_shear`` (this is what the bit-identity gate reproduces).
+
+    source='auto'   sim catalogue -> its ``m_bias_for_shear``; anything else -> zeros;
+    source='given'  use ``m_bias`` verbatim; source='zero' -> zeros;
+    source='fiducial' -> ``src.KiDS.systematics.m_bias`` (only for a catalogue that is NOT corrected).
     """
     nbins = int(cat.provenance.get("nbins", 6))
     if source == "given":
@@ -219,8 +225,10 @@ def apply_m_bias(cat: Catalogue, m_bias=None, source: str = "auto") -> np.ndarra
         if "m_bias_for_shear" in attrs:
             m = np.asarray(attrs["m_bias_for_shear"], dtype=float)
         else:
-            from src.KiDS.systematics import m_bias as _fid
-            m = np.asarray(_fid, dtype=float)
+            m = np.zeros(nbins)            # real catalogue: already m-corrected (user, 2026-09-08)
+    elif source == "fiducial":
+        from src.KiDS.systematics import m_bias as _fid
+        m = np.asarray(_fid, dtype=float)
     else:
         raise ValueError(source)
     if m.ndim == 0:
@@ -231,11 +239,12 @@ def apply_m_bias(cat: Catalogue, m_bias=None, source: str = "auto") -> np.ndarra
 
 
 def apply_c_terms(cat: Catalogue, mode: str = "global_mean_only", **kw) -> Catalogue:
-    """Additive c-term treatment. DEFERRED (user, 2026-09-08).
+    """Additive c-term treatment.
 
-    mode='global_mean_only' (default): rely on the production estimator's GLOBAL per-tomo-bin mean
-    subtraction inside ``make_alm_shear_convergence`` (the sims inject per-N/S c-terms and are
-    processed the same way). Future modes (per-patch, per-bin c-map) plug in HERE.
+    USER DECISION (2026-09-08, afternoon): the real catalogue arrives c-corrected; nothing is
+    applied here. mode='global_mean_only' (default) only RECORDS the per-bin means that the
+    production estimator subtracts anyway inside ``make_alm_shear_convergence`` (identically for
+    the mocks, which inject per-N/S c-terms). Future modes (per-patch, per-bin c-map) plug in HERE.
     """
     if mode != "global_mean_only":
         raise NotImplementedError(f"apply_c_terms mode {mode!r} is not implemented yet (deferred)")

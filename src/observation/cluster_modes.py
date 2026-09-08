@@ -85,7 +85,7 @@ def add_observe_args(parser) -> None:
     g.add_argument("--exact-rng", action="store_true")
     g.add_argument("--jitter-floor", action="store_true")
     g.add_argument("--rng-seed", type=int, default=20260908)
-    g.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero"])
+    g.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero", "fiducial"])
 
 
 

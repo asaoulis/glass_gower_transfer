@@ -44,7 +44,7 @@ def main(argv=None):
     ap.add_argument("--geometry", default="auto", choices=["auto", "production", "smoke"],
                     help="auto = from a sim catalogue's attrs, else production")
     ap.add_argument("--variants", default="production", choices=["production", "full", "a1only"])
-    ap.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero"])
+    ap.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero", "fiducial"])
     ap.add_argument("--m-bias", default=None, help="comma-separated per-bin m (with --m-bias-source given)")
     ap.add_argument("--weights-mode", default="ignore")
     ap.add_argument("--c-terms-mode", default="global_mean_only")
