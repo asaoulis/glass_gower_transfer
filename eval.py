@@ -196,7 +196,8 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
     parser.add_argument("--mode",
-                        choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers"],
+                        choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
+                                 "observe-build"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -286,9 +287,15 @@ def main(argv=None):
     parser.add_argument("--ood-k", type=int, default=10, help="summaries mode: kNN k for the OOD scores")
     parser.add_argument("--ood-n-perm", type=int, default=200,
                         help="summaries mode: permutations for the MMD two-sample p-value")
+    # Unblinding front end (src/observation): catalogue -> observation -> baked per-arm stores.
+    from src.observation.cluster_modes import add_observe_args
+    add_observe_args(parser)
     args = parser.parse_args(argv)
 
     mode = args.mode or DEFAULT_MODE
+    if mode == "observe-build":
+        from src.observation.cluster_modes import run_observe_build
+        return run_observe_build(args)
     if mode == "ebdiff":
         # Difference-map forensics on the paired b_g stores: no model, no training. Decides
         # whether the surviving b_g channel is signal-sector (red, coherent with the map) or
