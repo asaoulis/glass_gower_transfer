@@ -197,7 +197,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
     parser.add_argument("--mode",
                         choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
-                                 "observe-build", "obs-reference", "obs-score"],
+                                 "observe-build", "observe-strip", "obs-reference", "obs-score"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -290,8 +290,10 @@ def main(argv=None):
     # Unblinding front end (src/observation): catalogue -> observation -> baked per-arm stores.
     # Fail-soft: a bug in the (independent) observation package must never break the other modes.
     try:
-        from src.observation.cluster_modes import add_observe_args, add_reference_args, add_score_args
+        from src.observation.cluster_modes import (add_observe_args, add_reference_args, add_score_args,
+                                                   add_strip_args)
         add_observe_args(parser)
+        add_strip_args(parser)
         add_reference_args(parser)
         add_score_args(parser)
     except Exception as _ex:  # pragma: no cover
@@ -302,6 +304,9 @@ def main(argv=None):
     if mode == "observe-build":
         from src.observation.cluster_modes import run_observe_build
         return run_observe_build(args)
+    if mode == "observe-strip":
+        from src.observation.cluster_modes import run_obs_strip
+        return run_obs_strip(args)
     if mode == "obs-reference":
         from src.observation.cluster_modes import run_obs_reference
         return run_obs_reference(args)
