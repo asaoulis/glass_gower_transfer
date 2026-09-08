@@ -155,6 +155,7 @@ def make_alm_shear_convergence(
     n_arcmin2=None,
     smoothed_counts_fwhm_arcmin=None,
     rng=None,
+    weights=None,
 ):
     """Compute spin-2 shear alms (E/B) per tomographic bin.
 
@@ -187,6 +188,10 @@ def make_alm_shear_convergence(
       effective pixel count when `normalization="mean"`.
     - If you pass `rng` (np.random.Generator), it is used for the random
       rotations; otherwise, the global `np.random` is used.
+    - `weights` (optional, len == len(catalogue)): per-galaxy weights w_g. The numerator becomes
+      sum_p w (e - <e>_w,i) and the count map sum_p w (float), so every normalization mode is the
+      weighted estimator of .claude/plans/shear_normalisation_spec.md §1. `weights=None` takes
+      exactly the historical path (int counts, unweighted mean) and is bit-identical to before.
     """
 
     if return_shear:
@@ -258,7 +263,8 @@ def make_alm_shear_convergence(
 
     for i in range(nbins):
         shear = np.zeros(hp.nside2npix(nside), dtype=complex)
-        counts = np.zeros(hp.nside2npix(nside), dtype=int)
+        # a float count map once weights are in play (int would truncate sum w silently)
+        counts = np.zeros(hp.nside2npix(nside), dtype=(np.float64 if weights is not None else int))
         in_bin = catalogue["ZBIN"] == i
 
         if not np.any(in_bin):
@@ -270,7 +276,17 @@ def make_alm_shear_convergence(
 
         e1 = catalogue["E1"][in_bin]
         e2 = catalogue["E2"][in_bin]
-        she = (1.0 / (1.0 + m_bias[i])) * ((e1 - np.mean(e1)) + 1j * (e2 - np.mean(e2)))
+        if weights is None:
+            w = None
+            she = (1.0 / (1.0 + m_bias[i])) * ((e1 - np.mean(e1)) + 1j * (e2 - np.mean(e2)))
+        else:
+            # weighted per-bin mean subtraction + weighted numerator; _map_shears_weights
+            # accumulates she_map += s and wht_map += w, i.e. S_p = sum w (e - <e>_w) and D_p = sum w
+            w = np.asarray(weights, dtype=float)[in_bin]
+            sw = w.sum()
+            e1b = (w * e1).sum() / sw
+            e2b = (w * e2).sum() / sw
+            she = (1.0 / (1.0 + m_bias[i])) * w * ((e1 - e1b) + 1j * (e2 - e2b))
 
         map_shears(
             shear,
@@ -278,7 +294,7 @@ def make_alm_shear_convergence(
             catalogue["RA"][in_bin],
             catalogue["DEC"][in_bin],
             she,
-            gal_wht=None,
+            gal_wht=w,
         )
 
         _apply_normalization(shear, counts, i)
@@ -293,14 +309,14 @@ def make_alm_shear_convergence(
         e2_corr = she.imag * np.cos(rand_theta) + she.real * np.sin(rand_theta)
 
         rand = np.zeros(hp.nside2npix(nside), dtype=complex)
-        rand_counts = np.zeros_like(rand, dtype=int)
+        rand_counts = np.zeros_like(rand, dtype=(np.float64 if weights is not None else int))
         map_shears(
             rand,
             rand_counts,
             catalogue["RA"][in_bin],
             catalogue["DEC"][in_bin],
-            e1_corr + 1j * e2_corr,
-            gal_wht=None,
+            e1_corr + 1j * e2_corr,     # rotation commutes with the scalar w already in she
+            gal_wht=w,
         )
 
         _apply_normalization(rand, rand_counts, i)

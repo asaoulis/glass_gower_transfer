@@ -13,6 +13,7 @@ Gates (named as in .claude/plans/shear_normalisation_spec.md §6):
   2  weighted no-op: weights = ones(n) must match gate 1 to float tolerance   [needs the patch]
   3  scale invariance: weights = alpha*w for alpha in {1e-3, 1e3}, identical  [needs the patch]
   4  Eq.-11 identity: wraps .claude/plans/verify_shear_normalisation.py
+  4b weights= path: weighted mean/counts maps vs analytic S_p/W_i, S_p/D_p; ones == None
   5  W_i check: N_eff/N_pix per bin vs [15.002, 13.981, 12.693, 12.357, 11.402, 9.054]
      (real catalogue only; also prints n_eff/arcmin^2 vs src/KiDS/tomo.py)
 Gates 2-3 report SKIPPED (with the reason) until `make_alm_shear_convergence` accepts `weights=`.
@@ -187,6 +188,45 @@ def gate4() -> bool:
     return r.returncode == 0
 
 
+def gate4b() -> bool:
+    """Direct check of the estimator's weights= path (once patched): weighted 'mean' and 'counts'
+    maps vs the analytic S_p / W_i and S_p / D_p of spec §1, and weights=None == weights=ones."""
+    if not estimator_accepts_weights():
+        print("  [4b] SKIPPED: estimator has no weights=")
+        return True
+    import healpy as hp
+    sys.path.insert(0, str(REPO / ".claude/plans"))
+    from verify_shear_normalisation import synthetic, analytic_mean_norm, NBINS, NSIDE, M_BIAS
+    from src.cosmology.map_shears import make_alm_shear_convergence
+    cat, w, mask = synthetic()
+    kw = dict(mask=mask, return_shear=True)
+    ref_mean = analytic_mean_norm(cat, w, M_BIAS, float(mask.sum()))
+    got_mean = make_alm_shear_convergence(cat, M_BIAS, NBINS, NSIDE, 2 * NSIDE, normalization="mean",
+                                          rng=np.random.default_rng(1), weights=w, **kw)[2]
+    got_cnt = make_alm_shear_convergence(cat, M_BIAS, NBINS, NSIDE, 2 * NSIDE, normalization="counts",
+                                         rng=np.random.default_rng(1), weights=w, **kw)[2]
+    ok = True
+    for i in range(NBINS):
+        sel = cat["ZBIN"] == i
+        e = cat["E1"][sel] + 1j * cat["E2"][sel]; ww = w[sel]
+        ebar = (ww * e).sum() / ww.sum()
+        pix = hp.ang2pix(NSIDE, cat["RA"][sel], cat["DEC"][sel], lonlat=True)
+        S = np.zeros(hp.nside2npix(NSIDE), complex); D = np.zeros(hp.nside2npix(NSIDE))
+        np.add.at(S, pix, ww * (e - ebar)); np.add.at(D, pix, ww)
+        ref_cnt = np.zeros_like(S); v = D > 0; ref_cnt[v] = S[v] / D[v] / (1 + M_BIAS[i])
+        r1 = np.abs(got_mean[i] - ref_mean[i]).max() / np.abs(ref_mean[i]).max()
+        r2 = np.abs(got_cnt[i] - ref_cnt).max() / np.abs(ref_cnt).max()
+        ok &= r1 < 1e-12 and r2 < 1e-12
+        print(f"  [4b] bin {i}: weights= mean-norm vs S_p/W_i {r1:.1e}; counts-norm vs S_p/D_p {r2:.1e}")
+    un = make_alm_shear_convergence(cat, M_BIAS, NBINS, NSIDE, 2 * NSIDE, normalization="counts",
+                                    rng=np.random.default_rng(1), **kw)[2]
+    on = make_alm_shear_convergence(cat, M_BIAS, NBINS, NSIDE, 2 * NSIDE, normalization="counts",
+                                    rng=np.random.default_rng(1), weights=np.ones(len(cat)), **kw)[2]
+    d = max(np.abs(un[i] - on[i]).max() / np.abs(un[i]).max() for i in range(NBINS))
+    print(f"  [4b] weights=None vs weights=ones: {d:.1e}")
+    return ok and d < 1e-12
+
+
 def gate5(real: str, column_map: str) -> bool:
     cm = json.load(open(column_map)) if column_map else None
     cat = load_catalogue(real, column_map=cm, kind="auto")
@@ -219,6 +259,7 @@ def main(argv=None):
     print("gate 1 (bit-identity, weights=None)"); results["1"], ref, cat, m = gate1(a.fixture, tmp, a.reference_json)
     print("gates 2-3 (weighted no-op, scale invariance)"); results["2-3"] = gate2_3(cat, m, ref, tmp)
     print("gate 4 (Eq. 11 identity)"); results["4"] = gate4()
+    print("gate 4b (weights= path vs analytic weighted maps)"); results["4b"] = gate4b()
     if a.real_catalogue:
         print("gate 5 (W_i / n_eff on the real catalogue)"); results["5"] = gate5(a.real_catalogue, a.column_map)
     print("\n" + "  ".join(f"gate {k}: {'PASS' if v else 'FAIL'}" for k, v in results.items()))
