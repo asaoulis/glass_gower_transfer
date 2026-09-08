@@ -129,11 +129,14 @@ display(Markdown(f"**Tier-1a** kNN p = {tp['knn']['p'][0]:.3f}, Mahalanobis p = 
 
 md("## 4. B-mode null test")
 code(r"""
-bm = t1["bmodes"]
-display(Markdown(f"**Tier-1b** χ² vs mock-B mean = {bm['chi2_vs_mockmean'][0]:.1f} (dim {bm['dim']}; null median {bm['null_chi2_median']:.1f}) → "
+bm = t1.get("bmodes")
+if bm is None:
+    display(Markdown("_no B-mode block in the Tier-1 results (reference cloud built without the raw store): section skipped_"))
+else:
+  display(Markdown(f"**Tier-1b** χ² vs mock-B mean = {bm['chi2_vs_mockmean'][0]:.1f} (dim {bm['dim']}; null median {bm['null_chi2_median']:.1f}) → "
                  f"**PTE = {bm['pte_empirical'][0]:.3f}** (empirical); vs zero: PTE = {bm['pte_vs_zero_empirical'][0]:.3f}; "
                  f"per-auto PTEs: " + ", ".join(f"{a['spectrum']}: {a['pte_empirical'][0]:.2f}" for a in bm['per_auto'])))
-display(Image(os.path.join(TIER1_DIR, "tier1_bmode_residuals.png")))
+  display(Image(os.path.join(TIER1_DIR, "tier1_bmode_residuals.png")))
 """)
 
 md("## 5. Map statistics (peaks, voids, one-point PDF, radial power) vs the mock cloud")
