@@ -1969,28 +1969,70 @@ for _r in range(5):
 # VERIFY Stage-B: `[whiten] Reusing existing (fit-once) whitener k=4` and a guard-c gap under 22.
 # =============================================================================================
 _BAND_NLE_REPEATS = (0, 1, 2, 3, 4)     # the band exposes pretrain_ncosmoNone_0..6; take the first 5
-_BAND_NLE_WHITEN_K = 4
 _BAND_NLE_SOURCE = "kids_legacy_band_nla_m_bgp"
 
-for _r in _BAND_NLE_REPEATS:
-    _pre_band = _nle_pretrain_bgp(_BGP_A1, _r)
-    _pre_band["whiten_embeddings"] = {"k": _BAND_NLE_WHITEN_K}
-    kids_legacy_bgp_experiments[f"glass_nle_pretrain_band_nla_m_bgp_k4_r{_r}"] = _pre_band
 
-    _ft_band = _nle_finetune(f"glass_nle_pretrain_band_nla_m_bgp_k4_r{_r}", ensemble_repeats=9,
-                             whiten_k=_BAND_NLE_WHITEN_K, warmstart_max_gap_nats=22.0,
-                             gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
-    _ft_band["max_trainval_cosmos"] = [300]
-    _ft_band["train_frac"] = 0.8
-    _ft_band["val_frac"] = 0.2
-    _ft_band["test_frac"] = 0.0       # test = the fixed 200 ids; fracs must sum to 1.0
-    _ft_band["fixed_test_sim_ids"] = _GOWER_TEST_IDS
-    _ft_band["epochs"] = 150
-    _ft_band["project"] = _BGP_NLE_PROJECT
-    kids_legacy_bgp_experiments[f"gower_nle_finetune_band_nla_m_bgp_k4_r{_r}_ens9_e150"] = \
-        _nle_bake_repeat(_ft_band, _r)
+def _register_band_nle_chain(k):
+    """Register the Stage-A + Stage-B rows of the 2-pt band NLE chain at one whitening k.
 
-    # The eval site resolves a Stage-B row's frozen source encoder from these tables, never by
-    # guesswork (the `e890aec` bug class). Register both halves of this chain.
-    FLAGSHIP_NLE_SOURCES[f"glass_nle_pretrain_band_nla_m_bgp_k4_r{_r}"] = _BAND_NLE_SOURCE
-    FLAGSHIP_NLE_SOURCES[f"gower_nle_finetune_band_nla_m_bgp_k4_r{_r}_ens9_e150"] = _BAND_NLE_SOURCE
+    k is IN THE EXPERIMENT NAME by construction. That is mandatory, not cosmetic: `whiten_k` sets
+    the flow's event dim, `fit_and_persist_whitener` is FIT-ONCE per run folder, and the embedding
+    cache is keyed by run name — so two k values sharing a name would silently reuse the wrong
+    whitener and let `get_best_checkpoint` resolve a shape-mismatched flow.
+    """
+    for _r in _BAND_NLE_REPEATS:
+        pre_name = f"glass_nle_pretrain_band_nla_m_bgp_k{k}_r{_r}"
+        ft_name = f"gower_nle_finetune_band_nla_m_bgp_k{k}_r{_r}_ens9_e150"
+
+        pre = _nle_pretrain_bgp(_BGP_A1, _r)
+        pre["whiten_embeddings"] = {"k": int(k)}
+        kids_legacy_bgp_experiments[pre_name] = pre
+
+        ft = _nle_finetune(pre_name, ensemble_repeats=9, whiten_k=int(k),
+                           warmstart_max_gap_nats=22.0,
+                           gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
+        ft["max_trainval_cosmos"] = [300]
+        ft["train_frac"] = 0.8
+        ft["val_frac"] = 0.2
+        ft["test_frac"] = 0.0         # test = the fixed 200 ids; fracs must sum to 1.0
+        ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+        ft["epochs"] = 150
+        ft["project"] = _BGP_NLE_PROJECT
+        kids_legacy_bgp_experiments[ft_name] = _nle_bake_repeat(ft, _r)
+
+        # The eval site resolves a Stage-B row's frozen source encoder from these tables, never by
+        # guesswork (the `e890aec` bug class). Register both halves of this chain.
+        FLAGSHIP_NLE_SOURCES[pre_name] = _BAND_NLE_SOURCE
+        FLAGSHIP_NLE_SOURCES[ft_name] = _BAND_NLE_SOURCE
+
+
+# ⭐⭐ **k=8 IS THE PRODUCTION ARM; k=4 IS A SUPERSEDED CONTROL. MEASURED 2026-09-08 23:20Z.**
+# The k=4 gate FAILED on the band's own spectrum. Stage-A r0 (job 1359082) printed
+#     [whiten] explained-variance ratio (top-k): [0.5886, 0.2736, 0.1035, 0.0204]
+# which SUMS TO 0.9861 — k=4 discards **1.39 %** of the variance, against the >= 99.9 % acceptance
+# threshold. For calibration against the one place truncation cost was ever MEASURED end-to-end
+# (`../bgp-nle-whitening-dim/artifacts/KSWEEP_REPORT.md`): on the p15 hybrid summary k=4 retained
+# **99.27 %** of the variance and still cost **21.6 % of FoM(omega_m, sigma_8)**. So 1.39 % lost
+# here is roughly TWICE that row's loss, and variance retention is known to badly UNDERSTATE the
+# FoM cost — truncation is cheap in variance and expensive in cosmology.
+#
+# ⇒ k=8 = PURE-WHITEN, no truncation. Three reasons it is the right arm and not merely the safe one:
+#   1. It is provably information-LOSSLESS — at full rank the whitener is an invertible affine map,
+#      and KSWEEP's invariance control measured the round trip at 0.003 nats.
+#   2. It is EXACTLY what the flagship map chain (`gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9`) uses,
+#      so 2-pt-vs-maps stays single-variable — which is this row's entire purpose. Truncating only
+#      the 2-pt arm would handicap it for reasons unrelated to the physics being compared.
+#   3. The reason to truncate AT ALL (near-null PCs divide the GLASS->Gower shift by a tiny
+#      sqrt-eigenvalue and blow the guard-c warm-start gap) is far weaker here than on the `nla`
+#      chain that needed k=5: nla's PCs 5-8 held 0.21 % of the variance with a 1.16e-5 minimum
+#      (max/min scale spread 264); the band's tail holds 1.39 % over four PCs, ~0.35 % each. The
+#      flagship itself ran k=8 at a 264-vs-79.5-times-gentler spectrum and was healthy.
+# The k=8 Stage-A ALSO doubles as the spectrum probe: `WhitenPCAScaler` prints the top-k ratios, so
+# at k=8 the log carries all EIGHT eigenvalues. If that tail turns out pathological after all, drop
+# to the smallest k that removes it — BEFORE Stage-B, which is where guard-c actually bites.
+#
+# k=4 is KEPT REGISTERED (r0's Stage-A was allowed to finish) so the truncation cost can be measured
+# DOWNSTREAM on this arm if wanted — the KSWEEP number is a hybrid-summary result, not a 2-pt one.
+_BAND_NLE_WHITEN_K = 8              # the production arm
+_register_band_nle_chain(4)         # superseded control (EVR sum 0.9861)
+_register_band_nle_chain(_BAND_NLE_WHITEN_K)
