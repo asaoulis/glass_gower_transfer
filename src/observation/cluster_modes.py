@@ -14,7 +14,8 @@ Mode ``observe-build``
     --catalogue-store NAME [--catalogue-root gpu4|gpu5] (--catalogue-index N | --catalogue-file BASENAME)
     --obs-label L --obs-store NAME [--bake-arms sc8a1 a1] [--variants production|full]
     [--fidelity] [--exact-rng] [--jitter-floor] [--rng-seed N] [--column-map BASENAME] [--kind auto|sim|h5|fits]
-  Builds  MODELS_ROOT/unblinding/<obs-store>/observation_<L>.h5 (+ provenance, fidelity JSON) and
+  Builds  MODELS_ROOT/checkpoints/unblinding/<obs-store>/observation_<L>.h5 (+ provenance, fidelity JSON;
+          under checkpoints/ so `run_remote.py fetch --exp unblinding --rel <obs-store>` can pull it) and
   bakes   DATASETS_ROOT/<obs-store>_<arm>/output_<id>_out0_rot0_0.h5 for each arm, so a sampling job
   can use ``--data-store <obs-store>_<arm> --data-tag <L>``.
   With --fidelity the sibling ``output_*.h5`` of a SIM catalogue (same store, same block name) is the
@@ -48,6 +49,12 @@ def models_root() -> str:
         return env
     from config.default import get_default_config
     return get_default_config().base_path
+
+
+def unblinding_root() -> Path:
+    """MODELS_ROOT/checkpoints/unblinding -- the fetchable home of every non-blind unblinding
+    artefact (`fetch --exp unblinding --rel <subdir>`)."""
+    return Path(models_root()) / "checkpoints" / "unblinding"
 
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
@@ -98,7 +105,7 @@ def run_obs_reference(args) -> int:
     import json
     from .reference import extract_reference
     out_name = _bare(args.ref_out, "--ref-out")
-    out_dir = Path(models_root()) / "unblinding" / "reference" / out_name
+    out_dir = unblinding_root() / "reference" / out_name
     out_dir.mkdir(parents=True, exist_ok=True)
     summary = {}
     if args.ref_store:
@@ -204,7 +211,7 @@ def run_obs_score(args) -> int:
             out["kl"] = float(d["kl_score"][0])
     out["notes"].append("posterior moments/samples and summary vectors live under "
                         f"checkpoints/{base}/{blind_root}/ (BLIND); this file carries scalars only")
-    res_dir = Path(models_root()) / "unblinding" / store
+    res_dir = unblinding_root() / store
     res_dir.mkdir(parents=True, exist_ok=True)
     with open(res_dir / f"obs_score_{label}.json", "w") as fh:
         json.dump(out, fh, indent=2)
@@ -270,7 +277,7 @@ def run_observe_build(args) -> int:
             return r
         return np.random.default_rng(int(args.rng_seed))
 
-    out_dir = Path(models_root()) / "unblinding" / obs_store
+    out_dir = unblinding_root() / obs_store
     out_dir.mkdir(parents=True, exist_ok=True)
     obs = build_observation(cat, m_bias, out_path=str(out_dir / f"observation_{label}.h5"), label=label,
                             geometry=geometry, variants=variants, rng_seed=args.rng_seed, rng=rng_factory(),
