@@ -69,27 +69,36 @@ import matplotlib.pyplot as plt
 from IPython.display import Image, display, Markdown
 plt.rcParams.update({"font.size": 11})
 obs_h5 = os.path.join(OBS_DIR, f"observation_{LABEL}.h5")
+if not os.path.exists(obs_h5):      # a stripped-mock control (eval --mode observe-strip) has only the baked copy
+    obs_h5 = os.path.join(OBS_DIR, f"observation_{LABEL}_baked.h5")
 assert os.path.exists(obs_h5), obs_h5
 """)
 
 md("## 1. Provenance and configuration")
 code(r"""
 prov = json.load(open(os.path.join(OBS_DIR, f"observation_{LABEL}_provenance.json")))
-cat_prov = json.loads(prov["catalogue_provenance"])
-display(Markdown(f"**label** `{prov['label']}` · built {prov['built_utc']} · git `{prov['git_rev'][:10]}` · "
-                 f"n_gal = {prov['n_gal']:,} · counts/bin = {prov['counts_per_bin']}"))
-display(Markdown("**geometry** `" + prov["geometry"] + "`"))
-display(Markdown("**variants** `" + prov["variants"] + "`"))
-display(Markdown("**catalogue source** `" + json.dumps(cat_prov.get("source", {})) + "`"))
-display(Markdown("**treatment (deferred hooks)** `" + json.dumps(cat_prov.get("treatment", {})) + "`"))
-display(Markdown("**m-bias used** `" + str(prov["m_bias_used"]) + "`"))
+STRIPPED = prov.get("kind") == "stripped_mock"        # no catalogue behind it: sections 1-2 degrade
+cat_prov = json.loads(prov["catalogue_provenance"]) if "catalogue_provenance" in prov else {}
+if STRIPPED:
+    display(Markdown(f"**label** `{prov['label']}` · **stripped mock control** (arm `{prov['arm']}`, "
+                     f"source store `{prov['source_store']}`, git `{prov['git_rev'][:10]}`) — no catalogue provenance"))
+else:
+    display(Markdown(f"**label** `{prov['label']}` · built {prov['built_utc']} · git `{prov['git_rev'][:10]}` · "
+                     f"n_gal = {prov['n_gal']:,} · counts/bin = {prov['counts_per_bin']}"))
+    display(Markdown("**geometry** `" + prov["geometry"] + "`"))
+    display(Markdown("**variants** `" + prov["variants"] + "`"))
+    display(Markdown("**catalogue source** `" + json.dumps(cat_prov.get("source", {})) + "`"))
+    display(Markdown("**treatment (deferred hooks)** `" + json.dumps(cat_prov.get("treatment", {})) + "`"))
+    display(Markdown("**m-bias used** `" + str(prov["m_bias_used"]) + "`"))
 stores = json.load(open(os.path.join(OBS_DIR, f"observation_{LABEL}_stores.json")))
 display(Markdown("**baked stores** `" + json.dumps(stores.get("data_store_names", {})) + "`"))
 """)
 
 md("## 2. Catalogue-level summaries")
 code(r"""
-counts = json.loads(prov["counts_per_bin"])
+counts = json.loads(prov["counts_per_bin"]) if "counts_per_bin" in prov else []
+if not counts:
+    display(Markdown("_no catalogue behind this label (stripped mock): catalogue-level summaries skipped_"))
 fig, ax = plt.subplots(1, 2, figsize=(10, 3.2))
 ax[0].bar(range(1, len(counts) + 1), counts); ax[0].set_xlabel("tomographic bin"); ax[0].set_ylabel("galaxies"); ax[0].set_title("counts per bin")
 ct = cat_prov.get("treatment", {}).get("c_terms", {}).get("per_bin_mean_e1_e2_removed_by_estimator")
