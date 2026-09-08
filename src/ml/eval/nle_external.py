@@ -99,7 +99,12 @@ def build_prior_for_mode(prior_mode: str, param_names, *, preset_overrides=None)
 # so a cluster caller can only pass names; the name -> glob mapping has to live in code).
 # --------------------------------------------------------------------------------------------
 def store_glob(name: str) -> str:
-    """A gpu5 store basename -> its output glob."""
+    """A store basename -> its output glob: gpu5 first, then the gpu4 datasets root (the matched
+    near-fiducial stores `gower_match_*_bgp` live there)."""
+    import os as _os
+    for root in (_GPU5, _GPU5.replace("/share/gpu5/", "/share/gpu4/")):
+        if _os.path.isdir(_os.path.join(root, name)):
+            return f"{root}/{name}/output_*.h5"
     return f"{_GPU5}/{name}/output_*.h5"
 
 
