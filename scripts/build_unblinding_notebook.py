@@ -63,7 +63,9 @@ FLAGSHIP_EXPERIMENT = "gower_nle_finetune_nla_m_bgp_z8_r0_ens9"
 UNBLIND = False                               # <- the gate. Flip by hand, once, after sign-off.
 
 import os, sys, json, glob
-sys.path.insert(0, os.path.abspath(".")) if os.path.exists("src") else sys.path.insert(0, os.path.abspath(".."))
+if not os.path.exists("src") and os.path.exists(os.path.join("..", "src")):
+    os.chdir("..")                     # nbconvert/jupyter start the kernel in notebooks/; every relative path is repo-rooted
+sys.path.insert(0, os.path.abspath("."))
 import numpy as np, h5py
 import matplotlib.pyplot as plt
 from IPython.display import Image, display, Markdown
