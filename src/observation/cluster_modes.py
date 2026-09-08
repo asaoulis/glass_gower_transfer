@@ -178,7 +178,10 @@ def run_obs_strip(args) -> int:
                                os.path.basename(src))
             with h5py.File(raw, "r") as fr:
                 cls = np.asarray(fr["cls_results/full/cls"])          # (nbins, nbins, >=2, n_ell)
+                bls = np.asarray(fr["cls_results/full/bandpower_ls"]) if "bandpower_ls" in fr["cls_results/full"] else None
             cr = fo.require_group("cls_results/full")
+            if bls is not None and "bandpower_ls" not in cr:
+                cr.create_dataset("bandpower_ls", data=bls)            # the bake drops it; Tier-1/notebook want it
             if "cls" in cr:
                 del cr["cls"]
             cr.create_dataset("cls", data=cls[:, :, :2])

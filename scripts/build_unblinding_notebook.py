@@ -114,12 +114,14 @@ md("## 3. Two-point statistics (EE bandpowers) with the nla_m mock cloud")
 code(r"""
 t1 = json.load(open(os.path.join(TIER1_DIR, "tier1_results.json")))
 with h5py.File(obs_h5) as f:
-    bp = f["cls_results/full/mixed_bandpowers"][()]; ells = f["cls_results/full/bandpower_ls"][()]
+    bp = f["cls_results/full/mixed_bandpowers"][()]
+    # a baked store (stripped-mock control) carries no bandpower_ls: fall back to the band index
+    ells = f["cls_results/full/bandpower_ls"][()] if "bandpower_ls" in f["cls_results/full"] else np.arange(1, bp.shape[-1] + 1)
     bb = f["cls_results/full/bb_bandpowers"][()] if "bb_bandpowers" in f["cls_results/full"] else None
 labs = t1["twopoint"]["spectrum_labels"]; z = np.asarray(t1["twopoint"]["robust_z"])[0]
 fig, axes = plt.subplots(3, 7, figsize=(19, 7.5))
 for s, ax in enumerate(axes.ravel()):
-    ax.loglog(ells, np.abs(bp[s]), "o-", ms=3, lw=1, color="k")
+    (ax.loglog if ells.max() > 20 else ax.semilogy)(ells, np.abs(bp[s]), "o-", ms=3, lw=1, color="k")
     ax.set_title(f"EE {labs[s]}", fontsize=9); ax.set_xlabel(r"$\ell$", fontsize=8)
     ax.text(0.03, 0.05, "z: " + " ".join(f"{v:+.1f}" for v in z[s]), transform=ax.transAxes, fontsize=6)
 fig.suptitle(f"label {LABEL}: EE bandpowers (|C_b|; robust z vs the mock cloud per band in each panel)"); plt.tight_layout(); plt.show()
@@ -254,9 +256,24 @@ else:
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--out", default=str(REPO / "notebooks" / "kids_unblinding.ipynb"))
+    ap.add_argument("--label", default=None, help="pre-fill LABEL in the parameters cell (default T)")
+    ap.add_argument("--obs-dir", default=None, help="pre-fill OBS_DIR (the fetched checkpoints/unblinding/<obs-store>)")
     args = ap.parse_args(argv)
+    cells = list(CELLS)
+    if args.label or args.obs_dir:
+        # the parameters cell is the first code cell; rewrite its two assignments only
+        for i, c in enumerate(cells):
+            if c["cell_type"] == "code" and "LABEL = " in c["source"]:
+                src = c["source"]
+                if args.label:
+                    src = src.replace('LABEL = "T"', f'LABEL = "{args.label}"', 1)
+                if args.obs_dir:
+                    src = src.replace('OBS_DIR = "/data/alex/unblinding/cluster_fetch/obs_gate0b"',
+                                      f'OBS_DIR = "{args.obs_dir}"', 1)
+                cells[i] = nbf.v4.new_code_cell(src)
+                break
     nb = nbf.v4.new_notebook()
-    nb["cells"] = CELLS
+    nb["cells"] = cells
     nb["metadata"]["kernelspec"] = {"name": "python3", "display_name": "Python 3", "language": "python"}
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     nbf.write(nb, args.out)
