@@ -379,10 +379,33 @@ def run_external_nle_eval(
         from .evaluate_models import run_evaluation_on_samples
         try:
             prior, _fx = build_prior_for_mode(prior_mode, p.param_names)
+            score_theta0s, score_scaler = theta0s, p.scalers["cosmo"]
+            if _fx:
+                # A pinning mode samples only the free dimensions, so `samples` is D-1 wide while
+                # `theta0s` is D: scoring them against the full cosmo scaler broadcast-errors and
+                # (before 2026-09-08) silently lost every LCDM_fixed_w0 metrics json. Restrict both
+                # truth and scaler to the free columns. The prior is dropped rather than
+                # conditioned: `build_prior_for_mode` returns the FULL-dimensional object, and a
+                # prior of the wrong dimension would produce plausible, wrong shrinkage numbers.
+                from ..embeddings.embeddings_utils import (COSMO_PARAM_PRESET_MINMAX,
+                                                           _build_cosmo_preset_scaler)
+                from .utils import _config_preset_overrides
+                free = free_param_names(prior_mode, p.param_names)
+                keep = [p.param_names.index(n) for n in free]
+                try:
+                    preset = {**COSMO_PARAM_PRESET_MINMAX, **(_config_preset_overrides(p.config) or {})}
+                except Exception:
+                    preset = COSMO_PARAM_PRESET_MINMAX
+                score_scaler = _build_cosmo_preset_scaler(preset, free)
+                score_theta0s = theta0s[..., keep]
+                prior = None
+                print(f"[nle-external] metrics on the {len(free)} free parameters "
+                      f"(pinned: {sorted(set(p.param_names) - set(free))}); prior-dependent "
+                      f"metrics skipped", flush=True)
             # NB argument order is (theta0s, samples, param_scaler) — the scaler carries
             # `.parameter_names`, so the cosmo scaler is what run_evaluation_on_samples wants.
             metrics = run_evaluation_on_samples(
-                theta0s, samples, p.scalers["cosmo"], prior=prior, compute_calibration=False,
+                score_theta0s, samples, score_scaler, prior=prior, compute_calibration=False,
             )
             mpath = os.path.join(out, f"external_evaluation_results_{prior_mode}_{p.match_string}.json")
             with open(mpath, "w") as fh:
