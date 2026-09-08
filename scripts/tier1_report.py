@@ -95,7 +95,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--ref-baked", default=None)
     ap.add_argument("--ref-raw", default=None)
-    ap.add_argument("--obs", nargs="+", required=True, metavar="LABEL=PATH")
+    ap.add_argument("--obs", nargs="*", default=[], metavar="LABEL=PATH", help="required unless --power-only")
     ap.add_argument("--obs-eb-variant", default=None, help="E group variant if the obs files are RAW (not baked)")
     ap.add_argument("--obs-noise-norm", default="rand")
     ap.add_argument("--exclude-truthkey", nargs="*", default=[],
@@ -103,6 +103,9 @@ def main(argv=None):
     ap.add_argument("--power", nargs="*", default=[], metavar="NAME=REF_BAKED_NPZ",
                     help="known-OOD reference clouds: AUROC of every Tier-1 statistic vs the ID null is added to "
                          "tier1_results.json['power'] (the GATE-1 power measurement)")
+    ap.add_argument("--power-only", action="store_true",
+                    help="recompute ONLY the power block (needs --ref-baked and --power) and splice it into an "
+                         "existing <out-dir>/tier1_results.json; the observation tests are left untouched")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--alpha", type=float, default=0.01)
     ap.add_argument("--seed", type=int, default=0)
@@ -113,6 +116,26 @@ def main(argv=None):
 
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    if args.power_only:
+        from src.observation.checks.tier1 import power_check
+        rp = out_dir / "tier1_results.json"
+        res = json.load(open(rp))
+        cloud = Cloud.from_npz(args.ref_baked, None)
+        res["power"] = {}
+        for tok in args.power:
+            name, pth = tok.split("=", 1)
+            ood = Cloud.from_npz(pth, None)
+            res["power"][name] = {which: power_check(cloud, ood, which=which, seed=args.seed)
+                                  for which in ("bandpowers", "emap")}
+            print(f"[power] {name}: " + "; ".join(
+                f"{w}/{t}: knn {r['auroc_knn']:.2f} mah {r['auroc_mahalanobis']:.2f}"
+                for w, d in res["power"][name].items() for t, r in d.items()))
+        with open(rp, "w") as fh:
+            json.dump(res, fh, default=float)
+        print(f"spliced power into {rp}")
+        return 0
+    if not args.obs:
+        raise SystemExit("--obs LABEL=PATH is required (unless --power-only)")
     labels, paths = [], []
     for tok in args.obs:
         lab, p = tok.split("=", 1)
