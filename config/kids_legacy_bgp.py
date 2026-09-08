@@ -1919,3 +1919,78 @@ for _r in range(5):
     # caught by the first nle-external run of this arm (job 1358164, 2026-09-08).
     FLAGSHIP_NLE_SOURCES[f"gower_nle_finetune_nla_m_z8_r{_r}_ens9"] = \
         "kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"
+
+
+# === M16 — the 2-pt-ONLY (Stage-I band) NLE CHAIN, NLA-M (user 2026-09-08) =======================
+# ⭐ PURPOSE: the multifidelity NLE chain run on the BANDPOWERS ALONE, so the campaign finally has a
+# matched 2-pt comparator to the flagship map chain `gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9`.
+# Until now the only 2-pt models were NPE (`kids_legacy_band_nla_m_bgp` on GLASS, `m15a_band_nla_p2`
+# on the `nla` variate) — there was NO Gower-side 2-pt NLE at all, so "what do the maps add" could
+# not be read off a single-variable comparison. This chain supplies it.
+#
+# The pipeline is IDENTICAL to M4a/M4b; the ONLY thing that changes is the frozen source encoder:
+#   flagship : kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1   (band MLP + PreActResNet maps, 8-D)
+#   THIS row : kids_legacy_band_nla_m_bgp                     (band MLP alone, ALSO 8-D)
+# Both summaries are 8-D, so the two chains differ in WHAT the 8 numbers see, not in how many.
+#
+# ⭐ **The GLASS store is `_BGP_A1`, not `_BGP_SC8A1`.** That is the store the band was TRAINED on,
+# so `split_by_cosmology` reproduces the band's own train/val/test split and no band-training
+# cosmology leaks into this flow's validation. (Bandpowers are byte-identical across the a1/sc8a1
+# bakes — they are computed upstream of the map product — so this is about the SPLIT, not the data.)
+# The Gower store is `_BGP_GOWER_NLA_M` (sc8a1), the flagship's own Stage-B store, for the same
+# reason in reverse: same files, same fixed test ids, so the comparison is single-variable.
+#
+# ⭐ **whiten k=4 (user), GATED ON THE MEASURED SPECTRUM.** A 2-pt summary is expected to be the most
+# rank-deficient of the campaign, and pure-whitening near-null PCs is what blew the warm-start guard
+# to 22.6-30.8 nats on the `nla` chain (see the M5b-k5 block above). k=4 pre-empts that. It is NOT
+# free, though: the k-sweep on the p15 hybrid summary priced k=4 at **-21.6 % FoM(omega_m,sigma_8)**
+# (`.claude/runs/training-runs/bgp-nle-whitening-dim/artifacts/KSWEEP_REPORT.md`). The acceptance
+# check is Stage-A r0's own log line
+#     `[whiten] explained-variance ratio (top-k): [...]`
+# whose entries are normalised by the FULL trace (`scaling.py:216`), so their SUM is exactly the
+# retained variance fraction. Require **>= 99.9 %**; if k=4 falls short, escalate to the smallest k
+# that clears it (the `nla` arm needed k=5 on precisely this test) under a NEW name — never in place,
+# since `whiten_k` sets the flow's event dim and `fit_and_persist_whitener` is FIT-ONCE.
+#
+# ⭐ **Stage-B is 150 epochs (user 2026-09-08)**, i.e. the later `_hf` standard rather than the
+# flagship's 50. M5e/M5d measured 50->150 ep at ~+3.7 % FoM on a matched seed, so this is the better
+# model; the epoch difference vs the flagship is a KNOWN, PRICED confound and must be quoted with any
+# 2-pt-vs-maps ratio. Everything else IS flagship-matched: same Gower store, 300 trainval
+# cosmologies, 0.8/0.2 train/val, `test_frac=0`, and the **200-id** lock file (199 usable test
+# cosmologies) — NOT the variates' 100-id file, because this chain reads the flagship's own store.
+#
+# LAUNCH (Stage-A first, one job per repeat; Stage-B gated on its own Stage-A finishing):
+#   embed --target glass_nle_pretrain_band_nla_m_bgp_k4_r{r} \
+#         --sources kids_legacy_band_nla_m_bgp --gpu v100
+#   embed --target gower_nle_finetune_band_nla_m_bgp_k4_r{r}_ens9_e150 \
+#         --sources kids_legacy_band_nla_m_bgp --cpu
+# VERIFY Stage-A: `Loaded keys: 14` on a `KidsBandpowersMLP` (the band has 14 tensors), summary
+# dimension 8, `[whiten] Fit whitener k=4` (NOT "Reusing"), and the EVR sum gate above.
+# VERIFY Stage-B: `[whiten] Reusing existing (fit-once) whitener k=4` and a guard-c gap under 22.
+# =============================================================================================
+_BAND_NLE_REPEATS = (0, 1, 2, 3, 4)     # the band exposes pretrain_ncosmoNone_0..6; take the first 5
+_BAND_NLE_WHITEN_K = 4
+_BAND_NLE_SOURCE = "kids_legacy_band_nla_m_bgp"
+
+for _r in _BAND_NLE_REPEATS:
+    _pre_band = _nle_pretrain_bgp(_BGP_A1, _r)
+    _pre_band["whiten_embeddings"] = {"k": _BAND_NLE_WHITEN_K}
+    kids_legacy_bgp_experiments[f"glass_nle_pretrain_band_nla_m_bgp_k4_r{_r}"] = _pre_band
+
+    _ft_band = _nle_finetune(f"glass_nle_pretrain_band_nla_m_bgp_k4_r{_r}", ensemble_repeats=9,
+                             whiten_k=_BAND_NLE_WHITEN_K, warmstart_max_gap_nats=22.0,
+                             gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
+    _ft_band["max_trainval_cosmos"] = [300]
+    _ft_band["train_frac"] = 0.8
+    _ft_band["val_frac"] = 0.2
+    _ft_band["test_frac"] = 0.0       # test = the fixed 200 ids; fracs must sum to 1.0
+    _ft_band["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    _ft_band["epochs"] = 150
+    _ft_band["project"] = _BGP_NLE_PROJECT
+    kids_legacy_bgp_experiments[f"gower_nle_finetune_band_nla_m_bgp_k4_r{_r}_ens9_e150"] = \
+        _nle_bake_repeat(_ft_band, _r)
+
+    # The eval site resolves a Stage-B row's frozen source encoder from these tables, never by
+    # guesswork (the `e890aec` bug class). Register both halves of this chain.
+    FLAGSHIP_NLE_SOURCES[f"glass_nle_pretrain_band_nla_m_bgp_k4_r{_r}"] = _BAND_NLE_SOURCE
+    FLAGSHIP_NLE_SOURCES[f"gower_nle_finetune_band_nla_m_bgp_k4_r{_r}_ens9_e150"] = _BAND_NLE_SOURCE
