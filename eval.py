@@ -197,7 +197,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
     parser.add_argument("--mode",
                         choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
-                                 "observe-build", "observe-strip", "obs-reference", "obs-score"],
+                                 "observe-build", "observe-strip", "obs-reference", "obs-score", "pool"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -241,6 +241,22 @@ def main(argv=None):
                         help="--mode nle-external: names the OUTPUT dir under checkpoints/<exp>/"
                              "external/<tag>/. Defaults to --data-store. Decoupled from the glob so "
                              "a real-observation run can be tagged e.g. kids_legacy_dr5.")
+    # --- --mode pool: the POOLED (repeat-concatenated) posterior -------------------------------
+    # Every token here is gatekeeper-safe ([A-Za-z0-9][A-Za-z0-9_.-]* or --[a-z-]*): experiment
+    # names, arm names, integers. No paths, no globs, no '=' -- names map to paths in code.
+    parser.add_argument("--pool-arm", default=None,
+                        help="--mode pool: arm name (src/ml/eval/arms.py) -- resolves to one "
+                             "experiment per repeat. Alternative to listing --experiments.")
+    parser.add_argument("--pool-draws", type=int, default=None,
+                        help="--mode pool: subsample each member to this many draws before "
+                             "concatenating. Omit for the literal concatenation (the default); "
+                             "use it only to equalise unequal members or to cap the pooled size.")
+    parser.add_argument("--pool-check", action="store_true",
+                        help="--mode pool: run the gates (pool-of-one identity + reproduction of "
+                             "the production metrics) instead of producing a pooled posterior.")
+    parser.add_argument("--pool-label", default=None,
+                        help="--mode pool: output name under checkpoints/pooled/ (default: the arm "
+                             "name, else the shared prefix of the member experiment names).")
     parser.add_argument("--prior-mode", default="gower",
                         choices=["gower", "kids_s8_analytic", "LCDM_fixed_w0"],
                         help="--mode nle-external: an NLE posterior is only defined WITH its prior, "
@@ -313,6 +329,9 @@ def main(argv=None):
     if mode == "obs-score":
         from src.observation.cluster_modes import run_obs_score
         return run_obs_score(args)
+    if mode == "pool":
+        from src.ml.eval.pool_mode import run_pool_mode
+        return run_pool_mode(args)
     if mode == "ebdiff":
         # Difference-map forensics on the paired b_g stores: no model, no training. Decides
         # whether the surviving b_g channel is signal-sector (red, coherent with the map) or
