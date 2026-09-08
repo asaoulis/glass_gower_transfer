@@ -70,6 +70,12 @@ def jobs(args):
                            "store": store}
 
 
+def shard_seed(arm, repeat, prior):
+    """Per (arm, repeat, prior) base seed; shard k uses base+k (ensemble_nle.generate_samples)."""
+    return 1000 * (list(ARMS).index(arm) + 1) + 100 * list(DEFAULT_PRIORS).index(prior) + 10 * int(repeat) if prior in DEFAULT_PRIORS \
+        else 1000 * (list(ARMS).index(arm) + 1) + 10 * int(repeat) + 7
+
+
 def eval_args(j, args):
     toks = ["--mode", "nle-external", "--experiments", j["experiment"], "--repeat-indices", str(j["repeat"]),
             "--data-store", j["store"], "--data-tag", j["label"], "--prior-mode", j["prior"],
@@ -81,8 +87,11 @@ def eval_args(j, args):
     # identical in distribution), 1 torch thread each, seeded per shard. 4.7x like-for-like on a
     # 64-core node at 25k draws; keep warmup 500 for the blind run.
     if args.mcmc_workers:
+        # Deterministic but REPEAT- and ARM-dependent shard seed (DECISIONS P-6): a constant seed
+        # would give every pooled member the same MC initialisation noise. --mcmc-seed overrides.
+        seed = args.mcmc_seed if args.mcmc_seed is not None else shard_seed(j["arm"], j["repeat"], j["prior"])
         toks += ["--mcmc-workers", str(args.mcmc_workers), "--mcmc-threads", str(args.mcmc_threads),
-                 "--mcmc-seed", str(args.mcmc_seed)]
+                 "--mcmc-seed", str(seed)]
     if args.warmup_steps is not None:
         toks += ["--warmup-steps", str(args.warmup_steps)]
     if args.emb_batch_size is not None:
@@ -190,7 +199,7 @@ def main(argv=None):
         s.add_argument("--num-jobs", type=int, default=None, help="joblib work items in parallel (aim ~ ncpu with --mcmc-workers)")
         s.add_argument("--mcmc-workers", type=int, default=None, help="shards per event (N=1 knob); e.g. 60 on CORES64, 36 on CORES40")
         s.add_argument("--mcmc-threads", type=int, default=1)
-        s.add_argument("--mcmc-seed", type=int, default=0)
+        s.add_argument("--mcmc-seed", type=int, default=None, help="override the per-(arm,repeat,prior) shard seed")
         s.add_argument("--warmup-steps", type=int, default=None, help="MCMC warmup sweeps per chain (eval.py default 500)")
         s.add_argument("--emb-batch-size", type=int, default=None,
                        help="events per work item (eval.py default 64); for a 160-event matched store use ~8 so items ~ ncpu")
