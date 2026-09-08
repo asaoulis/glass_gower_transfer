@@ -100,6 +100,9 @@ def main(argv=None):
     ap.add_argument("--obs-noise-norm", default="rand")
     ap.add_argument("--exclude-truthkey", nargs="*", default=[],
                     help="mock-as-real: truth-key sidecars whose sim_id must be dropped from the cloud (never printed)")
+    ap.add_argument("--power", nargs="*", default=[], metavar="NAME=REF_BAKED_NPZ",
+                    help="known-OOD reference clouds: AUROC of every Tier-1 statistic vs the ID null is added to "
+                         "tier1_results.json['power'] (the GATE-1 power measurement)")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--alpha", type=float, default=0.01)
     ap.add_argument("--seed", type=int, default=0)
@@ -127,6 +130,17 @@ def main(argv=None):
         with open(tk) as fh:
             excl.append(int(json.load(fh)["sim_id"]))
     res = run_tier1(cloud, obs, labels, seed=args.seed, exclude_sim_ids=excl)
+    if args.power:
+        from src.observation.checks.tier1 import power_check
+        res["power"] = {}
+        for tok in args.power:
+            name, pth = tok.split("=", 1)
+            ood = Cloud.from_npz(pth, None)
+            res["power"][name] = {which: power_check(cloud, ood, which=which, seed=args.seed)
+                                  for which in ("bandpowers", "emap")}
+            print(f"[power] {name}: " + "; ".join(
+                f"{w}/{t}: knn {r['auroc_knn']:.2f} mah {r['auroc_mahalanobis']:.2f}"
+                for w, d in res["power"][name].items() for t, r in d.items()))
     v = verdict(res, alpha=args.alpha)
     res["verdict"] = v
     res["alpha"] = args.alpha

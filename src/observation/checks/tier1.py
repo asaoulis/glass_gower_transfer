@@ -273,9 +273,21 @@ def power_check(cloud_id: Cloud, cloud_ood: Cloud, *, which: str = "emap", seed:
     """AUROC of each Tier-1 statistic at separating a KNOWN-OOD cloud from the in-distribution null
     (the power measurement GATE 1 requires). Uses the same fit/null split machinery."""
     from src.ml.eval.ood import auroc
+    fit, null = cosmology_split(cloud_id.sim_ids, seed=seed)
+    # The variate stores re-process the SAME Gower simulations as the in-distribution store, so an
+    # OOD row whose cosmology (and density field) sits in the FIT half has an unfairly close
+    # neighbour there (measured: AUROC 0.23 for the VD variate before this filter). Score only OOD
+    # rows from cosmologies of the NULL half -- the same unseen-cosmology footing as the null
+    # events themselves (and paired with them when the sim ids coincide). Unrelated OOD clouds
+    # (no shared sim ids) fall back to all rows.
+    null_ids = set(np.asarray(cloud_id.sim_ids)[null].tolist())
+    q_ok = np.array([int(i) in null_ids for i in np.asarray(cloud_ood.sim_ids)], dtype=bool)
+    if not q_ok.any():
+        q_ok[:] = True
+    q_idx = np.where(q_ok)[0][:max_ood]
     if which == "emap":
         E = np.asarray(cloud_id.emap, dtype=np.float64)
-        Q = np.asarray(cloud_ood.emap, dtype=np.float64)[:max_ood]
+        Q = np.asarray(cloud_ood.emap, dtype=np.float64)[q_idx]
         finite = np.isfinite(E).all(0) & np.isfinite(Q).all(0)
         sd = E[:, finite].std(0)
         keep = np.where(finite)[0][sd > 0]
@@ -286,8 +298,7 @@ def power_check(cloud_id: Cloud, cloud_ood: Cloud, *, which: str = "emap", seed:
         E, Q = (E - med) / mad, (Q - med) / mad
     else:
         E = cloud_id.bandpowers.reshape(len(cloud_id.bandpowers), -1)
-        Q = cloud_ood.bandpowers.reshape(len(cloud_ood.bandpowers), -1)[:max_ood]
-    fit, null = cosmology_split(cloud_id.sim_ids, seed=seed)
+        Q = cloud_ood.bandpowers.reshape(len(cloud_ood.bandpowers), -1)[q_idx]
     res = {}
     for tag, p in (("full", None), (f"pca{pca}", min(pca, E.shape[1]))):
         w = _shrink_whitener(E[fit])
@@ -298,7 +309,9 @@ def power_check(cloud_id: Cloud, cloud_ood: Cloud, *, which: str = "emap", seed:
             zf, zn, zq = zf @ P, zn @ P, zq @ P
         res[tag] = {"auroc_knn": float(auroc(knn_scores(zf, zn, k=k), knn_scores(zf, zq, k=k))),
                     "auroc_mahalanobis": float(auroc(mahalanobis_scores(zn), mahalanobis_scores(zq))),
-                    "n_null": int(len(zn)), "n_ood": int(len(zq))}
+                    "n_null": int(len(zn)), "n_ood": int(len(zq)),
+                    "n_ood_cosmologies": int(len(np.unique(np.asarray(cloud_ood.sim_ids)[q_idx]))),
+                    "ood_restricted_to_null_cosmologies": bool(q_ok.sum() < len(q_ok))}
     return res
 
 
