@@ -16,16 +16,19 @@ existing consumer can read with a path swap.
 | E2E | full mock pool: 3 x 8000 draws over 2000 rows x 15-D -> build + score | local | **PASS** — 2.6 GB npz built in ~2 min, scored in ~14 min (~16 min total, peak RSS well under 32 GB). `test_log_prob` null with reason; `fom_dim_normalized` 1.224 pooled vs 1.236-1.285 per seed |
 | G2 | pooled-npz TARP vs the independent `f`-identity curve | local | **PASS** — max\|dECP\| **0.0040** against a measured reference-draw floor of 0.0071 +- 0.0022 (p90 0.0101) |
 | OBS | the OBSERVATION branch on a synthetic fixture (NaN truth, `external/` layout) | local | **PASS** — writes under `pooled/<arm>/external/<tag>/`, draws byte-equal to `concat(members)`, `member_of_draw` counts correct, **no metrics json**, no sample statistic logged |
-| CLU | one real cluster `--pool-check` | hypatia | *(see §0.1)* |
+| CLU | one real cluster `--pool-check` | hypatia | **PASS** — job `1357612`, CORES64. G1a identity PASS; G1b 80 deterministic metrics vs production, **worst \|diff\| = 0** (exact — same environment wrote both, unlike the 2.5e-7 local mirror comparison). Report at `checkpoints/pooled/k2/gates/pool_check_report.json` |
 
 ### 0.1 Status line
 
 **Commits:** `89a2c8b` (the mode + primitive) then `e668a36`, `c12768a` (two gate fixes, below).
 Cluster checkout synced to `e668a36`; **re-sync to `c12768a` before running the gate.**
 
-**Cluster row: job `1357612` submitted 2026-09-08 (CORES64, 16 cpu, 128 G, `--pool-arm k2
---repeat-indices 0 1 2 --pool-check`) at rev `e668a36`. Verdict NOT yet recorded — treat the
-cluster path as UNVERIFIED until this line carries a PASS.**
+**Cluster: job `1357612` (2026-09-08, CORES64, 16 cpu, 128 G, `--pool-arm k2 --repeat-indices
+0 1 2 --pool-check`) ran at rev `e668a36` and returned **PASS**. `--pool-check` exercises G1 only,
+which `c12768a` does not touch (that commit changes G2), so the verdict stands for what it tested.
+The cluster checkout has since been synced to `a9038fb`.**
+
+**Every row of the ledger is now green.** The path is exercised end to end on the cluster.
 
 ⚠️ **Two bugs were found by running the gates, both in the GATE, neither in the pooling or scoring
 path** (G1 and E2E predate and are unaffected):
