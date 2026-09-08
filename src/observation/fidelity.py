@@ -27,6 +27,7 @@ import numpy as np
 # cls 2.2e-2, counts-E/B patches 5-7e-2, E_sc8 5-7e-3, noise_std_sc8 1e-4. The absolute numbers
 # below are therefore loose; the jitter-floor gate is the one that means something.)
 DEFAULT_TOL = {
+    "bandpower_ls": 1e-9,
     "mixed_bandpowers": 5e-2, "bb_bandpowers": 1e-1, "cls": 5e-2,
     "E_": 1e-1, "B_": 1e-1, "E_sc8_": 2e-2, "noise_std_": 5e-2,
 }
@@ -60,6 +61,10 @@ def compare_observation_to_mock(obs_path: str, mock_path: str, tol: Optional[Dic
     missing = []
     with h5py.File(obs_path, "r") as fo, h5py.File(mock_path, "r") as fm:
         cf_o, cf_m = fo["cls_results"]["full"], fm["cls_results"]["full"]
+        # band edges first: a band-definition mismatch must show up as its own line, not as an
+        # unexplained bandpower residual
+        if "bandpower_ls" in cf_o and "bandpower_ls" in cf_m:
+            res["bandpower_ls"] = rel_rms(cf_o["bandpower_ls"][()], cf_m["bandpower_ls"][()])
         for k in ("mixed_bandpowers", "cls", "bb_bandpowers"):
             if k in cf_o and k in cf_m:
                 res[k] = rel_rms(cf_o[k][()], cf_m[k][()])

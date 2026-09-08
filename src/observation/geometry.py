@@ -50,6 +50,19 @@ def patch_noise_std(rand_E_maps, patches, nside_out, ang, patch_names):
     return out
 
 
+RNG_STREAM_POSTPROC = 2   # mirror of master's stream index (parity-checked)
+
+
+def block_postproc_rng(seed: int, sim_num: int, outer_idx: int, rot_idx: int):
+    """Vendored mirror of ``master_kids_legacy_simulator.build_block_rngs(...)[2]`` -- the
+    random-rotation (noise-only alm) stream of one (sim, outer, rot) block -- WITHOUT the master's
+    side effect of seeding the global numpy RNG. Kept here so nothing in ``src/observation`` needs
+    to import the master module (mpi4py, glass.ext.camb) at runtime."""
+    ss = np.random.SeedSequence([int(seed), int(sim_num), int(outer_idx), int(rot_idx)])
+    children = ss.spawn(4)
+    return np.random.default_rng(children[RNG_STREAM_POSTPROC])
+
+
 def master_postproc_rng(attrs: dict):
     """Rebuild the EXACT random-rotation RNG a saved SIM catalogue's mock was post-processed with,
     from its file attrs (``rng_seed, sim_id, outer_idx, rot_idx``). Only possible for a catalogue
@@ -58,10 +71,8 @@ def master_postproc_rng(attrs: dict):
     seed = int(attrs.get("rng_seed", -1))
     if seed < 0:
         return None
-    import master_kids_legacy_simulator as m
-    _, _, postproc = m.build_block_rngs(seed, int(attrs.get("sim_id", 0)),
-                                        int(attrs.get("outer_idx", 0)), int(attrs.get("rot_idx", 0)))
-    return postproc
+    return block_postproc_rng(seed, int(attrs.get("sim_id", 0)),
+                              int(attrs.get("outer_idx", 0)), int(attrs.get("rot_idx", 0)))
 
 
 def check_master_parity() -> dict:
@@ -84,6 +95,12 @@ def check_master_parity() -> dict:
     b = patch_noise_std(maps, patches, nside_out, 0, ["south", "north"])
     for k in a:
         assert np.allclose(a[k], b[k]), k
+    # block RNG: the vendored postproc stream must equal the master's (first 1000 draws)
+    state0 = np.random.get_state()
+    _, _, mp = m.build_block_rngs(7, 3, 1, 2)
+    np.random.set_state(state0)     # undo the master's global-RNG side effect
+    vp = block_postproc_rng(7, 3, 1, 2)
+    assert np.array_equal(mp.random(1000), vp.random(1000)), "block RNG parity"
     return {"A3S8_FWHM_ARCMIN": A3S8_FWHM_ARCMIN, "A3S8_VARIANTS": A3S8_VARIANTS,
             "EB_SMOOTHING_VARIANTS": EB_SMOOTHING_VARIANTS_PROD}
 

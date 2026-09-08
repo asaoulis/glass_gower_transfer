@@ -218,12 +218,24 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
     with open(os.path.splitext(out_path)[0] + "_provenance.json", "w") as fh:
         json.dump({k: (v.tolist() if isinstance(v, np.ndarray) else v)
                    for k, v in observation_prov.items()}, fh, indent=2, default=str)
+    # TRUTHKEY sidecar (mock-as-real only): the sim identity, kept OUT of the observation and the
+    # store, under a _truthkey/ dir that the blind guard denies. Real data has no sim attrs.
+    sim_attrs = cat.provenance.get("sim_attrs", {})
+    if sim_attrs:
+        tk_dir = Path(out_path).parent / "_truthkey"
+        tk_dir.mkdir(exist_ok=True)
+        with open(tk_dir / f"observation_{label}_truthkey.json", "w") as fh:
+            json.dump({k: sim_attrs[k] for k in TRUTHKEY_KEYS if k in sim_attrs}, fh, indent=2, default=str)
     log(f"[obs:{label}] wrote {out_path}")
     return out_path
 
 
 _COSMO_LIKE = ("omega_m", "sigma_8", "s8", "s_8", "w0", "h", "ns", "n_s", "ombh2", "a_ia", "b_ia",
-               "mnu", "m_nu", "log10_m_eff", "b_g", "cosmo")
+               "mnu", "m_nu", "log10_m_eff", "b_g", "cosmo",
+               # a SIM catalogue's identity IS its truth (sim_id -> cosmology table), so it is
+               # scrubbed too; the gate keeps it in a separate TRUTHKEY sidecar (see build_observation)
+               "sim_id", "galaxy_bias", "systematics_model", "outer_idx", "rot_idx", "cat_idx", "rng_seed")
+TRUTHKEY_KEYS = ("sim_id", "galaxy_bias", "systematics_model", "outer_idx", "rot_idx", "cat_idx", "rng_seed")
 
 
 def scrub_provenance(prov: dict) -> dict:

@@ -288,8 +288,12 @@ def main(argv=None):
     parser.add_argument("--ood-n-perm", type=int, default=200,
                         help="summaries mode: permutations for the MMD two-sample p-value")
     # Unblinding front end (src/observation): catalogue -> observation -> baked per-arm stores.
-    from src.observation.cluster_modes import add_observe_args
-    add_observe_args(parser)
+    # Fail-soft: a bug in the (independent) observation package must never break the other modes.
+    try:
+        from src.observation.cluster_modes import add_observe_args
+        add_observe_args(parser)
+    except Exception as _ex:  # pragma: no cover
+        print(f"[eval] WARNING: observe-build args unavailable ({type(_ex).__name__}: {_ex})")
     args = parser.parse_args(argv)
 
     mode = args.mode or DEFAULT_MODE
