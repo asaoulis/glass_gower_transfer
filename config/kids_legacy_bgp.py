@@ -2027,9 +2027,17 @@ def _register_band_nle_chain(k):
 #      chain that needed k=5: nla's PCs 5-8 held 0.21 % of the variance with a 1.16e-5 minimum
 #      (max/min scale spread 264); the band's tail holds 1.39 % over four PCs, ~0.35 % each. The
 #      flagship itself ran k=8 at a 264-vs-79.5-times-gentler spectrum and was healthy.
-# The k=8 Stage-A ALSO doubles as the spectrum probe: `WhitenPCAScaler` prints the top-k ratios, so
-# at k=8 the log carries all EIGHT eigenvalues. If that tail turns out pathological after all, drop
-# to the smallest k that removes it — BEFORE Stage-B, which is where guard-c actually bites.
+# ⭐ **THE k=8 PROBE CAME BACK AND CONFIRMS THIS ARM (job 1359087, 2026-09-08 23:35Z).** The full
+# eight-eigenvalue spectrum is
+#     [0.5886, 0.2736, 0.1035, 0.0204, 0.0101, 0.0027, 0.0008, 0.0003]
+#     cumulative 0.5886 / 0.8622 / 0.9657 / 0.9861 / 0.9962 / 0.9989 / 0.9997 / 1.0000
+# so the smallest k clearing 99.9 % would be **k=7**, and k=8 is kept anyway for the reason that
+# actually governs pure-whiten safety — CONDITIONING, not variance. max/min whitening-scale spread
+# at k=8 is sqrt(0.5886/0.0003) = **44.3**, versus **79.5** on the `nla_m` flagship that runs k=8 in
+# production without trouble and **264** on the `nla` chain that DID blow guard-c (22.6-30.8 nats)
+# and had to drop to k=5. The band is therefore better conditioned than the chain already shipping
+# k=8, so the near-null-PC pathology does not arise; k=7 would discard 0.03 % of the variance and
+# improve the spread only 44.3 -> 43.6, i.e. a real (if small) information loss for nothing.
 #
 # k=4 is KEPT REGISTERED (r0's Stage-A was allowed to finish) so the truncation cost can be measured
 # DOWNSTREAM on this arm if wanted — the KSWEEP number is a hybrid-summary result, not a 2-pt one.
