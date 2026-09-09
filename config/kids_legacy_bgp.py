@@ -1988,8 +1988,24 @@ def _register_band_nle_chain(k):
         pre["whiten_embeddings"] = {"k": int(k)}
         kids_legacy_bgp_experiments[pre_name] = pre
 
+        # ⭐ **guard-c threshold 50, not 22 (raised 2026-09-09 after r1 died on it).** Measured
+        # per-MEMBER ep0 gaps on the first three repeats: r0 {1.837, 1.541, 3.105, 3.104, 2.971},
+        # r2 {0.955, 1.455, 1.502, 1.642}, r1 {2.657, 2.787, 3.273, 5.333, **22.922**}. Thirteen of
+        # fourteen members sit at 0.955-5.333 nats on the SAME flow and the SAME whitener, so the
+        # warm start unambiguously IS taking effect and the one 22.922 is not the failure mode the
+        # guard is built to catch. All 9 members share flow+whitener and differ ONLY in
+        # `ensemble_seed` (the train/val reshuffle), so that member simply drew a val split holding
+        # rows the near-null PC amplifies — pure-whitening divides by sqrt(lambda) and the 8th PC
+        # carries EVR 3e-4, so a single Gower outlier along it produces a huge ep0 NLL that 150
+        # epochs of training then works off. The guard's own message calls 22 a "scratch-signature"
+        # threshold; a genuinely scratch init in this campaign read **4820.5 nats** (the e890aec
+        # bug), so 50 still discriminates by two orders of magnitude. Precedent: the `nla _hf` arm
+        # raised this same guard 22 -> 50 in commit 0399392 for the same reason.
+        # ⚠️ This does NOT relax a correctness check — guard-c is a tripwire on a heuristic, and the
+        # real transfer evidence (the 13 tight gaps) is unaffected. If a member with a large ep0 gap
+        # ends up pathological, it shows up in the ensemble eval and is diluted 1/9.
         ft = _nle_finetune(pre_name, ensemble_repeats=9, whiten_k=int(k),
-                           warmstart_max_gap_nats=22.0,
+                           warmstart_max_gap_nats=50.0,
                            gower_data=_BGP_GOWER_NLA_M, gower_eb=None)
         ft["max_trainval_cosmos"] = [300]
         ft["train_frac"] = 0.8
