@@ -109,22 +109,31 @@ def build_prior_for_mode(prior_mode: str, param_names, *, preset_overrides=None)
     When `fixed_parameters` is not None the resulting dump is missing those columns — see
     `free_param_names`.
     """
-    from ..embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX, _build_cosmo_preset_scaler
-    from .utils import build_gower_prior, build_s8_analytic_prior
+    from ..embeddings.embeddings_utils import _build_cosmo_preset_scaler
+    from .utils import _merged_preset, build_gower_prior, build_s8_analytic_prior
 
     param_names = list(param_names)
+    # ⚠️ Every branch must honour `preset_overrides`. The global preset carries no box for the
+    # per-tomo-bin galaxy biases, so a 15-param arm (kappa=2 and, from 2026-08-16, the production
+    # default) supplies them via scaler_options['cosmo']['preset_overrides'] and
+    # `_build_cosmo_preset_scaler` RAISES on any parameter without one. The two KiDS branches used
+    # to build their scaler from the bare global preset, which killed both kappa=2 matched runs
+    # with "Cosmological parameter 'b_g_bin1' not found in preset min/max dictionary" (jobs
+    # 1358333 / 1358334) -- and would have killed the real k2 arm under both KiDS priors.
+    preset = _merged_preset(preset_overrides)
     if prior_mode == "gower":
         kw = {"preset_overrides": preset_overrides} if preset_overrides else {}
         return build_gower_prior(param_names, **kw), None
     if prior_mode == "kids_s8_analytic":
-        scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, param_names)
+        scaler = _build_cosmo_preset_scaler(preset, param_names)
         return build_s8_analytic_prior(param_names, scaler), None
     if prior_mode == "LCDM_fixed_w0":
         from gen_samples import _build_fixed_parameters_list
-        scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, param_names)
+        scaler = _build_cosmo_preset_scaler(preset, param_names)
         prior = build_s8_analytic_prior(param_names, scaler, return_restricted=False)
         return prior, _build_fixed_parameters_list(dict(FIXED_BY_PRIOR_MODE[prior_mode]),
-                                                   param_names, space="physical")
+                                                   param_names, space="physical",
+                                                   preset_overrides=preset_overrides)
     raise ValueError(f"unknown prior mode {prior_mode!r}; choose from {PRIOR_MODES}")
 
 
@@ -873,3 +882,89 @@ def run_scaler_recovery(
     print(f"[recover] REPORT " + json.dumps(_jsonable(out)), flush=True)
     print(f"[recover] {n_ok}/{len(cache_hits)} members accepted", flush=True)
     return out
+
+
+# --------------------------------------------------------------------------------------------
+# Selftest. There is no test suite in this repo, so these asserts ARE the gate on the two prior
+# contracts that silently broke a whole arm before:
+#   * every prior mode honours `preset_overrides` (the 15-param arms carry b_g boxes there);
+#   * a pinning mode's dump is narrower than `cosmo_param_names` (see `free_param_names`).
+# Run:  PYTHONPATH=. python -m src.ml.eval.nle_external
+# --------------------------------------------------------------------------------------------
+def _selftest():
+    import torch as _torch
+    from ..data.priors.builders import (GALAXY_BIAS_PARAMS, _infer_galaxy_bias_kappa,
+                                        GALAXY_BIAS_PRIOR_MEANS, GALAXY_BIAS_PRIOR_SIGMAS,
+                                        GALAXY_BIAS_PRIOR_NSIGMA)
+    from ..embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX as COSMO_PARAM_PRESET_MINMAX_FOR_TEST
+
+    p9 = ["omega_m", "sigma_8", "w0", "mnu", "h", "ns", "ombh2", "a_ia", "b_ia"]
+    p15 = p9 + list(GALAXY_BIAS_PARAMS)
+
+    # --- free_param_names: the pinned column is DROPPED, order preserved -----------------------
+    assert free_param_names("gower", p15) == p15
+    assert free_param_names("kids_s8_analytic", p15) == p15
+    assert free_param_names("LCDM_fixed_w0", p15) == [n for n in p15 if n != "w0"]
+    assert FIXED_BY_PRIOR_MODE["LCDM_fixed_w0"] == {"w0": -1.0}
+
+    # --- kappa is recovered from the boxes, not assumed ----------------------------------------
+    for kappa in (1.0, 2.0):
+        boxes = {n: (GALAXY_BIAS_PRIOR_MEANS[i] - GALAXY_BIAS_PRIOR_NSIGMA * kappa * GALAXY_BIAS_PRIOR_SIGMAS[i],
+                     GALAXY_BIAS_PRIOR_MEANS[i] + GALAXY_BIAS_PRIOR_NSIGMA * kappa * GALAXY_BIAS_PRIOR_SIGMAS[i])
+                 for i, n in enumerate(GALAXY_BIAS_PARAMS)}
+        got = _infer_galaxy_bias_kappa(boxes)
+        assert abs(got - kappa) < 1e-6, f"kappa {kappa} recovered as {got}"
+
+    # --- both KiDS modes build a valid 15-param prior when the b_g boxes are supplied ----------
+    kappa = 2.0
+    overrides = {n: (GALAXY_BIAS_PRIOR_MEANS[i] - GALAXY_BIAS_PRIOR_NSIGMA * kappa * GALAXY_BIAS_PRIOR_SIGMAS[i],
+                     GALAXY_BIAS_PRIOR_MEANS[i] + GALAXY_BIAS_PRIOR_NSIGMA * kappa * GALAXY_BIAS_PRIOR_SIGMAS[i])
+                 for i, n in enumerate(GALAXY_BIAS_PARAMS)}
+    bg_idx = [p15.index(n) for n in GALAXY_BIAS_PARAMS]
+    for mode in ("kids_s8_analytic", "LCDM_fixed_w0"):
+        prior, fixed = build_prior_for_mode(mode, p15, preset_overrides=overrides)
+        x = prior.sample((2000,))
+        assert tuple(x.shape) == (2000, 15), f"{mode}: sample shape {tuple(x.shape)}"
+        lp = prior.log_prob(x)
+        assert not _torch.isnan(lp).any(), f"{mode}: NaN log_prob"
+        assert (fixed is not None) == (mode == "LCDM_fixed_w0")
+        # The b_g block is a truncated Gaussian per bin, so it is bounded in EVERY mode. This is
+        # the column set the fix added; if it ever escaped the box the prior would disagree with
+        # the boxes the model was scaled with.
+        xb = x[:, bg_idx]
+        assert (xb >= 0).all() and (xb <= 1).all(), f"{mode}: b_g draws outside the scaled box"
+        if mode == "kids_s8_analytic":
+            # RESTRICTED (return_restricted=True via the b_ia companion): rejection-sampled back
+            # into the S_8 box, so every draw is inside the unit box with finite density.
+            assert (x >= 0).all() and (x <= 1).all(), f"{mode}: samples outside the scaled unit box"
+            assert _torch.isfinite(lp).all(), f"{mode}: non-finite log_prob"
+        else:
+            # UNRESTRICTED by construction (return_restricted=False). ~3 % of draws leave the S_8
+            # box on the joint cosmo block (omega_m, sigma_8, w0, mnu) and carry log_prob = -inf,
+            # which the MCMC rejects. Demanding all-finite here would fail on correct behaviour.
+            assert _torch.isfinite(lp).float().mean() > 0.5, f"{mode}: most draws have no density"
+
+    # The pinned column and its SCALED value: index 2 is w0, and the value must be w0=-1 mapped
+    # through the same preset box the model was scaled with. A wrong index would pin the wrong
+    # parameter and still run.
+    _, fixed = build_prior_for_mode("LCDM_fixed_w0", p15, preset_overrides=overrides)
+    assert len(fixed) == 1 and fixed[0][0] == p15.index("w0"), f"pinned the wrong column: {fixed}"
+    _lo, _hi = COSMO_PARAM_PRESET_MINMAX_FOR_TEST["w0"]
+    # 1e-6, not tighter: the scaler holds its boxes as float32, so the round trip differs from the
+    # float64 preset in the 8th decimal.
+    assert abs(fixed[0][1] - (-1.0 - _lo) / (_hi - _lo)) < 1e-6, f"pinned value {fixed[0][1]}"
+
+    # --- and still REFUSE a b_g parameter with no box (a silent default would be worse) --------
+    for mode in ("kids_s8_analytic", "LCDM_fixed_w0"):
+        try:
+            build_prior_for_mode(mode, p15)
+        except ValueError:
+            pass
+        else:                                     # pragma: no cover
+            raise AssertionError(f"{mode}: p15 without b_g boxes must raise, not guess a box")
+
+    print("nle_external selftest OK")
+
+
+if __name__ == "__main__":
+    _selftest()

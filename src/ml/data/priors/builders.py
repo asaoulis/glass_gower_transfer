@@ -374,6 +374,21 @@ def build_analytic_prior(
         "w0": phys_priors["w0"],
         "mnu": phys_priors["mnu"],
     }
+    # Marginalised galaxy bias (BGP), mirroring `build_gower_prior`. The b_g prior is a property of
+    # the STORE — the simulator draws b_i ~ N(mean_i, kappa*sigma_i) per mock — not of the cosmology
+    # prior, so the analytic (KiDS) path must supply exactly the same truncated Gaussians the
+    # empirical (Gower) path does. Without them every 15-parameter arm died here with "no analytic
+    # prior specified for parameter 'b_g_bin1'" (jobs 1358333/1358334, the kappa=2 matched runs);
+    # p15 is the production default, so this reached the real analysis, not just kappa=2.
+    #
+    # kappa is recovered from the SCALER's own boxes rather than a separate `preset_overrides`
+    # argument, so the prior can never disagree with the boxes the model was scaled with — the
+    # invariant `build_gower_prior` states after a hardcoded kappa=1 put 58.5 % of the kappa=2 test
+    # truths outside the sampler's support. `galaxy_bias_marginal_priors` returns {} when no b_g
+    # parameter is present, so this is a no-op for every pre-BGP parameter set.
+    _bg_boxes = {n: (float(scaler.min[name_to_idx[n]]), float(scaler.max[name_to_idx[n]]))
+                 for n in GALAXY_BIAS_PARAMS if n in params and n in name_to_idx}
+    one_d_priors.update(galaxy_bias_marginal_priors(params, kappa=_infer_galaxy_bias_kappa(_bg_boxes)))
 
     ia_names = [p for p in params if p in IA_PARAMS]
     ia_companions = [p for p in ia_names if p in IA_COMPANION_PARAMS]

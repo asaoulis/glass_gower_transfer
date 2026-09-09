@@ -10,7 +10,15 @@ def _build_fixed_parameters_list(
     param_names,
     *,
     space: str = "physical",
+    preset_overrides=None,
 ):
+    """-> [(index, scaled_value)] for the parameters a pinning prior mode fixes.
+
+    `preset_overrides` must be threaded through whenever `param_names` can carry a parameter the
+    GLOBAL preset has no box for — the per-tomo-bin galaxy biases of the 15-param arms. This only
+    converts physical -> scaled, but it needs the same box the model was scaled with, and
+    `_build_cosmo_preset_scaler` raises on any parameter without one.
+    """
     from src.ml.embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX, _build_cosmo_preset_scaler
 
     if fixed_params is None:
@@ -25,7 +33,10 @@ def _build_fixed_parameters_list(
 
     preset_scaler = None
     if space == "physical":
-        preset_scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, param_names)
+        preset = dict(COSMO_PARAM_PRESET_MINMAX)
+        if preset_overrides:
+            preset.update({k: tuple(v) for k, v in preset_overrides.items()})
+        preset_scaler = _build_cosmo_preset_scaler(preset, param_names)
         if preset_scaler is None or getattr(preset_scaler, "min", None) is None or getattr(preset_scaler, "max", None) is None:
             raise ValueError("Could not build preset scaler for physical->scaled conversion")
 
