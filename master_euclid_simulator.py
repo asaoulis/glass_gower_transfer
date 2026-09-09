@@ -267,7 +267,15 @@ def main():
                 )
 
                 cat_queue = deque(catalogues)
-                del catalogues, matter
+                del catalogues
+                # Drop everything the post-processing does not need BEFORE the concatenate,
+                # which is the memory peak. `matter` is a generator on the production path
+                # (`glass.generate` is not list()ed in prepare_glass_backend) so it is already
+                # spent, but the simulator still pins the nside-1024 mask + the MultiPlane
+                # convergence kappa map (~0.3 GB at production nside).
+                backend["matter"] = None
+                simulator = None
+                del matter
                 gc.collect()
 
                 m_bias = np.zeros(nbins)       # systematics off -> no multiplicative bias
@@ -330,10 +338,16 @@ def main():
                     gc.collect()
                     cat_idx += 1
 
-                del cat_queue, simulator, backend
+                del cat_queue, backend
                 gc.collect()
                 print(f"[rank {rank}] sim {sim_num} out{outer_idx} done in "
                       f"{time.time() - t_block:.1f} s", flush=True)
+            # Release this sim's cached CAMB products. `prepare_glass_backend`'s in-memory
+            # cache exists only to let the OUTER reps of one sim reuse the loaded Cls; it is
+            # never evicted, and a Euclid rank works through ~350 sims (50 000 / ~144 ranks)
+            # against KiDS's ~16, so at ~10 MB of shell x shell glass_cls per sim (630 spectra
+            # x 2049 at ~35 shells) an un-popped cache would grow by several GB over a run.
+            backend_cache.pop(sim_num, None)
         except Exception as exc:
             # Per-sim isolation, as in the KiDS master: one bad sim must not abort the rank.
             import traceback
