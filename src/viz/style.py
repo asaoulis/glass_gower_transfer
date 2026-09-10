@@ -140,22 +140,22 @@ ROLES: dict[str, dict] = {
     "tol-muted": {
         "real": "#000000", "flagship": 1, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 0, "pass": 3, "T": 0, "S": 1,
-        "arms": {"nla_m": 1, "nla_m_nobgp": 4, "nla": 0, "nla_z": 5, "vd": 6, "k2": 7},
+        "arms": {"nla_m": 1, "nla_m_nobgp": 4, "nla": 0, "nla_z": 5, "vd": 6, "k2": 7, "band": 3},
     },
     "tol-bright": {
         "real": "#000000", "flagship": 0, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 1, "pass": 2, "T": 1, "S": 0,
-        "arms": {"nla_m": 0, "nla_m_nobgp": 4, "nla": 1, "nla_z": 5, "vd": 2, "k2": 3},
+        "arms": {"nla_m": 0, "nla_m_nobgp": 4, "nla": 1, "nla_z": 5, "vd": 2, "k2": 3, "band": 6},
     },
     "tol-high-contrast": {
         "real": "#000000", "flagship": 0, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 2, "pass": 4, "T": 2, "S": 0,
-        "arms": {"nla_m": 0, "nla_m_nobgp": 3, "nla": 2, "nla_z": 5, "vd": 1, "k2": 4},
+        "arms": {"nla_m": 0, "nla_m_nobgp": 3, "nla": 2, "nla_z": 5, "vd": 1, "k2": 4, "band": 6},
     },
     "survey": {
         "real": "#000000", "flagship": 0, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 1, "pass": 2, "T": 1, "S": 0,
-        "arms": {"nla_m": 0, "nla_m_nobgp": 6, "nla": 1, "nla_z": 4, "vd": 2, "k2": 3},
+        "arms": {"nla_m": 0, "nla_m_nobgp": 6, "nla": 1, "nla_z": 4, "vd": 2, "k2": 3, "band": 5},
     },
 }
 
@@ -163,7 +163,7 @@ ROLES: dict[str, dict] = {
 # (`plt.cm.viridis(np.linspace(0.12, 0.82, n))`, fidelity + coverage figures).
 SEQUENTIAL_CMAP = "viridis"
 DIVERGING_CMAP = "RdBu_r"        # z-score heatmaps, symmetric about 0
-ARM_ORDER = ("nla_m", "nla_m_nobgp", "nla", "nla_z", "vd", "k2")
+ARM_ORDER = ("nla_m", "nla_m_nobgp", "nla", "nla_z", "vd", "k2", "band")
 
 
 def _check_arm_drift() -> None:
@@ -306,6 +306,7 @@ LABELS.update({f"b_g_bin{i}": r"$b_{g,%d}$" % i for i in range(1, 7)})
 ARM_NAMES = {
     "nla_m": r"NLA-M (BGP)", "nla_m_nobgp": r"NLA-M (no BGP)", "nla": r"NLA", "nla_z": r"NLA-$z$",
     "vd": r"variable depth", "k2": r"$\kappa = 2$",
+    "band": r"2-pt only (bandpowers)",
 }
 LABEL_NAMES = {"T": r"T (GLASS $b_g{=}1$ catalogue: known-OOD control)",
                "S": r"S (held-out $N$-body mock: in-distribution control)"}

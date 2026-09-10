@@ -26,6 +26,12 @@ ARMS = {
     "nla_z":       ("gower_nle_finetune_nla_z_bgp_z8_hf_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
     "vd":          ("gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150",   "sc8a1", (0, 1, 2, 3, 4)),
     "k2":          ("gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3)),
+    # M16 -- the 2-pt-ONLY (bandpower) NLE chain, added 2026-09-10. Same flagship Gower store,
+    # same 200-id test lock, so "what do the maps buy over the 2-point function?" is single-variable.
+    # ⚠️ repeat 1 is NOT here yet: it was still in its MCMC eval (job 1359261) when the arm was
+    # registered. `arm_experiments` RAISES on a requested-but-missing repeat rather than silently
+    # dropping it, so add 1 to this tuple only once its ensemble_evaluation json exists.
+    "band":        ("gower_nle_finetune_band_nla_m_bgp_k8_r{r}_ens9_e150",      "sc8a1", (0, 2, 3, 4)),
 }
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
@@ -102,6 +108,9 @@ MATCH_TEMPLATES = {
     "nla_z": "ncosmoNone_{r}",
     "vd": "ncosmoNone_{r}",
     "k2": "ncosmoNone_{r}",
+    # M16 carries max_trainval_cosmos=[300] (length 1), so `nle_external.match_string_for` derives
+    # `ncosmo300_{r}` -- VERIFIED against that resolver, not inferred from the experiment name.
+    "band": "ncosmo300_{r}",
 }
 assert set(MATCH_TEMPLATES) == set(ARMS), "MATCH_TEMPLATES and ARMS must cover the same arms"
 

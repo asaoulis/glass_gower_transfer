@@ -11,7 +11,7 @@ It takes a LABEL and a set of directories (parameters cell) and steps through:
   5. map statistics: E-map summary groups vs the mock cloud (peaks / voids / PDF / power) + kNN p (Tier-1c)
   6. OOD dashboard: Tier-1 p-values + Tier-2 detector scores read against the bias tables
   7. STANDARDISED posteriors (Plots A / B / B'; corner battery) -- the last blind section
-  8. UNBLIND = False  gate: the ONLY cell that loads raw samples and draws physical contours
+  8. UNBLIND_2PT / UNBLIND_FIELD  staged gates: the ONLY cell that loads raw samples
      (all arms x priors). The agent never sets it True; guard_blind blocks the underlying read anyway.
 
 Regenerate with:  PYTHONPATH=. python scripts/build_unblinding_notebook.py [--out notebooks/kids_unblinding.ipynb]
@@ -43,7 +43,8 @@ md(r"""
 # KiDS-Legacy unblinding notebook (multifidelity SBI)
 
 **Blind protocol.** Sections 1–7 are blind-safe: nothing in them reads a posterior location or width.
-Section 8 is gated by `UNBLIND = False` and is the **only** place physical contours are drawn.
+Section 8 is gated by the staged `UNBLIND_2PT` / `UNBLIND_FIELD` switches (2-pt first) and is
+the **only** place physical contours are drawn.
 Run it by hand, once, after Tiers 1–3 have been signed off in the runbook
 (`.claude/runs/eval-and-viz/unblinding-prep/artifacts/UNBLINDING_PROTOCOL.md`).
 
@@ -60,7 +61,13 @@ TIER2_DIR = ".claude/runs/eval-and-viz/unblinding-prep/artifacts/tier2"   # scri
 PLOTS_DIR = "/data/alex/unblinding/plots_" + LABEL                  # scripts/plot_blind_posteriors.py output
 BLIND_ROOT = "/data/alex/unblinding/blind_store"                    # raw posteriors (Section 8 ONLY)
 FLAGSHIP_EXPERIMENT = "gower_nle_finetune_nla_m_bgp_z8_r0_ens9"
-UNBLIND = False                               # <- the gate. Flip by hand, once, after sign-off.
+# STAGED unblinding (user decision 2026-09-10, DECISIONS U-1; UNBLINDING_PROTOCOL.md Tier 4).
+# Two one-way gates, flipped BY HAND, in order. Stage 1 reveals ONLY the 2-pt (bandpower) arm;
+# Stage 2 reveals the field-level arms and may not be opened until Stage 1 is archived in
+# artifacts/signoff_<label>_stage1.md.
+UNBLIND_2PT = False                           # <- Stage 1 gate: the `band` arm only.
+UNBLIND_FIELD = False                         # <- Stage 2 gate: flagship + variate arms.
+UNBLIND = UNBLIND_2PT or UNBLIND_FIELD        # back-compat: any reveal at all
 REPO_ROOT = "/home/alex/work/glass_gower_transfer"
 
 import os, sys, json, glob
@@ -200,20 +207,46 @@ for p in bat[:3]:
 """)
 
 md(r"""
-## 8. UNBLINDING — gated
+## 8. UNBLINDING — STAGED, gated
 
-`UNBLIND` is `False` above. **Do not flip it until Tiers 1–3 are signed off in the runbook.** This is
-the only cell that opens raw posterior samples and draws physical contours. It is never executed by
-the agent (guard_blind denies the read), and nbconvert runs of this notebook on mocks leave it skipped.
+Two one-way gates, both `False` above (`UNBLINDING_PROTOCOL.md` Tier 4, DECISIONS U-1):
+
+1. **`UNBLIND_2PT`** — reveals the **2-pt only (bandpower)** arm and nothing else. Flip after
+   Tiers 1–3 are signed off, then write `artifacts/signoff_<label>_stage1.md`.
+2. **`UNBLIND_FIELD`** — reveals the field-level arms. Flip only after Stage 1 is archived.
+
+Nothing seen in Stage 1 may be used to re-tune a Tier 1/2/3 choice before Stage 2 — in particular the
+Tier-2 `--kl-params` choice must be fixed before Stage 1.
+
+This is the only cell that opens raw posterior samples and draws physical contours. It is never
+executed by the agent (guard_blind denies the read), and nbconvert runs on mocks leave it skipped.
 """)
 code(r"""
+BAND_ARM = "band"          # the 2-pt-only NLE arm (M16); Stage 1 reveals this and nothing else
 if not UNBLIND:
-    display(Markdown("### 🔒 blind — set `UNBLIND = True` by hand to draw the physical posteriors"))
+    display(Markdown("### 🔒 blind — Stage 1: set `UNBLIND_2PT = True` by hand to reveal the "
+                     "**2-pt only** posterior. `UNBLIND_FIELD` stays `False` until Stage 1 is "
+                     "archived in `artifacts/signoff_<label>_stage1.md`."))
 else:
     import pandas as pd
     from src.viz import style as S                                     # the paper's corner convention
     from src.blind.standardise import _load_physical, list_raw_runs   # raw access: user-run cell only
     runs = [r for r in list_raw_runs(BLIND_ROOT) if r["label"] == LABEL]
+    # STAGE FILTER — the gates decide which arms may be looked at at all.
+    allowed = set()
+    if UNBLIND_2PT:
+        allowed.add(BAND_ARM)
+    if UNBLIND_FIELD:
+        allowed |= {r["arm"] for r in runs} - {BAND_ARM}
+    dropped = sorted({r["arm"] for r in runs} - allowed)
+    runs = [r for r in runs if r["arm"] in allowed]
+    stage = "1 (2-pt only)" if (UNBLIND_2PT and not UNBLIND_FIELD) else (
+            "2 (field level)" if UNBLIND_FIELD else "none")
+    display(Markdown(f"**Unblinding stage {stage}.** revealed arms: `{sorted(allowed)}`"
+                     + (f"; still blind: `{dropped}`" if dropped else "")))
+    if not runs:
+        display(Markdown(f"⚠️ no runs for the open gate — expected the `{BAND_ARM}` arm in the "
+                         "blind store. Sample it first (`sample_observation.py submit --arms band`)."))
     cols = {n: S.label(n) for n in ("omega_m", "sigma_8", "S8", "w0")}
     def _df(r):
         x, names = _load_physical(r["path"], r["experiment"])

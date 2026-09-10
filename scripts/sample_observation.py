@@ -29,6 +29,8 @@ Arm table (ASSESSMENT_hf.md, 2026-09-07) -> Stage-B experiment name per repeat r
   nla_z        gower_nle_finetune_nla_z_bgp_z8_hf_r{r}_ens9_e150
   vd           gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150
   k2           gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150   (repeats 0-3 only)
+  band         gower_nle_finetune_band_nla_m_bgp_k8_r{r}_ens9_e150       (M16, 2-pt only;
+               repeats 0,2,3,4 -- r1 joins when job 1359261's eval lands)
 Each arm reads the sc8a1 baked observation store `<store-prefix>_<label>_sc8a1` EXCEPT nla_m_nobgp,
 whose training store `gower_mocks_nla_m_f16_fwhm4_lmin56_lcut1400` was baked with
 `--eb-variant fwhm4_lmin56_lcut1400 --keep-variant-tag` and NO `--noise-norm` (prebake log in

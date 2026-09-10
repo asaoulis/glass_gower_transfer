@@ -31,6 +31,33 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 
 PARAMS_OF_INTEREST = ("omega_m", "sigma_8", "S8")
+
+# ADOPTED Tier-2 KL statistic (user decision 2026-09-10; DECISIONS T2-6, artifacts/KL_SUBSET_STUDY.md).
+# The production detector was the FULL 9-param diagonal-Gaussian KL. It is replaced by the
+# full-COVARIANCE symmetric KL over (Omega_m, sigma_8): the diagonal form discards the
+# Omega_m-sigma_8 correlation (rho ~ -0.84), which is where the kappa=2 galaxy-bias signal lives --
+# every single-dimension AUROC for that variate is ~0.5 while the correlated statistic reaches
+# 0.661. It beats the old detector on EVERY variate that carries signal with no loss anywhere
+# (nla +0.009, nla_z +0.019, gbk2 +0.124). Set to "full" to restore the previous behaviour.
+ADOPTED_KL = "om_s8_fullcov"
+
+# ...but the winner is PACK-DEPENDENT, measured 2026-09-10 (KL_SUBSET_STUDY.md sections 2 and 3).
+# On the 2-pt (bandpower) pack the FULL 9-param diagonal KL is best and every variant is worse
+# (nla 0.929 vs 0.917 for om_s8_fullcov, nla_z 0.936 vs 0.932), because the kappa=2 galaxy-bias
+# signal that om_s8_fullcov recovers on the maps is simply ABSENT from the bandpowers -- b_g
+# cancels there, so no estimator can find it (2-pt gbk2 AUROC = 0.500 under every variant).
+# Bias tables are built per pack, so the two may legitimately differ; what must never differ is a
+# table and the observation reading looked up in it (DECISIONS T2-8), which the stamp enforces.
+ADOPTED_KL_BY_PACK = {
+    "gower_npe_finetune_band_nla_m_bgp_ens9": "full",     # M17, 2-pt only
+}
+
+
+def adopted_kl_for(base_dir_or_experiment: str) -> str:
+    """The Tier-2 KL statistic this pack is scored with. Pack-specific, else :data:`ADOPTED_KL`."""
+    import os as _os
+    name = _os.path.basename(str(base_dir_or_experiment).rstrip("/"))
+    return ADOPTED_KL_BY_PACK.get(name, ADOPTED_KL)
 THRESHOLDS = (0.3, 0.5, 1.0)
 VARIATES_DEFAULT = ("gower_bgp_nla_m", "gower_nla", "gower_nla_z", "gower_vd", "gower_gb1p0", "gower_gb1p3", "gower_gbk2")
 IN_DIST = "gower_bgp_nla_m"
@@ -55,8 +82,22 @@ def _scaler_box(experiment: str):
 
 def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_ens1",
               variates: Sequence[str] = VARIATES_DEFAULT, repeats: Sequence[int] = (0, 1, 2, 3, 4),
-              phase6_dir: Optional[str] = None, with_s8: bool = True, max_events_s8: Optional[int] = None) -> Dict[str, np.ndarray]:
-    """Join everything by (variate, test_files basename). Returns column arrays."""
+              phase6_dir: Optional[str] = None, with_s8: bool = True, max_events_s8: Optional[int] = None,
+              match_template: str = "ncosmo300_{r}", kl_params: str = ADOPTED_KL) -> Dict[str, np.ndarray]:
+    """Join everything by (variate, test_files basename). Returns column arrays.
+
+    ``match_template`` names the per-repeat filename tag; it is ``ncosmo300_{r}`` for the
+    field-level pack AND for the 2-pt M17 pack (confirmed from the misspec job log -- do NOT infer
+    it from ``match_num_cosmo``).
+
+    ``kl_params`` selects which ensemble-disagreement statistic fills the ``kl`` column:
+    ``full`` (the production default, byte-identical to reading ``kl_score`` off the npz) or any
+    key of ``src.ml.eval.kl_subsets.ALL_SCORES``. See ``artifacts/KL_SUBSET_STUDY.md``; a table
+    built with one choice must never be read against an observation scored with another.
+
+    Summaries are OPTIONAL: a KL-axis-only pack (no kNN summary extraction, e.g. M17) yields NaN
+    ``knn_score``/``knn_p``/``meanp`` and a printed warning rather than a crash.
+    """
     names, lo, hi = _scaler_box(experiment)
     iom, is8 = names.index("omega_m"), names.index("sigma_8")
     cols: Dict[str, List] = {k: [] for k in ("variate", "repeat", "file", "sim_id", "z_omega_m", "z_sigma_8", "z_S8",
@@ -69,19 +110,28 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
         for f in glob.glob(os.path.join(mdir, "misspec_repeat_disagreement_*.npz")):
             d = np.load(f)
             if d["mu"].shape[0] >= 5:   # the 5-encoder file (a 2-repeat one may also exist)
-                kl_by_file = dict(zip([os.path.basename(x) for x in d["test_files"]], d["kl_score"]))
+                files_d = [os.path.basename(x) for x in d["test_files"]]
+                if kl_params == "full":
+                    kl_vals = d["kl_score"]          # byte-identical to the production path
+                else:
+                    from src.ml.eval.kl_subsets import load_variate, subset_scores
+                    rec = load_variate(base_dir, v, match_template, repeats, names, lo, hi,
+                                       max_events_s8=max_events_s8)
+                    kl_vals = subset_scores(rec, names)[kl_params]
+                    files_d = [os.path.basename(x) for x in rec["files"]]
+                kl_by_file = dict(zip(files_d, kl_vals))
         if phase6_dir:
             p6 = os.path.join(phase6_dir, f"multiencoder_ood_{v}.npz")
             if os.path.exists(p6):
                 d = np.load(p6, allow_pickle=True)
                 meanp_by_file = dict(zip([os.path.basename(x) for x in d["test_files"]], d["combined_p"]))
         for r in repeats:
-            m = np.load(os.path.join(mdir, f"misspec_posterior_moments_ncosmo300_{r}.npz"))
+            m = np.load(os.path.join(mdir, "misspec_posterior_moments_%s.npz" % match_template.format(r=r)))
             files = [os.path.basename(x) for x in m["test_files"]]
             z = m["z"]
             zS8 = np.full(len(files), np.nan)
             if with_s8:
-                sp = os.path.join(mdir, f"misspec_posterior_samples_ncosmo300_{r}.npz")
+                sp = os.path.join(mdir, "misspec_posterior_samples_%s.npz" % match_template.format(r=r))
                 if os.path.exists(sp):
                     d = np.load(sp, mmap_mode="r")
                     S = d["samples"]                       # [S,N,D] scaled
@@ -97,10 +147,17 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
                     zs = (S80 - S8.mean(0)) / S8.std(0)
                     zmap = dict(zip(sfiles[:n], zs))
                     zS8 = np.array([zmap.get(f, np.nan) for f in files])
-            s = np.load(os.path.join(sdir, f"summaries_ncosmo300_{r}.npz"))
-            sfiles = [os.path.basename(x) for x in s["test_files"]]
-            knn_s = dict(zip(sfiles, s["ood_knn_score"]))
-            knn_p = dict(zip(sfiles, s["ood_knn_p"]))
+            spath = os.path.join(sdir, "summaries_%s.npz" % match_template.format(r=r))
+            if os.path.exists(spath):
+                s = np.load(spath)
+                sfiles = [os.path.basename(x) for x in s["test_files"]]
+                knn_s = dict(zip(sfiles, s["ood_knn_score"]))
+                knn_p = dict(zip(sfiles, s["ood_knn_p"]))
+            else:
+                # KL-axis-only pack (no summary extraction was run): NaN the kNN family rather
+                # than crash, so the KL table can still be built.
+                print("[tier2] no summaries at %s -- knn/meanp columns will be NaN" % spath, flush=True)
+                knn_s, knn_p = {}, {}
             for i, f in enumerate(files):
                 cols["variate"].append(v)
                 cols["repeat"].append(r)

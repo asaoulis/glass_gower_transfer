@@ -64,9 +64,22 @@ def main(argv=None):
     ap.add_argument("--rows-cache", default=None, help="npz of the joined rows (built if missing)")
     ap.add_argument("--obs-score", nargs="*", default=[], help="obs_score_<label>.json files from eval --mode obs-score")
     ap.add_argument("--n-boot", type=int, default=200)
+    ap.add_argument("--match-template", default="ncosmo300_{r}",
+                    help="per-repeat filename tag; ncosmo300_{r} for BOTH the field-level pack and "
+                         "the 2-pt M17 pack (confirmed from the misspec job log)")
+    ap.add_argument("--kl-params", default=None,
+                    help="which ensemble-disagreement statistic fills the kl column: full (default, "
+                         "the production detector) or a variant from src.ml.eval.kl_subsets "
+                         "(om_s8, S8, om_s8_w0, om_s8_fullcov). See artifacts/KL_SUBSET_STUDY.md. "
+                         "The choice is STAMPED into bias_tables.json and the markdown header: a "
+                         "table must never be read against an observation scored differently.")
     args = ap.parse_args(argv)
 
-    from src.observation.checks.tier2 import bias_table, format_markdown, load_rows, lookup
+    from src.observation.checks.tier2 import adopted_kl_for, bias_table, format_markdown, load_rows, lookup
+    if args.kl_params is None:
+        args.kl_params = adopted_kl_for(args.base_dir)
+        print("[tier2-tables] kl_params not given -> adopted statistic for this pack: %s"
+              % args.kl_params, flush=True)
     out = Path(args.out_dir)
     out.mkdir(parents=True, exist_ok=True)
     rows = None
@@ -74,15 +87,26 @@ def main(argv=None):
         with np.load(args.rows_cache, allow_pickle=False) as d:
             rows = {("file" if k == "files" else k): d[k] for k in d.files}
     if rows is None:
-        rows = load_rows(args.base_dir, phase6_dir=args.phase6_dir)
+        rows = load_rows(args.base_dir, phase6_dir=args.phase6_dir,
+                         match_template=args.match_template, kl_params=args.kl_params)
         if args.rows_cache:
             np.savez(args.rows_cache, **{("files" if k == "file" else k): v for k, v in rows.items()})
-    tables = {"meanp": bias_table(rows, "meanp", n_boot=args.n_boot),
-              "knn_p": bias_table(rows, "knn_p", n_boot=args.n_boot),
-              "kl": bias_table(rows, "kl", lower_is_ood=False, n_boot=args.n_boot)}
+    tables = {}
+    for det, kw in (("meanp", {}), ("knn_p", {}), ("kl", {"lower_is_ood": False})):
+        if not np.any(np.isfinite(rows[det])):
+            # a KL-axis-only pack (no summary extraction / no phase6) -> that detector has no data
+            print("[tier2-tables] %s is entirely NaN -- skipping its table" % det, flush=True)
+            continue
+        tables[det] = bias_table(rows, det, n_boot=args.n_boot, **kw)
+    provenance = {"base_dir": args.base_dir, "match_template": args.match_template,
+                  "kl_params": args.kl_params, "phase6_dir": args.phase6_dir,
+                  "n_boot": args.n_boot, "detectors": sorted(tables)}
     with open(out / "bias_tables.json", "w") as fh:
-        json.dump(tables, fh, default=float)
+        json.dump({"_provenance": provenance, **tables}, fh, default=float)
     md = ["# Tier-2 bias tables (pooled over variates, equal weight per row)\n",
+          "**Detector provenance — `kl_params = %s`, `match_template = %s`, pack `%s`.** An "
+          "observation reading is only valid against a table built with the SAME `kl_params`.\n"
+          % (args.kl_params, args.match_template, os.path.basename(args.base_dir.rstrip("/"))),
           "Rows = (variate, encoder repeat, event) of `gower_npe_finetune_nla_m_bgp_z8_ens1` x 7 Gower variates; "
           "z = (truth - posterior mean)/posterior std; S8 from the full sample dumps; CI68 = cosmology-block bootstrap; "
           "'excess' = P(|z|>t) minus the in-distribution value in the SAME bin. A calibrated posterior has "

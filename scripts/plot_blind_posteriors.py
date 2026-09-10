@@ -42,8 +42,13 @@ from src.viz import style as S  # noqa: E402
 
 
 def _arm_key(experiment: str) -> str:
-    """Short arm name from the experiment name (nla_m / nla_m_nobgp / nla / nla_z / vd / k2)."""
+    """Short arm name from the experiment name (band / nla_m / nla_m_nobgp / nla / nla_z / vd / k2)."""
     e = experiment
+    # ⚠️ `band` MUST be tested first: the M16 2-pt experiment name
+    # `gower_nle_finetune_band_nla_m_bgp_k8_r0_ens9_e150` contains "nla_m_bgp", so any later
+    # ordering silently labels the 2-pt arm as the flagship map arm.
+    if "_band_" in e:
+        return "band"
     if "bgpk2" in e:
         return "k2"
     if "_vd_" in e:

@@ -320,7 +320,8 @@ def run_obs_score(args) -> int:
     ckpt_root = os.path.join(models_root(), "checkpoints", base)
     blind_root = os.path.join(BLIND_SUBDIR, label)
     reps = [int(r) for r in args.score_repeats]
-    matches = [f"ncosmo300_{r}" for r in reps]
+    match_template = getattr(args, "score_match_template", None) or "ncosmo300_{r}"
+    matches = [match_template.format(r=r) for r in reps]
 
     if not args.score_skip_summaries:
         from src.ml.eval.summaries import run_summary_extraction
@@ -363,6 +364,35 @@ def run_obs_score(args) -> int:
         d = np.load(f)
         if d["mu"].shape[0] == len(reps):
             out["kl"] = float(d["kl_score"][0])
+            # Every parameter-subset variant of the SAME cross-encoder disagreement, as scalars.
+            # Each is a disagreement MAGNITUDE, not a posterior location, so it carries the same
+            # blind status the full KL already has (DECISIONS T2-4). Emitting them all here means
+            # a later `--kl-params` switch never requires re-running a real-data observation
+            # (DECISIONS T2-8). Purely additive: a failure never breaks the reading.
+            try:
+                from src.ml.eval.kl_subsets import (ALL_SCORES, PARAM_BLOCKS, kl_per_dim,
+                                                    load_variate, subset_scores)
+                from src.observation.checks.tier2 import _scaler_box
+                names, lo, hi = _scaler_box(base)
+                rec = load_variate(os.path.join(ckpt_root, blind_root), f"obs_{label}",
+                                   match_template, reps, names, lo, hi)
+                sc = subset_scores(rec, names)
+                for sub in ALL_SCORES:
+                    v = sc[sub]
+                    out[f"kl_{sub}"] = float(v[0]) if np.isfinite(v[0]) else None
+                out["kl_per_dim"] = {p: float(x) for p, x in zip(names, rec["per_dim"][0])}
+                # The statistic the Tier-2 tables are built with. `kl` above stays the FULL
+                # diagonal value so earlier obs_score jsons remain comparable; `kl_adopted` is
+                # the one a bias-table lookup must use, and `kl_params` names it so a reading
+                # can never be matched against a differently-built table (DECISIONS T2-8).
+                from src.observation.checks.tier2 import adopted_kl_for
+                adopted = adopted_kl_for(base)        # pack-specific: 2-pt uses the full KL
+                out["kl_params"] = adopted
+                out["kl_adopted"] = out.get(f"kl_{adopted}")
+                out["kl_param_blocks"] = {b: sum(out["kl_per_dim"][p] for p in ps if p in out["kl_per_dim"])
+                                          for b, ps in PARAM_BLOCKS.items()}
+            except Exception as ex:      # a diagnostic must never take the reading down
+                out["notes"].append(f"subset KLs unavailable: {type(ex).__name__}: {ex}")
     out["notes"].append("posterior moments/samples and summary vectors live under "
                         f"checkpoints/{base}/{blind_root}/ (BLIND); this file carries scalars only")
     res_dir = unblinding_root() / store
