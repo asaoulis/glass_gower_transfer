@@ -2060,3 +2060,86 @@ def _register_band_nle_chain(k):
 _BAND_NLE_WHITEN_K = 8              # the production arm
 _register_band_nle_chain(4)         # superseded control (EVR sum 0.9861)
 _register_band_nle_chain(_BAND_NLE_WHITEN_K)
+
+
+# =============================================================================================
+# === M17 — the 2-pt-only GOWER **NPE** ens9 finetune (user 2026-09-10) ========================
+# =============================================================================================
+# The NPE counterpart of M16. M16 gave the band its NLE chain (GLASS Stage-A flow on frozen band
+# embeddings -> Gower Stage-B ens9 + MCMC); this row gives the SAME band encoder the campaign's
+# standard NPE treatment, so the 2-pt-only variate finally has both inference modes and the
+# "maps vs 2-pt" comparison can be read on the NPE axis as well as the NLE one.
+#
+# RECIPE = `_npe_finetune_z8`, VERBATIM. The user asked for "exactly the same as the usual, old
+# bandpower NPE finetuning", and an audit of every `kids_bandpowers_mlp` row across
+# experiments/ablations/kids_legacy{,_counts,_novd,_dn,_bgp}/archive found NO pre-existing band-only
+# Gower FINETUNE anywhere — every band row that reads a gower store (`gower_only_band_nla_m_novd`,
+# the `bandpower_mlp_representation_*` family) trains FROM SCRATCH on Gower, with no
+# `checkpoint_path`. So "the usual" can only mean the production NPE finetune recipe, which is
+# `_npe_finetune_z8`: whole-model warm start, 10 epochs, lr 1e-5, batch 128, exp scheduler with no
+# warmup, ens9, 300 train/val cosmologies at 0.8/0.2, `test_frac=0` with the 200-id lock file held
+# out. Every one of those keys is copied below and must stay diffable against that function.
+#   ⚠️ 10 epochs is the CURRENT standard (user 2026-07-07 cut it from 25 so the finetune backfills);
+#   the pre-2026-07-07 "old" value was 25. Flagged, not changed — a divergent NPE recipe would
+#   break comparability with every other Gower NPE row in the campaign.
+#
+# ⭐ BUILT FROM `_band_bgp`, **NOT** from `_npe_finetune_z8`. That function hardcodes
+# `_hybrid_lmin50_z8()` as its architecture, so calling it here would build a hybrid and then hand
+# it band-only weights. This is the exact trap M3 documents (`_RESNET_MAPKW`), inverted: the row
+# uses the STRICT `checkpoint_path` loader, so the architecture must match the checkpoint EXACTLY.
+# `_band_bgp(_BGP_A1)` is literally the recipe that produced `checkpoints/kids_legacy_band_nla_m_bgp/`,
+# which is what `_BAND_CKPT_BGP` points at.
+#
+# WARM START: `checkpoint_path` is a DIRECTORY; `train_model` resolves it per repeat via
+# `match_num_cosmo=False` -> `repeat_match="_{i}"` -> `pretrain_ncosmoNone_{i}/checkpoint-*.ckpt`.
+# The band's GLASS pretrain leaves `max_trainval_cosmos` unset, so its run dirs carry the
+# `ncosmoNone` tag and that resolution is unambiguous. Encoder AND NPE flow both transfer, and both
+# are finetuned (there is no `freeze_band` here — for a band-only model the encoder IS the band, and
+# freezing it would make this a flow-only finetune, which is the NLE arm's job, not this one).
+#
+# SPLIT: identical to M16 Stage-B — same `_BGP_GOWER_NLA_M` store, 300 train/val cosmologies at
+# 0.8/0.2, and the **200-id** `_GOWER_TEST_IDS` lock file. So the NPE and NLE 2-pt arms are scored
+# on the SAME held-out cosmologies and their eval jsons are directly comparable, as are these
+# against the flagship map NPE row.
+#
+# LAUNCH — ONE experiment, one job per repeat (keeps all 45 members under one checkpoints/ dir so
+# the ensemble loader finds them):
+#   train --exp gower_npe_finetune_band_nla_m_bgp_ens9 --gpu v100 --repeat-indices {r} --skip-smoke
+# (v100 first, l40s if v100 is blocked — user 2026-09-10. The "encoder finetunes never on v100"
+# rule is a MAP-encoder rule: this row loads no maps at all, its whole model is a small MLP + flow.)
+# `--skip-smoke` is required for the usual two reasons: the local fixture is ONE cosmology so any
+# split-based row false-fails, and `checkpoint_path` resolves to a cluster path that does not exist
+# locally. Replaced by `scratchpad/check_m17.py`, which builds the config exactly as train.py does
+# and asserts model_type/latent_dim/ensemble_repeats/checkpoint_path.
+#
+# RUN DIRS: `finetune_ncosmo300_{r}_ens{j}` (ens>1 appends `_ens{j}`, models/utils.py:182).
+# EVAL: `eval --args "--mode list --experiments gower_npe_finetune_band_nla_m_bgp_ens9"`, which
+# writes `ensemble_evaluation_results_ncosmo300_{r}.json` — named from `run_string`, not
+# `repeat_match`. Run it on l40s/a100, never v100 (the FoM credible-interval step).
+# =============================================================================================
+def _npe_finetune_band_bgp(data_patterns=_BGP_GOWER_NLA_M):
+    """Band-only (2-pt) Gower NPE ens9 finetune — `_npe_finetune_z8`'s recipe on `_band_bgp`'s arch."""
+    c = _band_bgp(_BGP_A1)                     # EXACT architecture of the checkpoint being loaded
+    c["data_patterns"] = data_patterns
+    c["checkpoint_path"] = _BAND_CKPT_BGP      # whole-model load (band + NPE flow), per-repeat "_{i}"
+    c["epochs"] = 10
+    c["lr"] = 1e-5
+    c["batch_size"] = 128
+    c["scheduler_type"] = "exp"
+    c["scheduler_kwargs"] = {"warmup": 0}
+    c["ensemble_repeats"] = 9
+    c["max_trainval_cosmos"] = [300]
+    c["train_frac"] = 0.8
+    c["val_frac"] = 0.2
+    c["test_frac"] = 0.0                       # test = the fixed 200 ids; fracs must sum to 1.0
+    c["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    c["match_num_cosmo"] = False
+    c["repeat_indices"] = [0, 1, 2, 3, 4]
+    c.pop("repeats", None)
+    c["project"] = "gower-finetuning"
+    return c
+
+
+kids_legacy_bgp_experiments["gower_npe_finetune_band_nla_m_bgp_ens9"] = \
+    _assert_final_summary_dim(_npe_finetune_band_bgp(), 8,
+                              "gower_npe_finetune_band_nla_m_bgp_ens9")
