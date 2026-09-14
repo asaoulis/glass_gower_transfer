@@ -101,6 +101,16 @@ def get_default_config():
     config.pin_memory = False
     config.stack_groups = False
     config.augment_eb_patches = True
+    # Opt-in cyclic translation of the E/B patches along the RA (last) axis, drawn once per
+    # sample and shared by north/south. ONLY valid for a full-RA footprint (Euclid DR3's Dec
+    # band), where it is an exact symmetry; leave False for the partial-RA KiDS patches.
+    config.augment_eb_ra_roll = False
+    # Tomographic bin count used to infer the map encoder's input channel width from
+    # dataset_quantities (E-only -> n_tomo_bins, E+B -> 2*n_tomo_bins). 6 for KiDS, 13 for Euclid.
+    config.n_tomo_bins = 6
+    # How many files the data scalers are fit on. Whole files are concatenated per key, so this
+    # is a memory knob as much as a statistical one: raise/lower it with the per-mock size.
+    config.scaler_fit_max_obs = 1000
     # Per-sample E/B map noise normalisation (shear-estimator hardening, Track B).
     # None => off (legacy). 'self' => per-bin footprint standardisation of every E/B map
     # quantity at load time (EBNoiseNormTransform), removing the source-clustering-modulated

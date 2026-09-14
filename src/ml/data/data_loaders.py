@@ -176,6 +176,7 @@ def build_dataloaders(
     dtype=np.float32,
     stack_groups: bool = False,
     augment_eb_patches: bool = False,
+    augment_eb_ra_roll: bool = False,
     max_trainval_cosmos: Optional[int] = None,
     selection_strategy: SelectionStrategy = "random",
     selection_cosmo_params: Optional[List[str]] = None,
@@ -201,7 +202,7 @@ def build_dataloaders(
             cpu_count = 1
         num_workers = max(0, min(8, max(1, cpu_count - 1)))
 
-    transform = RandomEBPatchAugment() if augment_eb_patches else None
+    transform = RandomEBPatchAugment(ra_roll=augment_eb_ra_roll) if augment_eb_patches else None
 
     train_ds, val_ds, test_ds = build_datasets(
         patterns,

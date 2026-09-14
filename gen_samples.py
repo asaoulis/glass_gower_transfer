@@ -145,6 +145,7 @@ def _run_generation(output_suffix: str):
     from config.ablations import ablation_experiments
     from config.kids_legacy import kids_legacy_experiments
     from config.kids_legacy_novd import kids_legacy_novd_experiments
+    from config.euclid import euclid_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
     from src.ml.embeddings.train import load_embedding_model_with_dataloader
     from src.ml.eval.utils import load_best_model_and_build_posterior
@@ -156,6 +157,7 @@ def _run_generation(output_suffix: str):
     experiments.update(ablation_experiments)
     experiments.update(kids_legacy_experiments)
     experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
+    experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
     experiments.update(kids_legacy_bgp_experiments)   # BGP campaign (galaxy-bias prior marginalised)
 
     prior, fixed_parameters = _build_prior()

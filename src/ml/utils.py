@@ -26,16 +26,23 @@ _E_MAP_RE = _re.compile(r"^E(?:_.+)?_(north|south)$")
 _B_MAP_RE = _re.compile(r"^B(?:_.+)?_(north|south)$")
 
 
-def _infer_channels_per_map_from_quantities(dataset_quantities: Optional[Sequence[str]]) -> Optional[int]:
+def _infer_channels_per_map_from_quantities(
+    dataset_quantities: Optional[Sequence[str]],
+    n_bins: int = N_BINS,
+) -> Optional[int]:
     """Infer channels_per_map from dataset_quantities.
 
-    - If only E maps are present (any E_*_{north,south}), use N_BINS.
-    - If B maps are also present, use 2*N_BINS.
+    - If only E maps are present (any E_*_{north,south}), use `n_bins`.
+    - If B maps are also present, use 2*`n_bins`.
     - If no map quantities are present, return None.
 
     Matches both the logical names (E_north) and explicit smoothing-variant names
     (E_fwhm8_north). NOTE: this counts E-vs-(E+B) for a SINGLE smoothing variant; loading
     several variants as separate stacked inputs would need an explicit channels_per_map.
+
+    `n_bins` defaults to the KiDS tomography (6) and is threaded from `config.n_tomo_bins`, so a
+    survey with a different tomographic binning (Euclid DR3 has 13) builds the right stem width
+    instead of silently producing a 6-channel encoder against 13-channel data.
     """
     if not dataset_quantities:
         return None
@@ -46,8 +53,8 @@ def _infer_channels_per_map_from_quantities(dataset_quantities: Optional[Sequenc
     if not has_e and not has_b:
         return None
     if has_b:
-        return 2*N_BINS
-    return N_BINS
+        return 2*n_bins
+    return n_bins
 
 
 class DataDictScalerTransform:
@@ -268,6 +275,7 @@ def prepare_data_parameters(config):
         dtype=np.float32,
         stack_groups=getattr(config, 'stack_groups', False),
         augment_eb_patches=getattr(config, 'augment_eb_patches', True),
+        augment_eb_ra_roll=getattr(config, 'augment_eb_ra_roll', False),
         max_trainval_cosmos=max_trainval_cosmos,
         selection_strategy=getattr(config, 'train_val_selection_strategy', 'random'),
         selection_cosmo_params=selection_cosmo_params,
@@ -309,6 +317,9 @@ def prepare_data_parameters(config):
         scaler_fit_paths,
         nested_keys,
         keys_to_scale=data_keys_to_scale,
+        # Whole files are concatenated per key before the fit, so this cap is a MEMORY knob, not
+        # just a statistics one: at Euclid's 28 MB/mock, the 1000 default would need ~28 GB/key.
+        max_obs=int(getattr(config, 'scaler_fit_max_obs', 1000) or 1000),
         seed=int(getattr(config, 'scaler_fit_seed', 0) or 0),
     )
 
@@ -385,7 +396,10 @@ def build_model(config, test_dataloader=None):
 
     # If channels_per_map not explicitly set, infer it from dataset_quantities
     if 'channels_per_map' not in model_kwargs:
-        ch = _infer_channels_per_map_from_quantities(getattr(config, 'dataset_quantities', None))
+        ch = _infer_channels_per_map_from_quantities(
+            getattr(config, 'dataset_quantities', None),
+            n_bins=int(getattr(config, 'n_tomo_bins', N_BINS) or N_BINS),
+        )
         if ch is not None:
             model_kwargs['input_channels'] = ch
             print("Inferred channels_per_map from dataset_quantities: setting input_channels to", ch)

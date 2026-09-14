@@ -48,14 +48,20 @@ def _resolve_eb_quantity(quantity: str, eb_variant: Optional[str]) -> Optional[T
 
 
 class RandomEBPatchAugment:
-    """Random E/B patch augmentation with flips and 180° rotation."""
+    """Random E/B patch augmentation with flips, 180° rotation and (opt-in) RA cyclic roll."""
 
-    def __init__(self):
+    def __init__(self, ra_roll: bool = False):
         self._augs = [
             ("vflip", self._vflip),
             ("hflip", self._hflip),
             ("rot180", self._rot180),
         ]
+        # Cyclic translation along the last (longitude) axis. Only valid when the stored patch
+        # spans the FULL 360 deg of RA, as the Euclid DR3 band does -- there the footprint is
+        # exactly invariant under an RA rotation, so the roll is an exact symmetry of the forward
+        # model rather than an approximation. It is meaningless for the KiDS N/S patches (a
+        # partial-RA footprint), hence opt-in and OFF by default.
+        self.ra_roll = bool(ra_roll)
 
     @staticmethod
     def _vflip(x):
@@ -76,10 +82,24 @@ class RandomEBPatchAugment:
         return np.rot90(x, k=2, axes=(-2, -1))
 
     @staticmethod
+    def _roll(x, shift: int):
+        if torch.is_tensor(x):
+            return torch.roll(x, shifts=int(shift), dims=-1)
+        return np.roll(x, int(shift), axis=-1)
+
+    @staticmethod
     def _rand_bool(use_torch: bool) -> bool:
         if use_torch:
             return bool(torch.randint(0, 2, ()).item())
         return bool(np.random.randint(0, 2))
+
+    @staticmethod
+    def _rand_shift(width: int, use_torch: bool) -> int:
+        if width <= 1:
+            return 0
+        if use_torch:
+            return int(torch.randint(0, int(width), ()).item())
+        return int(np.random.randint(0, int(width)))
 
     def __call__(self, data: Dict[str, Union[np.ndarray, torch.Tensor]]):
         present = [k for k in data if _EB_QUANTITY_RE.match(k)]
@@ -94,6 +114,15 @@ class RandomEBPatchAugment:
             side = "north" if k.endswith("north") else "south"
             by_patch.setdefault(side, []).append(k)
 
+        # The RA shift is drawn ONCE PER SAMPLE and applied to every side. north/south are the
+        # two adjacent halves of one Dec band on a shared longitude grid, so a physical RA
+        # rotation moves both by the same amount; independent per-side shifts would scramble the
+        # large-scale modes that run across the Dec=0 split and would NOT be an exact symmetry.
+        ra_shift = None
+        if self.ra_roll:
+            first_any = data[present[0]]
+            ra_shift = self._rand_shift(first_any.shape[-1], torch.is_tensor(first_any))
+
         for patch, keys in by_patch.items():
             first_val = data[keys[0]]
             use_torch = torch.is_tensor(first_val)
@@ -103,6 +132,8 @@ class RandomEBPatchAugment:
                 for flag, (_, fn) in zip(flags, self._augs):
                     if flag:
                         x = fn(x)
+                if ra_shift:
+                    x = self._roll(x, ra_shift)
                 data[k] = x
         return data
 
