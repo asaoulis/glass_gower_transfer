@@ -176,10 +176,26 @@ euclid_experiments["euclid_hybrid_bench_b32"] = _bench(32)
 #                                                       => 13.5 cycles
 #     Euclid:           16 336 train images (b16 => 1021 steps/epoch)
 #       -> cyclic_period_steps = 600 000 / 16 = 37 500   (ONE KiDS cycle's worth of images)
-#       -> a FULL image match would be 8.10M / 16 336 = 496 epochs ~ 83 h/repeat at the measured
-#          ~600 s/epoch. That is past the 48 h train wall and there is no mid-run resume (gap C4),
-#          so the user chose the HALF budget (2026-09-15):
-#       -> epochs 248 = 4.05 M images = 6.75 cycles, ~42 h/repeat, inside one 48 h wall.
+#       -> a FULL image match would be 8.10M / 16 336 = 496 epochs, and HALF of it 248 epochs.
+#          NEITHER FITS. The gatekeeper caps a train job at 48 h
+#          (`ssh_glass_gatekeeper.sh` train-submit: `need_num "$wall" 0.1 48`) and the MEASURED
+#          steady state is 764-926 s/epoch (last-8 means of the three step-matched repeats under
+#          3-way l40s contention, spikes to 1231 s); even the B1 bench's DEDICATED-card 733 s
+#          gives 248 x 733 = 50.5 h. So no amount of staggering or running fewer jobs at once
+#          rescues 248 - it does not fit uncontended either. There is no mid-run resume (gap C4).
+#          User decision 2026-09-15: take the largest budget that fits ONE 48 h job, ~170 epochs.
+#
+# ⭐ Why 155 and not 170. The cyclic phase starts at the LR FLOOR (SequentialLR hands over to
+# CyclicLR at `warmup_steps`, and CyclicLR's step 0 is base_lr = 0.05*lr), so a run ending on an
+# INTEGER number of cycles ends annealed, while one ending mid-cycle stops on the way back up.
+# That is a detail at the foundation's 13.5 cycles; at ~4 it is most of the schedule.
+#     155 ep x 1021 = 158 255 steps; warmup = 5 % = 7 912; 150 343 cyclic steps / 37 500
+#                   = 4.009 cycles -> ends 0.9 % of a cycle past the floor, i.e. annealed.
+#     170 ep would give 4.40 cycles, ending at ~80 % of peak LR - and its 4th (last) LR minimum
+#                   falls at epoch ~155 ANYWAY, so the extra 15 epochs only climb away from the
+#                   point the best checkpoint would come from.
+# 155 epochs = 2.53 M images = 31 % of the KiDS foundation, 4 full cycles, and at 900 s/epoch runs
+# 39 h against the 48 h wall - ~9 h of margin, still fitting even at 1000 s/epoch.
 #
 # NOT changed, deliberately:
 #   * `lr` stays 1e-4 — the user explicitly declined to rescale the PEAK LR (a linear batch rescale
@@ -194,7 +210,7 @@ euclid_experiments["euclid_hybrid_bench_b32"] = _bench(32)
 # silently merge two recipes into one "best" checkpoint (same trap documented for M11b in
 # config/kids_legacy_bgp.py).
 _IMG_CYCLE_STEPS = 37500
-_IMG_EPOCHS = 248
+_IMG_EPOCHS = 155
 
 
 def _euclid_hybrid_imgmatch(repeat_indices=(0, 1)):
