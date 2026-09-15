@@ -111,6 +111,11 @@ def get_default_config():
     # How many files the data scalers are fit on. Whole files are concatenated per key, so this
     # is a memory knob as much as a statistical one: raise/lower it with the per-mock size.
     config.scaler_fit_max_obs = 1000
+    # Optional per-key override of the cap above, e.g. {'mixed_bandpowers': 1000}. The cap is a
+    # memory knob driven by the LARGEST key, so a config whose maps force it down would otherwise
+    # also starve a tiny key like the bandpowers -- which matters when a later stage FREEZES an
+    # encoder that was trained against the un-starved scaler. None => the single cap applies to all.
+    config.scaler_fit_max_obs_by_key = None
     # Print a per-epoch [throughput] line (steps, samples/s, peak GPU memory, peak host RSS) to
     # stdout so a sizing benchmark can read them straight out of the SLURM .out. Off by default.
     config.log_throughput = False

@@ -111,16 +111,47 @@ class TransformingDataset(torch.utils.data.Dataset):
         return data, cosmo
 
 
+def _resolve_scaler_fit_max_obs(config):
+    """Scaler-fit file cap: an int, or a per-key dict built from the optional by-key override.
+
+    `scaler_fit_max_obs` is the cap for every key; `scaler_fit_max_obs_by_key` overrides it for
+    named keys (see `_cap_for` for why that distinction matters across a two-stage frozen run).
+    """
+    default = int(getattr(config, 'scaler_fit_max_obs', 1000) or 1000)
+    by_key = getattr(config, 'scaler_fit_max_obs_by_key', None)
+    if not by_key:
+        return default
+    out = {k: int(v) for k, v in dict(by_key).items()}
+    out["default"] = default
+    return out
+
+
 def _fit_data_key_scalers_from_paths(
     train_paths: Sequence[str],
     nested_keys: Dict[str, Tuple[str, ...]],
     keys_to_scale: Optional[Sequence[str]] = None,
-    max_obs : int = 1_000,
+    max_obs=1_000,
     seed: int = 0,
 ) -> Dict[str, BaseScaler]:
     key_scalers: Dict[str, BaseScaler] = {}
     if keys_to_scale is None:
         keys_to_scale = list(nested_keys.keys())
+
+    # `max_obs` may be a plain int (one cap for every key, the historical behaviour) or a dict
+    # {key: cap, 'default': cap} for a PER-KEY cap. The per-key form exists because the cap is a
+    # memory knob driven by the biggest key: Euclid's E maps are ~28 MB/file, so they need a cap
+    # of ~100, but `mixed_bandpowers` is ~3 kB/file and 1000 of them cost ~3 MB. Forcing the
+    # bandpowers down to the maps' cap makes a two-stage run inconsistent with ITSELF -- a Stage-I
+    # band encoder fits its scaler on 1000 files, and a Stage-II run that FREEZES that encoder
+    # then feeds it inputs standardised from only 100, i.e. shifted by ~sd*sqrt(1/100-1/1000)
+    # ~= 0.095 sd per feature. A frozen module cannot adapt to that; it must see the distribution
+    # it was trained on.
+    def _cap_for(key: str) -> int:
+        if isinstance(max_obs, dict):
+            v = max_obs.get(key, max_obs.get("default", 1_000))
+        else:
+            v = max_obs
+        return int(v or 1_000)
 
     # Subsampling RNG. This was `np.random.shuffle(train_paths)`, which did two bad things:
     #   (1) it drew from the process-wide UNSEEDED stream, so every fitted scaler was
@@ -141,7 +172,10 @@ def _fit_data_key_scalers_from_paths(
         single_key = {key: nested_keys[key]}
         # Per-key permutation (each key historically saw a different subsample; keep that), but
         # taken from the local generator and WITHOUT mutating `train_paths`.
-        order = rng.permutation(len(train_paths))[:max_obs]
+        # NB the permutation is drawn in full and sliced afterwards, so the generator advances
+        # identically whatever the cap is -- changing one key's cap cannot perturb another key's
+        # subsample, and a cap of 1000 here selects a strict SUPERSET of the same cap-100 draw.
+        order = rng.permutation(len(train_paths))[:_cap_for(key)]
         for p in [train_paths[i] for i in order]:
             # Skip corrupt/truncated files or ones missing the requested group (robust to a
             # large, partially-generated out-of-core dataset) — same policy as H5CosmoDataset.
@@ -319,7 +353,7 @@ def prepare_data_parameters(config):
         keys_to_scale=data_keys_to_scale,
         # Whole files are concatenated per key before the fit, so this cap is a MEMORY knob, not
         # just a statistics one: at Euclid's 28 MB/mock, the 1000 default would need ~28 GB/key.
-        max_obs=int(getattr(config, 'scaler_fit_max_obs', 1000) or 1000),
+        max_obs=_resolve_scaler_fit_max_obs(config),
         seed=int(getattr(config, 'scaler_fit_seed', 0) or 0),
     )
 

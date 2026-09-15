@@ -128,7 +128,14 @@ def _euclid_hybrid_z8_resnet():
         "flow_kwargs": {"hidden_features": 32},
         "project": "euclid-pretraining",
         "cosmo_param_names": _COSMO_3,
-        "scaler_fit_max_obs": 100,       # code change C2
+        # C2, per-key. The cap is a MEMORY knob set by the biggest key: the E maps are
+        # ~28 MB/file so they need 100, but `mixed_bandpowers` is ~3 kB/file and 1000 costs ~3 MB.
+        # The bandpower cap MUST match Stage I's (`_euclid_band` leaves the 1000 default),
+        # because Stage II FREEZES that band encoder: `mixed_bandpowers` is the first key in both
+        # stages and the fit's RNG is seeded identically, so cap 1000 here reproduces Stage I's
+        # scaler EXACTLY, while cap 100 would hand the frozen encoder inputs shifted ~0.095 sd.
+        "scaler_fit_max_obs": 100,
+        "scaler_fit_max_obs_by_key": {"mixed_bandpowers": 1000},
         # Q5: RA cyclic roll — an EXACT symmetry of this footprint (full-RA band), so it is free
         # augmentation for a 20k-sample set that otherwise has none. Code change C3.
         "augment_eb_ra_roll": True,
