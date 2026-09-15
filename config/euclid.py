@@ -148,6 +148,7 @@ def _bench(batch, epochs=2):
     c["pretrained_band_ckpt_path"] = None   # band not trained yet; from-scratch band is fine here
     c["freeze_band"] = False
     c["project"] = "euclid-bench"
+    c["log_throughput"] = True   # B1: the whole point of the bench is these numbers
     return c
 
 

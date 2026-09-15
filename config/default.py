@@ -111,6 +111,9 @@ def get_default_config():
     # How many files the data scalers are fit on. Whole files are concatenated per key, so this
     # is a memory knob as much as a statistical one: raise/lower it with the per-mock size.
     config.scaler_fit_max_obs = 1000
+    # Print a per-epoch [throughput] line (steps, samples/s, peak GPU memory, peak host RSS) to
+    # stdout so a sizing benchmark can read them straight out of the SLURM .out. Off by default.
+    config.log_throughput = False
     # Per-sample E/B map noise normalisation (shear-estimator hardening, Track B).
     # None => off (legacy). 'self' => per-bin footprint standardisation of every E/B map
     # quantity at load time (EBNoiseNormTransform), removing the source-clustering-modulated

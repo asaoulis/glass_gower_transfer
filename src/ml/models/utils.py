@@ -1,10 +1,51 @@
 import os
+import resource
+import time
 import torch
 import wandb
 import pytorch_lightning as pl
 from ..eval.loading_model import get_best_checkpoint
 from ..tmpdir import redirect_tempdir
 from ..utils import prepare_data_and_model, set_seed_for_repeat_and_ensemble
+
+
+class ThroughputMonitor(pl.Callback):
+    """Per-epoch throughput + peak-memory line on stdout (so it lands in the SLURM .out).
+
+    Added for the Euclid B1 sizing benchmark: the numbers that set `batch_size` / `epochs`
+    (samples/s, steps/epoch, peak GPU memory, peak host RSS) were otherwise only obtainable
+    from W&B system metrics, which are unavailable when the cluster job logs offline.
+    Rank-zero only, no effect on training. Enabled by `config.log_throughput`.
+    """
+
+    def __init__(self):
+        self._t0 = None
+
+    def on_train_epoch_start(self, trainer, pl_module):
+        self._t0 = time.time()
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+
+    def on_train_epoch_end(self, trainer, pl_module):
+        if self._t0 is None or trainer.global_rank != 0:
+            return
+        dt = max(time.time() - self._t0, 1e-9)
+        steps = int(trainer.num_training_batches) if trainer.num_training_batches not in (
+            None, float("inf")) else -1
+        bs = getattr(trainer.train_dataloader, "batch_size", None) or 0
+        smp_s = (steps * bs / dt) if steps > 0 else float("nan")
+        gpu_alloc = gpu_resv = 0.0
+        if torch.cuda.is_available():
+            gpu_alloc = torch.cuda.max_memory_allocated() / 2**30
+            gpu_resv = torch.cuda.max_memory_reserved() / 2**30
+        rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20
+        print(
+            f"[throughput] epoch={trainer.current_epoch} steps={steps} batch_size={bs} "
+            f"wall_s={dt:.1f} smp_s={smp_s:.2f} "
+            f"gpu_alloc_GiB={gpu_alloc:.2f} gpu_reserved_GiB={gpu_resv:.2f} "
+            f"host_rss_GiB={rss:.2f}",
+            flush=True,
+        )
 
 def create_run_name(config, match_string_logger):
     pretrain = config.checkpoint_path is None
@@ -67,7 +108,8 @@ def fit_model(
     experiment_name,
     run_name,
     base_path,
-    accumulate_grad_batches=1
+    accumulate_grad_batches=1,
+    log_throughput=False,
 ):
     # Stage fsspec's checkpoint temp files on the models filesystem, not the
     # compute node's small /tmp (see src/ml/tmpdir.py -- this is the errno-28 fix).
@@ -98,6 +140,10 @@ def fit_model(
 
     lr_monitor = pl.callbacks.LearningRateMonitor(logging_interval="step")
 
+    callbacks = [checkpoint_callback, lr_monitor]
+    if log_throughput:
+        callbacks.append(ThroughputMonitor())
+
     # Precision: when ml_perf.amp scopes bf16 to the map encoder (model.model.amp_encoder),
     # Lightning must run fp32 — a SECOND whole-forward autocast (precision='bf16-mixed') would
     # push the flow's rational-quadratic spline to bf16 and crash at its index_put. The scoped
@@ -111,7 +157,7 @@ def fit_model(
         devices=devices,
         strategy=strategy,
         logger=wandb_logger,          # None on non-zero ranks
-        callbacks=[checkpoint_callback, lr_monitor],
+        callbacks=callbacks,
         log_every_n_steps=10,
         check_val_every_n_epoch=1,
         gradient_clip_val=0.5,
@@ -219,6 +265,7 @@ def train_model(config):
                 run_name=run_name,
                 base_path=cfg.base_path,
                 accumulate_grad_batches=accumulate_grad_batches,
+                log_throughput=bool(getattr(cfg, "log_throughput", False)),
             )
             if wandb_logger is not None:
                 wandb.finish()
