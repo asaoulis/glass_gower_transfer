@@ -161,3 +161,93 @@ def _bench(batch, epochs=2):
 
 euclid_experiments["euclid_hybrid_bench_b16"] = _bench(16)
 euclid_experiments["euclid_hybrid_bench_b32"] = _bench(32)
+
+
+# === Amendment 2026-09-15 — the IMAGE-matched schedule (user directive) =========================
+# The first Stage-II submit (`euclid_hybrid_z8_resnet`, 3 repeats, jobs 1363863/4/5) was sized to
+# STEP-match the KiDS b100 foundation: 1021 steps/ep x 80 ep = 81.7k steps vs KiDS's 810 x 100 =
+# 81.0k, with `cyclic_period_steps` left at the foundation's 6000. Verified on W&B (the lr trace is
+# triangular between 0.05*lr and lr) and correct as far as it goes — but it matches the wrong
+# quantity. "Steps" changed MEANING when the batch dropped 100 -> 16; the user's intent is to match
+# the number of IMAGES the network sees, per cycle and in total:
+#
+#     KiDS foundation:  81 000 img/epoch x 100 epochs   = 8.10 M images total
+#                       6 000 steps x b100              = 600 000 images per cyclic period
+#                                                       => 13.5 cycles
+#     Euclid:           16 336 train images (b16 => 1021 steps/epoch)
+#       -> cyclic_period_steps = 600 000 / 16 = 37 500   (ONE KiDS cycle's worth of images)
+#       -> a FULL image match would be 8.10M / 16 336 = 496 epochs ~ 83 h/repeat at the measured
+#          ~600 s/epoch. That is past the 48 h train wall and there is no mid-run resume (gap C4),
+#          so the user chose the HALF budget (2026-09-15):
+#       -> epochs 248 = 4.05 M images = 6.75 cycles, ~42 h/repeat, inside one 48 h wall.
+#
+# NOT changed, deliberately:
+#   * `lr` stays 1e-4 — the user explicitly declined to rescale the PEAK LR (a linear batch rescale
+#     would give 2e-4 * 16/100 = 3.2e-5; the halved 1e-4 already in place is the sqrt rescale).
+#   * warmup needs no edit: `lightning/base.py` uses warmup_frac=0.05 of TOTAL steps (the config's
+#     `warmup: 2000` key is DEAD — cf. the note at config/kids_legacy_novd.py:430), so it tracks the
+#     epoch count automatically. 248 ep => 12 660 warmup steps = 5%, exactly as KiDS.
+#
+# ⭐ SEPARATE EXPERIMENT NAMES ARE LOAD-BEARING. These must NOT write into
+# `euclid_hybrid_z8_resnet/pretrain_ncosmoNone_{0,1}/` alongside the step-matched run: the folder is
+# shared per repeat index and `find_best_checkpoint` takes the GLOBAL minimum across it, which would
+# silently merge two recipes into one "best" checkpoint (same trap documented for M11b in
+# config/kids_legacy_bgp.py).
+_IMG_CYCLE_STEPS = 37500
+_IMG_EPOCHS = 248
+
+
+def _euclid_hybrid_imgmatch(repeat_indices=(0, 1)):
+    """`euclid_hybrid_z8_resnet` with the schedule matched on IMAGES instead of optimiser steps.
+
+    Derived from the running recipe so the architecture, the frozen Euclid band, the data store and
+    every tuning knob cannot drift — only the epoch count and the cyclic period move."""
+    c = _euclid_hybrid_z8_resnet()
+    c["epochs"] = _IMG_EPOCHS
+    c["scheduler_kwargs"] = {**c["scheduler_kwargs"],
+                             "cyclic_period_steps": _IMG_CYCLE_STEPS}
+    c["repeat_indices"] = list(repeat_indices)
+    return c
+
+
+euclid_experiments["euclid_hybrid_z8_resnet_imgmatch"] = _euclid_hybrid_imgmatch()
+
+
+# === The warm-start arm — KiDS bgp r0 map CNN into the Euclid hybrid ============================
+# User directive 2026-09-15: one repeat (r0) warm-started from the KiDS "p9 foundation"
+# `kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1` — the 9-param cosmology/IA encoder the BGP campaign
+# itself uses as a warm-start parent — while the NEW Euclid bandpower encoder is still loaded
+# separately and FROZEN (`pretrained_band_ckpt_path` + `freeze_band`, inherited untouched).
+# So: KiDS supplies ONLY the map CNN; nothing KiDS-shaped touches the 2-pt branch.
+#
+# ⚠️ `backbone_prefix` MUST be overridden. The default `'shared_cnn.backbone.'` describes the UNet
+# encoder's layout; the PreActResNet has NO `backbone.` level — its tensors are
+# `...shared_cnn.{stem,stages.*,poolproj.*,fc.*}` (verified against the on-disk r0 checkpoint,
+# epoch=56 val -5.3183). With the default prefix `k.startswith(...)` matches NOTHING and you get a
+# SILENT zero-key "warm" start (the failure class of memory `e890aec-embeddings-source-encoder-cutover`).
+#
+# Shape mismatch is EXPECTED and is exactly one tensor: `stem.weight` is (32, 6, 3, 3) for KiDS's 6
+# tomographic bins vs (32, 13, 3, 3) for Euclid's 13. `load_partial_weights` shape-skips it (random
+# init) and loads everything downstream.
+# ⭐ LAUNCH-VERIFY in the cluster log: `Loaded keys: 108`, exactly 1 skipped-shape entry naming
+# `stem.weight`, and the resolved source path ending `pretrain_ncosmoNone_0/`. `Loaded keys: 0` means
+# the prefix is wrong — cancel rather than train a config that only LOOKS warm.
+# The local smoke CANNOT gate this (smoke_test_experiment.py nulls every `pretrained_*_ckpt_path`);
+# it is gated instead by scripts' dry-run against the local checkpoint copy, see the task logbook.
+_KIDS_BGP_SC8A1_CKPT_DIR = f"{_CKPT}/kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1/"
+
+
+def _euclid_hybrid_imgmatch_warm():
+    """The image-matched recipe, r0 only, with the KiDS bgp map CNN as a warm start.
+
+    freeze_backbone stays False: the CNN is an initialisation to fine-tune, not a frozen feature
+    extractor — the only frozen module is the Euclid bandpower encoder, as in every other Stage-II
+    row here. lr stays 1e-4, the same as the arm it is compared against (user, 2026-09-15)."""
+    c = _euclid_hybrid_imgmatch(repeat_indices=(0,))
+    c["pretrained_backbone_ckpt_path"] = _KIDS_BGP_SC8A1_CKPT_DIR
+    c["backbone_prefix"] = "model.embedding_net.patch_encoder.shared_cnn."
+    c["freeze_backbone"] = False
+    return c
+
+
+euclid_experiments["euclid_hybrid_z8_resnet_imgmatch_warm"] = _euclid_hybrid_imgmatch_warm()
