@@ -267,3 +267,47 @@ def _euclid_hybrid_imgmatch_warm():
 
 
 euclid_experiments["euclid_hybrid_z8_resnet_imgmatch_warm"] = _euclid_hybrid_imgmatch_warm()
+
+
+# === Resume arm — pure checkpoint reload of the finished image-matched runs ======================
+# User request 2026-09-17: relaunch both image-matched repeats as PURE CHECKPOINT RELOADS, i.e.
+# restore the trained weights and train again from there. `checkpoint_path` is exactly that
+# mechanism: `maybe_resolve_repeat_checkpoint` resolves the best checkpoint of the SOURCE
+# experiment per repeat, `build_model` restores the full model state, and every `pretrained_*`
+# warm start is skipped so nothing overwrites the restored weights.
+#
+# Why this is the route back to the FULL image match: the original target was 8.10 M images
+# (496 epochs), cut to 155 because 496 does not fit the 48 h wall and there is no mid-run resume.
+# Each reload adds another 2.53 M images, so 155 -> 310 -> 465 walks up to the full budget in
+# wall-sized pieces.
+#
+# ⚠️ SEPARATE EXPERIMENT NAME IS LOAD-BEARING. Setting `checkpoint_path` on the ORIGINAL name
+# would write `finetune_ncosmoNone_{i}` beside the existing `pretrain_ncosmoNone_{i}` in one
+# folder, and `get_best_checkpoint` matches on the `ncosmoNone_{i}` substring — so a requeue
+# would resolve the run's OWN output as its source. Pointing a new experiment at the old dir
+# keeps source and destination disjoint.
+#
+# ⚠️ The band stays FROZEN. `build_model` skips the pretrained-band load when `checkpoint_path`
+# is set (the band arrives inside the restored state), but honours `freeze_band` explicitly via
+# `_freeze_band_encoder()` — verified at src/ml/utils.py:563. Do not drop `freeze_band`.
+#
+# EXPECTED BEHAVIOUR: this is a reload, NOT a Lightning mid-run resume — optimizer and scheduler
+# start fresh, so the LR warms back up to 1e-4 and runs 4 more cycles. Val will get WORSE before
+# it gets better as the first cycle kicks the model out of its annealed minimum; judge the run on
+# its final ep154 annealing, not on early epochs. The originals are untouched in the source
+# `pretrain_*` dirs, so a resume that ends worse costs nothing.
+_IMGMATCH_CKPT_DIR = f"{_CKPT}/euclid_hybrid_z8_resnet_imgmatch/"
+
+
+def _euclid_hybrid_imgmatch_resume():
+    """`euclid_hybrid_z8_resnet_imgmatch` restarted from its own finished checkpoints.
+
+    Derived from the image-matched builder so the architecture, data, frozen band and the whole
+    155-epoch / 37 500-step schedule are identical — the ONLY change is that training starts from
+    the trained weights instead of a random init."""
+    c = _euclid_hybrid_imgmatch(repeat_indices=(0, 1))
+    c["checkpoint_path"] = _IMGMATCH_CKPT_DIR
+    return c
+
+
+euclid_experiments["euclid_hybrid_z8_resnet_imgmatch_resume"] = _euclid_hybrid_imgmatch_resume()
