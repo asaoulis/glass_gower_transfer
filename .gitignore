@@ -19,6 +19,9 @@ build/
 *.so.0
 *.err
 *.ipynb
+# ...except this one: a self-contained, output-free comparison notebook meant to be
+# shared with collaborators alongside the posterior bundle (see scripts/).
+!scripts/euclid_posterior_comparison.ipynb
 wandb/
 *.json
 # Committed data files: locked fixed test-set sim_id lists (override the *.json ignore)
