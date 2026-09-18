@@ -102,8 +102,28 @@ def parse_args():
 
     # Core switches
     parser.add_argument("--simulator-type", type=str, default="gower_street",
-                        choices=["gower_street", "glass", "smoke"],
-                        help="Simulator backend ('smoke' = reduced-cost local pre-flight)")
+                        choices=["gower_street", "glass", "smoke", "external"],
+                        help="Simulator backend ('smoke' = reduced-cost local pre-flight; "
+                             "'external' = an ingested external shell cube, see --ext-variant)")
+
+    parser.add_argument("--ext-variant", type=str, default="dmo",
+                        choices=["dmo", "bary"],
+                        help="--simulator-type external: which cube of the external box to "
+                             "stream (dmo = gravity-only, bary = baryonified)")
+    parser.add_argument("--ext-data-dir", type=str, default=None,
+                        help="--simulator-type external: override the box directory "
+                             "(default: src/external_mocks FLAMINGO_BIG['data_dir'])")
+    parser.add_argument("--outer-indices", type=str, default=None,
+                        help="Comma-separated GLOBAL outer (shape-noise) indices to run in this "
+                             "process. Companion to --rot-indices: together they shard ONE "
+                             "cosmology's (outer, rot) blocks across concurrent processes, which "
+                             "is the only parallelism available when there is a single cosmology "
+                             "(the MPI Scatterv is over cosmologies). outer_idx stays global.")
+    parser.add_argument("--rot-indices", type=str, default=None,
+                        help="Comma-separated GLOBAL rotation indices to run in this process "
+                             "(e.g. '0,1'). Shards the per-rotation blocks of ONE cosmology "
+                             "across concurrent processes; rot_idx stays global so filenames "
+                             "and the fixed-RNG streams are unchanged.")
 
     parser.add_argument("--kids-systematics", action="store_true",
                         help="Enable KiDS systematics")
@@ -526,6 +546,12 @@ SIM_TYPE_CONFIGS = {
         "rotation_specs": KiDS_PATCH_GOWER_ROTATIONS,
         "get_sim_samples": lambda: np.arange(193, 781 + 1),
     },
+    # One external cosmology (the ingested box); Gower rotations, because the mock cloud we
+    # compare it against is the Gower suite.
+    "external": {
+        "rotation_specs": KiDS_PATCH_GOWER_ROTATIONS,
+        "get_sim_samples": lambda: np.arange(1),
+    },
     # Reduced-cost local pre-flight: a single sim; rotations/augmentations collapsed below.
     "smoke": {
         "rotation_specs": KiDS_PATCH_GLASS_ROTATIONS,
@@ -786,6 +812,10 @@ if __name__ == "__main__":
         if not data_dir.exists():
             data_dir = Path(__file__).resolve().parent / "kids-legacy-sbi" / "data"
         gower_prior = None
+    elif SIMULATOR_TYPE == "external":
+        # The external box has ONE fixed cosmology read from its own control.par / CLASS file,
+        # so the Gower empirical prior (and its cluster-pathed CSV) is not needed.
+        gower_prior = None
     else:
         gower_prior = GowerStPrior.from_csv(csv_path, drop_first=192)
     # Deterministic per-sim_id cosmology sampler (Gower Street flow prior), glass path only.
@@ -802,6 +832,20 @@ if __name__ == "__main__":
         rotation_specs =  [{"rot": 0, "flip": False, "backend": "pixel"}]
     else:
         rotation_specs = SIM_TYPE_CONFIGS[SIMULATOR_TYPE]["rotation_specs"]
+
+    # Shard one cosmology's rotation blocks across concurrent processes. The sim's MPI
+    # parallelism is over COSMOLOGIES (Scatterv), so a single-cosmology run cannot use extra
+    # ranks; this is how a one-cosmology external run uses more than one core-group.
+    ROT_INDICES = None
+    if args.rot_indices:
+        ROT_INDICES = {int(v) for v in args.rot_indices.split(",") if v.strip() != ""}
+        bad = {i for i in ROT_INDICES if i >= len(rotation_specs)}
+        if bad:
+            raise ValueError(f"--rot-indices {sorted(bad)} out of range "
+                             f"(only {len(rotation_specs)} rotation specs)")
+        if rank == 0:
+            print(f"[rank 0] --rot-indices {sorted(ROT_INDICES)} of "
+                  f"{len(rotation_specs)} rotation blocks", flush=True)
 
     if SMOKE:
         # Collapse all augmentation loops to a single realisation and rebind the cost-driving
@@ -858,6 +902,19 @@ if __name__ == "__main__":
     # means on disk for the resume logic below: a block produces inner_reps * len(mask_rotation_angles)
     # files (simulator.run), and a sim is outer_reps * len(rotation_specs) such blocks.
     files_per_block = inner_reps * len(mask_rotation_angles)
+    # Parsed HERE, not next to --rot-indices: `outer_reps` is assigned in the SMOKE / production
+    # branches above, so validating the indices any earlier is a NameError.
+    OUTER_INDICES = None
+    if args.outer_indices:
+        OUTER_INDICES = {int(v) for v in args.outer_indices.split(",") if v.strip() != ""}
+        _bad_outer = {i for i in OUTER_INDICES if i >= outer_reps}
+        if _bad_outer:
+            raise ValueError(f"--outer-indices {sorted(_bad_outer)} out of range "
+                             f"(outer_reps={outer_reps})")
+        if rank == 0:
+            print(f"[rank 0] --outer-indices {sorted(OUTER_INDICES)} of {outer_reps} outer reps",
+                  flush=True)
+
     expected_files_per_sim = outer_reps * len(rotation_specs) * files_per_block
     if rank == 0:
         mode = "OVERWRITE (regen all)" if OVERWRITE else "resume (skip complete)"
@@ -950,8 +1007,9 @@ if __name__ == "__main__":
             "cosmo_base_seed": COSMO_BASE_SEED_VAL,
         },
     }
-    if not SMOKE:
-        # GowerStCosmologies reads cluster data on construction; skip for the local smoke.
+    if not SMOKE and SIMULATOR_TYPE != "external":
+        # GowerStCosmologies reads cluster data on construction; skip for the local smoke and
+        # for the external box (fixed cosmology from its own control.par / CLASS file).
         backend_states["gower_street"] = {
             "loader": GowerStCosmologies(gower_data_dir, csv_path),
         }
@@ -1012,7 +1070,11 @@ if __name__ == "__main__":
                 print(f"[rank {rank}] sim {sim_num} complete ({expected_files_per_sim} files) — skipping.")
                 continue
             for outer_idx in range(outer_reps):
+                if OUTER_INDICES is not None and outer_idx not in OUTER_INDICES:
+                    continue
                 for rot_idx, rotation_spec in enumerate(rotation_specs):
+                    if ROT_INDICES is not None and rot_idx not in ROT_INDICES:
+                        continue
                     # Block-level resume: skip a complete (outer,rot) block; otherwise clear any
                     # partial files left by an earlier kill so the block recomputes cleanly.
                     if not OVERWRITE:
@@ -1080,6 +1142,19 @@ if __name__ == "__main__":
                             los_grid=LOS_GRID,
                             camb_limits=CAMB_LIMITS,
                             cache=glass_cache,
+                        )
+                    elif SIMULATOR_TYPE == "external":
+                        from src.external_mocks import FLAMINGO_BIG, prepare_external_backend
+                        _ext_spec = dict(FLAMINGO_BIG)
+                        if args.ext_data_dir:
+                            _ext_spec["data_dir"] = args.ext_data_dir
+                        backend = prepare_external_backend(
+                            sim_num,
+                            rng=backend_rng,
+                            spec=_ext_spec,
+                            prior_ranges=ia_prior_spec,
+                            sim_grid=SIM_GRID,
+                            variant=args.ext_variant,
                         )
                     else:
                         backend = prepare_gower_backend(
@@ -1256,7 +1331,14 @@ if __name__ == "__main__":
                     }
                     print('Simulating the galaxy catalogue...')
 
-                    simulator = GlassMatterShellSimulator(matter, shells, **kwargs)
+                    if SIMULATOR_TYPE == "external":
+                        # Shells stream straight off the external cube (10 GB f64); the subclass
+                        # builds its own window list from control.par, so no `matter` is passed.
+                        from src.external_mocks import ShellCubeSimulator
+                        simulator = ShellCubeSimulator(
+                            backend["data_dir"], backend["cube_name"], **kwargs)
+                    else:
+                        simulator = GlassMatterShellSimulator(matter, shells, **kwargs)
                     catalogues = simulator.run(
                         rotation_spec,
                         mask_rotation_angles,

@@ -237,8 +237,32 @@ GOWER_BGP_VARIATES: List[Dict] = [
 ]
 
 
+# --- EXTERNAL boxes: GowerSt2 / Flamingo_big (DMO + FLAMINGO-baryonified) ---------------------
+# Generated LOCALLY from the ingested delta cubes (src/external_mocks), 20 mocks each at ONE
+# cosmology (5 disjoint rotations x 4 mask angles). Paths are LOCAL, not gpu5: these never went
+# to the cluster. Prebaked to the same f16 sc8a1 bare-E layout the BGP chain reads.
+#
+# Two separable effects, read off the same detectors:
+#   ext_dmo  vs the Gower training cloud  ->  SUITE misspecification (different N-body suite,
+#                                             1250 Mpc/h box, 77 shells, continuous-delta cubes)
+#   ext_bary vs ext_dmo (identical phases) ->  BARYON feedback, sample-variance-free
+# NOTE ext_bary is baryonified only below z = 1.0122, so it is a LOWER BOUND on a fully
+# baryonified lightcone (see the task's artifacts/SHELL_AUDIT.md).
+_EXT_LOCAL = "/data/alex/external_mocks/baked"
+GOWER_EXT_VARIATES: List[Dict] = [
+    {"name": "gower_ext_dmo", "patterns": f"{_EXT_LOCAL}/ext_dmo_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": []},
+    {"name": "gower_ext_bary", "patterns": f"{_EXT_LOCAL}/ext_bary_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": []},
+]
+
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
     "gower_bgp": GOWER_BGP_VARIATES,
+    # The BGP variates PLUS the two external boxes, so the external points land on the same
+    # detector axes (Mahalanobis / kNN / cross-repeat KL) as the existing misspec campaign.
+    "gower_bgp_ext": GOWER_BGP_VARIATES + GOWER_EXT_VARIATES,
+    "gower_ext": GOWER_EXT_VARIATES,
     "gower": DEFAULT_VARIATES,
     "glass_pretrain": GLASS_PRETRAIN_VARIATES,
     "gower_novd": NOVD_GOWER_VARIATES,

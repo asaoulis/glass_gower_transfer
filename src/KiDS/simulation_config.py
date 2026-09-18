@@ -87,6 +87,8 @@ COSMO_BASE_SEED = 0
 # NOTE: gower_street outer set to 1 for the theory-test runs (outer reloads the N-body backend,
 # ~40 min each; inner+mask augmentations are cheap). Restore to 4 for production Gower datasets.
 OUTER_NUM_SHAPE_NOISE_REALISATIONS = {
+	# external: 1 outer x 5 rot x 1 inner x 4 mask = 20 mocks/cosmology (disjoint rotations).
+	"external": 1,
 	"gower_street": 4,
 	"glass": 4,
 }
@@ -95,6 +97,7 @@ INNER_NUM_SHAPE_NOISE_REALISATIONS = {
 	# Prod value is 1: 4 outer x 5 rot x 1 inner x 4 mask = 80 augs/sim (matches the on-disk
 	# gower_mocks dataset). inner>1 multiplies per-rank memory and OOMs; the eb85842 cleanup
 	# wrongly bumped this 1->4 (=320 augs/sim). Keep at 1 for production Gower datasets.
+	"external": 1,
 	"gower_street": 1,
 	"glass": 1,
 }

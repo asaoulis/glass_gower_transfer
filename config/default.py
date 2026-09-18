@@ -1,3 +1,5 @@
+import os
+
 import ml_collections
 
 def get_default_config():
@@ -69,7 +71,12 @@ def get_default_config():
     # multi-variant simulator set e.g. "fwhm8", "fwhm6_lcut1024" or "fwhm6_lmin76_lcut1024".
     # Explicit variant-tagged quantity names (e.g. "E_fwhm8_north") bypass this and resolve directly.
     config.eb_map_variant = None
-    config.base_path = "/share/gpu5/asaoulis/transfer_models"
+    # The models/checkpoints root. Defaults to the cluster path (unchanged for every
+    # existing caller); GLASS_MODELS_ROOT redirects it for LOCAL runs -- e.g. evaluating
+    # a fetched checkpoint tree against local stores, where `{base_path}/checkpoints`
+    # is the local ml-checkpoints dir. Listed in CLAUDE.md under "Hardcoded paths".
+    config.base_path = os.environ.get("GLASS_MODELS_ROOT",
+                                      "/share/gpu5/asaoulis/transfer_models")
     config.cosmo_param_names = [
         "omega_m", "sigma_8"
     ]
