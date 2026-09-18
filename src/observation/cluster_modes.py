@@ -336,13 +336,37 @@ def run_obs_score(args) -> int:
     out = {"label": label, "store": store, "base": base, "repeats": reps, "per_encoder": {}, "notes": []}
     sdir = os.path.join(ckpt_root, blind_root, "summaries")
     pv = []
+    # ENSEMBLE packs write summaries_<match>_m<j>.npz (summaries.py:219), single-encoder packs
+    # write the bare summaries_<match>.npz. Looking only for the bare name silently produced an
+    # EMPTY per_encoder -- and no meanp -- for every ensemble pack, including the ens9 2-pt pack
+    # that Stage 1 of the real unblinding uses (DECISIONS.md X-1).
+    #
+    # User decision 2026-09-18: ensemble members are so correlated that combining them does not
+    # improve AUROC, so take ONE member as the repeat's representative (keeping the mean-p
+    # combiner a 5-encoder statistic, matching how the Tier-2 tables were calibrated) and REPORT
+    # the member spread so the protocol can flag a big spread or an outlier.
+    MEMBER_SPREAD_FLAG = 0.25          # ptp of ood_knn_p across members worth surfacing
+    out["member_spread"] = {}
     for m in matches:
-        f = os.path.join(sdir, f"obs_{label}", f"summaries_{m}.npz")
-        if os.path.exists(f):
-            d = np.load(f)
+        odir = os.path.join(sdir, f"obs_{label}")
+        f = os.path.join(odir, f"summaries_{m}.npz")
+        members = [f] if os.path.exists(f) else sorted(glob.glob(os.path.join(odir, f"summaries_{m}_m*.npz")))
+        if members:
+            d = np.load(members[0])
             out["per_encoder"][m] = {k: float(d[k][0]) for k in ("ood_knn_score", "ood_knn_p", "ood_mahalanobis_score",
                                                                   "ood_mahalanobis_p") if k in d.files}
             pv.append(float(d["ood_knn_p"][0]))
+            if len(members) > 1:
+                ps = [float(np.load(g)["ood_knn_p"][0]) for g in members]
+                spread = {"n_members": len(members), "representative": os.path.basename(members[0]),
+                          "knn_p": ps, "min": float(min(ps)), "max": float(max(ps)),
+                          "ptp": float(max(ps) - min(ps))}
+                out["member_spread"][m] = spread
+                if spread["ptp"] > MEMBER_SPREAD_FLAG:
+                    out["notes"].append(
+                        f"{m}: ensemble member kNN p spans {spread['min']:.3f}-{spread['max']:.3f} "
+                        f"(ptp {spread['ptp']:.3f} > {MEMBER_SPREAD_FLAG}) across {len(members)} "
+                        "members; the reading uses member 0 — check for an outlier encoder")
     if pv:
         out["meanp_raw"] = float(np.mean(pv))
         # Recalibrate the mean-p statistic against the ID-test null of the same encoders. The

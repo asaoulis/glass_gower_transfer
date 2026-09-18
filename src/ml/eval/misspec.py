@@ -750,7 +750,8 @@ def run_misspecification_eval(
         cfg = _load_experiment_config(base_experiment)
         # Same test-point sub-selection for the in-distribution reference as for every
         # variate (rot0, inner noise {0,1}) so coverage curves are directly comparable.
-        cfg.test_shape_noise_idx = list(test_shape_noise_idx)
+        cfg.test_shape_noise_idx = (None if test_shape_noise_idx is None
+                                    else list(test_shape_noise_idx))
         repeat_match, _ = apply_repeat_config(cfg, r)
         cfg.match_string = repeat_match
         match_strings.append(repeat_match)
