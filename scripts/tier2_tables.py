@@ -140,9 +140,24 @@ def main(argv=None):
         with open(f) as fh:
             sc = json.load(fh)
         label = sc.get("label", os.path.basename(f))
-        reading = {"label": label, "scores": {k: sc.get(k) for k in ("meanp_raw", "meanp_recalibrated", "kl")}}
-        lines = [f"## Observation {label}: Tier-2 reading\n"]
-        for det, key in (("meanp", "meanp_recalibrated"), ("kl", "kl")):
+        # The KL column of the TABLE is built with `kl_params`; the observation must be looked up
+        # with the SAME statistic or it lands in the wrong bin. obs_score writes every variant,
+        # so select `kl_<kl_params>` (== `kl_adopted` when obs-score chose the same one) rather
+        # than the bare `kl`, which is always the FULL DIAGONAL value. Fixed 2026-09-18: the
+        # previous code used sc["kl"] unconditionally -- e.g. 0.194 (full) instead of 0.115
+        # (om_s8_fullcov) for the same observation, overstating the predicted bias.
+        kl_key = f"kl_{args.kl_params}"
+        if kl_key not in sc and sc.get("kl_params") == args.kl_params and "kl_adopted" in sc:
+            kl_key = "kl_adopted"
+        if kl_key not in sc:
+            print(f"[tier2-tables] WARNING: {label}: no '{kl_key}' in the obs-score json; the kl "
+                  f"reading is SKIPPED rather than read against a mismatched statistic "
+                  f"(available: {[k for k in sc if k.startswith('kl')]})", flush=True)
+        reading = {"label": label, "kl_params": args.kl_params,
+                   "scores": {k: sc.get(k) for k in ("meanp_raw", "meanp_recalibrated", kl_key)}}
+        lines = [f"## Observation {label}: Tier-2 reading\n",
+                 f"(detector provenance: `kl_params = {args.kl_params}`, read from `{kl_key}`)\n"]
+        for det, key in (("meanp", "meanp_recalibrated"), ("kl", kl_key)):
             val = sc.get(key)
             if val is None:
                 continue
