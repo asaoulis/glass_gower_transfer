@@ -80,11 +80,29 @@ def _figures(res, out_dir: Path, labels):
         axes = np.atleast_1d(axes)
         for ax, (title, blk) in zip(axes, panels):
             null = np.asarray(blk["null_scores"])
-            ax.hist(null, bins=40, color="0.8", label="held-out mocks (null)")
+            obs_v = np.asarray(blk["obs"], dtype=float)
+            # Robust x-range. The E-map kNN null has a long tail (a handful of mocks sit at
+            # 10-20x the bulk), and binning over the full range squeezed the entire
+            # distribution AND the observation markers into one or two pixels -- the panel was
+            # unreadable and the observation could not be placed by eye. Clip to a robust
+            # percentile window, always widened to contain every observation marker, and say
+            # how many null points fall outside so nothing is hidden silently.
+            lo, hi = np.percentile(null, [0.2, 99.5])
+            lo = min(lo, obs_v.min())
+            hi = max(hi, obs_v.max())
+            pad = 0.05 * (hi - lo) if hi > lo else 1.0
+            lo, hi = lo - pad, hi + pad
+            n_out = int(((null < lo) | (null > hi)).sum())
+            ax.hist(np.clip(null, lo, hi), bins=40, range=(lo, hi), color="0.8",
+                    label=f"held-out mocks (null, n={null.size})")
             for m, lab in enumerate(labels):
-                ax.axvline(blk["obs"][m], lw=2, label=f"{lab} (p={blk['p'][m]:.3f})")
+                ax.axvline(obs_v[m], lw=2, label=f"{lab} (p={blk['p'][m]:.3f})")
+            ax.set_xlim(lo, hi)
             ax.set_title(title, fontsize=10)
             ax.set_xlabel("mean k-NN distance")
+            if n_out:
+                ax.text(0.98, 0.72, f"{n_out} null pts beyond axis\n(clipped into end bins)",
+                        transform=ax.transAxes, ha="right", va="top", fontsize=6, color="0.35")
             ax.legend(fontsize=7)
         fig.tight_layout()
         fig.savefig(out_dir / "tier1_knn_scores.png", dpi=130)
