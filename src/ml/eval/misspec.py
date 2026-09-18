@@ -248,11 +248,16 @@ GOWER_BGP_VARIATES: List[Dict] = [
 #   ext_bary vs ext_dmo (identical phases) ->  BARYON feedback, sample-variance-free
 # NOTE ext_bary is baryonified only below z = 1.0122, so it is a LOWER BOUND on a fully
 # baryonified lightcone (see the task's artifacts/SHELL_AUDIT.md).
-_EXT_LOCAL = "/data/alex/external_mocks/baked"
+# Generated LOCALLY but evaluated on the CLUSTER: run_misspecification_eval rebuilds the
+# in-distribution scalers and test split from the gpu5 training store, so misspec cannot run
+# off-cluster. The baked stores are therefore pushed to DATASETS_ROOT (gpu5) with
+# `run_remote.py push-data --rel ext_<variant>_f16_<tag>` and resolved from _GPU5 like every
+# other variate. (An earlier version pointed these at the local /data/alex path, which would
+# have failed on the cluster with "No files matched".)
 GOWER_EXT_VARIATES: List[Dict] = [
-    {"name": "gower_ext_dmo", "patterns": f"{_EXT_LOCAL}/ext_dmo_f16_{_BGP_EB_TAG}/output_*.h5",
+    {"name": "gower_ext_dmo", "patterns": f"{_GPU5}/ext_dmo_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": []},
-    {"name": "gower_ext_bary", "patterns": f"{_EXT_LOCAL}/ext_bary_f16_{_BGP_EB_TAG}/output_*.h5",
+    {"name": "gower_ext_bary", "patterns": f"{_GPU5}/ext_bary_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": []},
 ]
 
