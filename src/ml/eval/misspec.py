@@ -451,11 +451,21 @@ def build_variate_test_loader(
               "these cosmologies at nla_m physics).", flush=True)
 
     test_paths = [p for c in test_ids for p in by_cosmo[c]]
-    filtered = _filter_paths_by_shape_noise_idx(test_paths, list(test_shape_noise_idx))
-    if not filtered:
-        print(f"[misspec] WARNING: shape-noise filter {test_shape_noise_idx} matched no files; "
-              "using all test-cosmology files.", flush=True)
+    if test_shape_noise_idx is None:
+        # Explicit opt-out (added 2026-09-18). The default (0, (0, 1)) subsamples augmentations
+        # per cosmology, which is right for the production stores (~80 augs/cosmology) but
+        # collapses a small purpose-built store to a handful of events -- e.g. a 40-file
+        # single-cosmology external store yields n_test=4, all from one (outer, rot) block and
+        # therefore sharing almost all their cosmic variance. Passing None keeps every file.
+        print(f"[misspec] shape-noise filter DISABLED: using all {len(test_paths)} "
+              "test-cosmology files.", flush=True)
         filtered = test_paths
+    else:
+        filtered = _filter_paths_by_shape_noise_idx(test_paths, list(test_shape_noise_idx))
+        if not filtered:
+            print(f"[misspec] WARNING: shape-noise filter {test_shape_noise_idx} matched no files; "
+                  "using all test-cosmology files.", flush=True)
+            filtered = test_paths
 
     if max_test_files is not None and len(filtered) > int(max_test_files):
         by_id: Dict[int, List[str]] = {}

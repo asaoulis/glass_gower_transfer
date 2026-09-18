@@ -219,6 +219,11 @@ def main(argv=None):
     parser.add_argument("--max-test-files", type=int, default=None,
                         help="misspec mode: cap each variate's test set to ~this many mocks "
                              "(whole cosmologies, sorted by sim_id)")
+    parser.add_argument("--test-shape-noise-idx", default=None,
+                        help="misspec mode: 'all' disables the per-cosmology augmentation "
+                             "subsample (default (0,(0,1)), right for the ~80-aug production "
+                             "stores but it collapses a small single-cosmology store to a "
+                             "handful of highly-correlated events)")
     parser.add_argument("--eb-variant", default=None,
                         help="E/B group tag for --mode ebdiff (omit for bare-E pre-baked stores)")
     parser.add_argument("--test-id-source", choices=["heldout", "shared", "all"], default="heldout",
@@ -473,6 +478,8 @@ def main(argv=None):
             variate_names=args.variate_names,
             max_test_files=args.max_test_files,
             test_id_source=args.test_id_source,
+            **({"test_shape_noise_idx": None}
+               if str(args.test_shape_noise_idx).lower() == "all" else {}),
         )
     else:
         run_standard_eval(args.experiments or DEFAULT_EXPERIMENTS, args.repeat_indices)
