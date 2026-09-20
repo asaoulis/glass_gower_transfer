@@ -18,6 +18,11 @@ config changes the split.
 Usage:
     python scripts/build_euclid_posterior_bundle.py --root <fetched-eval-dir> \
         --out euclid_posterior_bundle.npz [--n-show 120]
+
+The Stage-II arm defaults to the RESUMED image-matched runs
+(`euclid_hybrid_z8_resnet_imgmatch_resume`, 310 cumulative epochs). To rebuild the earlier
+155-epoch bundle instead:
+    ... --hybrid-exp euclid_hybrid_z8_resnet_imgmatch --hybrid-run pretrain_ncosmoNone_{i}
 """
 import argparse
 import json
@@ -25,12 +30,19 @@ import os
 
 import numpy as np
 
-ARMS = {  # label -> (experiment dir, human name)
-    "band": ("euclid_band", "2-pt (bandpowers)"),
-    "hybrid": ("euclid_hybrid_z8_resnet_imgmatch", "Stage II (hybrid)"),
+# arm -> (experiment dir, run-folder template, human name). The run template is NOT shared:
+# `create_run_name` names a folder `pretrain_*` when the config has no `checkpoint_path` and
+# `finetune_*` when it has one, so the resumed Stage-II arm
+# (`euclid_hybrid_z8_resnet_imgmatch_resume`, which restarts from its own finished weights) lives
+# under `finetune_ncosmoNone_{i}` while every cold-start arm is `pretrain_ncosmoNone_{i}`.
+# Overridable per arm from the CLI so the earlier 155-epoch bundle stays rebuildable:
+#   --hybrid-exp euclid_hybrid_z8_resnet_imgmatch --hybrid-run pretrain_ncosmoNone_{i}
+ARMS = {
+    "band": ("euclid_band", "pretrain_ncosmoNone_{i}", "2-pt (bandpowers)"),
+    "hybrid": ("euclid_hybrid_z8_resnet_imgmatch_resume", "finetune_ncosmoNone_{i}",
+               "Stage II (hybrid)"),
 }
 REPEATS = (0, 1)
-RUN_TMPL = "pretrain_ncosmoNone_{i}"
 PARAMS = ["omega_m", "sigma_8", "w0"]
 
 
@@ -68,8 +80,8 @@ def _unscale(x, lo, hi):
     return x * (hi - lo) + lo
 
 
-def _load_run(root, exp, rep):
-    run = os.path.join(root, exp, RUN_TMPL.format(i=rep))
+def _load_run(root, exp, run_tmpl, rep):
+    run = os.path.join(root, exp, run_tmpl.format(i=rep))
     npz = np.load(os.path.join(run, "posterior_samples.npz"), allow_pickle=False)
     samples = npz["samples"]                      # [S, N, D] as written by _save_posterior_samples
     if samples.ndim != 3:
@@ -124,16 +136,27 @@ def main():
     ap.add_argument("--n-show", type=int, default=120,
                     help="cosmologies kept at full draw resolution (float16)")
     ap.add_argument("--seed", type=int, default=0)
+    for arm in ARMS:                      # per-arm experiment / run-folder overrides
+        ap.add_argument(f"--{arm}-exp", default=None,
+                        help=f"experiment dir for the '{arm}' arm (default {ARMS[arm][0]})")
+        ap.add_argument(f"--{arm}-run", default=None,
+                        help=f"run-folder template for '{arm}' (default {ARMS[arm][1]})")
     args = ap.parse_args()
 
+    arms = {}
+    for arm, (exp, run_tmpl, human) in ARMS.items():
+        arms[arm] = (getattr(args, f"{arm}_exp") or exp,
+                     getattr(args, f"{arm}_run") or run_tmpl, human)
+
     runs, payload, meta_runs = {}, {}, {}
-    for arm, (exp, human) in ARMS.items():
+    for arm, (exp, run_tmpl, human) in arms.items():
         for rep in REPEATS:
             key = f"{arm}_r{rep}"
-            s, th, ids, metrics = _load_run(args.root, exp, rep)
+            s, th, ids, metrics = _load_run(args.root, exp, run_tmpl, rep)
             runs[key] = (s, th, ids)
             meta_runs[key] = {
                 "arm": arm, "label": human, "repeat": rep, "experiment": exp,
+                "run_folder": run_tmpl.format(i=rep),
                 "n_test": int(s.shape[0]), "n_draws": int(s.shape[1]),
                 "metrics": metrics.get("metrics", metrics),
             }
@@ -201,8 +224,12 @@ def main():
         "selection": ("plotted cosmologies are chosen PER REPEAT from that repeat's shared "
                       "band/hybrid test split, ranked by normalised distance from "
                       "(S8=0.80, w=-1.0, Omega_m=0.30) and kept closest-first"),
+        "arms": {a: {"experiment": e, "run_folder_template": r, "label": h}
+                 for a, (e, r, h) in arms.items()},
         "notes": ("samples are float16 (plotting); *_all summaries are float64 over the full "
-                  "test set. band r_i and hybrid r_i share a test split; r0 and r1 do not."),
+                  "test set. VERIFIED: ALL FOUR runs share one 2041-cosmology test set in the "
+                  "same order, so every comparison is paired per cosmology and r0 vs r1 differ "
+                  "only by training initialisation."),
     })
 
     np.savez_compressed(args.out, **payload)
