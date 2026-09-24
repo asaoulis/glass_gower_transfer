@@ -12,10 +12,15 @@ Gates (named as in .claude/plans/shear_normalisation_spec.md §6):
      stored mock bit-for-bit. THE §0 proof; must pass before and after the protected patch.
   2  weighted no-op: weights = ones(n) must match gate 1 to float tolerance   [needs the patch]
   3  scale invariance: weights = alpha*w for alpha in {1e-3, 1e3}, identical  [needs the patch]
+  3b production rescale: apply_weights(rescale='neff') -- per-BIN w~ = w*sum(w)/sum(w^2) --
+     leaves the maps identical, and sum(w~) == N_eff per bin
   4  Eq.-11 identity: wraps .claude/plans/verify_shear_normalisation.py
   4b weights= path: weighted mean/counts maps vs analytic S_p/W_i, S_p/D_p; ones == None
-  5  W_i check: N_eff/N_pix per bin vs [15.002, 13.981, 12.693, 12.357, 11.402, 9.054]
-     (real catalogue only; also prints n_eff/arcmin^2 vs src/KiDS/tomo.py)
+  5  W_i check: N_eff/N_pix per bin vs the mocks' mean count per pixel,
+     n_arcmin2 * 967.39 deg^2 * 3600 / N_pix = [20.888, 19.467, 17.673, 17.206, 15.876, 12.608],
+     to four figures (rel 5e-4); also n_eff/arcmin^2 vs src/KiDS/tomo.py (real catalogue only).
+     RE-PRE-REGISTERED 2026-09-24 (user): the old literal [15.002 .. 9.054] contradicted this
+     defining formula by x0.7182 in every bin (its sum w^2/sum w = 18.663 exceeds max w = 15.56).
 Gates 2-3 report SKIPPED (with the reason) until `make_alm_shear_convergence` accepts `weights=`.
 """
 from __future__ import annotations
@@ -40,7 +45,14 @@ from src.observation import (Catalogue, Geometry, MapVariants, apply_c_terms, ap
                              estimator_accepts_weights, load_catalogue, weight_summary)
 from src.observation.geometry import master_postproc_rng  # noqa: E402
 
-W_REF = [15.002, 13.981, 12.693, 12.357, 11.402, 9.054]        # spec §2.2 / §7, normalisation (b)
+from src.KiDS.tomo import n_arcmin2 as _N_ARCMIN2  # noqa: E402
+from src.observation.catalogue_io import KIDS_AREA_DEG2, KIDS_NPIX_NORM  # noqa: E402
+
+# Gate-5 reference under normalisation (b): the mocks' mean count per pixel, COMPUTED from its
+# definition (re-pre-registered 2026-09-24; the literal below was an arithmetic slip, kept for the record).
+W_REF = [float(n) * KIDS_AREA_DEG2 * 3600.0 / KIDS_NPIX_NORM for n in _N_ARCMIN2]
+W_REF_SUPERSEDED = [15.002, 13.981, 12.693, 12.357, 11.402, 9.054]
+GATE5_TOL = 5e-4                                                  # "to four figures"
 PY = sys.executable
 
 
@@ -177,6 +189,31 @@ def gate2_3(cat: Catalogue, m, ref_path: str, tmp: str) -> bool:
         d = _max_rel(base, _maps(_build(cat, m, tmp, f"g3_{alpha:g}", weights=alpha * w)))
         print(f"  [3] alpha={alpha:g}: max rel diff {d:.3e}")
         ok &= d < 1e-10
+    # [3b] the PRODUCTION rescale, apply_weights(rescale='neff'): w~ = w * sum(w)/sum(w^2) PER
+    # TOMOGRAPHIC BIN. A per-bin rescale is a strictly stronger test than the global alpha above --
+    # a different factor in every bin would expose any cross-bin coupling in the estimator, and the
+    # real build relies on the maps being untouched so that only W_i and an exported count field
+    # change scale. Also checks that sum(w~) really is N_eff, which is the whole point.
+    import copy as _copy
+    wcat = Catalogue(data=cat.data, weight=w.copy(), provenance=_copy.deepcopy(cat.provenance))
+    wcat.provenance.setdefault("treatment", {})
+    wcat = apply_weights(wcat, mode="lensfit", rescale="neff")
+    rec = wcat.provenance["treatment"]["weights"]
+    nb = int(cat.provenance.get("nbins", 6))
+    for i in range(nb):
+        sel = cat.data["ZBIN"] == i
+        if not sel.any():
+            continue
+        sw_t = float(wcat.weight[sel].sum())
+        neff = float(w[sel].sum()) ** 2 / float((w[sel] ** 2).sum())
+        rel = abs(sw_t - neff) / neff
+        if rel > 1e-12:
+            print(f"  [3b] bin {i}: sum(w~) = {sw_t:.6f} != N_eff = {neff:.6f} (rel {rel:.2e})")
+            ok = False
+    d = _max_rel(base, _maps(_build(cat, m, tmp, "g3b", weights=wcat.weight)))
+    print(f"  [3b] per-bin rescale='neff' vs raw w: max rel diff {d:.3e} "
+          f"(divisors sum w^2/sum w = {[None if v is None else round(v, 4) for v in rec['divisor_sum_w2_over_sum_w']]})")
+    ok &= d < 1e-10
     return ok
 
 
@@ -227,18 +264,34 @@ def gate4b() -> bool:
     return ok and d < 1e-12
 
 
-def gate5(real: str, column_map: str) -> bool:
+def gate5(real: str, column_map: str, json_out: str = None) -> bool:
     cm = json.load(open(column_map)) if column_map else None
     cat = load_catalogue(real, column_map=cm, kind="auto")
     summ = weight_summary(cat, 6)["per_bin"]
-    from src.KiDS.tomo import n_arcmin2 as n_ref
     ok = True
+    rows = []
     for b in summ:
-        dw = abs(b["W_i_neff_norm"] - W_REF[b["bin"]]) / W_REF[b["bin"]]
-        dn = abs(b["n_eff_per_arcmin2"] - float(n_ref[b["bin"]])) / float(n_ref[b["bin"]])
-        print(f"  [5] bin {b['bin'] + 1}: W_i(b)={b['W_i_neff_norm']:.3f} (ref {W_REF[b['bin']]}) "
-              f"n_eff={b['n_eff_per_arcmin2']:.4f}/arcmin2 (tomo.py {float(n_ref[b['bin']]):.4f})")
-        ok &= dw < 2e-3 and dn < 2e-3
+        i = b["bin"]
+        nref = float(_N_ARCMIN2[i])
+        dw = abs(b["W_i_neff_norm"] - W_REF[i]) / W_REF[i]
+        dn = abs(b["n_eff_per_arcmin2"] - nref) / nref
+        passed = dw < GATE5_TOL and dn < GATE5_TOL
+        ok &= passed
+        rows.append({"bin": i + 1, "n": b["n"], "sum_w": b["sum_w"], "sum_w2": b["sum_w2"], "N_eff": b["n_eff"],
+                     "divisor_sum_w2_over_sum_w": b["sum_w2"] / b["sum_w"],
+                     "W_i_data": b["W_i_neff_norm"], "W_i_ref": W_REF[i], "rel_diff_W": dw,
+                     "n_eff_per_arcmin2": b["n_eff_per_arcmin2"], "n_arcmin2_tomo": nref, "rel_diff_n_eff": dn,
+                     "W_i_superseded_literal": W_REF_SUPERSEDED[i], "pass": bool(passed)})
+        print(f"  [5] bin {i + 1}: W_i={b['W_i_neff_norm']:.4f} (ref {W_REF[i]:.4f}, rel {dw:.1e}) "
+              f"n_eff={b['n_eff_per_arcmin2']:.5f}/arcmin2 (tomo.py {nref:.4f}, rel {dn:.1e}) "
+              f"{'PASS' if passed else 'FAIL'}")
+    if json_out:
+        os.makedirs(os.path.dirname(json_out), exist_ok=True)
+        with open(json_out, "w") as fh:
+            json.dump({"gate": 5, "pass": bool(ok), "tolerance_rel": GATE5_TOL, "catalogue": real,
+                       "column_map": cm, "npix_norm": KIDS_NPIX_NORM, "area_deg2": KIDS_AREA_DEG2,
+                       "reference": "W_i = n_arcmin2 * area_deg2 * 3600 / npix_norm (re-pre-registered 2026-09-24)",
+                       "load_provenance": cat.provenance.get("validation"), "per_bin": rows}, fh, indent=1)
     return ok
 
 
@@ -248,6 +301,8 @@ def main(argv=None):
     ap.add_argument("--real-catalogue", default=None)
     ap.add_argument("--column-map", default=None)
     ap.add_argument("--keep", default=None, help="keep the build outputs under this dir")
+    ap.add_argument("--only-gate5", action="store_true", help="skip gates 0-4b (already recorded) and run gate 5 only")
+    ap.add_argument("--gate5-json", default=None, help="write gate 5's per-bin table here")
     ap.add_argument("--reference-json", default="/data/alex/unblinding/fixtures/gate0a/observation_S7_fidelity.json",
                     help="pre-edit fidelity report of the same fixture; gate 1 requires identical per-dataset residuals")
     a = ap.parse_args(argv)
@@ -255,13 +310,20 @@ def main(argv=None):
     tmp = a.keep or tempfile.mkdtemp(prefix="wgate_")
     os.makedirs(tmp, exist_ok=True)
     print(f"estimator accepts weights: {estimator_accepts_weights()}   (outputs: {tmp})")
+    if a.only_gate5:
+        if not a.real_catalogue:
+            ap.error("--only-gate5 needs --real-catalogue")
+        print("gate 5 (W_i / n_eff on the real catalogue)")
+        ok = gate5(a.real_catalogue, a.column_map, a.gate5_json)
+        print(f"\ngate 5: {'PASS' if ok else 'FAIL'}")
+        return 0 if ok else 1
     print("gate 0 (ingestion)"); results["0"] = gate0(a.fixture, tmp)
     print("gate 1 (bit-identity, weights=None)"); results["1"], ref, cat, m = gate1(a.fixture, tmp, a.reference_json)
     print("gates 2-3 (weighted no-op, scale invariance)"); results["2-3"] = gate2_3(cat, m, ref, tmp)
     print("gate 4 (Eq. 11 identity)"); results["4"] = gate4()
     print("gate 4b (weights= path vs analytic weighted maps)"); results["4b"] = gate4b()
     if a.real_catalogue:
-        print("gate 5 (W_i / n_eff on the real catalogue)"); results["5"] = gate5(a.real_catalogue, a.column_map)
+        print("gate 5 (W_i / n_eff on the real catalogue)"); results["5"] = gate5(a.real_catalogue, a.column_map, a.gate5_json)
     print("\n" + "  ".join(f"gate {k}: {'PASS' if v else 'FAIL'}" for k, v in results.items()))
     return 0 if all(results.values()) else 1
 

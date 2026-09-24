@@ -107,7 +107,10 @@ def main(argv=None):
           "**Detector provenance — `kl_params = %s`, `match_template = %s`, pack `%s`.** An "
           "observation reading is only valid against a table built with the SAME `kl_params`.\n"
           % (args.kl_params, args.match_template, os.path.basename(args.base_dir.rstrip("/"))),
-          "Rows = (variate, encoder repeat, event) of `gower_npe_finetune_nla_m_bgp_z8_ens1` x 7 Gower variates; "
+          # The pack name here was hardcoded to the FIELD pack whatever --base-dir said, so a
+          # band-pack table misattributed its own rows -- and this is the line a reader trusts.
+          "Rows = (variate, encoder repeat, event) of `%s` x 7 Gower variates; "
+          % os.path.basename(args.base_dir.rstrip("/")) +
           "z = (truth - posterior mean)/posterior std; S8 from the full sample dumps; CI68 = cosmology-block bootstrap; "
           "'excess' = P(|z|>t) minus the in-distribution value in the SAME bin. A calibrated posterior has "
           "P(|z|>0.3/0.5/1) = 0.76/0.62/0.32, so only the excess is evidence of bias.\n"]

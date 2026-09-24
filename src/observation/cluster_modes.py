@@ -86,6 +86,8 @@ def add_observe_args(parser) -> None:
     g.add_argument("--jitter-floor", action="store_true")
     g.add_argument("--rng-seed", type=int, default=20260908)
     g.add_argument("--m-bias-source", default="auto", choices=["auto", "given", "zero", "fiducial"])
+    g.add_argument("--weights-rescale", default="none", choices=["none", "neff"],
+                   help="neff = per tomo bin w~ = w*sum(w)/sum(w^2) (sum w~ = N_eff); maps invariant")
     g.add_argument("--weights-mode", default="ignore", choices=["ignore", "lensfit"],
                    help="lensfit = weighted estimator (needs the protected weights patch on the cluster checkout)")
 
@@ -275,14 +277,54 @@ BLIND_SUBDIR = "unblinding_blind"     # under checkpoints/<exp>/ -- denied to th
 
 
 
+def _member_summaries(dirpath: str, match: str) -> list:
+    """Every summaries file for one repeat in ``dirpath``, REPRESENTATIVE FIRST (member 0).
+
+    Single-encoder packs write the bare ``summaries_<match>.npz``; ENSEMBLE packs write
+    ``summaries_<match>_m<j>.npz`` (``src/ml/eval/summaries.py:218``) -- in the variate dir AND in
+    ``_train/`` / ``_idtest/``. Resolving that in two places is what produced DECISIONS X-1 twice:
+    once in the observation reading (fixed in 43b4c77) and once, still, in the mean-p null, which
+    raised FileNotFoundError, was caught, and silently dropped the whole meanp axis for the ens9
+    2-pt pack that Stage 1 of the real unblinding uses. ONE function, called by both sides, cannot
+    diverge.
+
+    User decision (2026-09-21): for the kNN MEAN-P axis, member 0 is the repeat's representative --
+    keeping mean-p a 5-encoder statistic, which is how the Tier-2 tables were calibrated -- and the
+    member spread is reported alongside. The KL axis uses ALL members and does not come through
+    here. The null must read the SAME member-0 file as the reading, or the statistic is
+    recalibrated against a different encoder.
+
+    Sorted NUMERICALLY on <j> (plain lexicographic order would put ``_m10`` before ``_m2``).
+    """
+    bare = os.path.join(dirpath, f"summaries_{match}.npz")
+    if os.path.exists(bare):
+        return [bare]
+    members = glob.glob(os.path.join(dirpath, f"summaries_{match}_m*.npz"))
+
+    def _j(path):
+        mo = re.search(r"_m(\d+)\.npz$", os.path.basename(path))
+        return int(mo.group(1)) if mo else 1 << 30
+    return sorted(members, key=_j)
+
+
+def _representative_summaries(dirpath: str, match: str):
+    """The member-0 file for one repeat, or None. See ``_member_summaries``."""
+    members = _member_summaries(dirpath, match)
+    return members[0] if members else None
+
+
 def _idtest_meanp_null(sdir: str, matches, *, k: int = 10) -> np.ndarray:
-    """Null distribution of the encoder-averaged kNN p over the common ID held-out files."""
+    """Null distribution of the encoder-averaged kNN p over the common ID held-out files.
+
+    Resolved through ``_representative_summaries`` so the null uses the SAME member-0 file per
+    repeat as the observation reading (DECISIONS X-1; see that helper's docstring).
+    """
     from src.ml.eval.ood import TrainWhitener, empirical_pvalues, knn_scores
     per = {}
     for m in matches:
-        ftr = os.path.join(sdir, "_train", f"summaries_{m}.npz")
-        fid = os.path.join(sdir, "_idtest", f"summaries_{m}.npz")
-        if not (os.path.exists(ftr) and os.path.exists(fid)):
+        ftr = _representative_summaries(os.path.join(sdir, "_train"), m)
+        fid = _representative_summaries(os.path.join(sdir, "_idtest"), m)
+        if not (ftr and fid and os.path.exists(ftr) and os.path.exists(fid)):
             raise FileNotFoundError(f"missing _train/_idtest summaries for {m}")
         dtr, did = np.load(ftr), np.load(fid)
         wh = TrainWhitener.fit(np.asarray(dtr["z"], dtype=np.float64))
@@ -336,21 +378,20 @@ def run_obs_score(args) -> int:
     out = {"label": label, "store": store, "base": base, "repeats": reps, "per_encoder": {}, "notes": []}
     sdir = os.path.join(ckpt_root, blind_root, "summaries")
     pv = []
-    # ENSEMBLE packs write summaries_<match>_m<j>.npz (summaries.py:219), single-encoder packs
-    # write the bare summaries_<match>.npz. Looking only for the bare name silently produced an
-    # EMPTY per_encoder -- and no meanp -- for every ensemble pack, including the ens9 2-pt pack
-    # that Stage 1 of the real unblinding uses (DECISIONS.md X-1).
+    # Member resolution lives in _member_summaries (representative FIRST), shared with the
+    # _idtest_meanp_null recalibration so the reading and its null cannot pick different encoders
+    # (DECISIONS.md X-1 -- the same bug, found twice).
     #
-    # User decision 2026-09-18: ensemble members are so correlated that combining them does not
-    # improve AUROC, so take ONE member as the repeat's representative (keeping the mean-p
-    # combiner a 5-encoder statistic, matching how the Tier-2 tables were calibrated) and REPORT
-    # the member spread so the protocol can flag a big spread or an outlier.
+    # User decision 2026-09-18, scoped 2026-09-21: ensemble members are so correlated that
+    # combining them does not improve AUROC, so take ONE member as the repeat's representative
+    # (keeping the mean-p combiner a 5-encoder statistic, matching how the Tier-2 tables were
+    # calibrated) and REPORT the member spread so the protocol can flag a big spread or an
+    # outlier. This applies to the kNN MEAN-P axis only; the KL axis uses ALL members.
     MEMBER_SPREAD_FLAG = 0.25          # ptp of ood_knn_p across members worth surfacing
     out["member_spread"] = {}
     for m in matches:
         odir = os.path.join(sdir, f"obs_{label}")
-        f = os.path.join(odir, f"summaries_{m}.npz")
-        members = [f] if os.path.exists(f) else sorted(glob.glob(os.path.join(odir, f"summaries_{m}_m*.npz")))
+        members = _member_summaries(odir, m)
         if members:
             d = np.load(members[0])
             out["per_encoder"][m] = {k: float(d[k][0]) for k in ("ood_knn_score", "ood_knn_p", "ood_mahalanobis_score",
@@ -468,7 +509,8 @@ def run_observe_build(args) -> int:
     print(f"[observe-build] catalogue={cat_path}\n[observe-build] sibling mock={mock_path}", flush=True)
 
     cat = load_catalogue(cat_path, column_map=column_map, kind=args.kind)
-    cat = apply_weights(cat, mode=getattr(args, "weights_mode", "ignore"))
+    cat = apply_weights(cat, mode=getattr(args, "weights_mode", "ignore"),
+                        rescale=getattr(args, "weights_rescale", "none"))
     m_bias = apply_m_bias(cat, source=args.m_bias_source)
     cat = apply_c_terms(cat)
     attrs = cat.provenance.get("sim_attrs", {})

@@ -244,24 +244,75 @@ def weight_summary(cat: "Catalogue", nbins: int, area_deg2: float = KIDS_AREA_DE
     return out
 
 
-def apply_weights(cat: Catalogue, mode: str = "ignore", nbins: Optional[int] = None, **kw) -> Catalogue:
+def apply_weights(cat: Catalogue, mode: str = "ignore", nbins: Optional[int] = None,
+                  rescale: str = "none", **kw) -> Catalogue:
     """Lensfit-weight treatment (spec .claude/plans/shear_normalisation_spec.md §5.1).
 
     mode='ignore'   (default) identity: the estimator runs unweighted (``gal_wht=None``), the
                     weight column is kept aside. This is the mock path.
     mode='lensfit'  carry ``cat.weight`` (= shear_weight_only * gold_weight_only) through to the
-                    estimator as ``weights=`` (spec §5.2). Requires a weight column. NO rescaling
-                    is applied: every normalisation mode is invariant under w -> alpha*w (§2.1),
-                    so a "safety" normalisation would be a no-op with a bin-indexing hazard.
-    Either way the per-bin weight summary (N, sum w, N_eff, n_eff/arcmin^2, W_i) is recorded.
+                    estimator as ``weights=`` (spec §5.2). Requires a weight column.
+
+    ``rescale`` (added 2026-09-21, user decision -- normalisation (b) of the spec):
+
+      'none'  (default) the raw lensfit weights, exactly as before. Nothing else changes.
+      'neff'  per TOMOGRAPHIC BIN, w~ = w * (sum w / sum w^2), so **sum w~ = N_eff**. The real
+              catalogue's mean WEIGHT per pixel then equals the mocks' mean COUNT per pixel
+              (W_i = N_eff / N_pix), which is the scale the trained models saw: the simulator
+              never passes weights, so its count field is a plain Poisson N.
+
+    Why this is safe AND why it matters. The estimators are scale-free: every normalisation mode
+    (counts, smoothed_counts incl. its 5 %-of-mean floor, mean, expected) is invariant under
+    w -> alpha*w per bin, so the maps and alms are UNCHANGED by this rescale -- verified by the
+    identity check in ``scripts/verify_weighted_build.py`` (gate 3). What the scale does fix is
+    every QUOTED or EXPORTED quantity: W_i, the count field handed to a compound-Poisson control,
+    and any comparison of the observation's weight field with the mocks' count field.
+
+    ⚠️ Bin-indexing hazard: ``data['ZBIN']`` is 0-based here (``load_catalogue`` has already
+    subtracted ``zbin_offset``; the delivered KiDS ``TOMOBIN`` is 1-based). The per-bin factors
+    below therefore index bins 0..nbins-1, matching ``counts_per_bin`` and ``weight_summary``.
+
+    Either way the per-bin weight summary (N, sum w, N_eff, n_eff/arcmin^2, W_i) is recorded --
+    and, when rescaled, the per-bin divisor ``sum w^2 / sum w`` and the resulting W_i as well.
     """
     if mode not in ("ignore", "lensfit"):
         raise NotImplementedError(f"apply_weights mode {mode!r} is not implemented (ignore | lensfit)")
+    if rescale not in ("none", "neff"):
+        raise NotImplementedError(f"apply_weights rescale {rescale!r} is not implemented (none | neff)")
     if mode == "lensfit" and cat.weight is None:
         raise ValueError("apply_weights(mode='lensfit') needs a weight column (column_map['weight'])")
+    if rescale != "none" and cat.weight is None:
+        raise ValueError(f"apply_weights(rescale={rescale!r}) needs a weight column")
     nb = int(nbins or cat.provenance.get("nbins", 6))
-    cat.provenance["treatment"]["weights"] = {"mode": mode, "had_weight_column": cat.weight is not None,
-                                              "rescaled": False, "summary": weight_summary(cat, nb)}
+
+    record = {"mode": mode, "had_weight_column": cat.weight is not None, "rescaled": False}
+    if rescale == "neff":
+        raw_summary = weight_summary(cat, nb)
+        w = np.asarray(cat.weight, dtype=float).copy()
+        divisors = []
+        for i in range(nb):
+            sel = cat.data["ZBIN"] == i          # 0-based, see the hazard note above
+            if not sel.any():
+                divisors.append(None)
+                continue
+            wi = w[sel]
+            sw, sw2 = float(wi.sum()), float((wi * wi).sum())
+            if not (sw > 0 and sw2 > 0):
+                raise ValueError(f"bin {i}: non-positive weight sums (sum w={sw}, sum w^2={sw2})")
+            divisor = sw2 / sw                   # w~ = w / divisor  =>  sum w~ = (sum w)^2/sum w^2
+            w[sel] = wi / divisor
+            divisors.append(divisor)
+        cat = Catalogue(data=cat.data, weight=w, provenance=cat.provenance)
+        record.update({
+            "rescaled": True, "rescale": "neff",
+            "rescale_note": "per bin w~ = w * sum(w)/sum(w^2), so sum(w~) = N_eff; the estimators "
+                            "are invariant under this per-bin rescale (maps/alms unchanged), it "
+                            "fixes the SCALE of W_i and of any exported count field",
+            "divisor_sum_w2_over_sum_w": divisors,
+            "summary_raw": raw_summary,
+        })
+    record["summary"] = weight_summary(cat, nb)
+    cat.provenance["treatment"]["weights"] = record
     return cat
 
 

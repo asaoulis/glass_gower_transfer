@@ -48,8 +48,21 @@ def R(role):
     return S.role_colour(role, PAL)
 
 
+LABEL_COLOUR_OVERRIDE: dict = {}
+
+
 def LC(lab):
-    return S.label_colour(lab, PAL)
+    """Colour for a label, with an optional per-run override.
+
+    `S.label_colour` pins the mock controls T and S and paints every OTHER label with the `real`
+    role (black), which is right when there is exactly one observation -- the real-data case. A
+    study that carries TWO observations at once (e.g. the external-mock dry run, which scores a
+    gravity-only and a baryonified box side by side) would then draw both in black and they would
+    be indistinguishable in the overlay panels. `--label-colours LAB=role` supplies a role name
+    per label for those runs; unset labels keep the pinned behaviour exactly.
+    """
+    role = LABEL_COLOUR_OVERRIDE.get(lab)
+    return S.role_colour(role, PAL) if role else S.label_colour(lab, PAL)
 
 
 CAPTIONS = {}
@@ -450,8 +463,15 @@ def main(argv=None):
     ap.add_argument("--rows", default="/data/alex/unblinding/localroots/tier2_rows.npz")
     ap.add_argument("--plots-dir", default="/data/alex/unblinding/plots_pilot")
     ap.add_argument("--also-copy-to", default=str(ART / "figures"))
+    ap.add_argument("--label-colours", nargs="*", default=[],
+                    help="LAB=role overrides for runs carrying more than one observation "
+                         "(roles: real, flagship, mock, reference, stop, pass, T, S). Unset "
+                         "labels keep the pinned T/S-and-black behaviour.")
     args = ap.parse_args(argv)
     PAL = args.palette
+    for tok in args.label_colours:
+        lab, role = tok.split("=", 1)
+        LABEL_COLOUR_OVERRIDE[lab] = role
     out = Path(args.out_dir); out.mkdir(parents=True, exist_ok=True)
 
     res = {}

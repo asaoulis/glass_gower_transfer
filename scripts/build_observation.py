@@ -48,6 +48,11 @@ def main(argv=None):
     ap.add_argument("--m-bias", default=None, help="comma-separated per-bin m (with --m-bias-source given)")
     ap.add_argument("--weights-mode", default="ignore", choices=["ignore", "lensfit"],
                     help="lensfit = pass the catalogue weights to the estimator (needs the protected weights patch)")
+    ap.add_argument("--weights-rescale", default="none", choices=["none", "neff"],
+                    help="neff = per tomo bin, w~ = w*sum(w)/sum(w^2) so sum(w~) = N_eff, putting the "
+                         "weight field on the mocks' COUNT scale (W_i = N_eff/N_pix). The maps are "
+                         "invariant (gate 3b); it fixes every quoted/exported scale. Divisor recorded "
+                         "in the provenance.")
     ap.add_argument("--normalization", default="counts", choices=["counts", "mean"],
                     help="bandpower-branch normalisation; 'mean' (paper Eq. 11) is a cross-check and loads the KiDS mask")
     ap.add_argument("--mask-data-dir", default=None, help="data dir for load_kids_mask (required with --normalization mean)")
@@ -64,7 +69,7 @@ def main(argv=None):
 
     column_map = json.load(open(args.column_map)) if args.column_map else None
     cat = load_catalogue(args.catalogue, column_map=column_map, nbins=args.nbins, kind=args.kind)
-    cat = apply_weights(cat, mode=args.weights_mode, nbins=args.nbins)
+    cat = apply_weights(cat, mode=args.weights_mode, nbins=args.nbins, rescale=args.weights_rescale)
     m_given = None if args.m_bias is None else [float(x) for x in args.m_bias.split(",")]
     m_bias = apply_m_bias(cat, m_bias=m_given, source=args.m_bias_source)
     cat = apply_c_terms(cat, mode=args.c_terms_mode)
