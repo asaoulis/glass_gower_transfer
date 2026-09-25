@@ -334,6 +334,18 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
          "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5", "exclude_params": [],
          "inject": {"source": "grf", "target_b": 1.5, "slope": 1.0, "profile": "des"}},
     ],
+    # Depth-driven noise-kurtosis injection on the PRODUCTION Gower test set (src/ml/eval/inject.py
+    # source='depth'; task eval-and-viz/vd-residual-kurtosis-npe). Every arm reads the in-distribution
+    # (no-VD) store; `null` is an exact identity through the identical code path and is the paired clean
+    # reference (same job, same scaler frame): Δ = arm − null. residual = real − A' VD (noise-only rung
+    # calibration), residual_sn = the same pattern at the production-format obs − A' gap (lower bracket),
+    # full = real − no VD.
+    "gower_injectdepth": [
+        {"name": f"gower_bgp_nla_m_injdepth_{arm}",
+         "patterns": f"{_GPU5}/gower_bgp_nla_m_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": [],
+         "inject": {"source": "depth", "arm": arm}}
+        for arm in ("null", "residual", "residual_sn", "full")
+    ],
 }
 
 

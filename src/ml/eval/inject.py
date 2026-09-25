@@ -52,11 +52,23 @@ the readout hypothesis:
 The bandpower branch is deliberately **untouched**: it is noise-debiased and measured immune
 (Δθ(σ_8) = +0.0009 ± 0.0028), so a map-only perturbation is the clean probe. This also makes the
 injection *cleaner* than the real b_g variate, which perturbs both branches.
+
+``source='depth'`` (task `eval-and-viz/vd-residual-kurtosis-npe`) is a different, ADDITIVE probe:
+the real survey's variable depth makes the map noise a Gaussian scale mixture (local variance
+`v_p ∝ σ_e²/n_eff,p`), which the no-VD training mocks lack. A stored mock can only gain noise, so
+the arm adds a zero-mean field with local variance `w(p) = A_b · max(v_real(p) − v_mock(p), 0)` on
+the real rot0 footprint, with the pipeline's own 4'/56/1400 filter response on the patch grid, then
+re-divides by the pooled noise std the bake would have measured (`sqrt(1 + <w>_{N+S})`). The
+signal is never touched. Templates, transfer functions and the rung-calibrated `A_b` live in
+``DEPTH_TEMPLATE_PATH`` (built by the task's `build_depth_inject.py`); arms: ``residual`` (real
+minus A' VD, noise-only rung calibration), ``residual_sn`` (same pattern at the production-format
+obs − A' gap; lower bracket), ``full`` (real minus no VD), ``null`` (exact identity).
 """
 from __future__ import annotations
 
 import hashlib
 import re
+from pathlib import Path
 from typing import Dict, Optional, Union
 
 import numpy as np
@@ -212,6 +224,37 @@ def _lowpass(img: np.ndarray, sigma_pix: float) -> np.ndarray:
     return np.fft.ifft2(np.fft.fft2(img) * kern).real
 
 
+# Committed (git add -f: *.npz is ignored) so the cluster can read it; resolved from this file.
+DEPTH_TEMPLATE_PATH = (Path(__file__).resolve().parents[3] / "config" / "inject_templates"
+                       / "depth_noise_rot0_fwhm4_lmin56_lcut1400.npz")
+DEPTH_ARMS = ("null", "residual", "residual_sn", "full")
+
+
+def load_depth_templates(path=None) -> Dict[str, np.ndarray]:
+    """{'t2_<side>': (H,W) filter amplitude, 'w_<arm>_<side>': (nbins,H,W) added variance,
+    'wpool_<arm>': (nbins,) its pooled N+S patch mean} as float64, and 'canon_<side>': (H*W,) int64."""
+    with np.load(path or DEPTH_TEMPLATE_PATH) as z:
+        out = {k: np.asarray(z[k], dtype=np.float64) for k in z.files
+               if k.startswith(("t2_", "w_", "wpool_"))}
+        out.update({k: np.asarray(z[k], dtype=np.int64) for k in z.files if k.startswith("canon_")})
+    return out
+
+
+def _filtered_unit_noise(t2: np.ndarray, rng: np.random.Generator,
+                         canon: Optional[np.ndarray] = None) -> np.ndarray:
+    """Unit-variance Gaussian field with the pipeline's patch-grid noise spectrum (`t2` is the
+    amplitude transfer normalised to mean(t2²) = 1, so white -> unit variance in expectation).
+
+    ``canon`` (flat index of the first patch pixel sampling the same NSIDE-512 HEALPix pixel)
+    reproduces the patch projection's nearest-neighbour DUPLICATES: 35-48 % of patch pixels share
+    their HEALPix pixel with a neighbour and carry bit-identical values in every stored map. Noise
+    drawn independently per patch pixel would break those ties -- a texture no training map has
+    (it moves the 3x3 peak counts, which count tied maxima twice)."""
+    white = rng.standard_normal(t2.shape)
+    g = np.fft.ifft2(np.fft.fft2(white) * t2).real
+    return g if canon is None else g.ravel()[canon].reshape(t2.shape)
+
+
 def _unit_variance(g: np.ndarray, mask: np.ndarray) -> np.ndarray:
     """Zero-mean, unit-variance over the footprint; identically 0 if the footprint is degenerate."""
     if mask.sum() < 2:
@@ -232,7 +275,12 @@ class NoiseVarianceInjectTransform:
 
     Parameters
     ----------
-    source : {'grf', 'kappa', 'null'}
+    source : {'grf', 'kappa', 'null', 'depth'}
+        ``depth`` is additive, not multiplicative — see the module docstring and ``arm``.
+    arm : {'null', 'residual', 'residual_sn', 'full'}
+        ``depth`` only: which variance template to add (``null`` = exact identity).
+    template_path : str, optional
+        ``depth`` only: override ``DEPTH_TEMPLATE_PATH``.
     target_b : float
         The b_g being synthesised (>= 1). Amplitude is calibrated from `MEASURED_POWER_RATIO_B1P5`.
     slope : float
@@ -248,9 +296,15 @@ class NoiseVarianceInjectTransform:
 
     def __init__(self, source: str = "grf", target_b: float = 1.5, slope: float = 1.0,
                  kappa_smooth_pix: float = 6.0, floor: float = 0.05,
-                 profile: str = "measured", kband: Optional[tuple] = None):
-        if source not in ("grf", "kappa", "null"):
-            raise ValueError(f"source must be grf|kappa|null, got {source!r}")
+                 profile: str = "measured", kband: Optional[tuple] = None,
+                 arm: str = "residual", template_path: Optional[str] = None):
+        if source not in ("grf", "kappa", "null", "depth"):
+            raise ValueError(f"source must be grf|kappa|null|depth, got {source!r}")
+        if source == "depth" and arm not in DEPTH_ARMS:
+            raise ValueError(f"depth arm must be one of {DEPTH_ARMS}, got {arm!r}")
+        self.arm = arm
+        self._depth = load_depth_templates(template_path) if source == "depth" else None
+        self._pow_tgt: Dict[str, np.ndarray] = {}
         if profile not in _PROFILES:
             raise ValueError(f"profile must be one of {sorted(_PROFILES)}, got {profile!r}")
         self.source = source
@@ -275,7 +329,35 @@ class NoiseVarianceInjectTransform:
         # -> smaller f -> LOWER noise variance, the correct sign for source clustering).
         return _unit_variance(_lowpass(plane, self.kappa_smooth_pix), mask)
 
+    def _apply_side_depth(self, arr: np.ndarray, side: str) -> np.ndarray:
+        """`(E + sqrt(w)·g) / sqrt(1 + <w>)` per bin; g = filtered unit noise, seeded like the
+        multiplicative sources so the same event gets the same realisation in every arm."""
+        nbins = arr.shape[0]
+        out = np.array(arr, dtype=np.float64, copy=True)
+        pin, pout, ptgt = np.zeros(nbins), np.zeros(nbins), np.zeros(nbins)
+        d = self._depth
+        for b in range(nbins):
+            plane = out[b]
+            pin[b] = float((plane ** 2).mean())
+            ptgt[b] = pin[b]
+            if self.arm != "null":
+                w, wpool = d[f"w_{self.arm}_{side}"][b], d[f"wpool_{self.arm}"][b]
+                if w.shape != plane.shape:
+                    raise ValueError(f"depth template {side} bin {b} is {w.shape}, map is {plane.shape}")
+                if wpool > 0:
+                    rng = np.random.default_rng(_seed_from(arr[b]) + b)
+                    g = _filtered_unit_noise(d[f"t2_{side}"], rng, d.get(f"canon_{side}"))
+                    out[b] = (plane + np.sqrt(w) * g) / np.sqrt(1.0 + wpool)
+                    ptgt[b] = (pin[b] + float(w.mean())) / (1.0 + wpool)
+            pout[b] = float((out[b] ** 2).mean())
+        for acc, val in ((self._pow_in, pin), (self._pow_out, pout), (self._pow_tgt, ptgt)):
+            acc[side] = acc.get(side, np.zeros(nbins)) + val
+        self._n[side] = self._n.get(side, 0) + 1
+        return out
+
     def _apply_side(self, arr: np.ndarray, side: str) -> np.ndarray:
+        if self.source == "depth":
+            return self._apply_side_depth(arr, side)
         nbins = arr.shape[0]
         amp = _amplitude(side, nbins, self.target_b, self.floor, self.profile)
         out = np.array(arr, dtype=np.float64, copy=True)
@@ -327,7 +409,11 @@ class NoiseVarianceInjectTransform:
             pout = self._pow_out[side] / n
             with np.errstate(invalid="ignore", divide="ignore"):
                 achieved = np.where(pin > 0, pout / pin, np.nan)
-            tgt = _PROFILES[self.profile][side][: achieved.size]
+            if self.source == "depth":
+                # expected <E²> ratio given the event's own power: (P + <w>_side) / (P (1 + <w>_pool))
+                tgt = self._pow_tgt[side] / self._pow_in[side]
+            else:
+                tgt = _PROFILES[self.profile][side][: achieved.size]
             if self.source == "null":
                 tgt = np.ones_like(tgt)
             rep[side] = {
@@ -338,6 +424,8 @@ class NoiseVarianceInjectTransform:
         return rep
 
     def __repr__(self):
+        if self.source == "depth":
+            return f"NoiseVarianceInjectTransform(source='depth', arm={self.arm!r})"
         return (f"NoiseVarianceInjectTransform(source={self.source!r}, "
                 f"target_b={self.target_b}, slope={self.slope}, profile={self.profile!r}, "
                 f"kband={self.kband})")
