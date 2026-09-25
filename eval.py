@@ -199,7 +199,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
     parser.add_argument("--mode",
                         choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
-                                 "observe-build", "observe-strip", "obs-reference", "obs-score", "pool"],
+                                 "observe-build", "observe-strip", "obs-reference", "obs-score", "pool",
+                                 "catalogue-digest"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -347,6 +348,9 @@ def main(argv=None):
     if mode == "observe-build":
         from src.observation.cluster_modes import run_observe_build
         return run_observe_build(args)
+    if mode == "catalogue-digest":
+        from src.observation.cluster_modes import run_catalogue_digest
+        return run_catalogue_digest(args)
     if mode == "observe-strip":
         from src.observation.cluster_modes import run_obs_strip
         return run_obs_strip(args)

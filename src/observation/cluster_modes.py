@@ -563,3 +563,114 @@ def run_observe_build(args) -> int:
         json.dump({"label": label, "observation": obs, "baked": baked,
                    "data_store_names": {arm: f"{obs_store}_{label}_{arm}" for arm in baked}}, fh, indent=2)
     return rc
+
+
+# ---------------------------------------------------------------------------------------------
+# catalogue-digest: compact, fetchable products of ONE saved sim catalogue, for comparing a
+# mock's galaxy-position field and noise with the real catalogue (pipeline audit, 2026-09-25).
+# Saved catalogues live under DATASETS_ROOT and cannot be fetched; this mode reduces one to
+#   * per-bin nside-256 pixel sums  N (count), S1 = sum w, S2 = sum w^2, Q = sum w^2 |e|^2
+#     -> n_eff / noise-variance contrast maps, C_l, tracer regression, cross-bin correlations
+#   * sc8 (8' smoothed-counts) E/B patch maps, filter (4', 56, 1400), production estimator:
+#       E_obs/B_obs     the mock as observed (signal + noise)
+#       E_rot/B_rot     ellipticities randomly rotated first: a pure noise realisation
+#       E_rand/B_rand   the estimator's own second rotation (noise meter)
+#     + noise_std_<tag>{north,south,all} of the unrotated build's rand map (obs) and of the rotated one.
+# Written to MODELS_ROOT/checkpoints/unblinding/catalogue_digest/<store>_<index>/digest.h5.
+# ---------------------------------------------------------------------------------------------
+def run_catalogue_digest(args) -> int:
+    import time
+    import h5py
+    import healpy as hp
+    from src.observation import apply_c_terms, apply_m_bias, apply_weights, load_catalogue
+    from src.observation.geometry import Geometry, patch_noise_std, TAPER_START_FRAC
+    from src.cosmology.map_shears import make_alm_shear_convergence, filter_EB_alms_and_make_maps
+    from src.cosmology.pixelise_maps import get_patch_values
+
+    cat_path, _, cmap_path = _resolve_catalogue(args)
+    column_map = json.load(open(cmap_path)) if cmap_path else None
+    store = _bare(args.catalogue_store, "--catalogue-store")
+    out_dir = unblinding_root() / "catalogue_digest" / f"{store}_{int(args.catalogue_index or 0)}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    t0 = time.time()
+    cat = load_catalogue(cat_path, column_map=column_map, kind=args.kind)
+    cat = apply_weights(cat, mode=getattr(args, "weights_mode", "ignore"),
+                        rescale=getattr(args, "weights_rescale", "none"))
+    m_bias = apply_m_bias(cat, source=args.m_bias_source)
+    cat = apply_c_terms(cat)
+    attrs = cat.provenance.get("sim_attrs", {})
+    g = Geometry.from_catalogue_attrs(attrs) if attrs else Geometry.production()
+    data = cat.data.copy()
+    w = cat.estimator_weights
+    print(f"[catalogue-digest] {cat_path}: n_gal={cat.n_gal:,} per-bin={cat.counts_per_bin(g.nbins)} "
+          f"({time.time() - t0:.0f}s)", flush=True)
+
+    # ---- per-bin nside-256 pixel sums ----
+    ns = 256
+    npix = hp.nside2npix(ns)
+    zb = np.asarray(data["ZBIN"]).astype(int)
+    pix = hp.ang2pix(ns, np.asarray(data["RA"], float), np.asarray(data["DEC"], float), lonlat=True)
+    ww = np.ones(cat.n_gal) if w is None else np.asarray(w, float)
+    e2 = np.asarray(data["E1"], float) ** 2 + np.asarray(data["E2"], float) ** 2
+    sums = {k: np.zeros((g.nbins, npix), np.float64) for k in ("N", "S1", "S2", "Q")}
+    for i in range(g.nbins):
+        s = zb == i
+        sums["N"][i] = np.bincount(pix[s], minlength=npix)
+        sums["S1"][i] = np.bincount(pix[s], weights=ww[s], minlength=npix)
+        sums["S2"][i] = np.bincount(pix[s], weights=ww[s] ** 2, minlength=npix)
+        sums["Q"][i] = np.bincount(pix[s], weights=ww[s] ** 2 * e2[s], minlength=npix)
+    del pix, e2
+
+    # ---- sc8 E/B patches: as observed, and a pure-noise (rotated) realisation ----
+    rng = np.random.default_rng(int(args.rng_seed))
+    patches = [tuple(p) for p in g.patches]
+    names = list(g.patch_names)
+    fwhm, lmin, lcut = 4.0, 56, 1400
+    tag = f"fwhm{fwhm:g}_lmin{lmin}_lcut{lcut}"
+    kw = dict(normalization="smoothed_counts", smoothed_counts_fwhm_arcmin=8.0)
+    if w is not None:
+        kw["weights"] = w
+    out = {}
+
+    def _maps(d, lab_sig, lab_rand):
+        t1 = time.time()
+        alm, alm_rand = make_alm_shear_convergence(d, m_bias, g.nbins, g.nside, g.lmax, nosh=False, mask=None,
+                                                   rng=rng, **kw)
+        for lab, al in ((lab_sig, alm), (lab_rand, alm_rand)):
+            E, B = filter_EB_alms_and_make_maps(alm_list=al, nside_out=g.nside_out, lmax_out=None, fwhm_arcmin=fwhm,
+                                                taper_start_frac=TAPER_START_FRAC, lmin=lmin, lcut=lcut)
+            for mname, mm in (("E", E), ("B", B)):
+                pp = get_patch_values(mm, patches, g.nside_out, g.ang)
+                out[f"{mname}_{lab}"] = {nm: pp[k].astype(np.float32) for k, nm in enumerate(names)}
+            if lab == lab_rand:
+                out[f"noise_std_{lab_sig}_{tag}"] = patch_noise_std(E, patches, g.nside_out, g.ang, names)
+        print(f"[catalogue-digest] maps {lab_sig}/{lab_rand} in {time.time() - t1:.0f}s", flush=True)
+
+    _maps(data, "obs", "obs_rand")
+    th = rng.random(cat.n_gal) * 2 * np.pi
+    e = (np.asarray(data["E1"], float) + 1j * np.asarray(data["E2"], float)) * np.exp(1j * th)
+    data["E1"] = e.real
+    data["E2"] = e.imag
+    del e, th
+    _maps(data, "rot", "rand")
+
+    path = out_dir / "digest.h5"
+    with h5py.File(path, "w") as f:
+        f.attrs["catalogue"] = str(cat_path)
+        f.attrs["filter"] = tag
+        f.attrs["rng_seed"] = int(args.rng_seed)
+        f.attrs["n_gal"] = int(cat.n_gal)
+        for k, v in attrs.items():
+            try:
+                f.attrs[f"sim_{k}"] = v
+            except (TypeError, ValueError):
+                f.attrs[f"sim_{k}"] = str(v)
+        gs = f.create_group("pixel_sums_nside256")
+        for k, v in sums.items():
+            gs.create_dataset(k, data=v.astype(np.float32), compression="gzip", compression_opts=4)
+        for k, d in out.items():
+            gg = f.create_group(k)
+            for nm, arr in d.items():
+                gg.create_dataset(nm, data=np.asarray(arr))
+    print(f"[catalogue-digest] wrote {path} ({time.time() - t0:.0f}s total)", flush=True)
+    return 0
