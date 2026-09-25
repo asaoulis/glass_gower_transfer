@@ -2,10 +2,10 @@
 
 These three classes are copied **VERBATIM** from the reference implementation
 ``kids-legacy-sbi/kids-legacy-sbi/kids_legacy_sim/catalogue.py`` (lines 15-176) so the VD effect
-is identical to the validated reference. They are pure look-up / sampling helpers (no edits to the
-forward model) and depend only on numpy + healpy. Construction of instances lives in
-``src/cosmology/sim_utils.py:build_variable_depth``; the constants live in
-``src/KiDS/variable_depth_config.py``.
+is identical to the validated reference (except: ``vardepth_los_tracer`` is per tomo bin). They are
+pure look-up / sampling helpers (no edits to the forward model) and depend only on numpy + healpy.
+Construction of instances lives in ``src/cosmology/sim_utils.py:build_variable_depth``; the constants
+live in ``src/KiDS/variable_depth_config.py``.
 """
 import numpy as np
 import healpy as hp
@@ -49,7 +49,8 @@ class AngularLosVariableDepthMask(AngularVariableDepthMask):
 
     ``vardepth_tomo_functions`` should map ``vardepth_map`` values to the
     galaxy-count contrast (VD / no-VD); when omitted, ``vardepth_map`` is
-    itself treated as the contrast.  ``dndz_vardepth`` provides per-VD-bin
+    itself treated as the contrast.  ``vardepth_los_tracer`` (n_bins, npix), if given, replaces
+    ``vardepth_map`` for the LOS interpolation.  ``dndz_vardepth`` provides per-VD-bin
     n(z)s used to derive the LOS fraction per shell.
     """
 
@@ -124,7 +125,7 @@ class AngularLosVariableDepthMask(AngularVariableDepthMask):
         los_fraction_vardepth = self.get_los_fraction(index)
 
         tracer = (angular_tracer_map if self.vardepth_los_tracer is None
-                  else self.vardepth_los_tracer)
+                  else self.vardepth_los_tracer[index[0]])
         los_vardepth_map = np.interp(
             tracer, self.vardepth_values[index[0]], los_fraction_vardepth
         )

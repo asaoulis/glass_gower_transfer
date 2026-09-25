@@ -1195,7 +1195,7 @@ if __name__ == "__main__":
                     shift_nz = model_shift_nz(SYSTEMATICS_MODEL)
                     zb = glass.shells.distance_grid(cosmo, zmin, zmax, dx=dx)
                     los_z_integration = np.linspace(zb[0], zb[-1], n_los_chi)
-                    tomo_nz = calculate_tomo_nz(data_dir, n_los_chi, los_z_integration, shift_nz)
+                    tomo_nz, dz_shift = calculate_tomo_nz(data_dir, n_los_chi, los_z_integration, shift_nz, return_shift=True)
                     if SMOKE:
                         # "Very low n_eff": scale the real n(z) right down to keep the smoke fast.
                         tomo_nz = tomo_nz * SMOKE_CONFIG["n_eff_scale"]
@@ -1229,6 +1229,7 @@ if __name__ == "__main__":
                             nside=nside,
                             sigma_e=sigma_e,
                             dndz_scale=dndz_scale,
+                            dz_shift=dz_shift,
                         )
                         # Per-sim realised VD shear biases (mirror m_bias_realised, using rng).
                         m_bias_vd_realised = np.array([

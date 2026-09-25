@@ -18,9 +18,10 @@ Re-derived from the new target-galaxy (TG) weights. Relative to the previous tab
 - ``vd_trace_edges`` is now **per-tomographic-bin**, ``(11,) -> (6, 11)``. Consumers must index it
   as ``vd_trace_edges[tomo]`` before digitising.
 - ``vd_trace_eff_centre``, ``m_bias_vd``, ``m_bias_vd_unc`` — new values, same shapes.
-- The galaxy-count contrast model changed **functional form**: the ``n_eff_table`` (10, 6) lookup +
-  ``interp1d`` is replaced by a per-tomo **quadratic** in the tracer, ``a_ngal x^2 + b_ngal x +
-  c_ngal``, clipped to ``[0.95, 1.8]`` and divided by ``n_arcmin2[i]``. ``n_eff_table`` is gone.
+- The galaxy-count contrast is the **A' table** (2026-09-25): real-catalogue H12 n_eff in 10
+  galaxy-equipopulated bins of the 15'-smoothed tracer (``vd_contrast_xbar``, ``vd_contrast_neff``;
+  scripts/calibrate_vd_neff_table.py). It replaces upstream's quadratic ``a/b/c_ngal``, which was flat and
+  anti-correlated with the real n_eff.
 - The ``sigma_eps`` model dropped from **cubic to quadratic**: ``a_se x^2 + b_se x + c_se``
   (``d_se`` is gone), clip window ``[0.25, 0.34]`` unchanged.
 - ``load_vd_maps`` now reads per-tomo SOM-derived maps named by the **integer tomo index**, not by
@@ -79,15 +80,38 @@ vd_trace_eff_centre = np.array([
      6.10448105, 6.66362351, 7.33460146, 8.42028027],
 ])
 
-# Quadratic n_gal(VD tracer) model coefficients per tomo bin (6,). Replaces the old
-# `n_eff_table` (10, 6) + interp1d lookup. Used clipped to [0.95, 1.8] and divided by
-# `n_arcmin2[i]` to form the raw count contrast — see `sim_utils.build_variable_depth`.
-a_ngal = np.array([-0.001047, -0.001979, -0.000701, -0.004175, -0.004781, -0.001811])
-b_ngal = np.array([0.007246, 0.015826, 0.005413, 0.030059, 0.029338, -0.000527])
-c_ngal = np.array([1.764172, 1.627612, 1.489635, 1.427104, 1.334675, 1.129347])
-
-# Clip window for the raw count contrast, applied BEFORE the /n_arcmin2 division.
-n_contrast_clip = (0.95, 1.8)
+# A' count contrast: H12 n_eff (arcmin^-2) of the real catalogue in 10 galaxy-equipopulated bins of the tracer
+# smoothed by `vd_contrast_fwhm_arcmin`, tabulated against the mask-weighted mean smoothed tracer per bin.
+# Regenerate with scripts/calibrate_vd_neff_table.py.
+vd_contrast_fwhm_arcmin = 15.0
+vd_contrast_xbar = np.array([
+    [4.66338443114, 5.03470534646, 5.2148292944, 5.3527680538, 5.47364783744,
+     5.59056746723, 5.71129643552, 5.84233188638, 6.0058389412, 6.3169373662],
+    [4.30323148959, 4.81910707721, 5.08521273589, 5.29609600832, 5.48204221803,
+     5.65378946159, 5.82929478783, 6.02391465954, 6.27043283354, 6.71845100602],
+    [3.92283070643, 4.40676936591, 4.6711831795, 4.8853567684, 5.07038970073,
+     5.23924467606, 5.41317516958, 5.61693242121, 5.86804634649, 6.29652974303],
+    [3.83392264251, 4.35767721208, 4.65664380079, 4.91188532831, 5.14104449011,
+     5.35664157923, 5.57924279624, 5.82474341547, 6.12806588276, 6.64052492401],
+    [3.35356402035, 3.97835719233, 4.3432915337, 4.64240078508, 4.90278683147,
+     5.1477166381, 5.39812743309, 5.67254446109, 6.0112397517, 6.57748419361],
+    [2.60235809527, 3.41699715418, 3.92179661277, 4.33243602233, 4.69289272303,
+     5.0224932126, 5.38505793879, 5.819258384, 6.33618126675, 7.17735503907],
+])
+vd_contrast_neff = np.array([
+    [1.5002728398, 1.60790118716, 1.66864485492, 1.72267589615, 1.76758842056,
+     1.81738245484, 1.85876045838, 1.8976890919, 1.95474929554, 2.0686686226],
+    [1.23552484052, 1.39465008713, 1.50590382992, 1.5843880438, 1.66098561016,
+     1.72393016551, 1.79356368262, 1.87692889923, 1.99387483582, 2.16395494199],
+    [1.10361925181, 1.2668506868, 1.36884139136, 1.45385565168, 1.52090364793,
+     1.57291491405, 1.63084493436, 1.7125481119, 1.80647125956, 1.95068101625],
+    [0.996465161889, 1.1661148664, 1.28800490688, 1.39430338724, 1.48288644591,
+     1.56808672091, 1.65458373732, 1.73612320283, 1.84290174197, 2.03979266958],
+    [0.845749740354, 1.04585092252, 1.17302218522, 1.28290833894, 1.38002298353,
+     1.46949649437, 1.55212395822, 1.65874662973, 1.79645105553, 2.00633011147],
+    [0.531475986236, 0.750828552058, 0.894331631483, 1.01849049819, 1.13548775049,
+     1.24312710478, 1.3614068189, 1.50152788235, 1.68295265709, 1.9890347961],
+])
 
 # Quadratic sigma_eps(VD tracer) model coefficients per tomo bin (6,). Was cubic before the
 # 2026-08 recalibration (the `d_se` constant term is gone).
@@ -169,6 +193,19 @@ def load_vd_maps(data_dir: str | Path, nside: int) -> np.ndarray:
             m = hp.ud_grade(m, nside)
         vd_map[i] = m
     return vd_map
+
+
+def smooth_vd_tracer(vd_map: np.ndarray, mask: np.ndarray, fwhm_arcmin: float = vd_contrast_fwhm_arcmin) -> np.ndarray:
+    """Mask-weighted Gaussian smoothing of each tomo bin's tracer map; 0 on holes (tracer <= 0)."""
+    fwhm = np.radians(fwhm_arcmin / 60.0)
+    smooth = np.zeros_like(vd_map)
+    for i in range(len(vd_map)):
+        hole = vd_map[i] <= 0
+        w = mask * ~hole
+        s = hp.smoothing(vd_map[i] * w, fwhm=fwhm, iter=0)
+        sw = hp.smoothing(w, fwhm=fwhm, iter=0)
+        smooth[i] = np.where((sw > 1e-3) & ~hole, s / np.maximum(sw, 1e-3), 0.0)
+    return smooth
 
 
 def load_psf_maps(data_dir: str | Path, nside: int) -> tuple[np.ndarray, np.ndarray]:

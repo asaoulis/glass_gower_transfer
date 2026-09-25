@@ -23,7 +23,7 @@ ztomo_label = [
 # Galaxy density in each tomographic bin
 n_arcmin2 = np.array([1.7698, 1.6494, 1.4974, 1.4578, 1.3451, 1.0682])#*1.e-2 # per arcmin^2
 
-def calculate_tomo_nz(data_dir, n_los_chi, los_z_integration, shift_nz=True):
+def calculate_tomo_nz(data_dir, n_los_chi, los_z_integration, shift_nz=True, return_shift=False):
     tomo_nz = np.zeros((nbins, n_los_chi))
         
     if shift_nz:
@@ -45,4 +45,6 @@ def calculate_tomo_nz(data_dir, n_los_chi, los_z_integration, shift_nz=True):
             zmid = z[:-1] + 0.5*(z[1:] - z[:-1])
             dndz_interpolated = np.interp(los_z_integration, zmid, n_arcmin2[i]*hdu[1][:-1]/np.trapezoid(hdu[1][:-1], zmid))
             tomo_nz[i] = np.clip(dndz_interpolated, 0, None)
+    if return_shift:
+        return tomo_nz, (shift_dz_realised if shift_nz else None)
     return tomo_nz

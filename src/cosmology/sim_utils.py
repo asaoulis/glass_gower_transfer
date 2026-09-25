@@ -94,26 +94,29 @@ def build_systematics(model: str, *, systematics_cls, cosmo, ia_params: dict, sh
 	raise ValueError(f"Unknown systematics model: {model!r}")
 
 
-def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple, nside, sigma_e, dndz_scale=1.0):
+def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple, nside, sigma_e, dndz_scale=1.0, dz_shift=None):
 	"""Construct the variable-depth (VD) look-up objects.
 
 	``dndz_scale`` multiplies the per-VD-bin n(z) normalisation so it shares the SAME overall
 	galaxy-density scale as the ``tomo_nz`` passed in (the LOS depth fraction is the ratio
-	``dndz_vardepth / tomo_nz``, which must be scale-consistent). It is 1.0 in production (then
-	`dndz_vd` is built exactly as the reference); the local smoke scales `tomo_nz` down by
-	`n_eff_scale`, so it must pass the same factor here.
+	``dndz_vardepth / tomo_nz``, which must be scale-consistent). It is 1.0 in production; the local
+	smoke scales `tomo_nz` down by `n_eff_scale`, so it must pass the same factor here.
 
-	Ports the reference VD driver (Kiyam/kids-legacy-sbi @ 4a22578,
-	scripts/kids_legacy_sim_vd_cluster.py lines ~340-560) VERBATIM, only parameterised by the
-	simulator's survey geometry:
+	``dz_shift`` is the realised per-tomo photo-z shift already applied to ``tomo_nz`` (None: unshifted).
+	Each VD-bin n(z) is shifted by it plus that VD bin's mean offset from the tomo-bin mean.
 
-	- load per-tomo VD tracer maps (`vd_map`);
+	Follows the reference VD driver (Kiyam/kids-legacy-sbi @ 4a22578, scripts/kids_legacy_sim_vd_cluster.py)
+	except for the count contrast, which is the A' table (`vd_contrast_xbar`, `vd_contrast_neff`) evaluated
+	on the smoothed tracer, 0 where the tracer is 0, unclipped:
+
+	- load per-tomo VD tracer maps (`vd_map`) and their smoothed version (`vd_map_smooth`);
 	- build the count-contrast functions `n_contrast_vd` (mask-normalised so <contrast>_mask = 1,
 	  guaranteeing total galaxy counts match the no-VD case per tomo bin);
 	- build the per-pixel sigma_eps model `sigma_eps_var` (clipped quadratic, rescaled so
 	  <sigma_eps>_mask = sigma_e[i]);
-	- build the per-VD-bin n(z) `dndz_vd`, reading a SEPARATE recalibrated ascii per VD bin;
-	- assemble `AngularLosVariableDepthMask` + `VariableDepthShapeDispersion`.
+	- build the per-VD-bin n(z) `dndz_vd` (shape only: the amplitude enters once, via the contrast);
+	- assemble `AngularLosVariableDepthMask` + `VariableDepthShapeDispersion`. The LOS interpolation,
+	  sigma_eps and the returned `vd_map` use the raw tracer.
 
 	Returns:
 		(var_depth_mask, vd_shapes, vd_map)
@@ -124,34 +127,31 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 	)
 	from src.KiDS.tomo import nbins, ztomo, n_arcmin2
 	from src.KiDS.variable_depth_config import (
-		a_ngal,
 		a_se,
-		b_ngal,
 		b_se,
-		c_ngal,
 		c_se,
 		load_vd_maps,
-		n_contrast_clip,
 		n_vardepth_bins,
 		sigma_eps_clip,
+		smooth_vd_tracer,
+		vd_contrast_neff,
+		vd_contrast_xbar,
 		vd_trace_eff_centre,
 		zb_label,
 	)
 
 	vd_map = load_vd_maps(data_dir, nside)  # (nbins, npix) at run nside
+	vd_map_smooth = smooth_vd_tracer(vd_map, mask)
 
-	# Count-contrast: clipped quadratic in the tracer, divided by the tomo-bin mean density so it
-	# is a CONTRAST (VD / no-VD) rather than an absolute density, then mask-normalised so
+	# Count-contrast: the A' n_eff table on the smoothed tracer (0 on holes), mask-normalised so
 	# <contrast>_mask = 1. That normalisation makes Sum_pix mask*contrast = Sum_pix mask exactly,
 	# guaranteeing total galaxy counts match the no-VD case at the per-tomo level.
 	_contrast_raw = [
-		lambda x, i=i: (
-			np.clip(a_ngal[i]*x**2 + b_ngal[i]*x + c_ngal[i], *n_contrast_clip) / n_arcmin2[i]
-		)
+		lambda x, i=i: np.where(x > 0, np.interp(x, vd_contrast_xbar[i], vd_contrast_neff[i]), 0.0)
 		for i in range(nbins)
 	]
 	_disc_corr = np.array([
-		1.0 / np.average(_contrast_raw[i](vd_map[i]), weights=mask)
+		1.0 / np.average(_contrast_raw[i](vd_map_smooth[i]), weights=mask)
 		for i in range(nbins)
 	])
 	n_contrast_vd = [
@@ -175,11 +175,13 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		for i in range(nbins)
 	])
 
-	# Per-VD-bin n(z): each VD bin reads its OWN recalibrated ascii, scaled by n_contrast_vd at the
-	# VD-bin centre. Before the 2026-08 recalibration every VD bin read the same `comb_1` file, so
-	# the VD effect on n(z) was absent entirely (the depth only rescaled the amplitude, never the
-	# shape) — upstream `5a7c63e` is the fix. Note the VD index sits AFTER the ZB label here, and
-	# the stem carries the extra `_lab_filt_lab_` segment.
+	if dz_shift is not None:
+		dz_mean = np.loadtxt(f"{data_dir}/nofzs/dz/Nz_biases.txt")
+		dz_mean_vd = np.genfromtxt(f"{data_dir}/nofzs/dz_tgweights/Nz_biases.txt")[nbins:].reshape(n_vardepth_bins, nbins)
+
+	# Per-VD-bin n(z): each VD bin reads its OWN recalibrated ascii (upstream `5a7c63e`). Shape only:
+	# normalised to n_arcmin2, so `get_los_fraction` is a pure n(z)-shape ratio. Note the VD index sits
+	# AFTER the ZB label here, and the stem carries the extra `_lab_filt_lab_` segment.
 	dndz_vd = np.zeros((nbins, n_vardepth_bins, len(los_z_integration)))
 	for i in range(nbins):
 		for j in range(n_vardepth_bins):
@@ -189,16 +191,19 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 			)
 			hdu = np.loadtxt(filename).T
 			z = hdu[0]
+			n_z = hdu[1]
+			if dz_shift is not None:
+				n_z = np.interp(z, z - (dz_shift[i] + dz_mean_vd[j, i] - dz_mean[i]), n_z)
 			zmid = z[:-1] + 0.5 * (z[1:] - z[:-1])
 			dndz_interpolated = np.interp(
 				los_z_integration,
 				zmid,
-				dndz_scale * n_arcmin2[i] * n_contrast_vd[i](vd_trace_eff_centre[i][j]) * hdu[1][:-1] / np.trapezoid(hdu[1][:-1], zmid),
+				dndz_scale * n_arcmin2[i] * n_z[:-1] / np.trapezoid(n_z[:-1], zmid),
 			)
 			dndz_vd[i][j] = np.clip(dndz_interpolated, 0, None)
 
 	var_depth_mask = AngularLosVariableDepthMask(
-		vd_map,
+		vd_map_smooth,
 		n_bins=nbins,
 		zbins=zb_tuple,
 		ztomo=ztomo,
@@ -206,10 +211,24 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		z=los_z_integration,
 		dndz_vardepth=dndz_vd,
 		vardepth_values=vd_trace_eff_centre,
-		vardepth_los_tracer=None,
+		vardepth_los_tracer=vd_map,
 		vardepth_tomo_functions=n_contrast_vd,
 	)
 	vd_shapes = VariableDepthShapeDispersion(sigma_eps_var, vd_map, nside)
+
+	# Banner: angular contrast and the shell-summed total (angular x LOS) count factor per tomo bin.
+	shells = [np.concatenate([[z0], los_z_integration[(los_z_integration > z0) & (los_z_integration < z1)], [z1]]) for z0, z1 in zb_tuple]
+	for i in range(nbins):
+		ngal = np.array([np.trapezoid(np.interp(zk, los_z_integration, tomo_nz[i]), zk) for zk in shells])
+		los = np.array([var_depth_mask.get_los_fraction((i, k)) for k in range(len(zb_tuple))])
+		c = n_contrast_vd[i](vd_map_smooth[i])
+		total = c * np.interp(vd_map[i], vd_trace_eff_centre[i], ngal @ los / ngal.sum())
+		t_mean = np.average(total, weights=mask)
+		print(
+			f"[vd A'] bin {i + 1}: <c>={np.average(c, weights=mask):.3f} rms={np.sqrt(np.average((c - 1) ** 2, weights=mask)):.3f}"
+			f" | <c*L>={t_mean:.3f} rms={np.sqrt(np.average((total / t_mean - 1) ** 2, weights=mask)):.3f}",
+			flush=True,
+		)
 
 	return var_depth_mask, vd_shapes, vd_map
 
