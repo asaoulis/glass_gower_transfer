@@ -94,7 +94,8 @@ def build_systematics(model: str, *, systematics_cls, cosmo, ia_params: dict, sh
 	raise ValueError(f"Unknown systematics model: {model!r}")
 
 
-def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple, nside, sigma_e, dndz_scale=1.0, dz_shift=None):
+def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple, nside, sigma_e, dndz_scale=1.0, dz_shift=None,
+						 vd_table="pooled"):
 	"""Construct the variable-depth (VD) look-up objects.
 
 	``dndz_scale`` multiplies the per-VD-bin n(z) normalisation so it shares the SAME overall
@@ -104,6 +105,10 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 
 	``dz_shift`` is the realised per-tomo photo-z shift already applied to ``tomo_nz`` (None: unshifted).
 	Each VD-bin n(z) is shifted by it plus that VD bin's mean offset from the tomo-bin mean.
+
+	``vd_table`` selects the count-contrast table: ``"pooled"`` (default, A') is one table for the whole survey
+	(`vd_contrast_xbar`, `vd_contrast_neff`); ``"patch"`` uses one table per KiDS patch on tail-resolved galaxy
+	quantiles (`vd_patch_xbar`, `vd_patch_neff`, split at `vd_patch_dec_split`). Everything else is identical.
 
 	Follows the reference VD driver (Kiyam/kids-legacy-sbi @ 4a22578, scripts/kids_legacy_sim_vd_cluster.py)
 	except for the count contrast, which is the A' table (`vd_contrast_xbar`, `vd_contrast_neff`) evaluated
@@ -121,6 +126,7 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 	Returns:
 		(var_depth_mask, vd_shapes, vd_map)
 	"""
+	import healpy as hp
 	from .variable_depth import (
 		AngularLosVariableDepthMask,
 		VariableDepthShapeDispersion,
@@ -136,6 +142,9 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		smooth_vd_tracer,
 		vd_contrast_neff,
 		vd_contrast_xbar,
+		vd_patch_dec_split,
+		vd_patch_neff,
+		vd_patch_xbar,
 		vd_trace_eff_centre,
 		zb_label,
 	)
@@ -146,10 +155,21 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 	# Count-contrast: the A' n_eff table on the smoothed tracer (0 on holes), mask-normalised so
 	# <contrast>_mask = 1. That normalisation makes Sum_pix mask*contrast = Sum_pix mask exactly,
 	# guaranteeing total galaxy counts match the no-VD case at the per-tomo level.
-	_contrast_raw = [
-		lambda x, i=i: np.where(x > 0, np.interp(x, vd_contrast_xbar[i], vd_contrast_neff[i]), 0.0)
-		for i in range(nbins)
-	]
+	if vd_table == "pooled":
+		_contrast_raw = [
+			lambda x, i=i: np.where(x > 0, np.interp(x, vd_contrast_xbar[i], vd_contrast_neff[i]), 0.0)
+			for i in range(nbins)
+		]
+	elif vd_table == "patch":
+		# One table per KiDS patch (0 = N, 1 = S); x is the full-sky smoothed tracer, so `north` lines up with it.
+		north = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)[1] > vd_patch_dec_split
+		_contrast_raw = [
+			lambda x, i=i: np.where(x > 0, np.where(north, np.interp(x, vd_patch_xbar[0, i], vd_patch_neff[0, i]),
+			                                        np.interp(x, vd_patch_xbar[1, i], vd_patch_neff[1, i])), 0.0)
+			for i in range(nbins)
+		]
+	else:
+		raise ValueError(f"vd_table must be 'pooled' or 'patch', got {vd_table!r}")
 	_disc_corr = np.array([
 		1.0 / np.average(_contrast_raw[i](vd_map_smooth[i]), weights=mask)
 		for i in range(nbins)
@@ -225,7 +245,7 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		total = c * np.interp(vd_map[i], vd_trace_eff_centre[i], ngal @ los / ngal.sum())
 		t_mean = np.average(total, weights=mask)
 		print(
-			f"[vd A'] bin {i + 1}: <c>={np.average(c, weights=mask):.3f} rms={np.sqrt(np.average((c - 1) ** 2, weights=mask)):.3f}"
+			f"[vd A'{'' if vd_table == 'pooled' else ' ' + vd_table}] bin {i + 1}: <c>={np.average(c, weights=mask):.3f} rms={np.sqrt(np.average((c - 1) ** 2, weights=mask)):.3f}"
 			f" | <c*L>={t_mean:.3f} rms={np.sqrt(np.average((total / t_mean - 1) ** 2, weights=mask)):.3f}",
 			flush=True,
 		)

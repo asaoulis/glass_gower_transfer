@@ -143,6 +143,12 @@ def parse_args():
     )
 
     parser.add_argument(
+        "--vd-table", type=str, default="pooled", choices=["pooled", "patch"],
+        help="Variable-depth count-contrast table: 'pooled' (default) = one survey-wide table; 'patch' = one "
+             "table per KiDS patch on tail-resolved galaxy quantiles (src/KiDS/variable_depth_config.py).",
+    )
+
+    parser.add_argument(
         "--ia-model",
         type=str,
         default="nla_m",
@@ -786,6 +792,7 @@ if __name__ == "__main__":
     SIMULATOR_TYPE = args.simulator_type
     SYSTEMATICS_MODEL = resolve_systematics_model(args)
     IA_MODEL = args.ia_model
+    VD_TABLE = args.vd_table
     IA_PRIOR_SET = args.ia_prior_set
     ia_prior_spec = resolve_ia_prior_spec(IA_MODEL, IA_PRIOR_SET)
     nuisance_pins = NUISANCE_PINS[IA_PRIOR_SET]
@@ -1230,6 +1237,7 @@ if __name__ == "__main__":
                             sigma_e=sigma_e,
                             dndz_scale=dndz_scale,
                             dz_shift=dz_shift,
+                            vd_table=VD_TABLE,
                         )
                         # Per-sim realised VD shear biases (mirror m_bias_realised, using rng).
                         m_bias_vd_realised = np.array([
