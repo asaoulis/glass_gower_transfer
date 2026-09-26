@@ -108,7 +108,8 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 
 	``vd_table`` selects the count-contrast table: ``"pooled"`` (default, A') is one table for the whole survey
 	(`vd_contrast_xbar`, `vd_contrast_neff`); ``"patch"`` uses one table per KiDS patch on tail-resolved galaxy
-	quantiles (`vd_patch_xbar`, `vd_patch_neff`, split at `vd_patch_dec_split`). Everything else is identical.
+	quantiles (`vd_patch_xbar`, `vd_patch_neff`, split at `vd_patch_dec_split`); ``"quadcap"`` a per-patch quadratic
+	in the tracer (`vd_quadcap_*`), constant beyond the outermost calibration bins. Everything else is identical.
 
 	Follows the reference VD driver (Kiyam/kids-legacy-sbi @ 4a22578, scripts/kids_legacy_sim_vd_cluster.py)
 	except for the count contrast, which is the A' table (`vd_contrast_xbar`, `vd_contrast_neff`) evaluated
@@ -145,6 +146,10 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		vd_patch_dec_split,
 		vd_patch_neff,
 		vd_patch_xbar,
+		vd_quadcap_coef,
+		vd_quadcap_hi,
+		vd_quadcap_lo,
+		vd_quadcap_nbar,
 		vd_trace_eff_centre,
 		zb_label,
 	)
@@ -168,8 +173,16 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 			                                        np.interp(x, vd_patch_xbar[1, i], vd_patch_neff[1, i])), 0.0)
 			for i in range(nbins)
 		]
+	elif vd_table == "quadcap":
+		# Per-patch quadratic in the tracer, clipped to the calibrated support [lo, hi] (constant beyond).
+		north = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)[1] > vd_patch_dec_split
+		_fit = lambda x, i, p: vd_quadcap_nbar[p, i] * np.polyval(vd_quadcap_coef[p, i], np.clip(x, vd_quadcap_lo[p, i], vd_quadcap_hi[p, i]))
+		_contrast_raw = [
+			lambda x, i=i: np.where(x > 0, np.where(north, _fit(x, i, 0), _fit(x, i, 1)), 0.0)
+			for i in range(nbins)
+		]
 	else:
-		raise ValueError(f"vd_table must be 'pooled' or 'patch', got {vd_table!r}")
+		raise ValueError(f"vd_table must be 'pooled', 'patch' or 'quadcap', got {vd_table!r}")
 	_disc_corr = np.array([
 		1.0 / np.average(_contrast_raw[i](vd_map_smooth[i]), weights=mask)
 		for i in range(nbins)

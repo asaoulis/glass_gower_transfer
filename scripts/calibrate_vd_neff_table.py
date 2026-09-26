@@ -11,6 +11,7 @@ blind-safe.
     python scripts/calibrate_vd_neff_table.py            # print paste-ready constants + write JSON
     python scripts/calibrate_vd_neff_table.py --check    # compare with the committed constants
     python scripts/calibrate_vd_neff_table.py --table patch [--check]   # the per-patch table (vd_patch_*)
+    python scripts/calibrate_vd_neff_table.py --table quadcap [--check] # the per-patch capped quadratic (vd_quadcap_*)
 
 `--table patch` calibrates KiDS-N and KiDS-S separately on the tail-resolved galaxy quantiles
 `vd_patch_quantiles` (1, 2.5, 5, 10, ..., 90, 95, 97.5, 99 %), resolving the shallow and deep tails that
@@ -30,13 +31,13 @@ sys.path.insert(0, str(REPO))
 from src.KiDS.simulation_config import load_kids_mask
 from src.KiDS.tomo import nbins
 from src.KiDS.variable_depth_config import (load_vd_maps, n_vardepth_bins, smooth_vd_tracer, vd_contrast_fwhm_arcmin,
-                                            vd_patch_dec_split, vd_patch_quantiles)
+                                            vd_patch_dec_split, vd_patch_quantiles, vd_quadcap_quantiles)
 
 NSIDE = 1024
 
 
-def calibrate(catalogue, data_dir, fwhm, quantiles=None, patch=None):
-    """(xbar, neff), each (nbins, len(quantiles) - 1). `quantiles` are the galaxy-quantile bin edges
+def calibrate(catalogue, data_dir, fwhm, quantiles=None, patch=None, return_area=False):
+    """(xbar, neff[, area]), each (nbins, len(quantiles) - 1). `quantiles` are the galaxy-quantile bin edges
     (default: n_vardepth_bins equipopulated bins); `patch` in {None, 'N', 'S'} restricts galaxies and
     mask pixels to one KiDS patch (split at `vd_patch_dec_split`)."""
     q = np.linspace(0, 1, n_vardepth_bins + 1) if quantiles is None else np.asarray(quantiles)
@@ -55,6 +56,7 @@ def calibrate(catalogue, data_dir, fwhm, quantiles=None, patch=None):
     pixarea = hp.nside2pixarea(NSIDE, degrees=True) * 3600.0
     xbar = np.zeros((nbins, nb))
     neff = np.zeros((nbins, nb))
+    areas = np.zeros((nbins, nb))
     for i in range(nbins):
         hole = vd_map[i] <= 0
         sel = (tomo == i) & ~hole[pix] & in_patch[pix]
@@ -67,10 +69,18 @@ def calibrate(catalogue, data_dir, fwhm, quantiles=None, patch=None):
         jp = np.clip(np.digitize(xs[ok], edges) - 1, 0, nb - 1)
         s1 = np.bincount(jg, weights=w[sel], minlength=nb)
         s2 = np.bincount(jg, weights=w[sel] ** 2, minlength=nb)
-        area = np.bincount(jp, weights=mask[ok], minlength=nb)
+        area = areas[i] = np.bincount(jp, weights=mask[ok], minlength=nb)
         xbar[i] = np.bincount(jp, weights=(mask * xs)[ok], minlength=nb) / area
         neff[i] = s1 ** 2 / s2 / (area * pixarea)
-    return xbar, neff
+    return (xbar, neff, areas) if return_area else (xbar, neff)
+
+
+def fit_quadcap(xbar, neff, area):
+    """Per tomo bin: quadratic in the tracer fitted to the binned contrast neff / nbar (weights sqrt(area)), the
+    area-weighted patch density nbar, and the caps (outermost bin means) the tracer is clipped to before evaluation."""
+    nbar = np.array([np.average(n, weights=a) for n, a in zip(neff, area)])
+    coef = np.array([np.polyfit(x, n / nb, 2, w=np.sqrt(a)) for x, n, a, nb in zip(xbar, neff, area, nbar)])
+    return coef, nbar, xbar[:, 0], xbar[:, -1]
 
 
 def _rows(a, indent):
@@ -96,19 +106,36 @@ def main():
     ap.add_argument("--catalogue", default="/data/alex/unblinding/real/inputs/catalogue/kids_legacy_7col.h5")
     ap.add_argument("--data-dir", default=str(REPO / "kids-legacy-sbi" / "data"))
     ap.add_argument("--fwhm", type=float, default=vd_contrast_fwhm_arcmin)
-    ap.add_argument("--table", choices=["pooled", "patch"], default="pooled",
+    ap.add_argument("--table", choices=["pooled", "patch", "quadcap"], default="pooled",
                     help="pooled: the A' table (10 equipopulated bins, KiDS-N+S together); patch: one table per "
-                         "KiDS patch on the tail-resolved quantiles `vd_patch_quantiles`")
+                         "KiDS patch on the tail-resolved quantiles `vd_patch_quantiles`; quadcap: per-patch capped "
+                         "quadratic fit to the `vd_quadcap_quantiles` bins")
     ap.add_argument("--out", default=None, help="JSON output path")
     ap.add_argument("--check", action="store_true", help="compare with the committed constants (rtol 1e-6)")
     a = ap.parse_args()
     if a.table == "pooled":
         xbar, neff = calibrate(a.catalogue, Path(a.data_dir), a.fwhm)
         names = ("vd_contrast_xbar", "vd_contrast_neff")
-    else:
+    elif a.table == "patch":
         tabs = [calibrate(a.catalogue, Path(a.data_dir), a.fwhm, vd_patch_quantiles, p) for p in ("N", "S")]
         xbar, neff = np.stack([t[0] for t in tabs]), np.stack([t[1] for t in tabs])
         names = ("vd_patch_xbar", "vd_patch_neff")
+    else:
+        fits = [fit_quadcap(*calibrate(a.catalogue, Path(a.data_dir), a.fwhm, vd_quadcap_quantiles, p, return_area=True))
+                for p in ("N", "S")]
+        out = {k: np.stack([f[j] for f in fits]) for j, k in enumerate(("vd_quadcap_coef", "vd_quadcap_nbar",
+                                                                          "vd_quadcap_lo", "vd_quadcap_hi"))}
+        for k, v in out.items():
+            print(paste(k, v))
+        if a.out:
+            json.dump({"fwhm_arcmin": a.fwhm, "table": a.table, **{k: v.tolist() for k, v in out.items()}},
+                      open(a.out, "w"), indent=1)
+        if a.check:
+            import src.KiDS.variable_depth_config as cfg
+            ok = all(np.allclose(v, getattr(cfg, k), rtol=1e-6) for k, v in out.items())
+            print("check vs committed constants:", "OK" if ok else "MISMATCH")
+            sys.exit(0 if ok else 1)
+        return
     print(paste(names[0], xbar))
     print(paste(names[1], neff))
     for i in range(nbins):

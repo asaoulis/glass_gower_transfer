@@ -143,9 +143,10 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--vd-table", type=str, default="pooled", choices=["pooled", "patch"],
+        "--vd-table", type=str, default="pooled", choices=["pooled", "patch", "quadcap"],
         help="Variable-depth count-contrast table: 'pooled' (default) = one survey-wide table; 'patch' = one "
-             "table per KiDS patch on tail-resolved galaxy quantiles (src/KiDS/variable_depth_config.py).",
+             "table per KiDS patch on tail-resolved galaxy quantiles; 'quadcap' = per-patch quadratic fit, constant "
+             "beyond the outermost calibration bins (src/KiDS/variable_depth_config.py).",
     )
 
     parser.add_argument(
