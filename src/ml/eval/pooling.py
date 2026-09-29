@@ -246,6 +246,7 @@ def _frame_for(experiments: Sequence[str]):
     from config.experiments import experiments as base_experiments
     from config.kids_legacy import kids_legacy_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
+    from config.kids_legacy_vdq import kids_legacy_vdq_experiments
     from config.kids_legacy_counts import kids_legacy_counts_experiments
     from config.kids_legacy_dn import kids_legacy_dn_experiments
     from config.kids_legacy_novd import kids_legacy_novd_experiments
@@ -253,7 +254,7 @@ def _frame_for(experiments: Sequence[str]):
     exps = dict(base_experiments)
     for extra in (ablation_experiments, kids_legacy_experiments, kids_legacy_counts_experiments,
                   kids_legacy_novd_experiments, kids_legacy_dn_experiments,
-                  kids_legacy_bgp_experiments, bgp_stack5_experiments):
+                  kids_legacy_bgp_experiments, kids_legacy_vdq_experiments, bgp_stack5_experiments):
         exps.update(extra)
     frames = []
     for name in experiments:

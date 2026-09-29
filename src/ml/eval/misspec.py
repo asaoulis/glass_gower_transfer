@@ -262,7 +262,25 @@ GOWER_EXT_VARIATES: List[Dict] = [
 ]
 
 
+# --- VDQ campaign (VD-final-train, 2026-09-29): variable depth ON (quadcap table), b_g kappa=1 ---
+# The pack `gower_npe_finetune_nla_m_vdq_z8_ens1` trains on the Gower VDQ sc8a1 bake (bare `E`
+# groups, eb_map_variant=None). Only the in-distribution store is registered at campaign start;
+# the Phase V VDQ variate bakes are appended HERE (path-only, each path `data-ls`-verified first)
+# as they land — planned names, same `_BGP_EB_TAG` layout:
+#   gower_vdq_nla      gower_vdq_nla_f16_<tag>        exclude_params ["a_ia"]
+#   gower_vdq_nla_z    gower_vdq_nla_z_f16_<tag>      exclude_params ["a_ia"]
+#   gower_vdq_gb1p0    gower_vdq_gb1p0_f16_<tag>      exclude_params []
+#   gower_vdq_gb1p3    gower_vdq_gb1p3_f16_<tag>      exclude_params []
+#   gower_vdq_gbk2     gower_vdqk2_nla_m_f16_<tag>    exclude_params []
+# (see .claude/runs/training-runs/VD-final-train/datasets_checklist.md for the bake commands).
+GOWER_VDQ_VARIATES: List[Dict] = [
+    {"name": "gower_vdq_nla_m", "patterns": f"{_GPU5}/gower_vdq_nla_m_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": [], "in_distribution": True},
+]
+
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
+    "gower_vdq": GOWER_VDQ_VARIATES,
     "gower_bgp": GOWER_BGP_VARIATES,
     # The BGP variates PLUS the two external boxes, so the external points land on the same
     # detector axes (Mahalanobis / kNN / cross-repeat KL) as the existing misspec campaign.
@@ -359,6 +377,7 @@ def _load_experiment_config(experiment_name: str):
     from config.kids_legacy_novd import kids_legacy_novd_experiments
     from config.kids_legacy_dn import kids_legacy_dn_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
+    from config.kids_legacy_vdq import kids_legacy_vdq_experiments
     from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 
     exps = dict(base_experiments)
@@ -368,6 +387,7 @@ def _load_experiment_config(experiment_name: str):
     exps.update(kids_legacy_novd_experiments)
     exps.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
     exps.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
+    exps.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
     exps.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation
     experiment_config = exps[experiment_name]
 

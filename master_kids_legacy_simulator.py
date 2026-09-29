@@ -1,3 +1,16 @@
+"""MPI KiDS-Legacy mock generator (GLASS / Gower Street / smoke / external backends).
+
+See .claude/background/master_simulator.md for the control flow and launch scripts.
+
+Variable depth (VD) is ON BY DEFAULT since 2026-09-29 (task training-runs/VD-final-train):
+with --kids-systematics and the KiDS geometry (smoke, or glass/gower_street + --use-kids-mask),
+an absent --variable-depth resolves to VD ON with the 'quadcap' count-contrast table. Opt out
+with --no-variable-depth; --systematics-model none and --simulator-type external resolve OFF.
+Consequently the root launchers (mpi_gower_mocks.sh / fast_mpi_gower_mocks.sh: --kids-systematics
+--use-kids-mask, no VD flag) now produce VD-quadcap mocks by design. Rank 0 prints the resolved
+state (`variable-depth: ON vd_table=quadcap (source=auto)`) to stdout AND stderr, and every mock
+carries cosmo_dict/vd_code (0 off, 1 pooled, 2 patch, 3 quadcap).
+"""
 import numpy as np
 import healpy as hp
 import re
@@ -6,6 +19,7 @@ from pathlib import Path
 from collections import deque
 import gc
 import argparse
+import sys
 import traceback
 
 import glass.ext.camb
@@ -137,16 +151,25 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--variable-depth", action="store_true",
-        help="Enable the KiDS-Legacy variable-depth effect (implies full NLA + shear-bias "
-             "systematics; resolves the systematics model to 'nla_vd'). Use with --use-kids-mask.",
+        "--variable-depth", action=argparse.BooleanOptionalAction, default=None,
+        help="KiDS-Legacy variable-depth (VD) effect (implies full NLA + shear-bias systematics; "
+             "resolves the systematics model to 'nla_vd'). DEFAULT (flag absent) = AUTO: ON iff the "
+             "systematics model is 'nla' (i.e. --kids-systematics) AND (--simulator-type smoke, or "
+             "glass/gower_street with --use-kids-mask); OFF otherwise (--systematics-model none, no "
+             "KiDS mask, --simulator-type external). --variable-depth forces it on (an error with "
+             "external: VD was never validated on its shell windows); --no-variable-depth forces it "
+             "off. Since 2026-09-29 (VD-final-train) the production default is VD ON with the "
+             "'quadcap' table; the resolved state is printed on rank 0 and stamped per mock as "
+             "cosmo_dict/vd_code (0 off, 1 pooled, 2 patch, 3 quadcap).",
     )
 
     parser.add_argument(
-        "--vd-table", type=str, default="pooled", choices=["pooled", "patch", "quadcap"],
-        help="Variable-depth count-contrast table: 'pooled' (default) = one survey-wide table; 'patch' = one "
-             "table per KiDS patch on tail-resolved galaxy quantiles; 'quadcap' = per-patch quadratic fit, constant "
-             "beyond the outermost calibration bins (src/KiDS/variable_depth_config.py).",
+        "--vd-table", type=str, default=None, choices=["pooled", "patch", "quadcap"],
+        help="Variable-depth count-contrast table (default quadcap when VD resolves ON): 'quadcap' = "
+             "per-patch quadratic fit, constant beyond the outermost calibration bins; 'pooled' = one "
+             "survey-wide table (the A' table); 'patch' = one table per KiDS patch on tail-resolved "
+             "galaxy quantiles (src/KiDS/variable_depth_config.py). Passing --vd-table while VD "
+             "resolves OFF is an error.",
     )
 
     parser.add_argument(
@@ -308,6 +331,53 @@ def parse_args():
                              "is identical across IA models — see IA_PRIOR_OVERRIDES.")
 
     return parser.parse_args()
+
+
+# Variable-depth provenance code stamped per mock as cosmo_dict/vd_code (a float, loader-safe).
+VD_TABLE_CODES = {"off": 0, "pooled": 1, "patch": 2, "quadcap": 3}
+VD_TABLE_DEFAULT = "quadcap"   # VD-final-train (2026-09-29): the production VD table
+
+
+def _resolve_variable_depth(args):
+    """Resolve the tri-state --variable-depth (None = auto) to ``(on, table, source)``.
+
+    Must run BEFORE the protected ``resolve_systematics_model(args)`` sees ``args`` (it reads
+    ``args.variable_depth`` as a truthy flag), so the caller writes the result back onto
+    ``args.variable_depth`` / ``args.vd_table``. Raises ``SystemExit`` on a contradictory command line.
+    """
+    explicit = args.variable_depth
+    if explicit is True and args.simulator_type == "external":
+        raise SystemExit("--variable-depth with --simulator-type external is not supported: the VD "
+                         "path was never validated on the external top-hat shell windows.")
+    if explicit is None:
+        # The systematics model WITHOUT variable depth (variable_depth is None -> falsy here).
+        base_model = resolve_systematics_model(args)
+        kids_geom = (args.simulator_type == "smoke"
+                     or (args.simulator_type in ("glass", "gower_street") and args.use_kids_mask))
+        if base_model != "nla":
+            on, source = False, f"auto: systematics model '{base_model}'"
+        elif not kids_geom:
+            why = ("simulator 'external'" if args.simulator_type == "external"
+                   else "no --use-kids-mask")
+            on, source = False, f"auto: {why}"
+        else:
+            on, source = True, "auto"
+    elif explicit:
+        on, source = True, "explicit"
+    else:
+        on, source = False, "explicit --no-variable-depth"
+    if not on and args.vd_table is not None:
+        raise SystemExit(f"--vd-table {args.vd_table} given but variable depth resolves OFF "
+                         f"({source}); drop --vd-table or pass --variable-depth.")
+    table = (args.vd_table or VD_TABLE_DEFAULT) if on else None
+    return on, table, source
+
+
+def _vd_banner(on, table, source):
+    if on:
+        return f"[rank 0] variable-depth: ON vd_table={table} (source={source})"
+    return f"[rank 0] variable-depth: OFF (source={source})"
+
 
 GLASS_N_JOBS = 6500
 
@@ -743,6 +813,21 @@ if __name__ == "__main__":
     # ------------------ distribute sim_samples using Scatterv (robust) ------------------
     if rank == 0:
         args = parse_args()
+        # Resolve the tri-state VD flag HERE (before the bcast and before any heavy rank-0 work),
+        # so every rank sees a plain bool and the protected resolve_systematics_model() below
+        # picks 'nla_vd' exactly when VD resolved ON. Error paths exit before anything runs.
+        try:
+            _vd_on, _vd_table, _vd_source = _resolve_variable_depth(args)
+        except SystemExit as exc:
+            print(f"[rank 0] ERROR: {exc}", file=sys.stderr, flush=True)
+            if size > 1:
+                comm.Abort(2)   # the other ranks are already waiting in bcast
+            raise SystemExit(2)
+        args.variable_depth = _vd_on
+        args.vd_table = _vd_table
+        _banner = _vd_banner(_vd_on, _vd_table, _vd_source)
+        print(_banner, flush=True)
+        print(_banner, file=sys.stderr, flush=True)
 
         sim_samples = SIM_TYPE_CONFIGS[args.simulator_type]["get_sim_samples"]()
 
@@ -794,6 +879,9 @@ if __name__ == "__main__":
     SYSTEMATICS_MODEL = resolve_systematics_model(args)
     IA_MODEL = args.ia_model
     VD_TABLE = args.vd_table
+    # Provenance: which VD table (if any) generated this store. Consistent with SYSTEMATICS_MODEL
+    # by construction (nla_vd <=> variable_depth resolved ON on rank 0).
+    VD_CODE = VD_TABLE_CODES[VD_TABLE] if SYSTEMATICS_MODEL == "nla_vd" else VD_TABLE_CODES["off"]
     IA_PRIOR_SET = args.ia_prior_set
     ia_prior_spec = resolve_ia_prior_spec(IA_MODEL, IA_PRIOR_SET)
     nuisance_pins = NUISANCE_PINS[IA_PRIOR_SET]
@@ -1184,6 +1272,9 @@ if __name__ == "__main__":
                     # Tag the saved param group with the IA model so the read side can disambiguate
                     # which (per-model) IA parameters are present.
                     param_dict["ia_model"] = IA_MODEL
+                    # VD provenance (0 off, 1 pooled, 2 patch, 3 quadcap) -- a FLOAT, so the loader's
+                    # float() read of cosmo_dict stays safe; survives the prebake (cosmo_dict copied).
+                    param_dict["vd_code"] = float(VD_CODE)
 
                     # IA params: the model tag + only this model's sampled parameters (a_ia plus
                     # b_ia / b_z / b_src as appropriate). f_red / log10_M_eff are used only by

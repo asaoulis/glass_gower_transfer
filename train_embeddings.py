@@ -8,6 +8,7 @@ from config.kids_legacy_novd import kids_legacy_novd_experiments
 from config.euclid import euclid_experiments
 from config.kids_legacy_dn import kids_legacy_dn_experiments
 from config.kids_legacy_bgp import kids_legacy_bgp_experiments
+from config.kids_legacy_vdq import kids_legacy_vdq_experiments
 from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 from src.ml.embeddings.train import EmbeddingTrainArgs, train_embeddings_experiment
 from src.ml.models.custom_sbi import NeuralSplineFlow
@@ -24,6 +25,7 @@ experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite confi
 experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
 experiments.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
 experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
+experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
 experiments.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation (closed; do not extend)
 
 if __name__ == "__main__":

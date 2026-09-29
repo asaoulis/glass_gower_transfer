@@ -147,6 +147,7 @@ def _run_generation(output_suffix: str):
     from config.kids_legacy_novd import kids_legacy_novd_experiments
     from config.euclid import euclid_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
+    from config.kids_legacy_vdq import kids_legacy_vdq_experiments
     from src.ml.embeddings.train import load_embedding_model_with_dataloader
     from src.ml.eval.utils import load_best_model_and_build_posterior
     from src.ml.utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_active, prepare_data_parameters
@@ -159,6 +160,7 @@ def _run_generation(output_suffix: str):
     experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
     experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
     experiments.update(kids_legacy_bgp_experiments)   # BGP campaign (galaxy-bias prior marginalised)
+    experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
 
     prior, fixed_parameters = _build_prior()
 
