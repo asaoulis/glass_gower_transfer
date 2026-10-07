@@ -104,6 +104,9 @@ kids_legacy_vdq_experiments["kids_legacy_hybrid_nla_m_vdq_z8_resnet_sc8a1_smoke"
 # hardcodes its foundation ckpt). ⭐ map_kwargs=_RESNET_MAPKW is CRITICAL: `_npe_finetune_z8` starts
 # from a bare `_hybrid_lmin50_z8()` (UNet); the STRICT `checkpoint_path` loader would then refuse the
 # PreActResNet weights — loud, but a wasted job. ensemble_repeats=1 ⇒ run dirs `finetune_ncosmo300_{r}`.
+_FINETUNE_VAL_CHECK_INTERVAL = 0.25
+
+
 def _npe_pack_vdq(hyb_ckpt, repeat_indices=_PACK_REPEATS, data_patterns=_VDQ_GOWER):
     c = _npe_finetune_z8(hyb_ckpt, data_patterns=data_patterns, eb_variant=None)
     c["model_kwargs"] = {**c["model_kwargs"], "map_kwargs": _RESNET_MAPKW}
@@ -111,6 +114,9 @@ def _npe_pack_vdq(hyb_ckpt, repeat_indices=_PACK_REPEATS, data_patterns=_VDQ_GOW
     c["project"] = "gower-finetuning"
     c["ensemble_repeats"] = 1
     c["repeat_indices"] = list(repeat_indices)
+    # Deviation 3 (user, 2026-10-07): validate 4x per epoch. The BGP 10-epoch finetunes always picked
+    # ep 1-2 from only 10 val points; 40 points give the best-ckpt selector a real minimum to find.
+    c["val_check_interval"] = _FINETUNE_VAL_CHECK_INTERVAL
     return c
 
 
@@ -134,6 +140,7 @@ kids_legacy_vdq_experiments["gower_npe_finetune_nla_m_vdq_z8_canary_ens1"] = _as
 # bakes, and it is overwritten here) and hardcodes the `_bgp` band ckpt ⇒ override it.
 _band_pack = _npe_finetune_band_bgp(_VDQ_GOWER)
 _band_pack["checkpoint_path"] = _BAND_CKPT_VDQ
+_band_pack["val_check_interval"] = _FINETUNE_VAL_CHECK_INTERVAL
 kids_legacy_vdq_experiments["gower_npe_finetune_band_nla_m_vdq_ens9"] = _assert_final_summary_dim(
     _band_pack, 8, "gower_npe_finetune_band_nla_m_vdq_ens9")
 

@@ -110,6 +110,7 @@ def fit_model(
     base_path,
     accumulate_grad_batches=1,
     log_throughput=False,
+    val_check_interval=None,
 ):
     # Stage fsspec's checkpoint temp files on the models filesystem, not the
     # compute node's small /tmp (see src/ml/tmpdir.py -- this is the errno-28 fix).
@@ -163,6 +164,9 @@ def fit_model(
         gradient_clip_val=0.5,
         precision=precision,
         accumulate_grad_batches=accumulate_grad_batches,
+        # None keeps Lightning's default (validate at the end of every epoch); set it to validate
+        # several times per epoch so short finetunes get more checkpoint candidates.
+        val_check_interval=val_check_interval,
     )
 
     trainer.fit(model, train_loader, val_loader)
@@ -266,6 +270,7 @@ def train_model(config):
                 base_path=cfg.base_path,
                 accumulate_grad_batches=accumulate_grad_batches,
                 log_throughput=bool(getattr(cfg, "log_throughput", False)),
+                val_check_interval=getattr(cfg, "val_check_interval", None),
             )
             if wandb_logger is not None:
                 wandb.finish()

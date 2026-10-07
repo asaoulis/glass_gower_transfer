@@ -8,6 +8,9 @@ def get_default_config():
     config.training_mode = "nde"
     config.lr = 0.0004
     config.epochs = 80
+    # Validation cadence: None => once per epoch (historical); float in (0, 1] => that fraction of an
+    # epoch; int => every N training batches. More val points => more checkpoint candidates on short runs.
+    config.val_check_interval = None
     config.batch_size = 32
     config.val_batch_size = None  # defaults to batch_size if None
     config.test_batch_size = None # defaults to val_batch_size if None
