@@ -226,6 +226,13 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r2_ens9_e150"]
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r3_ens9_e150"] = _band_nle_b_vdq(3)
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r4_ens9_e150"] = _band_nle_b_vdq(4)
 
+# ⭐ guard-c 50 -> 100 for **r3 ONLY** (user decision 2026-10-08 20:20Z). Stage-B r3 job 1382660 died on
+# member 4: ep0 gaps r3 = {3.021, 2.179, 32.416, 1.748, 68.537}; every other repeat's 30 members sat at
+# 1.458-6.125. The r3 whitener is well conditioned (EVR [0.4031 ... 0.0012]), so this is a member-specific
+# val split holding outlier Gower rows (the bgp M16 r1 22.9-nat pattern, which raised 22 -> 50), not a
+# broken warm start: a genuine scratch init reads ~4800 nats (e890aec). The other repeats keep 50.
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r3_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 100.0
+
 # === P3 — the 15-param GLASS foundation (9 cosmo/IA + b_g_bin1..6), 125 epochs, r0–r4 ============
 kids_legacy_vdq_experiments["kids_legacy_hybrid_nla_m_vdq_z8_resnet_sc8a1_p15"] = \
     _hybrid_bgp_p15(_VDQ_GLASS, _BAND_CKPT_VDQ)
