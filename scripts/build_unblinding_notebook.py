@@ -58,6 +58,8 @@ LABEL = "T"                                   # opaque observation label (A / B 
 OBS_DIR = "/data/alex/unblinding/cluster_fetch/obs_gate0b"          # fetched checkpoints/unblinding/<obs-store>
 TIER1_DIR = "/data/alex/unblinding/tier1_" + LABEL                  # scripts/tier1_report.py output
 TIER2_DIR = ".claude/runs/eval-and-viz/unblinding-prep/artifacts/tier2"   # scripts/tier2_tables.py output
+# one Tier-2 battery dir PER PACK (run_tier2_battery.sh); each is read against its OWN table (X-2)
+TIER2_DIRS = {"field": TIER2_DIR}
 PLOTS_DIR = "/data/alex/unblinding/plots_" + LABEL                  # scripts/plot_blind_posteriors.py output
 BLIND_ROOT = "/data/alex/unblinding/blind_store"                    # raw posteriors (Section 8 ONLY)
 FLAGSHIP_EXPERIMENT = "gower_nle_finetune_nla_m_bgp_z8_r0_ens9"
@@ -99,8 +101,11 @@ else:
     display(Markdown("**catalogue source** `" + json.dumps(cat_prov.get("source", {})) + "`"))
     display(Markdown("**treatment (deferred hooks)** `" + json.dumps(cat_prov.get("treatment", {})) + "`"))
     display(Markdown("**m-bias used** `" + str(prov["m_bias_used"]) + "`"))
-stores = json.load(open(os.path.join(OBS_DIR, f"observation_{LABEL}_stores.json")))
-display(Markdown("**baked stores** `" + json.dumps(stores.get("data_store_names", {})) + "`"))
+sp = os.path.join(OBS_DIR, f"observation_{LABEL}_stores.json")   # written by the CLUSTER observe-build only
+if os.path.exists(sp):
+    display(Markdown("**baked stores** `" + json.dumps(json.load(open(sp)).get("data_store_names", {})) + "`"))
+else:
+    display(Markdown(f"**baked stores** (local build, pushed by T0.6): `obs_kids_{LABEL}_sc8a1`, `obs_kids_{LABEL}_a0_tagged`"))
 """)
 
 md("## 2. Catalogue-level summaries")
@@ -165,18 +170,39 @@ for ax, g in zip(axes, groups):
     ax.set_title(f"{g} ({len(names)} stats)", fontsize=9); ax.set_ylabel("robust z vs cloud", fontsize=8)
 plt.tight_layout(); plt.show()
 display(Image(os.path.join(TIER1_DIR, "tier1_knn_scores.png")))
+for extra in ("map_statistics_residuals.png", "bandpower_corner_obs.png"):
+    ep = os.path.join(TIER1_DIR, "figures", extra)
+    if os.path.exists(ep):
+        display(Image(ep))
 """)
 
 md("## 6. OOD dashboard: Tier-1 p-values and Tier-2 detector readings")
 code(r"""
 v = json.load(open(os.path.join(TIER1_DIR, "tier1_verdict.json")))
-display(Markdown("**Tier-1 verdict** (α = %.3g): " % v["alpha"] + json.dumps(v["summary"])))
-rd = os.path.join(TIER2_DIR, f"obs_reading_{LABEL}.md")
-if os.path.exists(rd):
-    display(Markdown(open(rd).read()))
-else:
-    display(Markdown(f"_no Tier-2 reading for label {LABEL} yet (run eval --mode obs-score, fetch, then scripts/tier2_tables.py --obs-score …)_"))
-display(Image(os.path.join(TIER2_DIR, "bias_curves.png")))
+display(Markdown("**Tier-1 verdict** (α = %.3g): " % v["alpha"] + json.dumps(v.get("summary", v))))
+rep_md = os.path.join(TIER1_DIR, f"TIER1_REPORT_{LABEL}.md")
+if os.path.exists(rep_md):
+    display(Markdown(open(rep_md).read()))
+ct = os.path.join(TIER1_DIR, "figures", f"tier1_colour_tables_{LABEL}.png")
+if os.path.exists(ct):
+    display(Markdown("### Tier-1 χ² colour tables (EE and BB)")); display(Image(ct))
+for pack, d in TIER2_DIRS.items():
+    display(Markdown(f"### Tier 2 — `{pack}` pack (read ONLY against this pack's table, X-2)"))
+    found = False
+    for rd in (os.path.join(d, f"obs_reading_{LABEL}{pack if pack == 'band' else ''}.md"),
+               os.path.join(d, f"obs_reading_{LABEL}.md")):
+        if os.path.exists(rd):
+            display(Markdown(open(rd).read())); found = True; break
+    if not found:
+        display(Markdown(f"_no Tier-2 reading for label {LABEL} in {d} yet (eval --mode obs-score, fetch, run_tier2_battery.sh)_"))
+    for fig_ in ("tier2_bias_readoff.png", "tier2_bias_readoff_asis.png", "tier2_score_hist.png", "bias_curves.png",
+                 "figures/07_tier2_detectors.png", "figures/08_tier2_bias_tables.png"):
+        fp = os.path.join(d, fig_)
+        if os.path.exists(fp):
+            display(Image(fp))
+    au = os.path.join(d, "TIER2_AUROC.md")
+    if os.path.exists(au):
+        display(Markdown(open(au).read()))
 """)
 
 md("## 7. Standardised posteriors (blind): shapes, widths, arm consistency")
@@ -297,9 +323,13 @@ def main(argv=None):
     ap.add_argument("--out", default=str(REPO / "notebooks" / "kids_unblinding.ipynb"))
     ap.add_argument("--label", default=None, help="pre-fill LABEL in the parameters cell (default T)")
     ap.add_argument("--obs-dir", default=None, help="pre-fill OBS_DIR (the fetched checkpoints/unblinding/<obs-store>)")
+    ap.add_argument("--tier1-dir", default=None, help="pre-fill TIER1_DIR (run_tier1_battery.sh OUT)")
+    ap.add_argument("--tier2-field", default=None, help="the FIELD pack's run_tier2_battery.sh OUT")
+    ap.add_argument("--tier2-band", default=None, help="the BAND (2-pt) pack's run_tier2_battery.sh OUT")
+    ap.add_argument("--plots-dir", default=None, help="pre-fill PLOTS_DIR (plot_blind_posteriors.py output)")
     args = ap.parse_args(argv)
     cells = list(CELLS)
-    if args.label or args.obs_dir:
+    if args.label or args.obs_dir or args.tier1_dir or args.tier2_field or args.tier2_band or args.plots_dir:
         # the parameters cell is the first code cell; rewrite its two assignments only
         for i, c in enumerate(cells):
             if c["cell_type"] == "code" and "LABEL = " in c["source"]:
@@ -309,6 +339,15 @@ def main(argv=None):
                 if args.obs_dir:
                     src = src.replace('OBS_DIR = "/data/alex/unblinding/cluster_fetch/obs_gate0b"',
                                       f'OBS_DIR = "{args.obs_dir}"', 1)
+                if args.tier1_dir:
+                    src = src.replace('TIER1_DIR = "/data/alex/unblinding/tier1_" + LABEL', f'TIER1_DIR = "{args.tier1_dir}"', 1)
+                if args.plots_dir:
+                    src = src.replace('PLOTS_DIR = "/data/alex/unblinding/plots_" + LABEL', f'PLOTS_DIR = "{args.plots_dir}"', 1)
+                if args.tier2_field or args.tier2_band:
+                    dirs = {k: v for k, v in (("field", args.tier2_field), ("band", args.tier2_band)) if v}
+                    src = src.replace('TIER2_DIRS = {"field": TIER2_DIR}', f"TIER2_DIRS = {dirs!r}", 1)
+                    src = src.replace('TIER2_DIR = ".claude/runs/eval-and-viz/unblinding-prep/artifacts/tier2"',
+                                      f'TIER2_DIR = "{args.tier2_field or args.tier2_band}"', 1)
                 cells[i] = nbf.v4.new_code_cell(src)
                 break
     nb = nbf.v4.new_notebook()

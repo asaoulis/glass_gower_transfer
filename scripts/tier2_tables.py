@@ -164,6 +164,12 @@ def main(argv=None):
             val = sc.get(key)
             if val is None:
                 continue
+            if det not in tables:
+                # the pack has no table for this detector (e.g. a KL-only pack without summaries):
+                # SAY so in the reading rather than crash or silently drop it
+                lines.append(f"- **{det}** = {val:.4g} -> **no {det} table for this pack** (detector not tabulated)")
+                reading[det] = {"value": val, "bin": None, "note": "no table for this pack"}
+                continue
             row = lookup(tables[det], float(val))
             reading[det] = {"value": val, "bin": [row["lo"], row["hi"]], "per_param": row["per_param"], "n_rows": row["n_rows"]}
             lines.append(f"- **{det}** = {val:.4g} -> bin [{row['lo']:.3g}, {row['hi']:.3g}) (n={row['n_rows']} rows, "

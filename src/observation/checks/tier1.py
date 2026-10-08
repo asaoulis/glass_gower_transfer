@@ -250,6 +250,20 @@ def bmode_check(cloud: Cloud, obs_bb: np.ndarray, *, seed: int = 0, exclude_sim_
         co = np.einsum("ni,ij,nj->n", Os[:, s, :] - m, cinv, Os[:, s, :] - m)
         per_auto.append({"spectrum": labs[s], "chi2": co.tolist(), "pte_empirical": empirical_pvalues(cn, co).tolist()})
     out["per_auto"] = per_auto
+    # ALL 21 spectra (autos AND crosses), the same statistic as twopoint_check's per_spectrum, so the
+    # Tier-1 chi^2 colour tables can show EE and BB side by side (added 2026-09-24; additive -- every
+    # key above is unchanged). A cross-BB excess has no shape-noise bias to hide behind.
+    per_spec = []
+    for s in range(N_SPECTRA):
+        xs_fit = Bs[fit, s, :]
+        xs_null = Bs[null, s, :]
+        m = xs_fit.mean(0)
+        cinv = np.linalg.inv(np.cov(xs_fit, rowvar=False) + 1e-8 * np.eye(nb))
+        cn = np.einsum("ni,ij,nj->n", xs_null - m, cinv, xs_null - m)
+        co = np.einsum("ni,ij,nj->n", Os[:, s, :] - m, cinv, Os[:, s, :] - m)
+        per_spec.append({"spectrum": labs[s], "chi2": co.tolist(), "pte_empirical": empirical_pvalues(cn, co).tolist(),
+                         "null_chi2_median": float(np.median(cn))})
+    out["per_spectrum"] = per_spec
     return out
 
 

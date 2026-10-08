@@ -147,7 +147,12 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
                     zs = (S80 - S8.mean(0)) / S8.std(0)
                     zmap = dict(zip(sfiles[:n], zs))
                     zS8 = np.array([zmap.get(f, np.nan) for f in files])
-            spath = os.path.join(sdir, "summaries_%s.npz" % match_template.format(r=r))
+            # X-1: an ensemble pack writes summaries_<match>_m<j>.npz, not the bare name. Resolve the
+            # SAME member-0 representative the obs-score reading and its null use (one shared helper,
+            # src/observation/cluster_modes.py); the bare file wins when it exists (ens1 packs).
+            from src.observation.cluster_modes import _representative_summaries
+            spath = (_representative_summaries(sdir, match_template.format(r=r))
+                     or os.path.join(sdir, "summaries_%s.npz" % match_template.format(r=r)))
             if os.path.exists(spath):
                 s = np.load(spath)
                 sfiles = [os.path.basename(x) for x in s["test_files"]]

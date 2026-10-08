@@ -49,6 +49,9 @@ def R(role):
 
 
 LABEL_COLOUR_OVERRIDE: dict = {}
+REAL_RUN = None      # --real-run LABEL: captions/README describe the real catalogue, not the T/S controls
+GATE0_JSON = None    # --gate0-json: the fresh Tier-0 identity gate of THIS run (fidelity json + floor)
+TIER2_TABLES = None  # --tier2-tables: bias_tables.json of the SAME pack as --rows (X-2); default = prep's field table
 
 
 def LC(lab):
@@ -168,8 +171,12 @@ def fig_overview(out_dir, index):
 # 02 tier 0 fidelity
 # ---------------------------------------------------------------------------------------------
 def fig_tier0(out_dir, index):
-    ident = json.load(open(ART / "GATE_identity_prodgeom_f64_fidelity.json"))
-    g0b = json.load(open(ART / "GATE0b_cluster_prodgeom_fidelity.json"))
+    if GATE0_JSON:
+        # one fresh gate carries both the per-dataset residuals and its own float32 jitter floor
+        ident = g0b = json.load(open(GATE0_JSON))
+    else:
+        ident = json.load(open(ART / "GATE_identity_prodgeom_f64_fidelity.json"))
+        g0b = json.load(open(ART / "GATE0b_cluster_prodgeom_fidelity.json"))
     per = g0b["per_dataset"]; floor = g0b.get("floor", {}) or {}
     keys = [k for k in per if k in floor and np.isfinite(per[k]) and floor[k] > 0]
     shorten = lambda k: k.replace("_lmin56_lcut1400", "").replace("_lmin56_lcut1024", "-1024")   # noqa: E731
@@ -190,13 +197,25 @@ def fig_tier0(out_dir, index):
         ax.plot(x, [3 * floor[k] for k in keys], "_", color=R("stop"), ms=16, mew=2, label=T("gate: 3 × floor"))
         ax.set_xticks(x); ax.set_xticklabels([T(shorten(k).replace("/", " ")) for k in keys], fontsize=8, rotation=30, ha="right")
         ax.set_yscale("log"); ax.set_ylabel(T("relative rms (float32 store)"))
-        ax.legend(loc="upper left", fontsize=11)
+        if keys and all(per[k] == 0 for k in keys):
+            # a bit-identical gate has nothing to draw on a log axis -- say so instead of an empty bar
+            ax.text(0.5, 0.04, T("observation vs master mock: 0 exactly (bit-identical) for every dataset"),
+                    transform=ax.transAxes, ha="center", fontsize=11, color=S.arm_colour("nla_m", PAL))
+        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1.02), ncol=3, fontsize=10.5, frameon=False)
         S.panel_label(ax, "(b)")
-    _save(fig, out_dir, "02_tier0_processing_fidelity.png", index,
-          "Tier 0, the observation builder reproduces the simulator's own processing. (a) Identity gate on the "
-          "float64 catalogue at nside 1024: all 13 datasets bit-identical (relative rms 0). (b) Gate 0b on the "
-          "cluster catalogue stored as float32: every dataset sits at its half-ulp storage floor, below the "
-          "3x-floor gate. PASS.")
+    if GATE0_JSON:
+        n_exact = sum(bool(v) for v in (ident.get("exact") or {}).values())
+        cap = ("Tier 0, the observation builder reproduces the simulator's own processing, re-run at the rev "
+               "that built the real observation. (a) Identity gate on a production-geometry float64 mock catalogue "
+               f"(--exact-rng): {n_exact}/{len(ident['per_dataset'])} compared datasets bit-identical (relative rms 0). "
+               "(b) The same residuals against the build's own half-ulp float32 jitter floor and the 3x-floor gate. "
+               + ("PASS." if ident.get("pass") else "FAIL."))
+    else:
+        cap = ("Tier 0, the observation builder reproduces the simulator's own processing. (a) Identity gate on the "
+               "float64 catalogue at nside 1024: all 13 datasets bit-identical (relative rms 0). (b) Gate 0b on the "
+               "cluster catalogue stored as float32: every dataset sits at its half-ulp storage floor, below the "
+               "3x-floor gate. PASS.")
+    _save(fig, out_dir, "02_tier0_processing_fidelity.png", index, cap)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -347,6 +366,10 @@ def fig_tier2_detectors(rows, scores, out_dir, index):
             ax.axvline(e, color="black", ls=":", lw=0.9)
         for lab, sc in scores.items():
             v = sc.get("meanp_recalibrated", sc.get("meanp_raw"))
+            if v is None:
+                # the X-1 signature: say it on the figure instead of dropping the label silently
+                ax.plot([], [], color=LC(lab), lw=2.4, label=T(f"label {lab}: mean-$p$ MISSING (X-1)"))
+                continue
             ax.axvline(v, color=LC(lab), lw=2.4, label=T(f"label {lab}: mean-$p$ = {v:.2f}"))
         ax.axvspan(0, 0.01, color=R("stop"), alpha=0.18); ax.axvspan(0.01, 0.05, color=R("stop"), alpha=0.08)
         ax.set_xlim(0, 1); ax.set_yticks([]); ax.set_xlabel(T("5-encoder mean kNN $p$ (recalibrated; low = out of support)"))
@@ -356,8 +379,11 @@ def fig_tier2_detectors(rows, scores, out_dir, index):
         kl = rows["kl"][idm]; kl = kl[np.isfinite(kl)]
         ax.hist(kl, bins=50, range=(0, 1.5), color=R("mock"), alpha=0.75, density=True, label=T("in-distribution mocks"))
         for lab, sc in scores.items():
-            if "kl" in sc:
-                ax.axvline(sc["kl"], color=LC(lab), lw=2.4, label=T(f"label {lab}: KL = {sc['kl']:.2f}"))
+            # rows["kl"] is the pack's ADOPTED statistic (tier2.load_rows kl_params); the obs line must be
+            # the same one -- sc["kl"] is the full diagonal KL (fixed 2026-10-08)
+            v = sc.get("kl_adopted", sc.get("kl"))
+            if v is not None:
+                ax.axvline(v, color=LC(lab), lw=2.4, label=T(f"label {lab}: KL ({sc.get('kl_params', 'full')}) = {v:.2f}"))
         p95 = float(np.quantile(kl, 0.95))
         ax.axvline(p95, color=R("stop"), ls="--", lw=1.4, label=T(f"top bin (≥ null 95\\%: {p95:.2f})"))
         ax.axvspan(p95, 1.5, color=R("stop"), alpha=0.10)
@@ -372,16 +398,18 @@ def fig_tier2_detectors(rows, scores, out_dir, index):
 
 
 def fig_tier2_bias(rows, scores, out_dir, index):
-    tab = json.load(open(ART / "tier2" / "bias_tables.json"))
+    tab = json.load(open(TIER2_TABLES or (ART / "tier2" / "bias_tables.json")))
     edges = {}
-    for det in ("meanp", "kl"):          # the SAME bins the readings (obs_reading_<label>.md) use
+    dets = [d for d in ("meanp", "kl") if d in tab]   # a KL-only pack (no summaries) has no meanp table
+    for det in dets:                     # the SAME bins the readings (obs_reading_<label>.md) use
         b = tab[det]["bins"]
         edges[det] = [b[0]["lo"]] + [x["hi"] for x in b]
     var = rows["variate"].astype(str)
     idm = np.array([v.endswith("nla_m") for v in var])
     with S.context(PAL, font_size=14):
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5.4)); fig.subplots_adjust(wspace=0.22)
-        for k, (ax, det) in enumerate(zip(axes, ("meanp", "kl"))):
+        fig, axes = plt.subplots(1, len(dets), figsize=(7 * len(dets), 5.4), squeeze=False); fig.subplots_adjust(wspace=0.22)
+        axes = axes[0]
+        for k, (ax, det) in enumerate(zip(axes, dets)):
             x = rows[det]; e = edges[det]
             cen, p05, p1, pid = [], [], [], []
             for lo, hi in zip(e[:-1], e[1:]):
@@ -443,8 +471,11 @@ def copy_tier3(plots_dir: Path, out_dir, index):
 def _readme(out: Path, index):
     lines = ["# Unblinding figure set", "",
              "Style: `src/viz/style.py` (see `.claude/runs/eval-and-viz/unblinding-prep/artifacts/STYLE_GUIDE.md (copy next to the figures: /data/alex/unblinding/figures/STYLE_GUIDE.md)`), palette option `%s`. " % PAL +
-             "Controls: T = GLASS b_g=1 catalogue (known-OOD for the Gower nla_m cloud), S = held-out flagship N-body mock "
-             "(in distribution). All Tier-3 panels are in sigma units of a standardised posterior; no physical "
+             (f"Observation label `{REAL_RUN}` = the real KiDS-Legacy catalogue (one label, no shear blinds), built "
+              "locally with lensfit weights (neff-rescaled), fiducial m, counts/sc8 normalisation. " if REAL_RUN else
+              "Controls: T = GLASS b_g=1 catalogue (known-OOD for the Gower nla_m cloud), S = held-out flagship N-body mock "
+              "(in distribution). ") +
+             "All Tier-3 panels are in sigma units of a standardised posterior; no physical "
              "posterior location appears anywhere. Every figure is also written as PDF.", ""]
     for n in index:
         lines.append(f"- **{n}** -- {CAPTIONS.get(n, '')}")
@@ -463,11 +494,21 @@ def main(argv=None):
     ap.add_argument("--rows", default="/data/alex/unblinding/localroots/tier2_rows.npz")
     ap.add_argument("--plots-dir", default="/data/alex/unblinding/plots_pilot")
     ap.add_argument("--also-copy-to", default=str(ART / "figures"))
+    ap.add_argument("--gate0-json", default=None,
+                    help="fresh Tier-0 identity gate (build_observation --fidelity-mock --jitter-floor json) for figure 02; "
+                         "default = the protocol-prep gate files")
+    ap.add_argument("--tier2-tables", default=None,
+                    help="bias_tables.json built from the SAME pack as --rows (figure 08 bins); the default is the "
+                         "protocol-prep FIELD table, which is wrong for the band pack (X-2)")
+    ap.add_argument("--real-run", default=None, metavar="LABEL",
+                    help="the real-data run: README/captions describe label LABEL as the real catalogue, not the T/S controls")
     ap.add_argument("--label-colours", nargs="*", default=[],
                     help="LAB=role overrides for runs carrying more than one observation "
                          "(roles: real, flagship, mock, reference, stop, pass, T, S). Unset "
                          "labels keep the pinned T/S-and-black behaviour.")
     args = ap.parse_args(argv)
+    global REAL_RUN, GATE0_JSON, TIER2_TABLES
+    REAL_RUN, GATE0_JSON, TIER2_TABLES = args.real_run, args.gate0_json, args.tier2_tables
     PAL = args.palette
     for tok in args.label_colours:
         lab, role = tok.split("=", 1)

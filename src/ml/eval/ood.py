@@ -81,6 +81,18 @@ def mahalanobis_scores(zw_query: np.ndarray) -> np.ndarray:
     return np.sqrt((np.asarray(zw_query) ** 2).sum(axis=1))
 
 
+def _knn_workers() -> int:
+    import os
+    env = os.environ.get("OOD_KNN_WORKERS")
+    if env:
+        return int(env)
+    try:
+        n = len(os.sched_getaffinity(0))
+    except AttributeError:
+        n = os.cpu_count() or 1
+    return max(1, min(32, n))
+
+
 def knn_scores(zw_train: np.ndarray, zw_query: np.ndarray, k: int = 10, *, exclude_self: bool = False) -> np.ndarray:
     """Mean Euclidean distance to the k nearest TRAIN points (whitened frame).
 
@@ -90,7 +102,10 @@ def knn_scores(zw_train: np.ndarray, zw_query: np.ndarray, k: int = 10, *, exclu
         raise ImportError("knn_scores needs scipy")
     tree = cKDTree(np.asarray(zw_train, dtype=np.float64))
     kk = k + 1 if exclude_self else k
-    d, _ = tree.query(np.asarray(zw_query, dtype=np.float64), k=kk)
+    # Parallel query: bit-identical to the serial one (same tree, same neighbours), ~16x faster on
+    # the 168-250-d Tier-1 clouds, where a k-d tree degenerates to near brute force. Threads follow
+    # the process's CPU allocation (SLURM / taskset), capped at 32 (local node rule: <= 60 cores).
+    d, _ = tree.query(np.asarray(zw_query, dtype=np.float64), k=kk, workers=_knn_workers())
     d = np.atleast_2d(d)
     if exclude_self:
         d = d[:, 1:]
