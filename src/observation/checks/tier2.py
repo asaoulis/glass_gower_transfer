@@ -50,6 +50,7 @@ ADOPTED_KL = "om_s8_fullcov"
 # table and the observation reading looked up in it (DECISIONS T2-8), which the stamp enforces.
 ADOPTED_KL_BY_PACK = {
     "gower_npe_finetune_band_nla_m_bgp_ens9": "full",     # M17, 2-pt only
+    "gower_npe_finetune_band_nla_m_vdq_ens9": "full",     # VDQ 2-pt pack, same reasoning
 }
 
 
