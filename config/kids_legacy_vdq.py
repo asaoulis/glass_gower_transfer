@@ -180,6 +180,52 @@ kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vdq_z8_r3_ens9"] = _nle_b_
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vdq_z8_r4_ens9"] = _nle_b_vdq(4)
 
 
+
+# === P3b — the 2-pt (bandpower) NLE chain: the `_bgp` M16 k=8 procedure on the VDQ stores ========
+# Mirror of `glass_nle_pretrain_band_nla_m_bgp_k8_r{r}` -> `gower_nle_finetune_band_nla_m_bgp_k8_r{r}_ens9_e150`
+# (config/kids_legacy_bgp.py `_register_band_nle_chain`): the frozen source is the per-repeat GLASS
+# band MLP `kids_legacy_band_nla_m_vdq/pretrain_ncosmoNone_{r}` (ONE compression head per repeat — NOT
+# the Gower ens9 NPE pack), whiten k=8 (pure-whiten, the production arm), Stage-B 150 epochs, guard-c 50.
+# GLASS store = the band's OWN training store so the split reproduces the band's (Deviation 1: that is
+# the sc8a1 bake here; bandpowers are byte-identical across bakes). Launch:
+#   embed --gpu v100 --mem-gb 32 --target glass_nle_pretrain_band_nla_m_vdq_k8_r<r> --sources kids_legacy_band_nla_m_vdq
+#   embed --cpu --partition CORES40 --target gower_nle_finetune_band_nla_m_vdq_k8_r<r>_ens9_e150 --sources kids_legacy_band_nla_m_vdq
+# VERIFY Stage-A: `Loaded keys: 14` (KidsBandpowersMLP), summary dim 8, `[whiten] Fit whitener k=8`.
+_BAND_NLE_K_VDQ = 8
+
+
+def _band_nle_a_vdq(r):
+    pre = _nle_pretrain_bgp(_VDQ_GLASS, r)
+    pre["whiten_embeddings"] = {"k": _BAND_NLE_K_VDQ}
+    return pre
+
+
+def _band_nle_b_vdq(r):
+    ft = _nle_finetune(f"glass_nle_pretrain_band_nla_m_vdq_k{_BAND_NLE_K_VDQ}_r{r}", ensemble_repeats=9,
+                       whiten_k=_BAND_NLE_K_VDQ, warmstart_max_gap_nats=50.0,
+                       gower_data=_VDQ_GOWER, gower_eb=None)
+    ft["max_trainval_cosmos"] = [300]
+    ft["train_frac"] = 0.8
+    ft["val_frac"] = 0.2
+    ft["test_frac"] = 0.0        # test = the fixed 200 ids; fracs must sum to 1.0
+    ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS
+    ft["epochs"] = 150
+    ft["project"] = _BGP_NLE_PROJECT
+    return _nle_bake_repeat(ft, r)
+
+
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdq_k8_r0"] = _band_nle_a_vdq(0)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdq_k8_r1"] = _band_nle_a_vdq(1)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdq_k8_r2"] = _band_nle_a_vdq(2)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdq_k8_r3"] = _band_nle_a_vdq(3)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdq_k8_r4"] = _band_nle_a_vdq(4)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r0_ens9_e150"] = _band_nle_b_vdq(0)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r1_ens9_e150"] = _band_nle_b_vdq(1)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r2_ens9_e150"] = _band_nle_b_vdq(2)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r3_ens9_e150"] = _band_nle_b_vdq(3)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r4_ens9_e150"] = _band_nle_b_vdq(4)
+
 # === P3 — the 15-param GLASS foundation (9 cosmo/IA + b_g_bin1..6), 125 epochs, r0–r4 ============
 kids_legacy_vdq_experiments["kids_legacy_hybrid_nla_m_vdq_z8_resnet_sc8a1_p15"] = \
     _hybrid_bgp_p15(_VDQ_GLASS, _BAND_CKPT_VDQ)
