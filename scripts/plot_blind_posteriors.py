@@ -85,6 +85,19 @@ def _chain(z, names, params, name, role="outline", colour=None, **kw):
     return (name, np.asarray(z)[:, idx], cols, S.chain_kwargs(role, colour, name=PALETTE, **kw))
 
 
+def _thin(z, n, seed=12345):
+    """Uniform random subsample of at most `n` draws (seeded, order-preserving).
+
+    ⚠️ NEVER head-truncate (`z[:n]`): a pooled dump is the repeats CONCATENATED in order and a
+    per-repeat dump is the MCMC shards concatenated in order, so the first n draws are repeat 0 /
+    the first shards only. That bug made the 'pooled' curve repeat 0 (2026-10-09, plot D S8 shift)."""
+    z = np.asarray(z)
+    if n is None or z.shape[0] <= n:
+        return z
+    idx = np.sort(np.random.default_rng(seed).choice(z.shape[0], size=int(n), replace=False))
+    return z[idx]
+
+
 NO_TITLES = False
 
 
@@ -192,7 +205,7 @@ def main(argv=None):
             st = standardise_self(r["path"], r["experiment"])
             p = write_standardised(st, str(std_dir / label / r["experiment"]), f"self_{args.prior}_{r['match']}")
             manifest["standardised"].append(p)
-            z = st.z[:args.max_samples]
+            z = _thin(st.z, args.max_samples)
             arm = r["arm"] or _arm_key(r["experiment"])
             chains.append(_chain(z, st.names, [q for q in args.params if q in st.names],
                                  _tag(r), "outline", armc(r)))
@@ -210,7 +223,7 @@ def main(argv=None):
                 continue
             arm = r["arm"] or _arm_key(r["experiment"])
             fn = out / f"zoom_{label}_{arm}_{'pooled' if r['pooled'] else r['match']}.png"
-            _plot([_chain(st.z[:args.max_samples], st.names, zp, _tag(r), "real")], str(fn),
+            _plot([_chain(_thin(st.z, args.max_samples), st.names, zp, _tag(r), "real")], str(fn),
                   title=f"label {label}: {_tag(r)}, self-standardised ({', '.join(zp)})")
             manifest["figures"].append(str(fn))
 
@@ -232,7 +245,7 @@ def main(argv=None):
                 p = write_standardised(st, str(std_dir / label / r["experiment"]), f"flagframe_{args.prior}_{r['match']}")
                 manifest["standardised"].append(p)
                 is_flag = r["experiment"] == fr["experiment"] and r["pooled"] == fr["pooled"]
-                chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
+                chains.append(_chain(_thin(st.z, args.max_samples), st.names, [q for q in args.params if q in st.names],
                                      _tag(r), "flagship" if is_flag else "outline", armc(r)))
             _plot(chains, str(out / f"plotBprime_{label}.png"),
                   title=f"Plot B': label {label}, all arms in the flagship frame (offsets in sigma of the flagship)")
@@ -245,7 +258,7 @@ def main(argv=None):
             chains = []
             for i, r in enumerate(lruns):
                 st = standardise_in_real_frame(r["path"], r["experiment"], fr["path"], fr["experiment"], subtract="real")
-                chains.append(_chain(st.z[:args.max_samples], st.names, shared, _tag(r), "outline", armc(r)))
+                chains.append(_chain(_thin(st.z, args.max_samples), st.names, shared, _tag(r), "outline", armc(r)))
             _plot(chains, str(out / "battery" / f"{label}_shared_corner.png"),
                   title=f"label {label}: all arms, shared parameters, flagship frame", formats=("png",), battery=True)
 
@@ -260,7 +273,7 @@ def main(argv=None):
             if not reps:
                 continue
             stp = standardise_self(pr["path"], pr["experiment"])
-            chains = [_chain(stp.z[:args.max_samples], stp.names, [q for q in args.params if q in stp.names],
+            chains = [_chain(_thin(stp.z, args.max_samples), stp.names, [q for q in args.params if q in stp.names],
                              f"{S.arm_name(arm)}, pooled", "real")]
             reps = sorted(reps, key=lambda r: r["match"])
             ramp = S.sequential(max(len(reps), 2))
@@ -268,7 +281,7 @@ def main(argv=None):
                 st = standardise_in_real_frame(r["path"], r["experiment"], pr["path"], pr["experiment"], subtract="real")
                 p = write_standardised(st, str(std_dir / label / r["experiment"]), f"pooledframe_{args.prior}_{r['match']}")
                 manifest["standardised"].append(p)
-                chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
+                chains.append(_chain(_thin(st.z, args.max_samples), st.names, [q for q in args.params if q in st.names],
                                      f"{S.arm_name(arm)}, {_rep(r['match'])}", "outline", ramp[i], linewidth=1.1))
             chains = chains[1:] + chains[:1]          # repeats underneath, the pooled posterior on top
             _plot(chains, str(out / f"plotD_{label}_{arm}.png"),
@@ -278,7 +291,7 @@ def main(argv=None):
         # ---- Plot B: flagship vs matched mocks (own mean, flagship std) ------------------
         if fr is not None and args.matched_mocks:
             st_real = standardise_self(fr["path"], fr["experiment"])
-            chains = [_chain(st_real.z[:args.max_samples], st_real.names, [q for q in args.params if q in st_real.names],
+            chains = [_chain(_thin(st_real.z, args.max_samples), st_real.names, [q for q in args.params if q in st_real.names],
                              f"label {label}, flagship{', pooled' if fr['pooled'] else ''}", "real")]
             for i, tok in enumerate(args.matched_mocks):
                 arm, rest = tok.split("=", 1)
@@ -286,7 +299,7 @@ def main(argv=None):
                 for ev in args.mock_events:
                     st = standardise_in_real_frame(mpath, mexp, fr["path"], fr["experiment"], subtract="own", event=ev)
                     first = ev == args.mock_events[0]
-                    chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
+                    chains.append(_chain(_thin(st.z, args.max_samples), st.names, [q for q in args.params if q in st.names],
                                          f"matched mocks, {S.arm_name(arm)}" if first else f"matched mock {ev + 1}, {S.arm_name(arm)}",
                                          "mock", S.role_colour("mock", PALETTE) if i == 0 else S.arm_colour(arm, PALETTE),
                                          show_label_in_legend=first))
@@ -306,7 +319,7 @@ def main(argv=None):
             if fr is None:
                 continue
             st = standardise_in_real_frame(fr["path"], fr["experiment"], fa["path"], fa["experiment"], subtract="real")
-            chains.append(_chain(st.z[:args.max_samples], st.names, [q for q in args.params if q in st.names],
+            chains.append(_chain(_thin(st.z, args.max_samples), st.names, [q for q in args.params if q in st.names],
                                  f"label {label}", "outline", S.label_colour(label, PALETTE)))
         _plot(chains, str(out / "labels_overplot.png"), title=f"flagship posteriors of all labels in label {flag_label}'s frame")
         manifest["figures"].append(str(out / "labels_overplot.png"))
