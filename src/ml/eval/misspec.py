@@ -276,6 +276,9 @@ GOWER_EXT_VARIATES: List[Dict] = [
 GOWER_VDQ_VARIATES: List[Dict] = [
     {"name": "gower_vdq_nla_m", "patterns": f"{_GPU5}/gower_vdq_nla_m_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": [], "in_distribution": True},
+    # Phase V, landed 2026-10-09T04:30Z (SIMS BAKE LANDED, job 1382786; data-ls 800 files, 40 sims).
+    {"name": "gower_vdq_gb1p0", "patterns": f"{_GPU5}/gower_vdq_gb1p0_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": []},
 ]
 
 
