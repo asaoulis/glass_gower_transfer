@@ -100,7 +100,7 @@ def cmd_plan(args):
     js = list(jobs(args))
     print(f"{len(js)} sampling jobs:")
     for j in js:
-        line = (f"python {RUN_REMOTE} eval --cpu --partition {args.partition} --ncpu {args.ncpu} --wall_h {args.wall_h} "
+        line = (f"python {RUN_REMOTE} eval --cpu --partition {args.partition} --ncpu {args.ncpu} --wall_h {args.wall_h:g} "
                 f"--mem-gb {args.mem_gb} --args {shlex.quote(eval_args(j, args))}")
         print(f"  [{j['label']} {j['arm']} r{j['repeat']} {j['prior']}] {line}")
     return 0
@@ -110,7 +110,7 @@ def cmd_submit(args):
     js = list(jobs(args))
     for j in js:
         cmd = [sys.executable, str(RUN_REMOTE)] + (["--dry-run"] if args.dry_run else []) + [
-            "eval", "--cpu", "--partition", args.partition, "--ncpu", str(args.ncpu), "--wall_h", str(args.wall_h),
+            "eval", "--cpu", "--partition", args.partition, "--ncpu", str(args.ncpu), "--wall_h", f"{args.wall_h:g}",
             "--mem-gb", str(args.mem_gb), "--args", eval_args(j, args)]
         print(f"[{j['label']} {j['arm']} r{j['repeat']} {j['prior']}] " + " ".join(shlex.quote(c) for c in cmd[2:]))
         subprocess.check_call(cmd)
