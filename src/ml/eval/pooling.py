@@ -294,11 +294,22 @@ def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
     from .utils import _pop_credible_intervals, _to_json_compatible
 
     names, preset = _frame_for(experiments)
+    # A PINNING prior mode (LCDM_fixed_w0 pins w0) samples only the free dimensions, so its dumps
+    # are D-1 wide while `theta0s` keeps the full vector (nle_external.free_param_names). Score on
+    # the free columns, as run_external_nle_eval does; before 2026-10-09 every LCDM pool raised here.
+    full_names = list(names)
+    pinned = False
+    if prior_mode:
+        from .nle_external import free_param_names
+        names = list(free_param_names(prior_mode, full_names))
+        pinned = len(names) != len(full_names)
     scaler = _build_cosmo_preset_scaler(preset, names)
 
     d = np.load(npz_path, allow_pickle=False)
     samples = torch.as_tensor(np.asarray(d["samples"]))
     theta0s = torch.as_tensor(np.asarray(d["theta0s"]))
+    if pinned and theta0s.shape[-1] == len(full_names):
+        theta0s = theta0s[..., [full_names.index(n) for n in names]]
     if samples.shape[2] != len(names):
         raise ValueError("pooled dump is %d-D but the experiment frame names %d parameters"
                          % (samples.shape[2], len(names)))
@@ -313,7 +324,11 @@ def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
     # `preset_overrides` (a hardcoded kappa=1 b_g prior put 58.5 % of the kappa=2 truths outside
     # the sampler's support -- see eval/utils.py). Never call either builder without it.
     overrides = {k: v for k, v in preset.items() if k in names}
-    if prior_mode:
+    if pinned:
+        # `build_prior_for_mode` returns the FULL-dimensional object; a prior of the wrong
+        # dimension would give plausible, wrong shrinkage numbers -> drop it (as nle_external).
+        prior = None
+    elif prior_mode:
         from .nle_external import build_prior_for_mode
         prior, _ = build_prior_for_mode(prior_mode, names, preset_overrides=overrides)
     else:
