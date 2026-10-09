@@ -304,9 +304,9 @@ LABELS = {
 }
 LABELS.update({f"b_g_bin{i}": r"$b_{g,%d}$" % i for i in range(1, 7)})
 ARM_NAMES = {
-    "nla_m": r"NLA-M (BGP)", "nla_m_nobgp": r"NLA-M (no BGP)", "nla": r"NLA", "nla_z": r"NLA-$z$",
+    "nla_m": r"field level (NLA-M, VD)", "nla_m_nobgp": r"NLA-M (no BGP)", "nla": r"NLA", "nla_z": r"NLA-$z$",
     "vd": r"variable depth", "k2": r"$\kappa = 2$",
-    "band": r"2-pt only (bandpowers)",
+    "band": r"2-pt (bandpowers, VD)",
 }
 LABEL_NAMES = {"T": r"T (GLASS $b_g{=}1$ catalogue: known-OOD control)",
                "S": r"S (held-out $N$-body mock: in-distribution control)"}
