@@ -285,7 +285,9 @@ class NDELightningModule(BaseLightningModule):
         theta0s = torch.cat(theta0s, dim=0)
         z_conds = torch.cat(z_conds, dim=0)
 
-        device = "cuda"
+        # Same availability check as the encoding loop above: an unconditional "cuda" here crashed
+        # every CPU-node misspec eval ("Found no NVIDIA driver"). GPU behaviour is unchanged.
+        device = "cuda" if torch.cuda.is_available() else "cpu"
         posterior.prior.to(device)
         posterior.to(device)
         batch_size = 8
