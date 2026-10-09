@@ -120,6 +120,11 @@ def main(argv=None):
                     help="headline posterior per arm: the POOLED run (final analysis; auto = pooled when present, "
                          "else the per-repeat runs), or the per-repeat runs only")
     ap.add_argument("--params", nargs="+", default=["omega_m", "sigma_8", "S8", "w0"])
+    ap.add_argument("--labels", nargs="+", default=None,
+                    help="restrict to these blind-store labels (default: every label found)")
+    ap.add_argument("--zoom-params", nargs="+", default=["omega_m", "sigma_8", "S8", "w0"],
+                    help="zoom corner per headline posterior on these parameters (those the prior leaves FREE; "
+                         "w0 drops out automatically under LCDM_fixed_w0)")
     ap.add_argument("--matched-mocks", nargs="*", default=[], metavar="ARM=PATH:EXPERIMENT",
                     help="matched near-fiducial mock dumps per arm (Plot B)")
     ap.add_argument("--mock-events", type=int, nargs="+", default=[0, 1, 2], help="events of the mock dump to overlay")
@@ -140,7 +145,8 @@ def main(argv=None):
     out = Path(args.out_dir)
     (out / "battery").mkdir(parents=True, exist_ok=True)
     std_dir = Path(STANDARDISED_ROOT)
-    all_runs = [r for r in list_raw_runs(root) if r["prior"] == args.prior]
+    all_runs = [r for r in list_raw_runs(root) if r["prior"] == args.prior
+                and (args.labels is None or r["label"] in args.labels)]
     if not all_runs:
         raise SystemExit(f"no raw runs with prior={args.prior} under {root}")
     labels = sorted({r["label"] for r in all_runs})
@@ -195,6 +201,18 @@ def main(argv=None):
                   title=f"label {label}: {_tag(r)}, self-standardised (all parameters)", formats=("png",), battery=True)
         _plot(chains, str(out / f"plotA_{label}.png"), title=f"Plot A: label {label}, each posterior standardised to N(0,1)")
         manifest["figures"].append(str(out / f"plotA_{label}.png"))
+
+        # ---- Zoom: the headline parameters of each headline posterior, self frame -------------
+        for r in lruns:
+            st = standardise_self(r["path"], r["experiment"])
+            zp = [q for q in args.zoom_params if q in st.names]
+            if len(zp) < 2:
+                continue
+            arm = r["arm"] or _arm_key(r["experiment"])
+            fn = out / f"zoom_{label}_{arm}_{'pooled' if r['pooled'] else r['match']}.png"
+            _plot([_chain(st.z[:args.max_samples], st.names, zp, _tag(r), "real")], str(fn),
+                  title=f"label {label}: {_tag(r)}, self-standardised ({', '.join(zp)})")
+            manifest["figures"].append(str(fn))
 
         # ---- Plot B-prime: all arms in the flagship frame ----------------------------------
         fr = flagship_run(label)
