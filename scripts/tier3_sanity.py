@@ -38,6 +38,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+from scipy import stats
 
 REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
@@ -236,6 +237,32 @@ def _provenance(npz_path, match, prior):
 
 
 # ------------------------------------------------------------------ main
+_HULL = None
+
+
+def _build_hull(exp0, names_full, test_path):
+    """(omega_m, sigma_8) convex hull of the Gower cosmologies (unique sims of the Stage-B test set,
+    SCALED units) -- the region the likelihood was actually trained on."""
+    global _HULL
+    from scipy.spatial import Delaunay
+    if not os.path.exists(test_path):
+        return None
+    with np.load(test_path, allow_pickle=False) as z:
+        t, sid = z["theta0s"], z["sim_ids"]
+    _, u = np.unique(sid, return_index=True)
+    _HULL = Delaunay(t[u][:, [names_full.index(OMS8[0]), names_full.index(OMS8[1])]])
+    return _HULL
+
+
+def _null_kurtosis(path, names_full, n_events=400):
+    """Excess kurtosis of the (omega_m, sigma_8) marginals across test-set mock posteriors."""
+    with np.load(path, allow_pickle=False) as z:
+        S = z["samples"]
+        idx = np.linspace(0, S.shape[1] - 1, min(n_events, S.shape[1])).astype(int)
+        return {n: stats.kurtosis(np.asarray(S[:, idx, names_full.index(n)], dtype=np.float64), axis=0)
+                for n in OMS8}
+
+
 def run_arm_prior(args, arm, prior):
     assert_active(arm)
     tmpl, _bake, reps = ARMS[arm]
@@ -246,6 +273,8 @@ def run_arm_prior(args, arm, prior):
     free = _free(prior, names_full)
     i, j = free.index(OMS8[0]), free.index(OMS8[1])
     res = {"arm": arm, "prior": prior, "repeats": reps, "free_params": free, "issues": []}
+    _t0 = os.path.join(TESTSET_ROOT, exps[0], f"ensemble_posterior_samples_{matches[0]}.npz")
+    _build_hull(exps[0], names_full, _t0)
 
     # observation: per-repeat moments + shard R-hat + draw counts (nothing location-like leaves here)
     mu, var, m2, c2, rh = [], [], [], [], {}
@@ -273,11 +302,26 @@ def run_arm_prior(args, arm, prior):
             rh[f"r{r}"] = {"max": None, "note": "no mcmc_workers in provenance"}
         a, b = _moments(S)
         mu.append(a); var.append(b); m2.append(a[:, [i, j]]); c2.append(_cov_pair(S, i, j))
+        # SUPPORT + SHAPE (blind-safe: fractions and standardised moments only)
+        X = S[:, 0, :].astype(np.float64)
+        sup = res.setdefault("support", {})
+        sup[f"r{r}"] = {"frac_outside_box_any": float(np.mean(np.any((X < 0) | (X > 1), axis=1))),
+                        "frac_outside_box": {n: float(np.mean((X[:, k] < 0) | (X[:, k] > 1)))
+                                             for k, n in enumerate(free) if np.any((X[:, k] < 0) | (X[:, k] > 1))},
+                        "frac_outside_sim_hull_oms8": (float(np.mean(_HULL.find_simplex(X[:, [i, j]]) < 0))
+                                                       if _HULL is not None else None),
+                        "excess_kurtosis": {n: float(stats.kurtosis(X[:, free.index(n)]))
+                                            for n in OMS8}}
         # identity provenance (filenames only): the exact files this repeat was scored with
         pv = prov.get("provenance") or {}
         res.setdefault("identity", {})[f"r{r}"] = {k: pv.get(k) for k in
                                                    ("source_checkpoints", "whitener_path", "member_checkpoints")}
     res["rhat"] = rh
+    if os.path.exists(_t0):
+        nk = _null_kurtosis(_t0, names_full)
+        for rr, sv in res.get("support", {}).items():
+            sv["kurtosis_pte_vs_testset"] = {n: pte(nk[n], sv["excess_kurtosis"][n])[0] for n in OMS8}
+            sv["testset_kurtosis_median_p95"] = {n: [float(np.median(nk[n])), float(np.quantile(nk[n], .95))] for n in OMS8}
     obs, loo = statistics(*(np.stack(x) for x in (mu, var, m2, c2)))
     res["obs"] = {k: float(v[0]) for k, v in obs.items()}
     res["obs_loo_per_repeat"] = {f"r{r}": float(loo[k, 0]) for k, r in enumerate(reps)}
@@ -331,6 +375,13 @@ def _md(results):
     for r in results:
         L.append(f"- **{r['arm']} / {r['prior']}: {r.get('verdict')}**"
                  + ("" if not r["issues"] else " — " + "; ".join(r["issues"])))
+        for rr, sv in (r.get("support") or {}).items():
+            L.append(f"  - {rr} support: outside box {sv['frac_outside_box_any']:.3f} {sv['frac_outside_box']}; "
+                     f"outside Gower (Om,s8) hull {sv['frac_outside_sim_hull_oms8']}; excess kurtosis "
+                     + ", ".join(f"{n} {sv['excess_kurtosis'][n]:.2f} (testset med/p95 "
+                                 f"{sv.get('testset_kurtosis_median_p95', {}).get(n, ['?','?'])[0]:.2f}/"
+                                 f"{sv.get('testset_kurtosis_median_p95', {}).get(n, ['?','?'])[1]:.2f}, "
+                                 f"PTE {sv.get('kurtosis_pte_vs_testset', {}).get(n, float('nan')):.3f})" for n in OMS8))
         L.append(f"  - shard R-hat: " + ", ".join(f"{k} {v.get('max') if v.get('max') is None else format(v['max'], '.4f')}"
                                                   for k, v in (r.get("rhat") or {}).items()))
     return "\n".join(L) + "\n"
