@@ -263,6 +263,44 @@ def _null_kurtosis(path, names_full, n_events=400):
                 for n in OMS8}
 
 
+SHAPE_PARAMS = ("omega_m", "sigma_8", "S8")
+SHAPE_STATS = ("skew", "exkurt", "tail95", "tail99", "peak")
+
+
+def _with_s8(X, names):
+    """[n, N, D] scaled -> dict of [n, N] arrays for SHAPE_PARAMS (S8 from PHYSICAL om, s8)."""
+    from src.ml.utils import _build_cosmo_preset_scaler
+    from src.ml.data.constants import COSMO_PARAM_PRESET_MINMAX
+    sc = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, list(names))
+    lo, hi = np.asarray(sc.min, dtype=np.float64), np.asarray(sc.max, dtype=np.float64)
+    i, j = names.index("omega_m"), names.index("sigma_8")
+    om = X[..., i] * (hi[i] - lo[i]) + lo[i]
+    s8 = X[..., j] * (hi[j] - lo[j]) + lo[j]
+    return {"omega_m": om, "sigma_8": s8, "S8": s8 * np.sqrt(om / 0.3)}
+
+
+def shape_stats(v):
+    """Shape of the NORMALISED marginal(s) along axis 0 (location/scale-free; blind-safe).
+    v [n] or [n, N] -> dict stat -> scalar / [N]."""
+    v = np.asarray(v, dtype=np.float64)
+    z = (v - v.mean(axis=0)) / v.std(axis=0)
+    q = np.quantile(z, [0.005, 0.025, 0.16, 0.84, 0.975, 0.995], axis=0)
+    # peak height x sigma from a 0.1-sigma histogram on the normalised axis (Gaussian: 0.399)
+    edges = np.linspace(-6, 6, 121)
+    if z.ndim == 1:
+        peak = np.histogram(z, edges, density=True)[0].max()
+    else:
+        peak = np.array([np.histogram(z[:, k], edges, density=True)[0].max() for k in range(z.shape[1])])
+    return {"skew": stats.skew(z, axis=0), "exkurt": stats.kurtosis(z, axis=0),
+            "tail95": (q[4] - q[1]) / (q[3] - q[2]), "tail99": (q[5] - q[0]) / (q[3] - q[2]), "peak": peak}
+
+
+def _two_sided_pte(null, obs):
+    null = np.asarray(null)[np.isfinite(null)]
+    med = np.median(null)
+    return float((1 + np.sum(np.abs(null - med) >= abs(obs - med))) / (1 + null.size))
+
+
 def run_arm_prior(args, arm, prior):
     assert_active(arm)
     tmpl, _bake, reps = ARMS[arm]
@@ -302,6 +340,7 @@ def run_arm_prior(args, arm, prior):
             rh[f"r{r}"] = {"max": None, "note": "no mcmc_workers in provenance"}
         a, b = _moments(S)
         mu.append(a); var.append(b); m2.append(a[:, [i, j]]); c2.append(_cov_pair(S, i, j))
+        res.setdefault("_obs_X", []).append(S[:, 0, :].astype(np.float64))
         # SUPPORT + SHAPE (blind-safe: fractions and standardised moments only)
         X = S[:, 0, :].astype(np.float64)
         sup = res.setdefault("support", {})
@@ -317,6 +356,52 @@ def run_arm_prior(args, arm, prior):
         res.setdefault("identity", {})[f"r{r}"] = {k: pv.get(k) for k in
                                                    ("source_checkpoints", "whitener_path", "member_checkpoints")}
     res["rhat"] = rh
+    # ---- SHAPE in-distribution test: obs repeats + pooled vs the test-set mock posteriors ------
+    obsX = res.pop("_obs_X")
+    test_paths = [os.path.join(TESTSET_ROOT, e, f"ensemble_posterior_samples_{m}.npz") for e, m in zip(exps, matches)]
+    if all(os.path.exists(p) for p in test_paths):
+        n_ev = args.shape_events
+        per_rep, tf_sets = [], []
+        for p in test_paths:
+            with np.load(p, allow_pickle=False) as z:
+                tf = [os.path.basename(str(f)) for f in z["test_files"]]
+                per_rep.append((z, tf)) if False else None
+                tf_sets.append(tf)
+        common = sorted(set(tf_sets[0]).intersection(*map(set, tf_sets[1:])))
+        rng = np.random.default_rng(0)
+        pick = sorted(rng.choice(len(common), size=min(n_ev, len(common)), replace=False))
+        pick_files = [common[k] for k in pick]
+        null_rep, mix = {pp: {st: [] for st in SHAPE_STATS} for pp in SHAPE_PARAMS}, []
+        for p, tf in zip(test_paths, tf_sets):
+            idx = {f: k for k, f in enumerate(tf)}
+            sel = [idx[f] for f in pick_files]
+            with np.load(p, allow_pickle=False) as z:
+                Xn = np.asarray(z["samples"][:, sel, :], dtype=np.float64)          # [n, E, 9] gower prior
+            if prior == "LCDM_fixed_w0":
+                pass   # marginal shapes of om/s8/S8 taken from the w0-free null (approximate)
+            V = _with_s8(Xn, names_full)
+            for pp in SHAPE_PARAMS:
+                ss = shape_stats(V[pp])
+                for st in SHAPE_STATS:
+                    null_rep[pp][st].append(np.asarray(ss[st]))
+            mix.append(V)
+        # pooled null: equal mixture of the K repeats' posteriors of the SAME mock
+        null_pool = {pp: shape_stats(np.concatenate([m[pp] for m in mix], axis=0)) for pp in SHAPE_PARAMS}
+        names_obs = free
+        shape = {"null_events": len(pick_files), "null_prior": "gower (Stage-B test set)", "repeats": {}, "pooled": {}}
+        Vobs = [_with_s8(X[:, None, :] if X.ndim == 2 else X, names_obs) for X in obsX]
+        for k, (rr, V) in enumerate(zip(reps, Vobs)):
+            shape["repeats"][f"r{rr}"] = {pp: {st: {"obs": float(np.ravel(shape_stats(V[pp][:, 0])[st])[0]),
+                                                    "null_med": float(np.median(null_rep[pp][st][k])),
+                                                    "pte2": _two_sided_pte(null_rep[pp][st][k], float(np.ravel(shape_stats(V[pp][:, 0])[st])[0]))}
+                                               for st in SHAPE_STATS} for pp in SHAPE_PARAMS}
+        Vp = {pp: np.concatenate([V[pp][:, 0] for V in Vobs]) for pp in SHAPE_PARAMS}
+        for pp in SHAPE_PARAMS:
+            so = shape_stats(Vp[pp])
+            shape["pooled"][pp] = {st: {"obs": float(so[st]), "null_med": float(np.median(null_pool[pp][st])),
+                                        "null_q01_q99": [float(np.quantile(null_pool[pp][st], .01)), float(np.quantile(null_pool[pp][st], .99))],
+                                        "pte2": _two_sided_pte(null_pool[pp][st], float(so[st]))} for st in SHAPE_STATS}
+        res["shape"] = shape
     if os.path.exists(_t0):
         nk = _null_kurtosis(_t0, names_full)
         for rr, sv in res.get("support", {}).items():
@@ -373,6 +458,19 @@ def _md(results):
                          f"{x['null_median']:.3g} | {x['null_p99']:.3g} | {x['pte']:.3f} |")
     L.append("")
     for r in results:
+        sh = r.get("shape")
+        if not sh:
+            continue
+        L.append(f"### shape of the normalised marginals: {r['arm']} / {r['prior']} (null: {sh['null_events']} test-set mocks, {sh['null_prior']})")
+        L.append("| posterior | param | " + " | ".join(f"{st} obs (null med) PTE" for st in SHAPE_STATS) + " |")
+        L.append("|---|---|" + "---|" * len(SHAPE_STATS))
+        rows = [("pooled", sh["pooled"])] + list(sh["repeats"].items())
+        for name, block in rows:
+            for pp in SHAPE_PARAMS:
+                b = block[pp]
+                L.append(f"| {name} | {pp} | " + " | ".join(f"{b[st]['obs']:.2f} ({b[st]['null_med']:.2f}) {b[st]['pte2']:.3f}" for st in SHAPE_STATS) + " |")
+        L.append("")
+    for r in results:
         L.append(f"- **{r['arm']} / {r['prior']}: {r.get('verdict')}**"
                  + ("" if not r["issues"] else " — " + "; ".join(r["issues"])))
         for rr, sv in (r.get("support") or {}).items():
@@ -395,6 +493,7 @@ def main(argv=None):
     ap.add_argument("--repeats", type=int, nargs="+", default=[0, 1, 2, 3, 4])
     ap.add_argument("--matched-tag", default=None, help="e.g. gower_match_vdq (used only if all repeats exist)")
     ap.add_argument("--expect-draws", type=int, default=25000)
+    ap.add_argument("--shape-events", type=int, default=800, help="test-set mocks in the shape null")
     ap.add_argument("--pte-flag", type=float, default=0.01)
     ap.add_argument("--rhat-flag", type=float, default=1.01)
     ap.add_argument("--out-dir", required=True)
