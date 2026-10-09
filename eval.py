@@ -315,6 +315,9 @@ def main(argv=None):
     parser.add_argument("--members", type=int, nargs="+", default=None,
                         help="--mode recover-scalers: ensemble member indices (default: all). Each "
                              "member had its OWN stochastic scaler fit, so each needs its own frame.")
+    parser.add_argument("--verify-frames", action="store_true",
+                        help="--mode recover-scalers: do NOT fit; verify every member's persisted frame on "
+                             "held-out test events through the sampler's embedding path, on this node")
     parser.add_argument("--no-save", action="store_true",
                         help="--mode recover-scalers: fit and report but do not write scalers.pt")
     parser.add_argument("--require-member-frames", action="store_true",
@@ -462,10 +465,15 @@ def main(argv=None):
         # Recover the training-time input frame of an already-trained run and persist it per
         # ensemble member. See src/ml/eval/scaler_recovery.py for why this is necessary and why
         # matching z (rather than the "true" scalers) is the correct objective.
-        from src.ml.eval.nle_external import run_scaler_recovery
+        from src.ml.eval.nle_external import run_frame_verification, run_scaler_recovery
 
         if not args.experiments:
             raise SystemExit("--mode recover-scalers requires --experiments <stage_b_experiment>")
+        if args.verify_frames:
+            for exp in args.experiments:
+                for r in (args.repeat_indices or (0,)):
+                    run_frame_verification(exp, r, batch_size=args.emb_batch_size)
+            return 0
         for exp in args.experiments:
             for r in (args.repeat_indices or (0,)):
                 run_scaler_recovery(

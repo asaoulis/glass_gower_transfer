@@ -815,6 +815,71 @@ def _jsonable(o):
     return str(o)
 
 
+def run_frame_verification(
+    experiment: str,
+    repeat: int = 0,
+    *,
+    source_experiments: Optional[Sequence[str]] = None,
+    max_events: int = 400,
+    batch_size: int = 64,
+    accept_dev: float = 1e-3,
+) -> Dict[str, object]:
+    """⭐ Verify every member's PERSISTED input frame on HELD-OUT events, through the exact
+    embedding path the observation sampler uses (`_build_external_embedding_loader_for_cfg` ->
+    `compute_embeddings`), on whatever node this runs on.
+
+    recover-scalers fits each frame on 200 strided test events; this scores a DISJOINT stride
+    (offset by half a step) so a frame that merely absorbed node/batch-specific numerics of its
+    fitting subset, or does not transfer to this node type, shows up as a deviation. Run it on the
+    SAME partition the sampling jobs use. PASS per member: median |dz|/sd <= accept_dev.
+    """
+    from ..data.scaling import load_scalers
+    from ..embeddings.train import _build_external_embedding_loader_for_cfg
+
+    frame = rebuild_production_frame(experiment, repeat, source_experiments=source_experiments)
+    cfg, match = frame.cfg, frame.match
+    n_all = len(frame.paths)
+    stride = max(1, n_all // max_events)
+    sel = [i for i in range(stride // 2, n_all, stride)][:max_events]
+    paths = [frame.paths[i] for i in sel]
+    cache_hits = sorted(_glob.glob(os.path.join(cfg.base_path, "checkpoints", experiment,
+                                                f"*{match}*", "datasets", "emb_test.pt")))
+    out: Dict[str, object] = {"experiment": experiment, "repeat": repeat, "match": match,
+                              "n_events": len(paths), "node": os.uname().nodename,
+                              "torch_threads": torch.get_num_threads(), "members": []}
+    print(f"[verify] {experiment} {match}: {len(cache_hits)} members, {len(paths)} held-out events "
+          f"(offset stride {stride}), node {out['node']}, threads {out['torch_threads']}", flush=True)
+    for cache_path in cache_hits:
+        member_dir = os.path.dirname(os.path.dirname(cache_path))
+        name = os.path.basename(member_dir)
+        sc_path = os.path.join(member_dir, "datasets", "scalers.pt")
+        if not os.path.exists(sc_path):
+            out["members"].append({"member": name, "verdict": "NO-FRAME"})
+            print(f"[verify] {name}: NO persisted frame -> FAIL", flush=True)
+            continue
+        keys, cosmo, prov = load_scalers(sc_path)
+        z_cached = torch.load(cache_path, map_location="cpu", weights_only=False)["z"][sel]
+        loader, _ds = _build_external_embedding_loader_for_cfg(
+            cfg, frame.source_models, paths, keys, cosmo or frame.scalers["cosmo"],
+            whiten_cfg=None, batch_size=batch_size)
+        z = torch.cat([b[0] for b in loader], dim=0)
+        sd = z_cached.std(dim=0).clamp_min(1e-12)
+        dev = ((z - z_cached).abs() / sd)
+        ok = float(dev.median()) <= accept_dev
+        rec = {"member": name, "method": prov.get("method"), "z_dev_median": float(dev.median()),
+               "z_dev_p99": float(dev.flatten().quantile(0.99)), "z_dev_max": float(dev.max()),
+               "verdict": "PASS" if ok else "FAIL"}
+        out["members"].append(rec)
+        print(f"[verify] {name}: frame {prov.get('method')} held-out median |dz|/sd = "
+              f"{rec['z_dev_median']:.3e}, p99 {rec['z_dev_p99']:.3e}, max {rec['z_dev_max']:.3e} "
+              f"-> {rec['verdict']}", flush=True)
+    n_ok = sum(1 for m in out["members"] if m["verdict"] == "PASS")
+    out["verdict"] = "PASS" if (n_ok == len(cache_hits) and cache_hits) else "FAIL"
+    print(f"[verify] VERDICT {out['verdict']} ({n_ok}/{len(cache_hits)} members) {experiment} r{repeat}", flush=True)
+    print("[verify] REPORT " + json.dumps(_jsonable(out)), flush=True)
+    return out
+
+
 def run_scaler_recovery(
     experiment: str,
     repeat: int = 0,
