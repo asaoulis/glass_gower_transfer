@@ -135,6 +135,8 @@ def main(argv=None):
     ap.add_argument("--params", nargs="+", default=["omega_m", "sigma_8", "S8", "w0"])
     ap.add_argument("--labels", nargs="+", default=None,
                     help="restrict to these blind-store labels (default: every label found)")
+    ap.add_argument("--arms", nargs="+", default=None,
+                    help="restrict to these arms (e.g. nla_m) -- keeps the 2-pt arm off a field-only figure set")
     ap.add_argument("--zoom-params", nargs="+", default=["omega_m", "sigma_8", "S8", "w0"],
                     help="zoom corner per headline posterior on these parameters (those the prior leaves FREE; "
                          "w0 drops out automatically under LCDM_fixed_w0)")
@@ -159,7 +161,8 @@ def main(argv=None):
     (out / "battery").mkdir(parents=True, exist_ok=True)
     std_dir = Path(STANDARDISED_ROOT)
     all_runs = [r for r in list_raw_runs(root) if r["prior"] == args.prior
-                and (args.labels is None or r["label"] in args.labels)]
+                and (args.labels is None or r["label"] in args.labels)
+                and (args.arms is None or (r["arm"] or _arm_key(r["experiment"])) in args.arms)]
     if not all_runs:
         raise SystemExit(f"no raw runs with prior={args.prior} under {root}")
     labels = sorted({r["label"] for r in all_runs})
