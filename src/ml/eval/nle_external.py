@@ -840,9 +840,22 @@ def run_scaler_recovery(
     from .misspec import _wrap_paths_as_loader
     from .scaler_recovery import recover_key_scalers
 
+    import re as _re
+    from copy import copy as _copy
+    from ..utils import prepare_data_parameters, set_seed_for_repeat_and_ensemble
+
     frame = rebuild_production_frame(experiment, repeat, source_experiments=source_experiments)
     cfg, match = frame.cfg, frame.match
-    paths = frame.paths[:max_events] if max_events else frame.paths
+    # Events SPREAD over the whole test split (stride), not the first `max_events`: a cache can agree
+    # on its first rows and disagree later (seen: field r0 2026-10-09, first 200 rows 5e-5, full split
+    # 8x the refit floor), and a frame accepted on a prefix would hide that.
+    n_all = len(frame.paths)
+    if max_events and max_events < n_all:
+        stride = n_all // max_events
+        sel = list(range(0, n_all, stride))[:max_events]
+    else:
+        sel = list(range(n_all))
+    paths = [frame.paths[i] for i in sel]
     nested_keys = build_nested_keys_from_quantities(
         list(cfg.dataset_quantities), eb_variant=getattr(cfg, "eb_map_variant", None),
     )
@@ -864,6 +877,25 @@ def run_scaler_recovery(
         member_dir = os.path.dirname(os.path.dirname(cache_path))
         name = os.path.basename(member_dir)
         z_cached = torch.load(cache_path, map_location="cpu", weights_only=False)["z"]
+        if z_cached.shape[0] != n_all:
+            raise RuntimeError(f"{name}: cache has {z_cached.shape[0]} rows, production split {n_all}")
+        z_cached = z_cached[sel]
+
+        # ⭐ EXACT member frame first. Ensemble scalers are fit on train+val, whose concatenation ORDER
+        # depends on the member's `ensemble_seed`; the seeded 1000-file subsample is then drawn from
+        # that order, so each member trained in its OWN frame. Since `scaler_fit_seed` made the fit
+        # deterministic, rebuilding member j's cfg (split_seed 42 + ensemble_idx j, as training did)
+        # reproduces member j's frame EXACTLY -- the LBFGS refinement below is then a no-op and the
+        # initial z_dev is the proof. Older (unseeded) runs fall back to the fit as before.
+        m_ens = _re.search(r"_ens(\d+)_", name)
+        init_scalers, init_method = frame.scalers["data"], "member0_refit"
+        if m_ens is not None:
+            cfg_j = _copy(cfg)
+            cfg_j.split_seed = 42
+            set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat, ensemble_idx=int(m_ens.group(1)))
+            sc_j, _tr, _va, _te = prepare_data_parameters(cfg_j)
+            del _tr, _va, _te
+            init_scalers, init_method = sc_j["data"], f"member{int(m_ens.group(1))}_refit"
 
         # RAW loader: empty key_scalers => DataDictScalerTransform passes values straight through.
         # Order must match the cache, which the reproduction gate proves (CHECK 2, theta exact).
@@ -872,13 +904,17 @@ def run_scaler_recovery(
             batch_size=batch_size, num_workers=2,
             eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
         )
-        print(f"[recover] --- {name}", flush=True)
+        print(f"[recover] --- {name} (init: {init_method}, {len(paths)} events spread over {n_all})", flush=True)
         # NB frame.scalers is {'data': {...}, 'cosmo': ...}; recovery wants the KEY scalers.
-        res = recover_key_scalers(encoders, raw_loader, z_cached, frame.scalers["data"],
+        res = recover_key_scalers(encoders, raw_loader, z_cached, init_scalers,
                                   max_events=len(paths), steps=steps)
 
         ok = res.z_dev_median_after <= accept_dev
-        rec = {"member": name, "accepted": bool(ok), **res.as_dict()}
+        exact = res.z_dev_median_before <= 1e-6
+        method = f"exact_{init_method}" if exact else f"{init_method}+lbfgs"
+        rec = {"member": name, "accepted": bool(ok), "method": method, **res.as_dict()}
+        print(f"[recover] {name}: init {init_method} z_dev_median {res.z_dev_median_before:.3e} -> "
+              f"{'EXACT' if exact else 'not exact'}", flush=True)
         if save and ok:
             p = save_scalers(
                 os.path.join(member_dir, "datasets", "scalers.pt"),
@@ -886,8 +922,10 @@ def run_scaler_recovery(
                 {"experiment": experiment, "match": match, "member": name,
                  "source_experiments": list(source_experiments or resolve_source_experiments(experiment)),
                  "cosmo_param_names": list(cfg.cosmo_param_names),
-                 "method": "recovered", "n_events": res.n_events,
-                 "z_dev_median_after": res.z_dev_median_after},
+                 "method": method, "n_events": res.n_events,
+                 "z_dev_median_before": res.z_dev_median_before,
+                 "z_dev_median_after": res.z_dev_median_after,
+                 "z_dev_max_after": res.z_dev_max_after},
             )
             rec["saved"] = p
         print(f"[recover] {name}: {res.z_dev_median_before:.3e} -> {res.z_dev_median_after:.3e} "
