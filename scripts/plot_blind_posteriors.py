@@ -137,6 +137,10 @@ def main(argv=None):
                     help="restrict to these blind-store labels (default: every label found)")
     ap.add_argument("--arms", nargs="+", default=None,
                     help="restrict to these arms (e.g. nla_m) -- keeps the 2-pt arm off a field-only figure set")
+    ap.add_argument("--no-cross-arm", action="store_true",
+                    help="never put two arms in one standardised frame: skip Plot B' and the shared corner; "
+                         "Plot B is drawn PER ARM against that arm's own matched mocks in that arm's own frame "
+                         "(user rule 2026-10-09: combine models only if standardised separately)")
     ap.add_argument("--zoom-params", nargs="+", default=["omega_m", "sigma_8", "S8", "w0"],
                     help="zoom corner per headline posterior on these parameters (those the prior leaves FREE; "
                          "w0 drops out automatically under LCDM_fixed_w0)")
@@ -241,7 +245,7 @@ def main(argv=None):
                   "(available: %s) -- Plots B and B' skipped"
                   % (label, args.flagship_experiment, args.prior,
                      ", ".join(sorted({r["experiment"] for r in lruns})) or "none"))
-        if fr is not None:
+        if fr is not None and not args.no_cross_arm:
             chains = []
             for i, r in enumerate(lruns):
                 st = standardise_in_real_frame(r["path"], r["experiment"], fr["path"], fr["experiment"], subtract="real")
@@ -291,8 +295,32 @@ def main(argv=None):
                   title=f"Plot D: label {label}, arm {arm}: repeats in the POOLED frame (seed spread in sigma of the pooled)")
             manifest["figures"].append(str(out / f"plotD_{label}_{arm}.png"))
 
+        # ---- Plot B PER ARM (no cross-arm frames): each arm's headline posterior vs ITS matched mocks
+        if args.no_cross_arm and args.matched_mocks:
+            for tok in args.matched_mocks:
+                marm, rest = tok.split("=", 1)
+                mpath, mexp = rest.rsplit(":", 1)
+                hr = [r for r in lruns if (r["arm"] or _arm_key(r["experiment"])) == marm]
+                hr = [r for r in hr if r["pooled"]] or hr
+                if not hr:
+                    continue
+                ref = hr[0]
+                st_real = standardise_self(ref["path"], ref["experiment"])
+                chains = [_chain(_thin(st_real.z, args.max_samples), st_real.names, [q for q in args.params if q in st_real.names],
+                                 f"label {label}, {_tag(ref)}", "real")]
+                for ev in args.mock_events:
+                    st = standardise_in_real_frame(mpath, mexp, ref["path"], ref["experiment"], subtract="own", event=ev)
+                    first = ev == args.mock_events[0]
+                    chains.append(_chain(_thin(st.z, args.max_samples), st.names, [q for q in args.params if q in st.names],
+                                         f"matched mocks, {S.arm_name(marm)}" if first else f"matched mock {ev + 1}",
+                                         "mock", S.role_colour("mock", PALETTE), show_label_in_legend=first))
+                chains = chains[1:] + chains[:1]
+                fn = out / f"plotB_{label}_{marm}.png"
+                _plot(chains, str(fn), title=f"Plot B: label {label}, {S.arm_name(marm)} vs its matched mocks (own mean, its std)")
+                manifest["figures"].append(str(fn))
+
         # ---- Plot B: flagship vs matched mocks (own mean, flagship std) ------------------
-        if fr is not None and args.matched_mocks:
+        if fr is not None and args.matched_mocks and not args.no_cross_arm:
             st_real = standardise_self(fr["path"], fr["experiment"])
             chains = [_chain(_thin(st_real.z, args.max_samples), st_real.names, [q for q in args.params if q in st_real.names],
                              f"label {label}, flagship{', pooled' if fr['pooled'] else ''}", "real")]
