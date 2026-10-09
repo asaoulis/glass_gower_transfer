@@ -19,22 +19,40 @@ plain-counts product and reads `_a0_tagged`; every other arm reads the smoothed-
 from __future__ import annotations
 
 # arm -> (experiment name template with {r}, bake-arm suffix, repeats that exist)
+#
+# ⭐ VDQ CUTOVER (2026-10-09, user-approved; eval-and-viz/vdq-unblinding-rerun V6): the two MAIN arms
+# `nla_m` (field-level hybrid) and `band` (2-pt) now name the VD-quadcap chains trained on VD mocks.
+# Their no-VD predecessors were `gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9` and
+# `gower_nle_finetune_band_nla_m_bgp_k8_r{r}_ens9_e150` (repeats 0,2,3,4). The five variate arms below
+# still name no-VD chains: they are DELAYED, not removed (user) -- kept so every table keeps its rows,
+# but listed in DELAYED_ARMS so nothing can sample/pool them against a VDQ headline until each is
+# repointed at its VDQ chain (then drop it from DELAYED_ARMS).
 ARMS = {
-    "nla_m":       ("gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9",              "sc8a1", (0, 1, 2, 3, 4)),
+    "nla_m":       ("gower_nle_finetune_nla_m_vdq_z8_r{r}_ens9",              "sc8a1", (0, 1, 2, 3, 4)),
     "nla_m_nobgp": ("gower_nle_finetune_nla_m_z8_r{r}_ens9",                  "a0_tagged", (0, 1, 2, 3, 4)),
     "nla":         ("gower_nle_finetune_nla_bgp_z8_hf_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 3, 4)),
     "nla_z":       ("gower_nle_finetune_nla_z_bgp_z8_hf_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
     "vd":          ("gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150",   "sc8a1", (0, 1, 2, 3, 4)),
     "k2":          ("gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3)),
-    # M16 -- the 2-pt-ONLY (bandpower) NLE chain, added 2026-09-10. Same flagship Gower store,
+    # The 2-pt-ONLY (bandpower) NLE chain (M16 procedure, VDQ stores). Same flagship Gower store,
     # same 200-id test lock, so "what do the maps buy over the 2-point function?" is single-variable.
-    # ⚠️ repeat 1 is NOT here yet: it was still in its MCMC eval (job 1359261) when the arm was
-    # registered. `arm_experiments` RAISES on a requested-but-missing repeat rather than silently
-    # dropping it, so add 1 to this tuple only once its ensemble_evaluation json exists.
-    "band":        ("gower_nle_finetune_band_nla_m_bgp_k8_r{r}_ens9_e150",      "sc8a1", (0, 2, 3, 4)),
+    # `arm_experiments` RAISES on a requested-but-missing repeat rather than silently dropping it.
+    "band":        ("gower_nle_finetune_band_nla_m_vdq_k8_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
 }
 
+# Variate arms whose rows still name no-VD chains (see the VDQ CUTOVER note above).
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "nla", "nla_z", "vd", "k2"})
+ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
+
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
+
+
+def assert_active(arm):
+    """Raise for an arm that is registered but DELAYED (its row still names a no-VD chain)."""
+    if arm in DELAYED_ARMS:
+        raise ValueError("arm %r is DELAYED: its row still names the no-VD chain %r. Repoint it at its "
+                         "VDQ chain and drop it from DELAYED_ARMS in src/ml/eval/arms.py before "
+                         "sampling or pooling it." % (arm, ARMS[arm][0]))
 
 
 def assert_matches_sample_observation(path=None):
@@ -89,6 +107,7 @@ def arm_experiments(arm, repeats=None):
     """
     if arm not in ARMS:
         raise KeyError("unknown arm %r; known: %s" % (arm, sorted(ARMS)))
+    assert_active(arm)
     template, _bake, available = ARMS[arm]
     want = tuple(available) if repeats is None else tuple(int(r) for r in repeats)
     missing = [r for r in want if r not in available]
@@ -102,7 +121,7 @@ def arm_experiments(arm, repeats=None):
 # fact `artifacts/variate_diagnostics/variates.py` records ("match strings are NOT constructed"),
 # and it is tabulated rather than pattern-matched off the experiment name for exactly that reason.
 MATCH_TEMPLATES = {
-    "nla_m": "ncosmo300_{r}",
+    "nla_m": "ncosmo300_{r}",          # VDQ row also max_trainval_cosmos=[300] -> ncosmo300 (verified 2026-10-09)
     "nla_m_nobgp": "ncosmo300_{r}",
     "nla": "ncosmoNone_{r}",
     "nla_z": "ncosmoNone_{r}",

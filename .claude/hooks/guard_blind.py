@@ -41,6 +41,9 @@ ALLOWED_ENTRY = [
     r"run_remote\.py\s+fetch\b", r"src/blind/standardise\.py\s*$",
     # Tier-1 report: opens the sidecar for its sim_id ONLY (never printed) to drop that cosmology from the null
     r"scripts/tier1_report\.py",
+    # Tier-3 sanity gate: reads raw dumps, emits ONLY relative scalars (inter-repeat KL, width
+    # ratios, shard R-hat, PTEs) -- never a mean/std/location (added 2026-10-09, user-requested check)
+    r"scripts/tier3_sanity\.py",
 ]
 # read-only listing verbs are fine on the blind store (filenames only)
 LISTING_ONLY = re.compile(r"^\s*(ls|find|du|tree|stat|wc\s+-l)\b")

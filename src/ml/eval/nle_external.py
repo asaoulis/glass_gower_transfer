@@ -217,6 +217,9 @@ def resolve_nle_pipeline(
             "source_experiments": list(source_experiments),
             "n_files": len(paths),
             "scaler_fit_patterns": getattr(art.config, "data_patterns", None),
+            # exact files scored (source encoders, whitener, the 9 members) -- the identity audit
+            # compares these across the obs / matched / Stage-B-eval runs of one (arm, repeat).
+            **dict(getattr(art.model, "external_provenance", {}) or {}),
         },
     )
 
@@ -231,7 +234,8 @@ def match_string_for(experiment: str, repeat: int) -> str:
     """
     from config.experiments import experiments as _exps
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
-    merged = {**_exps, **_bgp}
+    from config.kids_legacy_vdq import kids_legacy_vdq_experiments as _vdq
+    merged = {**_exps, **_bgp, **_vdq}   # same merge order as eval.py / train_embeddings.py
     exp = merged.get(experiment, {})
     n = exp.get("max_trainval_cosmos", None)
     if isinstance(n, (list, tuple)):
@@ -243,13 +247,15 @@ def match_string_for(experiment: str, repeat: int) -> str:
 def resolve_source_experiments(experiment: str) -> Sequence[str]:
     """The frozen source encoder(s) for a Stage-B row, from the config side (one place)."""
     from config.kids_legacy_bgp import HF_RETRAIN_SOURCES, FLAGSHIP_NLE_SOURCES
-    for table in (HF_RETRAIN_SOURCES, FLAGSHIP_NLE_SOURCES):
+    from config.kids_legacy_vdq import VDQ_NLE_SOURCES
+    for table in (HF_RETRAIN_SOURCES, FLAGSHIP_NLE_SOURCES, VDQ_NLE_SOURCES):
         if experiment in table:
             src = table[experiment]
             return [src] if isinstance(src, str) else list(src)
     raise KeyError(
         f"no source encoder registered for '{experiment}'. Add it to HF_RETRAIN_SOURCES or "
-        f"FLAGSHIP_NLE_SOURCES in config/kids_legacy_bgp.py — the source encoder is part of a "
+        f"FLAGSHIP_NLE_SOURCES in config/kids_legacy_bgp.py (VDQ rows: VDQ_NLE_SOURCES in "
+        f"config/kids_legacy_vdq.py) — the source encoder is part of a "
         f"chain's identity and must not be guessed at the eval site (cf. the e890aec bug)."
     )
 
@@ -424,8 +430,12 @@ def run_external_nle_eval(
         except Exception as exc:                       # metrics are a bonus, samples are the point
             print(f"[nle-external] metrics skipped ({type(exc).__name__}: {exc})", flush=True)
 
-    with open(os.path.join(out, f"external_provenance_{p.match_string}.json"), "w") as fh:
-        json.dump(_jsonable(result), fh, indent=2)
+    # Per-PRIOR record too: the legacy name is shared by every prior of one (experiment, repeat), so
+    # the LCDM and wCDM jobs overwrote each other's provenance (and raced when concurrent).
+    for fname in (f"external_provenance_{prior_mode}_{p.match_string}.json",
+                  f"external_provenance_{p.match_string}.json"):
+        with open(os.path.join(out, fname), "w") as fh:
+            json.dump(_jsonable(result), fh, indent=2)
     return result
 
 
@@ -466,8 +476,9 @@ def rebuild_production_frame(experiment: str, repeat: int = 0, *,
     from ..models.sampling import get_dataset_paths
     from config.experiments import experiments as _exps
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
+    from config.kids_legacy_vdq import kids_legacy_vdq_experiments as _vdq
 
-    merged = {**_exps, **_bgp}
+    merged = {**_exps, **_bgp, **_vdq}   # same merge order as match_string_for / eval.py
     if experiment not in merged:
         raise KeyError(f"experiment {experiment!r} not found in the config tables")
     match = match_string_for(experiment, repeat)
@@ -768,6 +779,13 @@ def run_reproduction_check(
             print(f"[repro] CHECK 4 SKIPPED: no persisted scalers.pt beside the cache "
                   f"(run eval --mode recover-scalers first)", flush=True)
 
+    # ONE verdict for the encoder-identity gate. CHECK 2 (exact split) and CHECK 3 (raw z vs the
+    # embeddings the trained flow actually consumed) are the only evidence that THIS repeat's source
+    # encoder + data frame are what Stage B trained on; a SKIPPED / inconclusive check is therefore a
+    # FAIL here, never a silent pass.
+    report["verdict"] = "PASS" if (report.get("theta_check") == "PASS" and report.get("z_check") == "PASS") else "FAIL"
+    print(f"[repro] VERDICT {report['verdict']} ({experiment} r{repeat}: theta={report.get('theta_check')}, "
+          f"z={report.get('z_check')}, z_dev/floor={report.get('z_dev_over_floor')})", flush=True)
     print("[repro] REPORT " + json.dumps(_jsonable(report)), flush=True)
     return report
 

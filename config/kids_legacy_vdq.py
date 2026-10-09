@@ -236,3 +236,17 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdq_k8_r3_ens9_e150"]
 # === P3 — the 15-param GLASS foundation (9 cosmo/IA + b_g_bin1..6), 125 epochs, r0–r4 ============
 kids_legacy_vdq_experiments["kids_legacy_hybrid_nla_m_vdq_z8_resnet_sc8a1_p15"] = \
     _hybrid_bgp_p15(_VDQ_GLASS, _BAND_CKPT_VDQ)
+
+
+# === Source encoders of the VDQ NLE Stage-B rows (read by src/ml/eval/nle_external.py) ============
+# The frozen source encoder is part of a chain's identity (the e890aec bug class): register it here,
+# exactly as passed to `embed --sources` at Stage A/B (models task VD-final-train-models), so the
+# external (real-observation / matched-mock) sampler never guesses it.
+VDQ_NLE_SOURCES = {}
+for _r in _NLE_REPEATS:
+    VDQ_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdq_z8_r{_r}"] = "kids_legacy_hybrid_nla_m_vdq_z8_resnet_sc8a1"
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_m_vdq_z8_r{_r}_ens9"] = "kids_legacy_hybrid_nla_m_vdq_z8_resnet_sc8a1"
+    VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_m_vdq_k{_BAND_NLE_K_VDQ}_r{_r}"] = "kids_legacy_band_nla_m_vdq"
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_m_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_m_vdq"
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments), \
+    sorted(set(VDQ_NLE_SOURCES) - set(kids_legacy_vdq_experiments))

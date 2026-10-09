@@ -817,6 +817,7 @@ def build_ensemble_model_from_checkpoints(
     base_seed = 42 #int(getattr(cfg, "split_seed", 42))
 
     members = []
+    member_checkpoints = []
     resolved_member_test_loaders = []
     missing_members = []
 
@@ -838,6 +839,7 @@ def build_ensemble_model_from_checkpoints(
         # kappa=2 k5 Stage-A parent resolved best val 1.396 on 2026-08-27 and 1.735 on 2026-09-01.
         # Log the exact file so two runs of "the same" eval can be compared after the fact.
         print(f"[build_ensemble_model_from_checkpoints] member {j}: {best_ckpt}", flush=True)
+        member_checkpoints.append(str(best_ckpt))
 
         cfg_j = copy(cfg)
         cfg_j.checkpoint_path = best_ckpt
@@ -876,6 +878,7 @@ def build_ensemble_model_from_checkpoints(
     inference_mode = str(getattr(cfg, "inference_mode", "npe")).lower()
     EnsembleCls = EnsembleLikelihoodNDELightningModule if inference_mode == "nle" else EnsembleNDELightningModule
     model = EnsembleCls(members)
+    model.member_checkpoints = member_checkpoints   # provenance: exactly which files were scored
     # use the first member loader for theta0s extraction; others are used internally
     model.test_dataloader = resolved_member_test_loaders[0]
     model.to("cuda" if torch.cuda.is_available() else "cpu")

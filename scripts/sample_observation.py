@@ -22,25 +22,19 @@ POSTERIORS ARE THE POOLED ONES (user, 2026-09-08); the per-repeat dumps stay as 
 diagnostic. `fetch --what pooled` pulls checkpoints/pooled/<arm>/external/<label>/ into
 BLIND_ROOT/<label>/pooled_<arm>/ (`--what both` = repeats + pooled).
 
-Arm table (ASSESSMENT_hf.md, 2026-09-07) -> Stage-B experiment name per repeat r:
-  nla_m        gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9                 (headline; notebook arm)
-  nla_m_nobgp  gower_nle_finetune_nla_m_z8_r{r}_ens9
-  nla          gower_nle_finetune_nla_bgp_z8_hf_r{r}_ens9_e150
-  nla_z        gower_nle_finetune_nla_z_bgp_z8_hf_r{r}_ens9_e150
-  vd           gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150
-  k2           gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150   (repeats 0-3 only)
-  band         gower_nle_finetune_band_nla_m_bgp_k8_r{r}_ens9_e150       (M16, 2-pt only;
-               repeats 0,2,3,4 -- r1 joins when job 1359261's eval lands)
-Each arm reads the sc8a1 baked observation store `<store-prefix>_<label>_sc8a1` EXCEPT nla_m_nobgp,
-whose training store `gower_mocks_nla_m_f16_fwhm4_lmin56_lcut1400` was baked with
-`--eb-variant fwhm4_lmin56_lcut1400 --keep-variant-tag` and NO `--noise-norm` (prebake log in
-.claude/runs/training-runs/vicreg-nle-first-test/plan.md; config `_GOWER_EB_VARIANT_FWHM4`, no
-`eb_noise_norm`), i.e. the `a0_tagged` bake: it reads `<store-prefix>_<label>_a0_tagged`.
+Arm table: `src/ml/eval/arms.py` (the ONE copy; this script imports it). Since the VDQ cutover
+(2026-10-09) the two ACTIVE arms are the VD-quadcap main analysis:
+  nla_m        gower_nle_finetune_nla_m_vdq_z8_r{r}_ens9                 (field-level flagship; repeats 0-4)
+  band         gower_nle_finetune_band_nla_m_vdq_k8_r{r}_ens9_e150       (2-pt only; repeats 0-4)
+The variate arms (nla_m_nobgp, nla, nla_z, vd, k2) are DELAYED (`arms.DELAYED_ARMS`): their rows still
+name no-VD chains, so `--arms` defaults to the active arms and naming a delayed arm raises.
+Both active arms read the sc8a1 baked observation store `<store-prefix>_<label>_sc8a1` (the delayed
+nla_m_nobgp row reads `_a0_tagged`).
 
 Cost: ~14 h wall per (arm, repeat, label) at 25k samples on ONE core (the historical path; Stage-B
 burn-in dominates). With the N=1 sharding (--ncpu 64 --mcmc-workers 60 --num-jobs 60 on CORES64,
 or --ncpu 40 --mcmc-workers 36 --num-jobs 36 on CORES40) the same run is ~17 min at warmup 500
-(SAMPLING_PROFILE_N1.md). One label x 29 (arm,repeat) x 2 priors = 58 jobs. Use --num-samples 2000
+(SAMPLING_PROFILE_N1.md). One label x 10 (arm,repeat) x 2 priors = 20 jobs (VDQ main analysis). Use --num-samples 2000
 and --repeats 0 for a pilot.
 """
 from __future__ import annotations
@@ -55,12 +49,13 @@ REPO = Path(__file__).resolve().parents[1]
 RUN_REMOTE = REPO / ".claude" / "cluster" / "run_remote.py"
 
 sys.path.insert(0, str(REPO))
-from src.ml.eval.arms import ARMS, DEFAULT_PRIORS  # noqa: E402  -- the ONE arm table (eval --mode pool reads the same)
+from src.ml.eval.arms import ACTIVE_ARMS, ARMS, DEFAULT_PRIORS, assert_active  # noqa: E402  -- the ONE arm table (eval --mode pool reads the same)
 
 
 def jobs(args):
     for label in args.labels:
         for arm in args.arms:
+            assert_active(arm)          # a DELAYED arm still names a no-VD chain
             exp_t, bake, reps = ARMS[arm]
             for r in args.repeats:
                 if r not in reps:
@@ -126,6 +121,7 @@ def pool_jobs(args):
     """(label, arm, prior, repeats-that-exist-and-were-requested) -- pooling needs >= 2 members."""
     for label in args.labels:
         for arm in args.arms:
+            assert_active(arm)
             _exp_t, _bake, reps_avail = ARMS[arm]
             reps = [r for r in args.repeats if r in reps_avail]
             if len(reps) < 2:
@@ -193,7 +189,7 @@ def main(argv=None):
         s.add_argument("--store-prefix", required=True, help="observation store prefix; store = <prefix>_<label>_<bake>")
         s.add_argument("--per-label-store", action="store_true", default=True)
         s.add_argument("--store-override", default=None, help="use this exact store name for every job (pilot runs)")
-        s.add_argument("--arms", nargs="+", default=list(ARMS), choices=list(ARMS))
+        s.add_argument("--arms", nargs="+", default=list(ACTIVE_ARMS), choices=list(ARMS))
         s.add_argument("--repeats", type=int, nargs="+", default=[0, 1, 2, 3, 4])
         s.add_argument("--priors", nargs="+", default=list(DEFAULT_PRIORS))
         s.add_argument("--num-samples", type=int, default=25000)

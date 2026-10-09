@@ -4,7 +4,7 @@ ONLY through src.blind.standardise and writes standardised npz + figures. Never 
 
     PYTHONPATH=. python scripts/plot_blind_posteriors.py \
         --blind-root /data/alex/unblinding/blind_store --out-dir <dir> \
-        [--flagship-experiment gower_nle_finetune_nla_m_bgp_z8_r0_ens9] [--flagship-label A] \
+        [--flagship-experiment gower_nle_finetune_nla_m_vdq_z8_r0_ens9] [--flagship-label A] \
         [--matched-mocks nla_m=/data/alex/variate_samples/<exp>/external/gower_match_nla_m/external_posterior_samples_gower_ncosmo300_0.npz:<exp> ...] \
         [--params omega_m sigma_8 S8 w0 ...] [--prior gower]
 
@@ -51,6 +51,10 @@ def _arm_key(experiment: str) -> str:
         return "band"
     if "bgpk2" in e:
         return "k2"
+    # VDQ main-analysis flagship (2026-10-09 cutover): `..._nla_m_vdq_z8_...` matches none of the
+    # no-VD patterns below (`_vdq_` != `_vd_`), so it must be named before them.
+    if "nla_m_vdq" in e:
+        return "nla_m"
     if "_vd_" in e:
         return "vd"
     if "nla_z" in e:
@@ -109,7 +113,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--blind-root", default=None)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--flagship-experiment", default="gower_nle_finetune_nla_m_bgp_z8_r0_ens9")
+    ap.add_argument("--flagship-experiment", default="gower_nle_finetune_nla_m_vdq_z8_r0_ens9")
     ap.add_argument("--flagship-label", default=None, help="label whose flagship frame is the reference (default: first)")
     ap.add_argument("--prior", default="gower", help="prior tag of the runs to plot")
     ap.add_argument("--use", default="auto", choices=["auto", "pooled", "repeats"],

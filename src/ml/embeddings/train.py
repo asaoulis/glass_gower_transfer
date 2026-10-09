@@ -207,6 +207,7 @@ def _build_external_embedding_loader_for_cfg(
                 f"[whiten][external] resolved whitener k={emb_scaler.k} != config k={k} "
                 f"at {whitener_path}."
             )
+        _assert_whitener_identity(emb_scaler, whitener_path, pretrained_ckpt_path_or_dir, repeat_match)
         print(f"[whiten][external] Reusing pretrain whitener k={emb_scaler.k} (fit on "
               f"{emb_scaler.fit_n_train_samples} rows, "
               f"source={emb_scaler.fit_source_experiment}) from {whitener_path}", flush=True)
@@ -216,6 +217,62 @@ def _build_external_embedding_loader_for_cfg(
                           scale_embeddings=scale_embeddings)
     loader = torch.utils.data.DataLoader(ds, batch_size=batch_size, shuffle=False)
     return loader, raw_loader.dataset
+
+
+def _repeat_token_in(path: str, token: str) -> bool:
+    """`token` (e.g. 'None_1', 'ncosmo300_1_ens3') occurs in `path` NOT followed by a digit, so
+    repeat 1 can never be satisfied by a run folder of repeat 10/11/..."""
+    import re as _re
+    return bool(_re.search(_re.escape(token) + r"(?!\d)", str(path)))
+
+
+def _assert_whitener_identity(emb_scaler, whitener_path, pretrained_ckpt_path_or_dir, repeat_match):
+    """EXTERNAL path only: the loaded whitener must be the one fit by THIS chain's Stage-A run, for
+    THIS repeat. `resolve_whitener_path` picks the run folder by substring match on `repeat_match`,
+    so a stale/renamed folder could hand back another repeat's whitener and every downstream number
+    would still look plausible. The whitener records who fit it (`fit_source_experiment` = the
+    Stage-A experiment, `fit_repeat_match`) -- compare, and refuse on any mismatch."""
+    import os as _os
+    root = str(pretrained_ckpt_path_or_dir or "").rstrip("/")
+    if root and _os.path.isdir(root):
+        stage_a = _os.path.basename(root)
+        if not _os.path.abspath(whitener_path).startswith(_os.path.abspath(root) + _os.sep):
+            raise RuntimeError(f"[whiten][external] whitener {whitener_path} is not under the Stage-A "
+                               f"dir {root}")
+        fse = getattr(emb_scaler, "fit_source_experiment", None)
+        if fse is not None and fse != stage_a:
+            raise RuntimeError(f"[whiten][external] whitener at {whitener_path} was fit by '{fse}', "
+                               f"not by this chain's Stage-A run '{stage_a}'")
+    frm = getattr(emb_scaler, "fit_repeat_match", None)
+    # Stage A may record the run-form match ('ncosmoNone_1') where eval asks for 'None_1': compare
+    # the repeat token, not the literal string.
+    if repeat_match and frm is not None and not _repeat_token_in(str(frm), str(repeat_match)):
+        raise RuntimeError(f"[whiten][external] whitener at {whitener_path} was fit for repeat match "
+                           f"'{frm}', expected '{repeat_match}'")
+    if repeat_match and not _repeat_token_in(_os.path.dirname(_os.path.dirname(whitener_path)), repeat_match):
+        raise RuntimeError(f"[whiten][external] whitener run folder {whitener_path} does not carry the "
+                           f"repeat token '{repeat_match}'")
+    print(f"[identity][external] whitener OK: {whitener_path} (fit by "
+          f"{getattr(emb_scaler, 'fit_source_experiment', None)}, match {frm})", flush=True)
+
+
+def _assert_source_identity(source_experiments, source_ckpts, src_match):
+    """EXTERNAL path only: every frozen source encoder must resolve inside ITS OWN experiment dir and
+    to a run folder of THIS repeat (`src_match`, e.g. 'None_1'). This is the e890aec bug class (a
+    chain silently scored through another encoder) plus the stale/re-rolled-repeat hazard."""
+    if len(source_ckpts) != len(source_experiments):
+        raise RuntimeError(f"[identity][external] {len(source_ckpts)} source checkpoints for "
+                           f"{len(source_experiments)} source experiments")
+    for name, ck in zip(source_experiments, source_ckpts):
+        marker = f"/checkpoints/{name}/"
+        if not ck or marker not in str(ck):
+            raise RuntimeError(f"[identity][external] source '{name}' resolved to {ck!r}, which is not "
+                               f"under {marker}")
+        rel = str(ck).split(marker, 1)[1]
+        if src_match and not _repeat_token_in(rel, src_match):
+            raise RuntimeError(f"[identity][external] source '{name}' checkpoint {ck} is not a "
+                               f"'{src_match}' run (wrong repeat?)")
+        print(f"[identity][external] source OK: {name} [{src_match}] -> {ck}", flush=True)
 
 
 def _build_embeddings_model_from_cfg_checkpoint(cfg, test_dataloader=None, emb_dim=None):
@@ -305,13 +362,15 @@ def load_embedding_model_with_dataloader(
         pretrained_models_match_string = "None_" + match_string.split("_")[1]  # e.g. "ncosmo30_0" -> "_0"
     else:
         pretrained_models_match_string = match_string  # use full match_string for loading sources if match_num_cosmo is True
-    source_models, dataset_quantities, _ = load_pretrained_models(
+    source_models, dataset_quantities, source_ckpts = load_pretrained_models(
         list(source_experiments),
         cfg_overrides=source_cfg_overrides,
         repeat_idx=repeat_idx,
         match_string=pretrained_models_match_string,
         per_source_match_strings=getattr(cfg, "source_match_strings", None),
     )
+    if external_paths is not None and getattr(cfg, "source_match_strings", None) is None:
+        _assert_source_identity(list(source_experiments), list(source_ckpts), pretrained_models_match_string)
     cfg.dataset_quantities = dataset_quantities
 
     if is_ensemble_eval_active(cfg):
@@ -403,6 +462,23 @@ def load_embedding_model_with_dataloader(
                     f"Failed to build embeddings ensemble for experiment '{experiment_name}' "
                     f"and match '{match_string}'."
                 )
+            member_ckpts = list(getattr(model, "member_checkpoints", []) or [])
+            if len(member_ckpts) != n_ens or len(set(member_ckpts)) != n_ens:
+                raise RuntimeError(f"[identity][external] expected {n_ens} DISTINCT member checkpoints, "
+                                   f"got {member_ckpts}")
+            for j, ck in enumerate(member_ckpts):
+                if f"/checkpoints/{experiment_name}/" not in ck or not _repeat_token_in(ck, f"{match_string}_ens{j}"):
+                    raise RuntimeError(f"[identity][external] member {j} checkpoint {ck} is not a "
+                                       f"'{match_string}_ens{j}' run of {experiment_name}")
+            print(f"[identity][external] members OK: {n_ens} distinct '{match_string}_ens<j>' checkpoints",
+                  flush=True)
+            from .embeddings_utils import resolve_whitener_path as _rwp
+            model.external_provenance = {
+                "source_checkpoints": list(source_ckpts),
+                "source_match": pretrained_models_match_string,
+                "whitener_path": _rwp(whiten_ckpt_dir, whiten_repeat_match) if whiten_cfg is not None else None,
+                "member_checkpoints": member_ckpts,
+            }
             model.external_raw_dataset = ext_raw_dataset
             return LoadedEmbeddingArtifacts(
                 model=model, scalers=scalers, test_loader=ext_loader,
