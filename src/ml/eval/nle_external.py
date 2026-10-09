@@ -180,6 +180,7 @@ def resolve_nle_pipeline(
     source_experiments: Optional[Sequence[str]] = None,
     batch_size: int = 64,
     config_overrides: Optional[Dict[str, object]] = None,
+    require_member_frames: bool = False,
 ) -> FrozenNLEPipeline:
     """Build the ensemble and put `paths` through its frozen encoder+whitener.
 
@@ -204,6 +205,7 @@ def resolve_nle_pipeline(
         config_overrides=config_overrides,
         external_paths=paths,
         external_batch_size=batch_size,
+        require_member_frames=require_member_frames,
     )
     return FrozenNLEPipeline(
         experiment=experiment,
@@ -337,6 +339,7 @@ def run_external_nle_eval(
     source_experiments: Optional[Sequence[str]] = None,
     compute_metrics: Optional[bool] = None,
     dry_run: bool = False,
+    require_member_frames: bool = False,
 ) -> Dict[str, object]:
     """Resolve the pipeline, sample, and persist. `paths` is the primitive; `store` is a shortcut."""
     from .utils import _save_posterior_samples
@@ -350,7 +353,8 @@ def run_external_nle_eval(
     tag = tag or store or "external"
 
     p = resolve_nle_pipeline(experiment, match_string, paths=paths,
-                             source_experiments=source_experiments, batch_size=batch_size)
+                             source_experiments=source_experiments, batch_size=batch_size,
+                             require_member_frames=require_member_frames)
     out = output_dir(p.config, tag)
     os.makedirs(out, exist_ok=True)
 

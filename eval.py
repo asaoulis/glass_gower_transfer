@@ -317,6 +317,11 @@ def main(argv=None):
                              "member had its OWN stochastic scaler fit, so each needs its own frame.")
     parser.add_argument("--no-save", action="store_true",
                         help="--mode recover-scalers: fit and report but do not write scalers.pt")
+    parser.add_argument("--require-member-frames", action="store_true",
+                        help="--mode nle-external: REFUSE to score unless every ensemble member has its own "
+                             "persisted input frame (scalers.pt from --mode recover-scalers). Without it a "
+                             "member with no frame silently falls back to member 0's refit frame, which "
+                             "differs per member (ensemble_seed-dependent scaler subsample).")
     parser.add_argument("--external-dry-run", action="store_true",
                         help="--mode nle-external: resolve the pipeline and stop before sampling.")
     parser.add_argument("--data-store", default=None,
@@ -451,6 +456,7 @@ def main(argv=None):
                     mcmc_seed=args.mcmc_seed,
                     batch_size=args.emb_batch_size,
                     dry_run=args.external_dry_run,
+                    require_member_frames=args.require_member_frames,
                 )
     elif mode == "recover-scalers":
         # Recover the training-time input frame of an already-trained run and persist it per

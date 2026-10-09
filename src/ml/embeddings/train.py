@@ -312,6 +312,7 @@ def load_embedding_model_with_dataloader(
     config_overrides: Optional[Dict[str, object]] = None,
     external_paths: Optional[Sequence[str]] = None,
     external_batch_size: int = 64,
+    require_member_frames: bool = False,
 ) -> LoadedEmbeddingArtifacts:
     """Load one trained embeddings model and its matching embedding test loader.
 
@@ -416,7 +417,7 @@ def load_embedding_model_with_dataloader(
             import os
             from ..data.scaling import load_scalers as _load_scalers
 
-            member_frames, n_persisted = [], 0
+            member_frames, n_persisted, frame_record = [], 0, []
             for j in range(n_ens):
                 mk, mc = refit_key, refit_cosmo
                 hits = _glob.glob(os.path.join(
@@ -435,7 +436,15 @@ def load_embedding_model_with_dataloader(
                             f"fall back to a refit frame, which would be ~1e-2 wrong."
                         )
                 member_frames.append((mk, mc))
+                frame_record.append({"member": j, "persisted": bool(hits),
+                                     "method": (prov.get("method") if hits else "member0_refit"),
+                                     "z_dev_median_after": (prov.get("z_dev_median_after") if hits else None)})
             print(f"[nle-external] {n_persisted}/{n_ens} members using a persisted frame", flush=True)
+            if require_member_frames and n_persisted != n_ens:
+                raise RuntimeError(
+                    f"[nle-external] --require-member-frames: only {n_persisted}/{n_ens} members of "
+                    f"{experiment_name} {match_string} have a persisted input frame (scalers.pt). Each "
+                    f"member trained in its OWN frame; run `eval --mode recover-scalers` first.")
 
             loaders_by_frame, member_test_loaders, ext_raw_dataset = {}, [], None
             for mk, mc in member_frames:
@@ -478,6 +487,7 @@ def load_embedding_model_with_dataloader(
                 "source_match": pretrained_models_match_string,
                 "whitener_path": _rwp(whiten_ckpt_dir, whiten_repeat_match) if whiten_cfg is not None else None,
                 "member_checkpoints": member_ckpts,
+                "member_frames": frame_record,
             }
             model.external_raw_dataset = ext_raw_dataset
             return LoadedEmbeddingArtifacts(
