@@ -6,8 +6,9 @@ the notebook's section-8 order, with the public external chains over-plotted.
     02  2-pt + field level ΛCDM                      -- Stage 2
     03  2-pt wCDM  (+ 03f vs DES Y3 wCDM)            -- Stage 1
     04  2-pt + field level wCDM                      -- Stage 2
-    05  final ΛCDM: field + 2-pt vs Planck 2018      -- Stage 2
+    05  final ΛCDM: field + 2-pt vs Planck 2018  (05b: the wCDM arms vs the Planck ΛCDM chain)   -- Stage 2
     06  S_8 summary whiskers (ours, KiDS-Legacy, companion 2-pt SBI, DES/HSC, Planck)   -- Stage 2
+        (06b: wCDM; externals without a wCDM chain keep their ΛCDM row, tagged)
     07  field + 2-pt vs DES Y3 / HSC Y3 (a ΛCDM, b wCDM)   -- Stage 2
   per group: `a` = headline corner (pooled / final), `b` = repeats-vs-pooled diagnostic,
   `c` = headline + KiDS-Legacy / companion comparisons, `d` = all free parameters (+S8) with the
@@ -756,10 +757,19 @@ def main(argv=None):
     sv_L = [p for p in surveys if getattr(p, "model", "LCDM") == "LCDM"]
     sv_W = [p for p in surveys if getattr(p, "model", "LCDM") == "wCDM"]
 
-    def vs_planck_and_surveys(arms_in, stage_dir, planck_stem, surv_L_stem, surv_W_stem):
+    def as_lcdm(p: Post) -> Post:
+        """A copy of an external LCDM-only posterior for the wCDM figures: same draws, label tagged
+        ($\Lambda$CDM) so the reader sees the chain carries no w (user 2026-10-12: 'add an extra row
+        without w from the ones that are missing it')."""
+        return Post(p.name + " [LCDM chain]", p.x, p.names, weights=p.weights, kind=p.kind, colour=p.colour,
+                    role=p.role, key=p.key + "_aslcdm", linestyle=p.linestyle, linewidth=p.linewidth,
+                    label=p.label + r" ($\Lambda$CDM)")
+
+    def vs_planck_and_surveys(arms_in, stage_dir, planck_stem, surv_L_stem, surv_W_stem, planck_W_stem=None):
         """Our headline posteriors against Planck 2018 (LCDM) and the public DES Y3 / HSC Y3 chains
-        (LCDM; wCDM vs DES Y3 only). Stage 1: the 2-pt arm alone (01e/01f/03f); stage 2: field + 2-pt
-        (05/07a/07b). The KiDS-Legacy release has LCDM chains only, so no wCDM KiDS overlay exists."""
+        (LCDM; wCDM vs DES Y3 only). Stage 1: the 2-pt arm alone (01e/01f/03f/03e); stage 2: field + 2-pt
+        (05/07a/07b/05b). The KiDS-Legacy release has LCDM chains only, so no wCDM KiDS overlay exists;
+        `planck_W_stem` draws the wCDM arms against the Planck LCDM chain on the (Om, s8, S8) corner."""
         who = " + ".join(tt[a] for a in arms_in)
         hs_L = [head(a, L) for a in arms_in if head(a, L) is not None]
         hs_W = [head(a, W) for a in arms_in if head(a, W) is not None]
@@ -767,6 +777,12 @@ def main(argv=None):
             written.append(corner([planck] + hs_L, PRIOR_PARAMS[L], os.path.join(stage_dir, pre + planck_stem + "_corner.png"),
                                   "%s: %s vs Planck 2018" % (PRIOR_NAMES[L], who), truth, rng, args.max_samples, **ttl_kw))
             write_table(hs_L + [planck], PRIOR_PARAMS[L], os.path.join(tdir, pre + planck_stem))
+        if planck is not None and hs_W and planck_W_stem:
+            pl = as_lcdm(planck)
+            written.append(corner([pl] + hs_W, PRIOR_PARAMS[L], os.path.join(stage_dir, pre + planck_W_stem + "_corner.png"),
+                                  "%s: %s vs Planck 2018 (LCDM chain)" % (PRIOR_NAMES[W], who), truth, rng, args.max_samples,
+                                  **ttl_kw))
+            write_table(hs_W + [pl], PRIOR_PARAMS[W], os.path.join(tdir, pre + planck_W_stem))
         if sv_L and hs_L:
             written.append(corner(sv_L + hs_L, PRIOR_PARAMS[L], os.path.join(stage_dir, pre + surv_L_stem + "_corner.png"),
                                   "%s: %s vs DES Y3 / HSC Y3" % (PRIOR_NAMES[L], who), truth, rng, args.max_samples, **ttl_kw))
@@ -779,17 +795,31 @@ def main(argv=None):
     if do1:
         group("01", "2pt_LCDM", L, ["band"], s1, kids + comp)
         group("03", "2pt_wCDM", W, ["band"], s1, [])
-        vs_planck_and_surveys(["band"], s1, "01e_2pt_LCDM_vs_Planck", "01f_2pt_LCDM_vs_surveys", "03f_2pt_wCDM_vs_surveys")
+        vs_planck_and_surveys(["band"], s1, "01e_2pt_LCDM_vs_Planck", "01f_2pt_LCDM_vs_surveys", "03f_2pt_wCDM_vs_surveys",
+                              planck_W_stem="03e_2pt_wCDM_vs_Planck")
     if do2:
         group("02", "2pt_field_LCDM", L, ["band", "nla_m"], s2, kids + comp)
         group("04", "2pt_field_wCDM", W, ["band", "nla_m"], s2, [])
-        vs_planck_and_surveys(["band", "nla_m"], s2, "05_LCDM_vs_Planck", "07a_LCDM_vs_surveys", "07b_wCDM_vs_surveys")
+        vs_planck_and_surveys(["band", "nla_m"], s2, "05_LCDM_vs_Planck", "07a_LCDM_vs_surveys", "07b_wCDM_vs_surveys",
+                              planck_W_stem="05b_wCDM_vs_Planck")
         # whisker groups (WHISKER_GROUPS): this work | KiDS-Legacy (companion SBI, Wright+25) | other surveys
         # (DES Y3 / HSC Y3, LCDM) | Planck
         ours = [head(a, L) for a in ("nla_m", "band") if head(a, L) is not None]
         written.append(s8_whiskers([ours, comp + kids, sv_L, [planck] if planck else []],
                                    os.path.join(s2, pre + "06_S8_summary.png"),
                                    "%s $S_8$ summary (median, 68%%)" % PRIOR_NAMES[L], truth, **ttl_kw))
+        # 06b: the wCDM whisker. Externals with a wCDM chain (DES Y3 cosmic shear / 3x2pt) appear as such;
+        # those without one (KiDS-Legacy, the companion SBI, HSC Y3, DES Y3 + KiDS-1000, Planck) keep their
+        # LCDM row, tagged (LCDM).
+        ours_W = [head(a, W) for a in ("nla_m", "band") if head(a, W) is not None]
+        if ours_W:
+            w_keys = {p.key for p in sv_W}
+            sv_only_L = [as_lcdm(p) for p in sv_L if p.key.replace("_lcdm", "_wcdm") not in w_keys]
+            written.append(s8_whiskers([ours_W, [as_lcdm(p) for p in comp + kids], sv_W + sv_only_L,
+                                        [as_lcdm(planck)] if planck else []],
+                                       os.path.join(s2, pre + "06b_S8_summary_wCDM.png"),
+                                       "%s $S_8$ summary (median, 68%%); rows tagged LCDM carry no $w$" % PRIOR_NAMES[W],
+                                       truth, **ttl_kw))
 
     meta = dict(source=args.source, label=None if mock else args.label, stage=args.stage, event=args.event if mock else None,
                 truth={k: v for k, v in truth.items()} if mock else None, provenance=prov, seed=args.seed,
