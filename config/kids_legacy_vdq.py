@@ -337,3 +337,73 @@ for _r in _NLE_REPEATS:
         "glass_encoder_finetune_nla_m_vdqk2_z8_cosmo"
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments), \
     sorted(set(VDQ_VARIATE_NLE_SOURCES) - set(kids_legacy_vdq_experiments))
+
+
+# === PV-G kappa=2 JOINT-SUMMARY TEST — NPE heads on concat(cosmo, b_g) embeddings (user 2026-10-12) ==
+# Question: the joint 15-param VMIM NPE lost FoM(Omega_m, sigma_8) vs the 9-param one (kappa=1 p15:
+# ~21-25 %). Does compressing SEPARATELY (the `_cosmo` 9-param + `_bg` 6-param encoders above) and then
+# fitting ONE 15-param NPE head on the CONCATENATED 16-D summary keep both encoders' constraining power?
+# ONLY IF YES does the joint NLE (concat + whiten/truncate) Stage A follow; otherwise flag the user.
+#
+# Instrument = an NPE head on FROZEN embeddings (`train_embeddings.py`, `compute_embeddings` concatenates
+# sources feature-wise: z = [z_cosmo(8) | z_bg(8)]). NPE models p(theta|z) — a density over THETA — so its
+# FoM / test log-prob are comparable across summaries (an NLE's are not). Precedent + caveats: the
+# archived stack5 ablation (config/archive/legacy_bgp_stack5.py).
+#   * joint heads, 15-param theta (9 NLA-M + b_g_bin1..6, kappa=2 boxes): whiten k=16 (pure-whiten, the
+#     TOTAL information), k=12, k=10 (truncations priced against k=16). The k=12/k=10 rows REUSE the k=16
+#     row's raw-embedding cache (the cache stores RAW z; whitening is per run) — launch them after it.
+#   * MATCHED CONTROLS (same pipeline, same frozen single-augmentation regime — a frozen-embedding head
+#     overfits vs the end-to-end encoder, so the encoders' own val NLLs are not the like-for-like bar):
+#     `_cosmo_ctl` = 9-param head on z_cosmo alone, `_bg_ctl` = 6-param head on z_bg alone, both k=8.
+#   Pass = joint FoM(Om,s8) ~ cosmo_ctl (within seed spread) AND joint b_g widths ~ bg_ctl.
+#   Secondary bar: the encoders' own end-to-end heads, scored by eval.py on the SAME split (same store,
+#   same split_seed = 42 + r, same fracs).
+# run_evaluation=True: NPE sampling is cheap (no MCMC), and it writes evaluation_results.json (FoM, TARP).
+# Launch (sources comma-joined, cosmo FIRST so z[:8] is the cosmo summary):
+#   embed --gpu v100 --mem-gb 32 --wall_h 6 --target glass_npe_pretrain_nla_m_vdqk2_joint_k16_r<r>
+#         --sources glass_encoder_finetune_nla_m_vdqk2_z8_cosmo,glass_encoder_finetune_nla_m_vdqk2_z8_bg
+_K2_JOINT_SOURCES = "glass_encoder_finetune_nla_m_vdqk2_z8_cosmo,glass_encoder_finetune_nla_m_vdqk2_z8_bg"
+_K2_JOINT_THETA = list(_COSMO_9_NLAM) + list(_BG_THETA)
+assert len(_K2_JOINT_THETA) == 15, _K2_JOINT_THETA
+
+
+def _k2_npe_head(r, k, theta, preset_overrides=None, cache_name=None):
+    kw = {"cosmo_param_names": list(theta)}
+    if preset_overrides is not None:
+        kw["preset_overrides"] = preset_overrides
+    c = _nle_pretrain_bgp(_VDQ_GLASS_K2, r, **kw)
+    c["inference_mode"] = "npe"
+    c["run_evaluation"] = True
+    c["whiten_embeddings"] = {"k": int(k)}
+    if cache_name is not None:
+        c["embedding_cache_name"] = cache_name
+        c["reuse_embedding_cache"] = True
+    return c
+
+
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k16_r0"] = _k2_npe_head(0, 16, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r0")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k12_r0"] = _k2_npe_head(0, 12, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r0")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k10_r0"] = _k2_npe_head(0, 10, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r0")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_cosmo_ctl_r0"] = _k2_npe_head(0, 8, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_bg_ctl_r0"] = _k2_npe_head(0, 8, _BG_THETA, _BG_BOXES_K2)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k16_r1"] = _k2_npe_head(1, 16, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r1")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k12_r1"] = _k2_npe_head(1, 12, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r1")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k10_r1"] = _k2_npe_head(1, 10, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r1")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_cosmo_ctl_r1"] = _k2_npe_head(1, 8, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_bg_ctl_r1"] = _k2_npe_head(1, 8, _BG_THETA, _BG_BOXES_K2)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k16_r2"] = _k2_npe_head(2, 16, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r2")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k12_r2"] = _k2_npe_head(2, 12, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r2")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k10_r2"] = _k2_npe_head(2, 10, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r2")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_cosmo_ctl_r2"] = _k2_npe_head(2, 8, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_bg_ctl_r2"] = _k2_npe_head(2, 8, _BG_THETA, _BG_BOXES_K2)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k16_r3"] = _k2_npe_head(3, 16, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r3")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k12_r3"] = _k2_npe_head(3, 12, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r3")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k10_r3"] = _k2_npe_head(3, 10, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r3")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_cosmo_ctl_r3"] = _k2_npe_head(3, 8, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_bg_ctl_r3"] = _k2_npe_head(3, 8, _BG_THETA, _BG_BOXES_K2)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k16_r4"] = _k2_npe_head(4, 16, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r4")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k12_r4"] = _k2_npe_head(4, 12, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r4")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k10_r4"] = _k2_npe_head(4, 10, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r4")
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_cosmo_ctl_r4"] = _k2_npe_head(4, 8, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_bg_ctl_r4"] = _k2_npe_head(4, 8, _BG_THETA, _BG_BOXES_K2)
