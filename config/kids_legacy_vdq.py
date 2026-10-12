@@ -407,3 +407,35 @@ kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k12_r4"] = _k2
 kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_joint_k10_r4"] = _k2_npe_head(4, 10, _K2_JOINT_THETA, _BG_BOXES_K2, "vdqk2_joint_r4")
 kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_cosmo_ctl_r4"] = _k2_npe_head(4, 8, _COSMO_9_NLAM)
 kids_legacy_vdq_experiments["glass_npe_pretrain_nla_m_vdqk2_bg_ctl_r4"] = _k2_npe_head(4, 8, _BG_THETA, _BG_BOXES_K2)
+
+
+# === PV-G k=6 NLE Stage A for nla / nla_z (user 2026-10-12: "Yes, use k=6") ======================
+# The k=5 nla rows above kept only 99.84-99.95 % of the summary variance on the VDQ encoders (r0 0.9995,
+# r1 0.9984, r2 0.9986, r3 0.9992, r4 0.9987; the `_bgp` nla chain kept 99.96 %), and KSWEEP priced a
+# ~0.3 % truncation at ~13 % FoM. k=6 is the production value for the VDQ variate NLE chains; the k=5
+# rows stay as the record of what ran. New names per k (the flow context width and the persisted
+# whitener are k-specific; Stage B must use the same k).
+_VARIATE_NLE_K6_VDQ = 6
+
+
+def _variate_nle_a_vdq_k6(data_patterns, r, cosmo_param_names, preset_overrides=None):
+    pre = _variate_nle_a_vdq(data_patterns, r, cosmo_param_names, preset_overrides)
+    pre["whiten_embeddings"] = {"k": _VARIATE_NLE_K6_VDQ}
+    return pre
+
+
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k6_r0"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 0, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k6_r1"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 1, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k6_r2"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 2, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k6_r3"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 3, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k6_r4"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k6_r0"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA_Z, 0, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k6_r1"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA_Z, 1, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k6_r2"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA_Z, 2, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k6_r3"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA_Z, 3, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k6_r4"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA_Z, 4, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+
+for _r in _NLE_REPEATS:
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdq_z8_k6_r{_r}"] = "glass_encoder_finetune_nla_vdq_z8"
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_z_vdq_z8_k6_r{_r}"] = "glass_encoder_finetune_nla_z_vdq_z8"
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
