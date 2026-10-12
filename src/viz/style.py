@@ -400,12 +400,17 @@ def plot_chains(samples_dict: Mapping[str, np.ndarray], columns, truth: Mapping 
                 smooth: int | None = CORNER_SMOOTH, prune_ticks: bool = True,
                 legend_loc: str = "upper left", usetex: bool = True, palette_name: str = DEFAULT_PALETTE,
                 formats: Sequence[str] = ("png", "pdf"), close: bool = True,
-                weights: Mapping[str, np.ndarray] | None = None):
+                weights: Mapping[str, np.ndarray] | None = None, plot_config: Mapping | None = None,
+                font_size: float | None = None, truth_kwargs: Mapping | None = None):
     """The paper's corner plot. `samples_dict` = {name: (n_draws, n_params) array}; `columns` a
     list of TeX labels or {name: list}. Chains are drawn in insertion order (later on top).
     `truth` is optional (None for anything from the blind store). Summaries are never drawn.
     `weights` = optional {name: (n_draws,) importance weights} for weighted chains (nested-sampling
-    or GetDist output); unweighted chains omit the entry."""
+    or GetDist output); unweighted chains omit the entry. `plot_config` overrides entries of
+    `CORNER_PLOTCONFIG` (e.g. the 8-9 pt tick/label sizes of a figure drawn at A&A final size);
+    `font_size` sets the style-context font (default the notebook 18 pt). `truth_kwargs` overrides
+    the `Truth` line style (e.g. ``{"color": "#444444", "line_style": "--", "line_width": 1.2}``;
+    default a black dashed 1 pt crosshair)."""
     import logging
 
     import pandas as pd
@@ -434,13 +439,14 @@ def plot_chains(samples_dict: Mapping[str, np.ndarray], columns, truth: Mapping 
 
     if smooth is not None:
         c.set_override(ChainConfig(smooth=smooth))
-    c.set_plot_config(PlotConfig(**{**CORNER_PLOTCONFIG, "usetex": usetex},
-                                 legend_kwargs={"loc": legend_loc}, extents=dict(extents),
+    pc = {**CORNER_PLOTCONFIG, **(dict(plot_config) if plot_config else {}), "usetex": usetex}
+    c.set_plot_config(PlotConfig(**pc, legend_kwargs={"loc": legend_loc}, extents=dict(extents),
                                  summarise=False))
     if truth is not None:
-        c.add_truth(Truth(location=dict(truth), color="black", label="Truth"))
+        c.add_truth(Truth(location=dict(truth), **{"color": "black", "label": "Truth", **dict(truth_kwargs or {})}))
 
-    with context(palette_name, usetex=usetex):
+    ctx = {"usetex": usetex} if font_size is None else {"usetex": usetex, "font_size": font_size}
+    with context(palette_name, **ctx):
         fig = c.plotter.plot(figsize=figsize)
         if prune_ticks:
             _prune_edge_ticks(fig)
