@@ -250,3 +250,90 @@ for _r in _NLE_REPEATS:
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_m_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_m_vdq"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments), \
     sorted(set(VDQ_NLE_SOURCES) - set(kids_legacy_vdq_experiments))
+
+
+# === PV-G — GLASS VDQ ANALYSIS VARIATES: encoder finetunes + NLE Stage A (user 2026-10-12) =========
+# The `_bgp` M5a/M6a/M12 variate recipe (`_encoder_finetune_bgp`: whole foundation encoder = band + map
+# warm-started, FRESH flow head, FIXED lr 2e-4, 100 epochs, z8) with ONE override: the warm start is the
+# NLA-M **VDQ** foundation (`_VDQ_HYB_CKPT`, resolved per repeat as `_{r}` via match_num_cosmo=False)
+# instead of the hardcoded `_bgp` one. Epochs are deliberately NOT raised for the larger stores (user).
+# Stores: SIMS GLASS twins (4000 cosmologies x 4 mocks, outer-reps 1; datasets_checklist §G).
+#
+# kappa=2 (VD-final-train/plan.md 'FUTURE ARM — kappa=2', user 2026-10-09): NOT a 15-param p15 row but
+# TWO NPEs on the kappa=2 store, both from the same VDQ foundation:
+#   _cosmo : the 9 NLA-M params, b_g marginalised over the broad prior; theta + scaler are identical to
+#            the foundation's, so its 9-param flow head is ALSO preloaded (as many weights as possible).
+#   _bg    : the 6 b_g_bin params ONLY (kappa=2 clipped boxes `_BG_BOXES_K2`), fresh flow head.
+#
+# NLE Stage A (GLASS only — the Gower nla/nla_z stores were left unbaked, Gower k2 never ran): k=5, the
+# documented variate value (`_hf` rows: pure-whitening a rank-deficient variate summary amplifies the
+# near-null PCs). theta + a_ia box MUST equal the paired encoder's. Launch:
+#   embed --gpu v100 --mem-gb 32 --target glass_nle_pretrain_<v>_vdq_z8_k5_r<r> --sources <encoder row>
+from config.kids_legacy import _A_IA_NLA_BOX, _COSMO_8_NLA, _COSMO_9_NLAZ  # noqa: E402
+from config.kids_legacy_bgp import _BG_BOXES_K2, _COSMO_9_NLAM, _encoder_finetune_bgp  # noqa: E402
+
+_VDQ_GLASS_NLA = f"{_GPU5}/glass_vdq_nla_f16_sc8a1_{_EB}/output_*.h5"
+_VDQ_GLASS_NLA_Z = f"{_GPU5}/glass_vdq_nla_z_f16_sc8a1_{_EB}/output_*.h5"
+_VDQ_GLASS_K2 = f"{_GPU5}/glass_vdqk2_nla_m_f16_sc8a1_{_EB}/output_*.h5"
+_BG_THETA = [f"b_g_bin{_i}" for _i in range(1, 7)]
+_VARIATE_NLE_K_VDQ = 5
+
+
+def _encoder_finetune_vdq(data_patterns, cosmo_param_names, preset_overrides=None, load_flow=False):
+    c = _encoder_finetune_bgp(data_patterns, cosmo_param_names, preset_overrides=preset_overrides)
+    c["pretrained_embedding_ckpt_path"] = _VDQ_HYB_CKPT
+    if load_flow:
+        c["load_pretrained_flow"] = True
+        c["pretrained_flow_ckpt_path"] = _VDQ_HYB_CKPT
+    return c
+
+
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_vdq_z8"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX), 8,
+    "glass_encoder_finetune_nla_vdq_z8")
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_z_vdq_z8"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_NLA_Z, _COSMO_9_NLAZ, preset_overrides=_A_IA_NLA_BOX), 8,
+    "glass_encoder_finetune_nla_z_vdq_z8")
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_cosmo"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_K2, _COSMO_9_NLAM, load_flow=True), 8,
+    "glass_encoder_finetune_nla_m_vdqk2_z8_cosmo")
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_K2, _BG_THETA, preset_overrides=_BG_BOXES_K2), 8,
+    "glass_encoder_finetune_nla_m_vdqk2_z8_bg")
+
+
+def _variate_nle_a_vdq(data_patterns, r, cosmo_param_names, preset_overrides=None):
+    kw = {"cosmo_param_names": list(cosmo_param_names)}
+    if preset_overrides is not None:
+        kw["preset_overrides"] = preset_overrides
+    pre = _nle_pretrain_bgp(data_patterns, r, **kw)
+    pre["whiten_embeddings"] = {"k": _VARIATE_NLE_K_VDQ}
+    return pre
+
+
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k5_r0"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA, 0, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k5_r1"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA, 1, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k5_r2"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA, 2, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k5_r3"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA, 3, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_k5_r4"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k5_r0"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA_Z, 0, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k5_r1"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA_Z, 1, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k5_r2"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA_Z, 2, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k5_r3"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA_Z, 3, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k5_r4"] = _variate_nle_a_vdq(_VDQ_GLASS_NLA_Z, 4, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k5_r0"] = _variate_nle_a_vdq(_VDQ_GLASS_K2, 0, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k5_r1"] = _variate_nle_a_vdq(_VDQ_GLASS_K2, 1, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k5_r2"] = _variate_nle_a_vdq(_VDQ_GLASS_K2, 2, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k5_r3"] = _variate_nle_a_vdq(_VDQ_GLASS_K2, 3, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k5_r4"] = _variate_nle_a_vdq(_VDQ_GLASS_K2, 4, _COSMO_9_NLAM)
+
+# Source encoder per Stage-A row (the e890aec bug class: a chain's encoder is part of its identity).
+VDQ_VARIATE_NLE_SOURCES = {}
+for _r in _NLE_REPEATS:
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdq_z8_k5_r{_r}"] = "glass_encoder_finetune_nla_vdq_z8"
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_z_vdq_z8_k5_r{_r}"] = "glass_encoder_finetune_nla_z_vdq_z8"
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k5_r{_r}"] = \
+        "glass_encoder_finetune_nla_m_vdqk2_z8_cosmo"
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments), \
+    sorted(set(VDQ_VARIATE_NLE_SOURCES) - set(kids_legacy_vdq_experiments))
