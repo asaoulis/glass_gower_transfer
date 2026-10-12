@@ -399,10 +399,13 @@ def plot_chains(samples_dict: Mapping[str, np.ndarray], columns, truth: Mapping 
                 figsize=FIGSIZE_CORNER, extents: Mapping | None = None, savefig=None,
                 smooth: int | None = CORNER_SMOOTH, prune_ticks: bool = True,
                 legend_loc: str = "upper left", usetex: bool = True, palette_name: str = DEFAULT_PALETTE,
-                formats: Sequence[str] = ("png", "pdf"), close: bool = True):
+                formats: Sequence[str] = ("png", "pdf"), close: bool = True,
+                weights: Mapping[str, np.ndarray] | None = None):
     """The paper's corner plot. `samples_dict` = {name: (n_draws, n_params) array}; `columns` a
     list of TeX labels or {name: list}. Chains are drawn in insertion order (later on top).
-    `truth` is optional (None for anything from the blind store). Summaries are never drawn."""
+    `truth` is optional (None for anything from the blind store). Summaries are never drawn.
+    `weights` = optional {name: (n_draws,) importance weights} for weighted chains (nested-sampling
+    or GetDist output); unweighted chains omit the entry."""
     import logging
 
     import pandas as pd
@@ -421,6 +424,9 @@ def plot_chains(samples_dict: Mapping[str, np.ndarray], columns, truth: Mapping 
         cols = columns.get(name, columns[next(iter(columns))]) if isinstance(columns, dict) else columns
         df = pd.DataFrame(np.asarray(samples), columns=cols)
         kw = dict(plotting_kwargs.get(name, {}))
+        if weights and name in weights:
+            df["weight"] = np.asarray(weights[name], dtype=float)
+            kw["weight_column"] = "weight"
         if name in colors:
             kw["color"] = colors[name]
         kw.setdefault("color", cycle[zorder % len(cycle)])
