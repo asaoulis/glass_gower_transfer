@@ -2,15 +2,17 @@
 """Tier-4 REVEAL figure set: PHYSICAL-unit posteriors of the KiDS-Legacy observation, numbered in
 the notebook's section-8 order, with the public external chains over-plotted.
 
-    01  2-pt (bandpowers) ΛCDM                       -- Stage 1 (the 2-pt arm alone)
+    01  2-pt (bandpowers) ΛCDM  (+ 01e vs Planck, 01f vs DES Y3 / HSC Y3)   -- Stage 1 (the 2-pt arm alone)
     02  2-pt + field level ΛCDM                      -- Stage 2
-    03  2-pt wCDM                                    -- Stage 1
+    03  2-pt wCDM  (+ 03f vs DES Y3 wCDM)            -- Stage 1
     04  2-pt + field level wCDM                      -- Stage 2
     05  final ΛCDM: field + 2-pt vs Planck 2018      -- Stage 2
-    06  S_8 summary whiskers (ours, KiDS-Legacy, companion 2-pt SBI, Planck)   -- Stage 2
+    06  S_8 summary whiskers (ours, KiDS-Legacy, companion 2-pt SBI, DES/HSC, Planck)   -- Stage 2
+    07  field + 2-pt vs DES Y3 / HSC Y3 (a ΛCDM, b wCDM)   -- Stage 2
   per group: `a` = headline corner (pooled / final), `b` = repeats-vs-pooled diagnostic,
-  `c` = headline + external comparisons, `d` = all free parameters (+S8) with the sampling prior on
-  the diagonal; `tables/<group>.{csv,md}` = mean / std / median / 68 %.
+  `c` = headline + KiDS-Legacy / companion comparisons, `d` = all free parameters (+S8) with the
+  sampling prior on the diagonal, `e` = vs Planck, `f` = vs the other surveys;
+  `tables/<group>.{csv,md}` = mean / std / median / 68 %.
 
 Style (one layout, the VD-report look): everything drawn in `S.context()` (18 pt serif LaTeX) and
 saved by `S.save()` (PNG 200 dpi + PDF 300 dpi); corners 9 in (3 params) / 11 in (4) / 16 in (all),
@@ -114,15 +116,16 @@ TICK_MARGIN = 0.1
 # lever is the per-chain `bins`. 3/4-param corners: bins 25 (range/50; chainconsumer default 35 ->
 # range/70), ~1.5 % contour broadening. Full corners: ALL draws (`--full-max-samples 0`) and a
 # Silverman-scaled kernel, bins = FULL_BINS x (N_eff / FULL_BINS_NREF)^(1/6) clipped to
-# FULL_BINS_CLIP (12 at 125k draws = range/24, ~6 % broadening; ~9 at 25k; ~15 at 500k), so the
-# prior-dominated 2-D panels are smooth blobs; the histogram path reflects at the prior-box edge
-# (correct). kde=True was tested: rounded box corners but jagged 68 % lines on flat-flat panels
-# (MegKDE's hard 3-sigma truncation) and ~2 min per figure.
+# FULL_BINS_CLIP (20 at 125k draws = range/40, ~2 % broadening; ~15 at 25k; ~25 at 500k). The
+# earlier 12/(8,20) (range/24, ~6 %) was judged too aggressive by the user (2026-10-12): it visibly
+# fattened the Om / sigma_8 marginals. The histogram path reflects at the prior-box edge (correct).
+# kde=True was tested: rounded box corners but jagged 68 % lines on flat-flat panels (MegKDE's hard
+# 3-sigma truncation) and ~2 min per figure.
 CORNER_BINS = 25
 FULL_SMOOTH = 10
-FULL_BINS = 12
+FULL_BINS = 20
 FULL_BINS_NREF = 125000
-FULL_BINS_CLIP = (8, 20)
+FULL_BINS_CLIP = (12, 30)
 FULL_KDE = False
 
 
@@ -750,33 +753,37 @@ def main(argv=None):
         write_table(allp, full, os.path.join(tdir, "%s_%s" % (tag, name)), note="%s%s" % ("MOCK (truth: %s). " % {
             k: float(round(v, 4)) for k, v in truth.items() if k in full} if mock else "", ttl))
 
+    sv_L = [p for p in surveys if getattr(p, "model", "LCDM") == "LCDM"]
+    sv_W = [p for p in surveys if getattr(p, "model", "LCDM") == "wCDM"]
+
+    def vs_planck_and_surveys(arms_in, stage_dir, planck_stem, surv_L_stem, surv_W_stem):
+        """Our headline posteriors against Planck 2018 (LCDM) and the public DES Y3 / HSC Y3 chains
+        (LCDM; wCDM vs DES Y3 only). Stage 1: the 2-pt arm alone (01e/01f/03f); stage 2: field + 2-pt
+        (05/07a/07b). The KiDS-Legacy release has LCDM chains only, so no wCDM KiDS overlay exists."""
+        who = " + ".join(tt[a] for a in arms_in)
+        hs_L = [head(a, L) for a in arms_in if head(a, L) is not None]
+        hs_W = [head(a, W) for a in arms_in if head(a, W) is not None]
+        if planck is not None and hs_L:
+            written.append(corner([planck] + hs_L, PRIOR_PARAMS[L], os.path.join(stage_dir, pre + planck_stem + "_corner.png"),
+                                  "%s: %s vs Planck 2018" % (PRIOR_NAMES[L], who), truth, rng, args.max_samples, **ttl_kw))
+            write_table(hs_L + [planck], PRIOR_PARAMS[L], os.path.join(tdir, pre + planck_stem))
+        if sv_L and hs_L:
+            written.append(corner(sv_L + hs_L, PRIOR_PARAMS[L], os.path.join(stage_dir, pre + surv_L_stem + "_corner.png"),
+                                  "%s: %s vs DES Y3 / HSC Y3" % (PRIOR_NAMES[L], who), truth, rng, args.max_samples, **ttl_kw))
+            write_table(hs_L + sv_L, PRIOR_PARAMS[L], os.path.join(tdir, pre + surv_L_stem))
+        if sv_W and hs_W:
+            written.append(corner(sv_W + hs_W, PRIOR_PARAMS[W], os.path.join(stage_dir, pre + surv_W_stem + "_corner.png"),
+                                  "%s: %s vs DES Y3" % (PRIOR_NAMES[W], who), truth, rng, args.max_samples, **ttl_kw))
+            write_table(hs_W + sv_W, PRIOR_PARAMS[W], os.path.join(tdir, pre + surv_W_stem))
+
     if do1:
         group("01", "2pt_LCDM", L, ["band"], s1, kids + comp)
         group("03", "2pt_wCDM", W, ["band"], s1, [])
+        vs_planck_and_surveys(["band"], s1, "01e_2pt_LCDM_vs_Planck", "01f_2pt_LCDM_vs_surveys", "03f_2pt_wCDM_vs_surveys")
     if do2:
         group("02", "2pt_field_LCDM", L, ["band", "nla_m"], s2, kids + comp)
         group("04", "2pt_field_wCDM", W, ["band", "nla_m"], s2, [])
-        if planck is not None:
-            hs = [head(a, L) for a in ("band", "nla_m") if head(a, L) is not None]
-            if hs:
-                written.append(corner([planck] + hs, PRIOR_PARAMS[L], os.path.join(s2, pre + "05_LCDM_vs_Planck_corner.png"),
-                                      "%s: field + 2-pt vs Planck 2018" % PRIOR_NAMES[L], truth, rng, args.max_samples,
-                                      **ttl_kw))
-                write_table(hs + [planck], PRIOR_PARAMS[L], os.path.join(tdir, pre + "05_LCDM_vs_Planck"))
-        # 07: our headline posteriors against the other surveys (DES Y3 / HSC Y3 public chains)
-        sv_L = [p for p in surveys if getattr(p, "model", "LCDM") == "LCDM"]
-        sv_W = [p for p in surveys if getattr(p, "model", "LCDM") == "wCDM"]
-        hs_L = [head(a, L) for a in ("band", "nla_m") if head(a, L) is not None]
-        hs_W = [head(a, W) for a in ("band", "nla_m") if head(a, W) is not None]
-        if sv_L and hs_L:
-            written.append(corner(sv_L + hs_L, PRIOR_PARAMS[L], os.path.join(s2, pre + "07a_LCDM_vs_surveys_corner.png"),
-                                  "%s: field + 2-pt vs DES Y3 / HSC Y3" % PRIOR_NAMES[L], truth, rng, args.max_samples,
-                                  **ttl_kw))
-            write_table(hs_L + sv_L, PRIOR_PARAMS[L], os.path.join(tdir, pre + "07a_LCDM_vs_surveys"))
-        if sv_W and hs_W:
-            written.append(corner(sv_W + hs_W, PRIOR_PARAMS[W], os.path.join(s2, pre + "07b_wCDM_vs_surveys_corner.png"),
-                                  "%s: field + 2-pt vs DES Y3" % PRIOR_NAMES[W], truth, rng, args.max_samples, **ttl_kw))
-            write_table(hs_W + sv_W, PRIOR_PARAMS[W], os.path.join(tdir, pre + "07b_wCDM_vs_surveys"))
+        vs_planck_and_surveys(["band", "nla_m"], s2, "05_LCDM_vs_Planck", "07a_LCDM_vs_surveys", "07b_wCDM_vs_surveys")
         # whisker groups (WHISKER_GROUPS): this work | KiDS-Legacy (companion SBI, Wright+25) | other surveys
         # (DES Y3 / HSC Y3, LCDM) | Planck
         ours = [head(a, L) for a in ("nla_m", "band") if head(a, L) is not None]
