@@ -53,6 +53,7 @@ from config.kids_legacy import _npe_finetune_z8
 from config.kids_legacy_bgp import (
     _EB,
     _GOWER_TEST_IDS,
+    _GOWER_TEST_IDS_100,
     _NLE_REPEATS,
     _BGP_NLE_PROJECT,
     _RESNET_MAPKW,
@@ -73,6 +74,8 @@ _CKPT = "/share/gpu5/asaoulis/transfer_models/checkpoints"
 _VDQ_GLASS = f"{_GPU5}/glass_vdq_nla_m_f16_sc8a1_{_EB}/output_*.h5"
 _VDQ_GLASS_CANARY = f"{_GPU5}/glass_vdq_nla_m_canary_f16_sc8a1_{_EB}/output_*.h5"
 _VDQ_GOWER = f"{_GPU5}/gower_vdq_nla_m_f16_sc8a1_{_EB}/output_*.h5"
+_VDQ_GOWER_NLA = f"{_GPU5}/gower_vdq_nla_f16_sc8a1_{_EB}/output_*.h5"
+_VDQ_GOWER_NLA_Z = f"{_GPU5}/gower_vdq_nla_z_f16_sc8a1_{_EB}/output_*.h5"
 
 # --- checkpoint dirs -----------------------------------------------------------------------------
 _BAND_CKPT_VDQ = f"{_CKPT}/kids_legacy_band_nla_m_vdq/"
@@ -470,4 +473,61 @@ kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_joint_k10_r4"] = _k2
 
 for _r in _NLE_REPEATS:
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdqk2_joint_k10_r{_r}"] = _K2_JOINT_SOURCES
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === PV-G nla_z r3 Stage A re-run on the RE-ROLLED encoder (user 2026-10-13) ======================
+# The nla_z encoder r3 (best -7.166 vs -7.67..-7.86 for r0-r4) was re-rolled at the SAME index (jobs
+# 1386148/1386150 write into the same pretrain_ncosmoNone_3/ folder; get_best_checkpoint takes the folder
+# min, so the re-roll is picked automatically). The existing `..._k6_r3` Stage A was fit on the OLD
+# encoder, and a same-name rerun is unsafe: fit_and_persist_whitener reuses an existing whitener.pt
+# (fit-once) and old/new flow ckpts would mix under best-over-dir. Hence a fresh name, same r=3 split.
+# `glass_nle_pretrain_nla_z_vdq_z8_k6_r3` is superseded — never source a Stage B from it.
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_z_vdq_z8_k6_r3b"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA_Z, 3, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+VDQ_VARIATE_NLE_SOURCES["glass_nle_pretrain_nla_z_vdq_z8_k6_r3b"] = "glass_encoder_finetune_nla_z_vdq_z8"
+
+
+# === PV-G Gower VDQ variate NLE Stage B (user 2026-10-13: "pickup all the NLE variate finetuning") ==
+# Recipe = the BGP `_hf` variate Stage B (config/kids_legacy_bgp.py `_HF_CHAINS` loop): ens9, guard-c
+# 50, 150 epochs, all trainval cosmologies 80/20, fixed 100-id test lock; whiten k=6 to match the k6
+# Stage A; one-wave sampling (63 workers, MUST launch with `embed --cpu --partition CORES64 --ncpu 64`).
+# Stores: SIMS-baked gower_vdq_{nla,nla_z} (the 200-id fixed set). nla_z r3 is sourced from `_k6_r3b`.
+# Launch: embed --cpu --partition CORES64 --ncpu 64 --mem-gb 128 --wall_h 48 --skip-smoke
+#         --target <row> --sources glass_encoder_finetune_<v>_vdq_z8
+_VARIATE_NLE_B_SAMPLING_JOBS = 63
+
+
+def _variate_nle_b_vdq(stage_a, gower_data, r, cosmo_param_names, preset_overrides):
+    b = _nle_finetune(stage_a, ensemble_repeats=9, whiten_k=_VARIATE_NLE_K6_VDQ, warmstart_max_gap_nats=50.0,
+                      gower_data=gower_data, gower_eb=None,
+                      cosmo_param_names=list(cosmo_param_names),
+                      preset_overrides=preset_overrides)
+    b["max_trainval_cosmos"] = None
+    b["train_frac"] = 0.8
+    b["val_frac"] = 0.2
+    b["test_frac"] = 0.0
+    b["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    b["epochs"] = 150
+    b["project"] = _BGP_NLE_PROJECT
+    b["sampling_num_jobs"] = _VARIATE_NLE_B_SAMPLING_JOBS
+    return _nle_bake_repeat(b, r)
+
+
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_k6_r0_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_k6_r0", _VDQ_GOWER_NLA, 0, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_k6_r1_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_k6_r1", _VDQ_GOWER_NLA, 1, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_k6_r2_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_k6_r2", _VDQ_GOWER_NLA, 2, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_k6_r3_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_k6_r3", _VDQ_GOWER_NLA, 3, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_k6_r4", _VDQ_GOWER_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r0_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_z_vdq_z8_k6_r0", _VDQ_GOWER_NLA_Z, 0, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r1_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_z_vdq_z8_k6_r1", _VDQ_GOWER_NLA_Z, 1, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r2_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_z_vdq_z8_k6_r2", _VDQ_GOWER_NLA_Z, 2, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r3b_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_z_vdq_z8_k6_r3b", _VDQ_GOWER_NLA_Z, 3, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_z_vdq_z8_k6_r4", _VDQ_GOWER_NLA_Z, 4, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
+
+for _r in _NLE_REPEATS:
+    _sfx = "3b" if _r == 3 else str(_r)
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdq_z8_k6_r{_r}_ens9_e150"] = "glass_encoder_finetune_nla_vdq_z8"
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_z_vdq_z8_k6_r{_sfx}_ens9_e150"] = "glass_encoder_finetune_nla_z_vdq_z8"
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments), \
+    sorted(set(VDQ_NLE_SOURCES) - set(kids_legacy_vdq_experiments))
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
