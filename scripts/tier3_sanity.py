@@ -477,8 +477,8 @@ def _md(results):
             L.append(f"  - {rr} support: outside box {sv['frac_outside_box_any']:.3f} {sv['frac_outside_box']}; "
                      f"outside Gower (Om,s8) hull {sv['frac_outside_sim_hull_oms8']}; excess kurtosis "
                      + ", ".join(f"{n} {sv['excess_kurtosis'][n]:.2f} (testset med/p95 "
-                                 f"{sv.get('testset_kurtosis_median_p95', {}).get(n, ['?','?'])[0]:.2f}/"
-                                 f"{sv.get('testset_kurtosis_median_p95', {}).get(n, ['?','?'])[1]:.2f}, "
+                                 f"{sv.get('testset_kurtosis_median_p95', {}).get(n, [float('nan'), float('nan')])[0]:.2f}/"
+                                 f"{sv.get('testset_kurtosis_median_p95', {}).get(n, [float('nan'), float('nan')])[1]:.2f}, "
                                  f"PTE {sv.get('kurtosis_pte_vs_testset', {}).get(n, float('nan')):.3f})" for n in OMS8))
         L.append(f"  - shard R-hat: " + ", ".join(f"{k} {v.get('max') if v.get('max') is None else format(v['max'], '.4f')}"
                                                   for k, v in (r.get("rhat") or {}).items()))
