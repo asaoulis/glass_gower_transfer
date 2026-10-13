@@ -524,6 +524,14 @@ kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r2_ens9_e150"] =
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r3b_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_z_vdq_z8_k6_r3b", _VDQ_GOWER_NLA_Z, 3, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_z_vdq_z8_k6_r4", _VDQ_GOWER_NLA_Z, 4, _COSMO_9_NLAZ, _A_IA_NLA_BOX)
 
+# ⭐ guard-c 50 -> 100 for **nla_z r3b ONLY** (user decision 2026-10-13 18:05Z, as the 2-pt r3 row above).
+# Stage-B job 1386483 died on member 0: ep0 gap 94.354 nats (Gower val NLL 94.302 vs Stage-A best -0.052);
+# r0/r1/r2/r4 first members sat at 24.5-31.8. Resolution verified correct (encoder pretrain_ncosmoNone_3
+# epoch=32 -7.9193, Stage A `_k6_r3b` epoch=126, whitener from the `_k6_r3b` dir), so this is the
+# re-rolled r3 encoder's larger GLASS->Gower embedding shift, not a broken warm start (a scratch init
+# reads thousands of nats, e890aec). The other repeats keep 50.
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r3b_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 100.0
+
 for _r in _NLE_REPEATS:
     _sfx = "3b" if _r == 3 else str(_r)
     VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdq_z8_k6_r{_r}_ens9_e150"] = "glass_encoder_finetune_nla_vdq_z8"
