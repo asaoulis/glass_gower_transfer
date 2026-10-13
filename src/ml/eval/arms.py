@@ -30,8 +30,11 @@ from __future__ import annotations
 ARMS = {
     "nla_m":       ("gower_nle_finetune_nla_m_vdq_z8_r{r}_ens9",              "sc8a1", (0, 1, 2, 3, 4)),
     "nla_m_nobgp": ("gower_nle_finetune_nla_m_z8_r{r}_ens9",                  "a0_tagged", (0, 1, 2, 3, 4)),
-    "nla":         ("gower_nle_finetune_nla_bgp_z8_hf_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 3, 4)),
-    "nla_z":       ("gower_nle_finetune_nla_z_bgp_z8_hf_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
+    # ⭐ VDQ variates (2026-10-13, user: "run the variate observation long sampling"): repointed from the
+    # no-VD `_bgp_z8_hf` chains to the VDQ k6 Stage-B rows (training-runs/VD-final-train-models G-PLAN).
+    # nla_z repeat 3 is the `_r3b` row -- see EXPERIMENT_OVERRIDES; never format this template at r=3.
+    "nla":         ("gower_nle_finetune_nla_vdq_z8_k6_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 3, 4)),
+    "nla_z":       ("gower_nle_finetune_nla_z_vdq_z8_k6_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
     "vd":          ("gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150",   "sc8a1", (0, 1, 2, 3, 4)),
     "k2":          ("gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3)),
     # The 2-pt-ONLY (bandpower) NLE chain (M16 procedure, VDQ stores). Same flagship Gower store,
@@ -40,8 +43,15 @@ ARMS = {
     "band":        ("gower_nle_finetune_band_nla_m_vdq_k8_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
 }
 
+# Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run
+# as `_r3b` on the re-rolled r3 encoder (same repeat index / split seed; the superseded `_r3` Stage A
+# was fit on the old encoder and must never be scored). ALWAYS resolve names via `arm_experiment`.
+EXPERIMENT_OVERRIDES = {
+    ("nla_z", 3): "gower_nle_finetune_nla_z_vdq_z8_k6_r3b_ens9_e150",
+}
+
 # Variate arms whose rows still name no-VD chains (see the VDQ CUTOVER note above).
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "nla", "nla_z", "vd", "k2"})
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd", "k2"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
@@ -113,7 +123,16 @@ def arm_experiments(arm, repeats=None):
     missing = [r for r in want if r not in available]
     if missing:
         raise ValueError("arm %r has no repeat(s) %s (it has %s)" % (arm, missing, list(available)))
-    return [(r, template.format(r=r)) for r in want]
+    return [(r, arm_experiment(arm, r)) for r in want]
+
+
+def arm_experiment(arm, repeat):
+    """The experiment name of one (arm, repeat): the arm's template, unless EXPERIMENT_OVERRIDES says
+    otherwise. Every consumer must use this instead of formatting `ARMS[arm][0]` itself."""
+    if arm not in ARMS:
+        raise KeyError("unknown arm %r; known: %s" % (arm, sorted(ARMS)))
+    r = int(repeat)
+    return EXPERIMENT_OVERRIDES.get((arm, r), ARMS[arm][0].format(r=r))
 
 
 # ⚠️ The eval `match_string` is NOT constructible from the repeat index: the two `nla_m`-era
@@ -132,6 +151,7 @@ MATCH_TEMPLATES = {
     "band": "ncosmo300_{r}",
 }
 assert set(MATCH_TEMPLATES) == set(ARMS), "MATCH_TEMPLATES and ARMS must cover the same arms"
+assert all(a in ARMS and r in ARMS[a][2] for a, r in EXPERIMENT_OVERRIDES), "override for an unknown (arm, repeat)"
 
 
 def arm_match_string(arm, repeat):

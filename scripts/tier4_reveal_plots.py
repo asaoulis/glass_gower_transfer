@@ -62,7 +62,7 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
 
 from src.blind import BLIND_ROOT                                   # noqa: E402
 from src.blind.standardise import _load_physical, _scaler_box, list_raw_runs, prior_of_dump  # noqa: E402
-from src.ml.eval.arms import ARMS                                  # noqa: E402
+from src.ml.eval.arms import ARMS, arm_experiment                  # noqa: E402
 
 from src.viz import style as S                                   # noqa: E402
 
@@ -228,9 +228,8 @@ def _dump_match(fname: str) -> str:
 def mock_runs(root: str, tag: str, arms: Sequence[str], repeats: Sequence[int], priors: Sequence[str]) -> List[dict]:
     out = []
     for arm in arms:
-        tmpl = ARMS[arm][0]
         for r in repeats:
-            exp = tmpl.format(r=r)
+            exp = arm_experiment(arm, r)
             d = os.path.join(root, exp, "external", tag)
             if not os.path.isdir(d):
                 continue
@@ -746,7 +745,7 @@ def main(argv=None):
                                   ttl + ": vs external", truth, rng, args.max_samples, **ttl_kw))
         # d: the FULL free-parameter posterior (+S8) with the sampling prior on the diagonal
         full = [n for n in hs[0].names if n != "S8"] + ["S8"]
-        pr = prior_post(hs[0].key and ARMS[hs[0].key][0].format(r=ARMS[hs[0].key][2][0]), prior, args.prior_draws, args.seed)
+        pr = prior_post(hs[0].key and arm_experiment(hs[0].key, ARMS[hs[0].key][2][0]), prior, args.prior_draws, args.seed)
         written.append(corner(hs, full, os.path.join(stage_dir, "%sd_%s_full_corner.png" % (tag, name)),
                               ttl + ": all parameters, with the prior", truth, rng, args.full_max_samples,
                               prior=pr, full=True, **ttl_kw))

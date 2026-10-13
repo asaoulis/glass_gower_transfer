@@ -49,7 +49,7 @@ REPO = Path(__file__).resolve().parents[1]
 RUN_REMOTE = REPO / ".claude" / "cluster" / "run_remote.py"
 
 sys.path.insert(0, str(REPO))
-from src.ml.eval.arms import ACTIVE_ARMS, ARMS, DEFAULT_PRIORS, assert_active  # noqa: E402  -- the ONE arm table (eval --mode pool reads the same)
+from src.ml.eval.arms import ACTIVE_ARMS, ARMS, DEFAULT_PRIORS, arm_experiment, assert_active  # noqa: E402  -- the ONE arm table (eval --mode pool reads the same)
 
 
 def jobs(args):
@@ -63,7 +63,7 @@ def jobs(args):
                 for prior in args.priors:
                     store = (args.store_override or (f"{args.store_prefix}_{label}_{bake}" if args.per_label_store
                                                     else f"{args.store_prefix}_{bake}"))
-                    yield {"label": label, "arm": arm, "repeat": r, "prior": prior, "experiment": exp_t.format(r=r),
+                    yield {"label": label, "arm": arm, "repeat": r, "prior": prior, "experiment": arm_experiment(arm, r),
                            "store": store}
 
 

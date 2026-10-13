@@ -162,11 +162,11 @@ def load_standardised(path: str) -> Standardised:
 def _arm_of(experiment: str) -> str:
     """Arm name of a per-repeat experiment (from the production arm table; '' if unknown)."""
     try:
-        from src.ml.eval.arms import ARMS
+        from src.ml.eval.arms import ARMS, arm_experiment
     except Exception:  # pragma: no cover
         return ""
-    for arm, (tmpl, _bake, reps) in ARMS.items():
-        if any(tmpl.format(r=r) == experiment for r in reps):
+    for arm, (_tmpl, _bake, reps) in ARMS.items():
+        if any(arm_experiment(arm, r) == experiment for r in reps):
             return arm
     return ""
 
@@ -197,8 +197,8 @@ def list_raw_runs(root: str = BLIND_ROOT) -> List[Dict[str, str]]:
                 arm = arm_dir[len("pooled_"):]
                 prior = prior_of_dump(f)
                 try:
-                    from src.ml.eval.arms import ARMS
-                    exp = ARMS[arm][0].format(r=ARMS[arm][2][0])
+                    from src.ml.eval.arms import ARMS, arm_experiment
+                    exp = arm_experiment(arm, ARMS[arm][2][0])
                 except Exception:
                     exp = ""
                 out.append({"label": label, "arm": arm, "experiment": exp, "prior": prior,

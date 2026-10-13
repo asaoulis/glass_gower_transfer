@@ -44,7 +44,7 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from src.ml.eval.arms import ACTIVE_ARMS, ARMS, arm_match_string, assert_active  # noqa: E402
+from src.ml.eval.arms import ACTIVE_ARMS, ARMS, arm_experiment, arm_match_string, assert_active  # noqa: E402
 from src.ml.eval.ensemble_discrepancies import diag_gaussian_symmetric_kl  # noqa: E402
 
 TESTSET_ROOT = "/data/alex/variate_samples"
@@ -305,7 +305,7 @@ def run_arm_prior(args, arm, prior):
     assert_active(arm)
     tmpl, _bake, reps = ARMS[arm]
     reps = [r for r in reps if r in args.repeats]
-    exps = [tmpl.format(r=r) for r in reps]
+    exps = [arm_experiment(arm, r) for r in reps]
     matches = [arm_match_string(arm, r) for r in reps]
     names_full = _param_names(exps[0])
     free = _free(prior, names_full)
@@ -519,10 +519,9 @@ def main(argv=None):
                     r["issues"].append(f"{rep}: provenance lacks identity fields (pre-assertion code rev?)")
                 refs.setdefault(rep, []).append((r["prior"], json.dumps(ident, sort_keys=True)))
         if args.matched_tag:
-            tmpl = ARMS[arm][0]
             for rep in list(refs):
                 rr = int(rep[1:])
-                pj = os.path.join(MATCHED_ROOT, tmpl.format(r=rr), "external", args.matched_tag,
+                pj = os.path.join(MATCHED_ROOT, arm_experiment(arm, rr), "external", args.matched_tag,
                                   f"external_provenance_LCDM_fixed_w0_{arm_match_string(arm, rr)}.json")
                 if os.path.exists(pj):
                     pv = (json.load(open(pj)).get("provenance") or {})
