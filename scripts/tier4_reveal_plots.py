@@ -10,6 +10,12 @@ the notebook's section-8 order, with the public external chains over-plotted.
     06  S_8 summary whiskers (ours, KiDS-Legacy, companion 2-pt SBI, DES/HSC, Planck)   -- Stage 2
         (06b: wCDM; externals without a wCDM chain keep their ΛCDM row, tagged)
     07  field + 2-pt vs DES Y3 / HSC Y3 (a ΛCDM, b wCDM)   -- Stage 2
+    08  IA-variate OVERLAY: field level NLA-M (pooled, filled teal) + NLA-z + NLA (outlines), one
+        contour per model (08a ΛCDM / wCDM on Om, s8, S8 [+w]; 08d on every shared parameter incl. A_IA)
+                                                     -- Stage 3 (the IA variates)
+    09  S_8 whiskers as 06/06b with the variate rows added (09 ΛCDM, 09b wCDM)   -- Stage 3
+    10  field level NLA-z suite (a/b/c/d/e/f as for the field arm; `_LCDM` / `_wCDM` in the name)   -- Stage 3
+    11  field level NLA suite (same)                                                             -- Stage 3
   per group: `a` = headline corner (pooled / final), `b` = repeats-vs-pooled diagnostic,
   `c` = headline + KiDS-Legacy / companion comparisons, `d` = all free parameters (+S8) with the
   sampling prior on the diagonal, `e` = vs Planck, `f` = vs the other surveys;
@@ -33,7 +39,16 @@ Two sources, one code path:
                   output paths -- every number goes to files.
 
 Stage gate (UNBLINDING_PROTOCOL Tier 4, one-way): `--stage 1` writes only the 2-pt groups (01, 03)
-into `stage1_2pt/`; `--stage 2` the field groups (02, 04, 05, 06) into `stage2_field/`; `all` both.
+into `stage1_2pt/`; `--stage 2` the field groups (02, 04, 05, 06) into `stage2_field/`; `--stage 3`
+the IA-variate groups (08-11) into `stage3_variates/`; `all` every stage.
+
+Stage 3 (IA variates, `--variates nla_z nla`): availability is PARTIAL and grows. Each variate arm x
+prior uses exactly the dumps on disk -- the cluster pooled dump when one exists (its member repeats read
+from the dump's `pooled_provenance`), else the per-repeat dumps concatenated at equal weight -- and a
+missing arm / prior / repeat is skipped with a printed note, never an error. The repeats behind every
+headline are recorded in the manifest (`variates` block) and in the README section this stage writes.
+A `--stage 3` run MERGES into an existing manifest.json (the stage-1/2 record is kept) and rewrites only
+the README's stage-3 section (between `<!-- stage3-variates -->` markers).
 
 External chains (public):
   KiDS-Legacy (Wright et al. 2025) CosmoSIS/Nautilus text chains, `--kids-dir` = the extracted
@@ -61,8 +76,8 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from src.blind import BLIND_ROOT                                   # noqa: E402
-from src.blind.standardise import _load_physical, _scaler_box, list_raw_runs, prior_of_dump  # noqa: E402
-from src.ml.eval.arms import ARMS, arm_experiment                  # noqa: E402
+from src.blind.standardise import _load_physical, _scaler_box, list_raw_runs, pooled_members, prior_of_dump  # noqa: E402
+from src.ml.eval.arms import ARMS, DELAYED_ARMS, arm_experiment    # noqa: E402
 
 from src.viz import style as S                                   # noqa: E402
 
@@ -80,7 +95,7 @@ COMPANION_NAMES = {"novd": "companion 2-pt SBI (score, no VD)", "vd": "companion
 COMPANION_LABELS = {"novd": "2-pt SBI, no VD", "vd": "2-pt SBI, VD"}
 PLANCK_NAME = "Planck 2018 TT,TE,EE+lowE+lensing"
 PLANCK_LABEL = "Planck 2018"
-ARM_LABELS = {"nla_m": "field level", "band": "2-pt"}
+ARM_LABELS = {"nla_m": "field level", "band": "2-pt", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA"}
 # Colours: the VD-report scheme (Paul Tol muted, `S.palette()`): field level teal PAL[6], 2-pt wine
 # PAL[5] (script-local overrides of the style's `nla_m`/`band` colours: the style's indigo flagship
 # clashed with the wine next to it -- user 2026-10-12 -- so Tier-4 draws the field arm teal while
@@ -88,18 +103,35 @@ ARM_LABELS = {"nla_m": "field level", "band": "2-pt"}
 # powers, dashed), companion cyan (no VD, dashed) / green (VD, solid), Planck the black reference
 # outline (never filled), prior grey. Repeats are a `tint_ramp` of their arm's hue.
 PAL = S.palette()
-ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5]}
+# IA variates (stage 3): Paul Tol VIBRANT blue (NLA-z) and red (NLA), script-local like the teal above.
+# The style's own variate colours clash here (nla_z = PAL[5] wine = the 2-pt arm, nla = PAL[0] rose = DES
+# Y3 + KiDS-1000); the muted cycle has no free hue left after the externals (sand, olive, cyan, green,
+# indigo, rose, orange, purple = KiDS + ext.). Blue sits between indigo (DES) and cyan (companion) but is far from both in
+# lightness; red is the vibrant partner of the HSC orange (that scheme's two warm hues are designed to
+# be told apart) and redder than the rose. In the 08 overlay NLA is also dashed (identity without colour).
+ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311"}
+VARIATE_ARMS = ("nla_z", "nla")
+# stage-3 legend labels (stage 1/2 keep "field level" for NLA-M: a rerun of those must not relabel them)
+STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
+                 "band": "2-pt"}
+STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level NLE, NLA-z IA, VD",
+                "nla": "field-level NLE, NLA IA, VD", "band": "2-pt (bandpowers) NLE, NLA-M IA, VD"}
+VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--"}            # 08 overlay outlines
+# per-variate figure group: (number, file stem)
+VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA")}
 EXT_COLOURS = {"cosebis": PAL[2], "bandpowers": PAL[7], "xipm": PAL[0], "cosebis_plus_external": PAL[8],
                "novd": PAL[4], "vd": PAL[3], "planck": S.role_colour("real")}
 EXT_LINESTYLE = {"cosebis": "-", "bandpowers": "--", "xipm": ":", "cosebis_plus_external": "-.",
                  "novd": "--", "vd": "-", "planck": "-"}
 PRIOR_COLOUR = "#8C8C8C"
 LW = {"flagship": 2.2, "arm": 2.0, "kids": 2.0, "companion": 2.0, "survey": 2.0, "planck": 1.8, "prior": 1.6,
-      "repeat": 1.4, "pooled": 3.0}
+      "repeat": 1.4, "pooled": 3.0, "variate": 2.6}
 SHADE_ALPHA = {"flagship": 0.75, "arm": 0.6}       # pinned: chainconsumer's default 1/sqrt(n_chains) varies per figure
 TRUTH_KW = {"color": "#444444", "line_style": "--", "line_width": 1.2}
-DRAW_ORDER = {"prior": -1, "planck": 0, "survey": 1, "kids": 2, "companion": 3, "ours": 4}   # externals under, our arms on top
-LEGEND_ORDER = {"ours": 0, "companion": 1, "kids": 2, "survey": 3, "planck": 4, "prior": 5}   # headline first in the legend
+# kind "variate" = an IA-variate outline over the filled NLA-M headline (08): drawn LAST so the filled
+# contour never hides it, listed right after the headline in the legend
+DRAW_ORDER = {"prior": -1, "planck": 0, "survey": 1, "kids": 2, "companion": 3, "ours": 4, "variate": 5}   # externals under, our arms on top
+LEGEND_ORDER = {"ours": 0, "variate": 0.5, "companion": 1, "kids": 2, "survey": 3, "planck": 4, "prior": 5}   # headline first in the legend
 ROLE_ORDER = {"flagship": 0, "arm": 1, "outline": 2}
 
 # Corner geometry (inches) and type at the paper's 18 pt context (`S.context()`, CORNER_PLOTCONFIG
@@ -294,24 +326,50 @@ def prior_post(experiment: str, prior_mode: str, n: int, seed: int) -> Optional[
         return None
 
 
-def load_ours(args) -> tuple[Dict[tuple, Post], Dict[tuple, List[Post]], Dict[str, float], List[dict]]:
-    """{(arm, prior): headline Post}, {(arm, prior): [repeat Posts]}, truth (mock only), provenance."""
+# (arm, prior) -> what went into the headline: per-repeat dumps on disk, the pooled dump's members,
+# and how the headline was formed (manifest `variates` block + README; filled by `load_ours`)
+COVERAGE: Dict[tuple, dict] = {}
+
+
+def _repeat_of(arm: str, experiment: str) -> Optional[int]:
+    for r in ARMS[arm][2]:
+        if arm_experiment(arm, r) == experiment:
+            return int(r)
+    return None
+
+
+def _rlist(reps: Sequence[int]) -> str:
+    return ", ".join("r%d" % r for r in reps)
+
+
+def load_ours(args, arms: Optional[Sequence[str]] = None, strict: bool = True
+              ) -> tuple[Dict[tuple, Post], Dict[tuple, List[Post]], Dict[str, float], List[dict]]:
+    """{(arm, prior): headline Post}, {(arm, prior): [repeat Posts]}, truth (mock only), provenance.
+    `strict=False` (stage-3 variates): an arm / prior with no dump is skipped with a note."""
     heads, reps, truth, prov = {}, {}, {}, []
     priors = list(PRIOR_PARAMS)
+    arms = list(args.arms if arms is None else arms)
     if args.source == "mock":
-        runs = mock_runs(args.matched_root, args.matched_tag, args.arms, args.repeats, priors)
+        runs = mock_runs(args.matched_root, args.matched_tag, arms, args.repeats, priors)
         event = args.event
     else:
-        runs = [r for r in list_raw_runs(BLIND_ROOT) if r["label"] == args.label and r["arm"] in args.arms]
+        runs = [r for r in list_raw_runs(BLIND_ROOT) if r["label"] == args.label and r["arm"] in arms]
         event = 0
     if not runs:
-        raise SystemExit("no runs found for source=%s" % args.source)
-    for arm in args.arms:
+        if strict:
+            raise SystemExit("no runs found for source=%s" % args.source)
+        print("[variates] no dumps at all for %s (label %s) -> skipped" % (", ".join(arms), args.label))
+        return heads, reps, truth, prov
+    trng = np.random.default_rng(args.seed + 7)
+    for arm in arms:
         for prior in priors:
             rr = sorted([r for r in runs if r["arm"] == arm and r["prior"] == prior and not r["pooled"]],
                         key=lambda r: r["match"])
             pooled = [r for r in runs if r["arm"] == arm and r["prior"] == prior and r["pooled"]]
             if not rr and not pooled:
+                if not strict:
+                    print("[variates] %s %s: no dump (pooled or per-repeat) for label %s -> skipped"
+                          % (arm, prior, args.label))
                 continue
             ramp = tint_ramp(arm_colour(arm), max(len(rr), 1))
             rl = []
@@ -326,18 +384,42 @@ def load_ours(args) -> tuple[Dict[tuple, Post], Dict[tuple, List[Post]], Dict[st
                 if args.source == "mock" and not truth:
                     truth = mock_truth(r, event)
             reps[(arm, prior)] = rl
+            on_disk = [int(r["match"].rsplit("_", 1)[-1]) for r in rr]
+            cov = dict(per_repeat=on_disk, pooled_members=None, headline="")
+            full_set = sorted(int(r) for r in ARMS[arm][2])
             if pooled:
                 x, names = _load_physical(pooled[0]["path"], pooled[0]["experiment"], 0)
-                hname = "%s (pooled)" % S.arm_name(arm)
+                exps = pooled_members(pooled[0]["path"])
+                mem = None if exps is None else sorted(r for r in (_repeat_of(arm, e) for e in exps) if r is not None)
+                cov["pooled_members"] = mem
+                if mem is None:
+                    cov["headline"] = "cluster pooled dump (members not recorded)"
+                    hname = "%s (pooled)" % S.arm_name(arm)
+                else:
+                    cov["headline"] = "cluster pooled dump over %s" % _rlist(mem)
+                    hname = "%s (pooled)" % S.arm_name(arm) if mem == full_set else \
+                        "%s (pooled %s)" % (S.arm_name(arm), _rlist(mem))
+                    if on_disk and sorted(on_disk) != mem:
+                        print("[note] %s %s: pooled dump covers %s but per-repeat dumps on disk are %s "
+                              "(re-pool + fetch to include them)" % (arm, prior, _rlist(mem), _rlist(sorted(on_disk))))
                 prov.append(dict(arm=arm, prior=prior, match="pooled", file=os.path.basename(pooled[0]["path"]),
-                                 experiment=pooled[0]["experiment"], event=0, n=len(x)))
+                                 experiment=pooled[0]["experiment"], event=0, n=len(x), members=mem))
             elif len(rl) > 1:
-                x = np.concatenate([p.x for p in rl], axis=0); names = rl[0].names
-                hname = "%s (pooled %d repeats)" % (S.arm_name(arm), len(rl))
+                n_min = min(len(p.x) for p in rl)
+                # equal-weight mixture needs equal draw counts: seeded uniform subsample, never a head slice
+                parts = [p.x if len(p.x) == n_min else p.x[np.sort(trng.choice(len(p.x), n_min, replace=False))]
+                         for p in rl]
+                x = np.concatenate(parts, axis=0); names = rl[0].names
+                hname = "%s (pooled %d repeats)" % (S.arm_name(arm), len(rl)) if sorted(on_disk) == full_set else \
+                    "%s (pooled in-script %s)" % (S.arm_name(arm), _rlist(sorted(on_disk)))
+                cov["headline"] = "per-repeat dumps concatenated in-script (equal weight, %d draws each) over %s" % (
+                    n_min, _rlist(sorted(on_disk)))
             else:
                 x, names = rl[0].x, rl[0].names
                 hname = "%s (repeat %s only, no pool)" % (S.arm_name(arm), rr[0]["match"].rsplit("_", 1)[-1])
-            role = "flagship" if arm == "nla_m" else "arm"
+                cov["headline"] = "single repeat %s (no pool)" % _rlist(on_disk)
+            COVERAGE[(arm, prior)] = cov
+            role = "flagship" if arm in ("nla_m",) + VARIATE_ARMS else "arm"
             heads[(arm, prior)] = Post(hname, x, names, kind="ours", colour=arm_colour(arm), role=role, key=arm,
                                        linewidth=LW[role], label=arm_label(arm))
     return heads, reps, truth, prov
@@ -586,7 +668,7 @@ WHISKER_GROUPS = ("this work", "KiDS-Legacy", "other surveys", "CMB")
 
 
 def s8_whiskers(groups: Sequence[List[Post]], out: str, title: str, truth: Dict[str, float], titles=False,
-                mock=False):
+                mock=False, height: float = 5.0):
     """Median + 68 % bar per posterior (Wright+25 Fig. 11 grammar), one block per group in
     `WHISKER_GROUPS` order (ours | KiDS-Legacy | other surveys | Planck) split by thin rules; the
     headline's and Planck's 68 % intervals are also drawn as faint vertical bands."""
@@ -603,13 +685,13 @@ def s8_whiskers(groups: Sequence[List[Post]], out: str, title: str, truth: Dict[
     if not rows:
         return None
     with S.context():
-        fig, ax = plt.subplots(figsize=(8.5, 5.0))
+        fig, ax = plt.subplots(figsize=(8.5, height))
         nr = len(rows)
         for i, p in enumerate(rows):
             v = p.x[:, p.names.index("S8")]
             q16, q50, q84 = _wq(v, [0.16, 0.5, 0.84], p.weights)
             y = nr - 1 - i
-            if (p.kind == "ours" and p.role == "flagship") or p.kind == "planck":
+            if (p.kind == "ours" and p.role == "flagship" and p.key == "nla_m") or p.kind == "planck":
                 ax.axvspan(q16, q84, color=p.colour, alpha=0.15, lw=0, zorder=0)
             eb = ax.errorbar(q50, y, xerr=[[q50 - q16], [q84 - q50]], fmt="o", color=p.colour, ms=8, lw=2.4,
                              capsize=4, capthick=2.4, zorder=3)
@@ -666,16 +748,366 @@ def write_table(posts: List[Post], params: Sequence[str], out_base: str, note: s
 
 
 # --------------------------------------------------------------------------------------------
+# stage 3: the IA variates (08 overlay, 09 S8 whiskers, 10+ per-variate suites)
+# --------------------------------------------------------------------------------------------
+def _s3copy(p: Post, arm: str, **over) -> Post:
+    """A stage-3 relabelled copy (same draws): "field level, NLA-M" etc. in the shared figures."""
+    kw = dict(weights=p.weights, kind=p.kind, colour=p.colour, role=p.role, key=p.key, linestyle=p.linestyle,
+              linewidth=p.linewidth, label=STAGE3_LABELS.get(arm, p.label))
+    kw.update(over)
+    return Post(p.name, p.x, p.names, **kw)
+
+
+def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_planck_and_surveys, as_lcdm,
+                    kids, comp, planck, sv_L, sv_W, s3, tdir, pre, ttl_kw) -> dict:
+    """Write the stage-3 figures; return the manifest `stage3_variates` block. Every figure uses only
+    the variates that have a posterior for its prior (none -> the figure is skipped with a note)."""
+    L, W = "LCDM_fixed_w0", "kids_s8_analytic"
+    models = ((L, "LCDM"), (W, "wCDM"))
+    head = heads.get
+    fig_inputs = {}           # figure basename -> {arm: headline description}
+
+    def note_inputs(path, arms_prior):
+        if path:
+            fig_inputs[os.path.basename(path)] = {
+                a: COVERAGE.get((a, pr), {}).get("headline", "?") for a, pr in arms_prior}
+
+    present = {pr: [v for v in variates if head((v, pr)) is not None] for pr, _ in models}
+    for pr, model in models:
+        missing = [v for v in variates if v not in present[pr]]
+        if missing:
+            print("[variates] %s: no posterior yet for %s -> left out of the %s figures" % (model, ", ".join(missing), model))
+
+    # 08 overlay: NLA-M filled (the Tier-4 teal) + each variate as a thick outline, one contour per model
+    for pr, model in models:
+        base = head(("nla_m", pr))
+        if base is None or not present[pr]:
+            print("[skip] 08 overlay %s: %s" % (model, "no NLA-M headline" if base is None else "no variate posterior yet"))
+            continue
+        posts = [_s3copy(base, "nla_m")] + [
+            _s3copy(head((v, pr)), v, kind="variate", role="outline", linewidth=LW["variate"],
+                    linestyle=VARIATE_LINESTYLE.get(v, "-")) for v in present[pr]]
+        arms_pr = [("nla_m", pr)] + [(v, pr) for v in present[pr]]
+        ttl = "%s: field level, IA variates vs NLA-M" % PRIOR_NAMES[pr]
+        f = corner(posts, PRIOR_PARAMS[pr], os.path.join(s3, "%s08a_IA_overlay_%s_corner.png" % (pre, model)), ttl,
+                   truth, rng, args.max_samples, **ttl_kw)
+        written.append(f); note_inputs(f, arms_pr)
+        shared = [n for n in posts[0].names if n != "S8" and all(n in q.names for q in posts)] + ["S8"]
+        f = corner(posts, shared, os.path.join(s3, "%s08d_IA_overlay_%s_shared_corner.png" % (pre, model)),
+                   ttl + " (all shared parameters)", truth, rng, args.full_max_samples, full=True, **ttl_kw)
+        written.append(f); note_inputs(f, arms_pr)
+        write_table(posts, shared, os.path.join(tdir, "%s08_IA_overlay_%s" % (pre, model)),
+                    note="%s. Inputs: %s. NB A_IA is each model's own IA amplitude (NLA-M: at the pivot "
+                         "halo mass; NLA-z: at the pivot redshift; NLA: constant), so it is comparable only "
+                         "loosely." % (ttl, "; ".join("%s = %s" % (a, COVERAGE.get((a, pr), {}).get("headline", "?"))
+                                                      for a, pr in arms_pr)))
+
+    # 09 S8 whiskers: 06 / 06b with the variate rows between the NLA-M field level and the 2-pt rows
+    for pr, model, stem in ((L, "LCDM", "09_S8_summary_variates"), (W, "wCDM", "09b_S8_summary_variates_wCDM")):
+        if not present[pr]:
+            print("[skip] %s: no variate posterior yet" % stem); continue
+        arms_rows = [a for a in ["nla_m"] + present[pr] + ["band"] if head((a, pr)) is not None]
+        rows = [_s3copy(head((a, pr)), a) for a in arms_rows]
+        if pr == L:
+            groups = [rows, comp + kids, sv_L, [planck] if planck else []]
+        else:
+            w_keys = {q.key for q in sv_W}
+            sv_only_L = [as_lcdm(q) for q in sv_L if q.key.replace("_lcdm", "_wcdm") not in w_keys]
+            groups = [rows, [as_lcdm(q) for q in comp + kids], sv_W + sv_only_L, [as_lcdm(planck)] if planck else []]
+        f = s8_whiskers(groups, os.path.join(s3, pre + stem + ".png"),
+                        "%s $S_8$ summary with the IA variates (median, 68%%)" % PRIOR_NAMES[pr], truth,
+                        height=5.0 + 0.35 * len(present[pr]), **ttl_kw)
+        written.append(f); note_inputs(f, [(a, pr) for a in arms_rows])
+
+    # 10+: the full field-arm suite per variate (a headline, b repeats vs pooled, c vs KiDS-Legacy /
+    # companion (LCDM), d all parameters + prior, e vs Planck, f vs DES Y3 / HSC Y3)
+    for v in variates:
+        if v not in VARIATE_GROUPS:
+            print("[variates] %s: no figure-group number assigned (VARIATE_GROUPS) -> no per-variate suite" % v)
+            continue
+        if not (present[L] and v in present[L]) and not (present[W] and v in present[W]):
+            print("[skip] %s suite: no posterior for either model" % v); continue
+        num, stem = VARIATE_GROUPS[v]
+        n0 = len(written)
+        group(num, stem + "_LCDM", L, [v], s3, kids + comp)
+        group(num, stem + "_wCDM", W, [v], s3, [])
+        vs_planck_and_surveys([v], s3, "%se_%s_LCDM_vs_Planck" % (num, stem), "%sf_%s_LCDM_vs_surveys" % (num, stem),
+                              "%sf_%s_wCDM_vs_surveys" % (num, stem), planck_W_stem="%se_%s_wCDM_vs_Planck" % (num, stem))
+        for f in written[n0:]:
+            if f:
+                pr = W if "_wCDM_" in os.path.basename(f) else L
+                note_inputs(f, [(v, pr)])
+
+    ia = ia_total_figure(heads, variates, s3, tdir, pre, args, ttl_kw)
+    written.extend(ia["figures"])
+    for f in ia["figures"]:
+        fig_inputs[os.path.basename(f)] = ia.get("inputs", {}).get(os.path.basename(f), {})
+
+    cov = {"%s/%s" % (a, pr): dict(c, model=PRIOR_NAMES[pr]) for (a, pr), c in COVERAGE.items()
+           if a in variates or a == "nla_m"}
+    return dict(variates=list(variates), present={model: present[pr] for pr, model in models},
+                coverage=cov, figure_inputs=fig_inputs,
+                colours={a: arm_colour(a) for a in ["nla_m"] + list(variates)},
+                labels={a: STAGE3_LABELS.get(a, a) for a in ["nla_m"] + list(variates) + ["band"]},
+                full_names={a: STAGE3_NAMES.get(a, a) for a in ["nla_m"] + list(variates) + ["band"]},
+                overlay=dict(nla_m="filled (flagship role)", variates="outlines, lw %.1f" % LW["variate"],
+                             linestyle=VARIATE_LINESTYLE),
+                ia_total={k: v for k, v in ia.items() if k != "inputs"})
+
+
+# --------------------------------------------------------------------------------------------
+# 12: A_IA,total(z) per IA model (Wright et al. 2025 style), from each model's prefactor
+# --------------------------------------------------------------------------------------------
+A_PIV = 0.769                  # NLA-z pivot scale factor (src/cosmology/nla.py:nla_z_effective_amplitude)
+LOG10_M_PIVOT = 13.5           # NLA-M halo-mass pivot (src/cosmology/nla.py:kappa_ia_nla_m)
+IA_TOTAL_NZ_DRAWS = 256        # dz-shift realisations of the tomographic n(z) (marginalised per draw)
+
+
+def ia_geometry(data_dir: str, seed: int, n_real: int = IA_TOTAL_NZ_DRAWS) -> dict:
+    """Per-bin <a>^(i) and <z>^(i) exactly as the simulator forms them: `calculate_tomo_nz` (the
+    nla_vd model shifts the n(z) by one dz ~ N(Nz_biases, Nz_covariance) draw per mock) on the
+    line-of-sight grid linspace(zmin, zmax, n_los_chi) of src/KiDS/simulation_config.py, then
+    <a>^(i) = sum a(z) n_i(z) / sum n_i(z) (master_kids_legacy_simulator.py, the nla_z `avg_a`).
+    `n_real` dz realisations, drawn with a seeded copy of the global numpy RNG (restored after)."""
+    from src.KiDS.simulation_config import n_los_chi, zmax, zmin
+    from src.KiDS.tomo import calculate_tomo_nz, nbins
+    z = np.linspace(zmin, zmax, n_los_chi)
+    a = 1.0 / (1.0 + z)
+    state = np.random.get_state()
+    np.random.seed(seed)
+    try:
+        avg_a, avg_z = np.empty((n_real, nbins)), np.empty((n_real, nbins))
+        for k in range(n_real):
+            nz = calculate_tomo_nz(data_dir, n_los_chi, z, shift_nz=True)
+            avg_a[k] = [np.average(a, weights=nz[i]) for i in range(nbins)]
+            avg_z[k] = [np.average(z, weights=nz[i]) for i in range(nbins)]
+    finally:
+        np.random.set_state(state)
+    nz0 = calculate_tomo_nz(data_dir, n_los_chi, z, shift_nz=False)
+    return dict(avg_a=avg_a, avg_z=avg_z, z_eff=avg_z.mean(axis=0),
+                z_eff_unshifted=np.array([np.average(z, weights=nz0[i]) for i in range(nbins)]),
+                avg_a_mean=avg_a.mean(axis=0), nbins=nbins)
+
+
+def ia_total_draws(arm: str, p: Post, geom: dict, data_dir: str, rng: np.random.Generator) -> Optional[np.ndarray]:
+    """[S, nbins] total IA amplitude per posterior draw and tomographic bin (the prefactor terms that
+    differ between models; the common -rho_c1 Om / D(z) is excluded):
+      NLA    A = a_ia (every bin)
+      NLA-z  A = a_ia + b_z (<a>^(i)/a_piv - 1), <a>^(i) from a random dz realisation per draw
+      NLA-M  A = a_ia f_red^(i) (10^log10M^(i) / 10^13.5)^b_ia, log10M ~ the simulator's massdep MVN
+             (load_massdep_priors), drawn independently per posterior draw (not inferred)."""
+    nb = geom["nbins"]
+    col = lambda n: p.x[:, p.names.index(n)][:, None]
+    if arm == "nla":
+        return np.repeat(col("a_ia"), nb, axis=1)
+    if arm == "nla_z":
+        k = rng.integers(0, len(geom["avg_a"]), size=len(p.x))
+        return col("a_ia") + col("b_z") * (geom["avg_a"][k] / A_PIV - 1.0)
+    if arm in ("nla_m", "band"):
+        from src.KiDS.systematics import f_red, load_massdep_priors
+        mu, cov = load_massdep_priors(data_dir)
+        logm = rng.multivariate_normal(mu, cov, size=len(p.x))
+        return col("a_ia") * f_red[None, :] * 10.0 ** (col("b_ia") * (logm - LOG10_M_PIVOT))
+    return None
+
+
+def ia_total_figure(heads, variates, s3, tdir, pre, args, ttl_kw) -> dict:
+    """12_A_IA_total_vs_z_{LCDM,wCDM}: NLA-M points (68 % bars) at the bins' effective redshifts, NLA-z
+    curve + shaded 68 %, NLA flat band; whichever variates exist. Returns the manifest block."""
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+    out = dict(figures=[], tables=[], method=None, z_eff=None)
+    try:
+        geom = ia_geometry(args.sim_data_dir, args.seed)
+    except Exception as e:  # noqa: BLE001
+        print("[skip] 12 A_IA,total: n(z) / massdep inputs unavailable under %s (%s)" % (args.sim_data_dir, e))
+        return out
+    zg = np.linspace(0.0, 2.0, 201)
+    out["z_eff"] = geom["z_eff"].tolist(); out["z_eff_unshifted"] = geom["z_eff_unshifted"].tolist()
+    out["avg_a"] = geom["avg_a_mean"].tolist()
+    out["method"] = ("per draw: NLA A=a_ia; NLA-z A=a_ia+b_z(<a>_i/%.3f-1) with <a>_i from one of %d dz-shifted n(z) "
+                     "realisations (simulator's calculate_tomo_nz + avg_a); NLA-M A=a_ia f_red_i (10^logM_i/10^%.1f)^b_ia "
+                     "with logM ~ massdep MVN (massdep_means/cov [2:]) per draw; common -rho_c1 Om/D(z) excluded; "
+                     "bins plotted at the mean over realisations of the n(z)-weighted mean z (simulator LOS grid)"
+                     % (A_PIV, IA_TOTAL_NZ_DRAWS, LOG10_M_PIVOT))
+    for pr, model in (("LCDM_fixed_w0", "LCDM"), ("kids_s8_analytic", "wCDM")):
+        arms = [a for a in ["nla_m"] + [v for v in ("nla_z", "nla") if v in variates] if heads.get((a, pr)) is not None]
+        if "nla_m" not in arms:
+            print("[skip] 12 A_IA,total %s: no NLA-M headline" % model); continue
+        rng = np.random.default_rng(args.seed + 12)
+        rows, yr = [], []
+        stem = "%s12_A_IA_total_vs_z_%s" % (pre, model)
+        with S.context():
+            fig, ax = plt.subplots(figsize=(8.0, 7.0))
+            hs = []
+            for a in arms:
+                p = heads[(a, pr)]
+                A = ia_total_draws(a, p, geom, args.sim_data_dir, rng)
+                q16, q50, q84 = np.quantile(A, [0.16, 0.5, 0.84], axis=0)
+                for i in range(geom["nbins"]):
+                    rows.append(dict(model=STAGE3_LABELS[a].replace("$", ""), arm=a, posterior=p.name, bin=i + 1,
+                                     z_eff=geom["z_eff"][i], median=q50[i], p16=q16[i], p84=q84[i],
+                                     mean=A[:, i].mean(), std=A[:, i].std(), n_draws=len(A)))
+                c = arm_colour(a)
+                lab = S.tex(STAGE3_LABELS[a])
+                if a == "nla":
+                    ax.axhspan(q16[0], q84[0], color=c, alpha=0.22, lw=0, zorder=1)
+                    ax.axhline(q50[0], color=c, lw=2.4, ls="--", zorder=2)
+                    hs.append((Patch(facecolor=mc_rgba(c, 0.35), edgecolor=c, lw=2.4, ls="--"), lab))
+                    yr += [q16[0], q84[0]]
+                elif a == "nla_z":
+                    th = p.thinned(100000, rng)[0]
+                    az = 1.0 / (1.0 + zg)
+                    Az = th[:, [p.names.index("a_ia")]] + th[:, [p.names.index("b_z")]] * (az[None, :] / A_PIV - 1.0)
+                    c16, c50, c84 = np.quantile(Az, [0.16, 0.5, 0.84], axis=0)
+                    ax.fill_between(zg, c16, c84, color=c, alpha=0.25, lw=0, zorder=1)
+                    ax.plot(zg, c50, color=c, lw=2.4, zorder=3)
+                    hs.append((Patch(facecolor=mc_rgba(c, 0.35), edgecolor=c, lw=2.4), lab))
+                    yr += list(q16) + list(q84)
+                else:
+                    ze = np.asarray(geom["z_eff"])
+                    ax.errorbar(ze, q50, yerr=[q50 - q16, q84 - q50], fmt="o", color=c, ms=8, lw=2.4, capsize=4,
+                                capthick=2.4, zorder=4)
+                    hs.append((Line2D([], [], color=c, marker="o", ms=8, lw=2.4), lab))
+                    yr += list(q16) + list(q84)
+            lo, hi = min(yr), max(yr)
+            pad = 0.25 * (hi - lo) if hi > lo else 0.5
+            ax.set_ylim(lo - pad, hi + pad)
+            ax.set_xlim(0.0, 1.7)
+            ax.axhline(0.0, color="0.6", lw=0.8, zorder=0)
+            ax.set_xlabel(r"$z$")
+            ax.set_ylabel(r"$A_\mathrm{IA,\,total}$")
+            ax.legend([h for h, _ in hs], [l for _, l in hs], loc="best", frameon=False, fontsize=14)
+            if ttl_kw.get("titles"):
+                ax.set_title(S.tex("%s: total IA amplitude per tomographic bin" % PRIOR_NAMES[pr]))
+            if ttl_kw.get("mock"):
+                _mock_tag(fig)
+            S.save(fig, os.path.join(s3, stem + ".png"))
+        f = os.path.join(s3, stem + ".png")
+        print("[fig] %s" % f)
+        LEGEND_LOG[os.path.basename(f)] = [[STAGE3_LABELS[a], heads[(a, pr)].name] for a in arms]
+        out["figures"].append(f)
+        out.setdefault("inputs", {})[os.path.basename(f)] = {a: COVERAGE.get((a, pr), {}).get("headline", "?") for a in arms}
+        tb = os.path.join(tdir, "%s12_A_IA_total_%s" % (pre, model))
+        os.makedirs(tdir, exist_ok=True)
+        keys = ["model", "arm", "bin", "z_eff", "median", "p16", "p84", "mean", "std", "n_draws", "posterior"]
+        with open(tb + ".csv", "w") as fh:
+            fh.write(",".join(keys) + "\n")
+            for r in rows:
+                fh.write(",".join("%.5g" % r[k] if isinstance(r[k], float) else '"%s"' % r[k] if k == "posterior" else str(r[k])
+                                  for k in keys) + "\n")
+        with open(tb + ".md", "w") as fh:
+            fh.write("%s: A_IA,total per tomographic bin (median, 68%%). Method: %s. Inputs: %s.\n\n" % (
+                PRIOR_NAMES[pr], out["method"], "; ".join("%s = %s" % kv for kv in out["inputs"][os.path.basename(f)].items())))
+            fh.write("| model | bin | z_eff | median | 68% interval | mean | std |\n|---|---|---|---|---|---|---|\n")
+            for r in rows:
+                fh.write("| %s | %d | %.3f | %.3f | [%.3f, %.3f] | %.3f | %.3f |\n" % (
+                    r["model"], r["bin"], r["z_eff"], r["median"], r["p16"], r["p84"], r["mean"], r["std"]))
+        print("[table] %s.{csv,md}" % tb)
+        out["tables"].append(tb)
+    return out
+
+
+def mc_rgba(c, alpha):
+    import matplotlib.colors as mc
+    return mc.to_rgba(c, alpha)
+
+
+S3_BEGIN, S3_END = "<!-- stage3-variates:begin -->", "<!-- stage3-variates:end -->"
+
+
+def write_stage3_readme(out_dir: str, v3: dict, pre: str, args):
+    """(Re)write the README's stage-3 section between the markers; the rest of the README is kept."""
+    import datetime
+    L_, W_ = "LCDM_fixed_w0", "kids_s8_analytic"
+    lines = [S3_BEGIN, "", "## Stage 3 -- IA variates (`stage3_variates/`)", "",
+             "Produced by `PYTHONPATH=. python scripts/tier4_reveal_plots.py --source %s --label %s --stage 3 "
+             "--out-dir <this folder>` (%s UTC; variates requested: %s). Availability is PARTIAL and grows: "
+             "re-run the same command after new repeats / pools are fetched into the store "
+             "(`scripts/sample_observation.py fetch --what both`); it rewrites only `stage3_variates/`, the "
+             "`08`-`11` tables, this section and the manifest's `stage3_variates` block."
+             % (args.source, args.label, datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+                ", ".join(args.variates)), "",
+             "Inputs (what each headline is; `per-repeat` = repeat dumps on disk; the pooled dump's members "
+             "come from its own `pooled_provenance`):", "",
+             "| arm | model | per-repeat dumps | pooled dump members | headline used |", "|---|---|---|---|---|"]
+    for arm in ["nla_m"] + list(v3["variates"]):
+        for pr in (L_, W_):
+            c = v3["coverage"].get("%s/%s" % (arm, pr))
+            if c is None:
+                lines.append("| %s | %s | none | none | -- (not available yet: left out) |" % (arm, PRIOR_NAMES[pr]))
+                continue
+            mem = c.get("pooled_members")
+            lines.append("| %s | %s | %s | %s | %s |" % (arm, PRIOR_NAMES[pr], _rlist(c["per_repeat"]) or "none",
+                                                      "--" if mem is None else _rlist(mem), c["headline"]))
+    figs = [os.path.splitext(os.path.basename(f))[0] for f in v3["figures"]]
+    lines += ["", "Figures written by the last stage-3 run (`.png` 200 dpi + `.pdf` 300 dpi):", ""]
+    desc = {"08a": "overlay on the cosmological parameters: field level NLA-M (pooled, filled teal) + the IA variates (outlines), one contour",
+            "08d": "the same overlay on every parameter the arms share (cosmology + A_IA; NB A_IA is each model's own amplitude)",
+            "09_": "S8 whiskers as 06 with the variate rows (LCDM)",
+            "12_": "A_IA,total vs z per IA model (Wright+25 Fig. style): NLA-M points + 68% bars at the bins' z_eff, NLA-z curve + 68% band, NLA flat band; table tables/12_A_IA_total_*", "09b": "S8 whiskers as 06b with the variate rows (wCDM; LCDM-only externals tagged)",
+            "a": "headline corner (pooled)", "b": "repeats vs pooled", "c": "vs KiDS-Legacy COSEBIs / band powers + companion 2-pt SBI",
+            "d": "all free parameters + S8, sampling prior on the diagonal", "e": "vs Planck 2018 (wCDM: the Planck LCDM chain, tagged)",
+            "f": "vs DES Y3 / HSC Y3 public chains"}
+    for f in figs:
+        b = f[len(pre):]
+        key = b[:3] if b[:3] in desc else b[2]
+        ins = v3["figure_inputs"].get(f + ".png", {})
+        lines.append("- `%s` -- %s. Inputs: %s" % (f, desc.get(key, ""), "; ".join("%s = %s" % kv for kv in ins.items()) or "--"))
+    if not figs:
+        lines.append("- (none yet: no variate posterior in the store)")
+    lines += ["", "Groups: `08` overlay, `09` S8 whiskers, %s, `12` A_IA,total vs z; the per-variate suites mirror the field arm's "
+              "02/04/05/07 letters (`a` headline, `b` repeats vs pooled, `c` vs KiDS-Legacy + companion (LCDM only), "
+              "`d` all parameters with the prior, `e` vs Planck, `f` vs DES Y3 / HSC Y3). Tables: `tables/08_*`, "
+              "`tables/1X_*`, `tables/12_A_IA_total_*` (mean / std / median / 68%%; each variate table's first line names its inputs)."
+              % ", ".join("`%s` %s" % (n, STAGE3_LABELS[a]) for a, (n, _st) in VARIATE_GROUPS.items()), "",
+              "Legend / colours (script-local, `ARM_COLOURS` in the script): \"field level, NLA-M\" = teal %s "
+              "(filled, as in stages 1-2); \"field level, NLA-z\" = Tol-vibrant blue %s; \"field level, NLA\" = "
+              "Tol-vibrant red %s (dashed in the 08 overlay); \"2-pt\" = wine (09 only). The style's default variate "
+              "colours were not used: they are the 2-pt wine (NLA-z) and the DES+KiDS-1000 rose (NLA). In the "
+              "per-variate suites the variate is the filled headline and its repeats a tint ramp of its hue. "
+              "Externals as in stages 1-2. Full names: %s."
+              % (arm_colour("nla_m"), arm_colour("nla_z"), arm_colour("nla"),
+                 "; ".join("\"%s\" = %s" % (STAGE3_LABELS[a], STAGE3_NAMES[a]) for a in STAGE3_NAMES)), "",
+              "`12` A_IA,total(z): %s. Bin effective redshifts z_eff = %s (unshifted n(z): %s); mean <a>_i = %s. "
+              "NLA-k is not part of this analysis." % (
+                  (v3.get("ia_total") or {}).get("method") or "not produced (inputs missing)",
+                  ", ".join("%.3f" % z for z in (v3.get("ia_total") or {}).get("z_eff") or []) or "--",
+                  ", ".join("%.3f" % z for z in (v3.get("ia_total") or {}).get("z_eff_unshifted") or []) or "--",
+                  ", ".join("%.3f" % z for z in (v3.get("ia_total") or {}).get("avg_a") or []) or "--"), "",
+              "Same style and smoothing as stages 1-2 (manifest `style`): 3/4-parameter corners thinned to "
+              "`--max-samples` by seeded uniform thinning (never a head slice), full / shared-parameter corners "
+              "on all draws with the Silverman-scaled bins.", "", S3_END]
+    block = "\n".join(lines).replace("NLA-$z$", "NLA-z") + "\n"
+    path = os.path.join(out_dir, pre + "README.md")
+    txt = open(path).read() if os.path.exists(path) else "# Tier-4 reveal set (label %s)\n" % args.label
+    if S3_BEGIN in txt and S3_END in txt:
+        a, b = txt.index(S3_BEGIN), txt.index(S3_END) + len(S3_END)
+        txt = txt[:a] + block.rstrip("\n") + txt[b:]
+    else:
+        txt = txt.rstrip("\n") + "\n\n" + block
+    with open(path, "w") as fh:
+        fh.write(txt)
+    print("[readme] %s (stage-3 section)" % path)
+
+
+# --------------------------------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", choices=("mock", "real"), required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--stage", choices=("1", "2", "all"), default="all")
+    ap.add_argument("--stage", choices=("1", "2", "3", "all"), default="all",
+                    help="1 = 2-pt, 2 = field + 2-pt, 3 = IA variates (merges into an existing manifest), all")
     ap.add_argument("--label", default="A2long", help="real: blind-store label")
     ap.add_argument("--matched-root", default="/data/alex/variate_samples_kids")
     ap.add_argument("--matched-tag", default="gower_match_vdq")
     ap.add_argument("--event", type=int, default=0, help="mock: event index of the matched dump")
     ap.add_argument("--arms", nargs="+", default=["band", "nla_m"])
+    ap.add_argument("--sim-data-dir", default=os.path.join(REPO, "kids-legacy-sbi", "data"),
+                    help="stage 3 / 12: the simulator data dir (nofzs/, priors/massdep_*) for A_IA,total")
+    ap.add_argument("--variates", nargs="*", default=list(VARIATE_ARMS),
+                    help="stage 3: IA-variate arms (whichever have dumps are plotted; the rest are skipped)")
     ap.add_argument("--repeats", nargs="+", type=int, default=[0, 1, 2, 3, 4])
     ap.add_argument("--kids-dir", default="/data/alex/unblinding/external/kids_legacy_release/"
                     "KiDS_Legacy_cosmic_shear_data_release/chains_and_config_files")
@@ -706,14 +1138,28 @@ def main(argv=None):
     s1 = os.path.join(args.out_dir, "stage1_2pt"); s2 = os.path.join(args.out_dir, "stage2_field")
     tdir = os.path.join(args.out_dir, "tables")
     do1, do2 = args.stage in ("1", "all"), args.stage in ("2", "all")
+    do3 = args.stage in ("3", "all")
+    s3 = os.path.join(args.out_dir, "stage3_variates")
 
-    heads, reps, truth, prov = load_ours(args)
+    variates = []
+    for v in (args.variates if do3 else []):
+        if v not in ARMS:
+            print("[variates] %s: unknown arm -> skipped" % v)
+        elif v in DELAYED_ARMS:
+            print("[variates] %s: DELAYED arm (row still names a no-VD chain) -> skipped" % v)
+        elif v not in variates:
+            variates.append(v)
+    base_arms = list(args.arms) if (do1 or do2) else [a for a in ("nla_m", "band") if a not in variates]
+    heads, reps, truth, prov = load_ours(args, base_arms)
+    if variates:
+        vh, vr, _vt, vp = load_ours(args, variates, strict=False)
+        heads.update(vh); reps.update(vr); prov.extend(vp)
     kids = load_kids(args.kids_dir, args.kids_stats) if args.kids_stats else []
     planck = load_planck(args.planck_dir, args.planck_burnin)
     comp = load_companion(args.companion_dir)
     surveys = load_surveys(args.beyond2pt) if not args.no_surveys else []
     L, W = "LCDM_fixed_w0", "kids_s8_analytic"
-    tt = {"band": "2-pt", "nla_m": "field"}
+    tt = {"band": "2-pt", "nla_m": "field", "nla_z": "field NLA-z", "nla": "field NLA"}
     ttl_kw = dict(titles=args.titles, mock=mock)
     written = []
 
@@ -734,8 +1180,11 @@ def main(argv=None):
             rl = reps.get((a, prior), [])
             h = head(a, prior)
             if len(rl) > 1 and h is not None:
+                cov = COVERAGE.get((a, prior), {})
+                mem, disk = cov.get("pooled_members"), cov.get("per_repeat")
+                plab = "pooled" if not mem or sorted(mem) == sorted(disk or []) else "pooled (%s)" % _rlist(mem)
                 pooled = Post(h.name, h.x, h.names, colour=arm_colour(a), role="outline", key=a,
-                              linewidth=LW["pooled"], label="pooled")
+                              linewidth=LW["pooled"], label=plab)
                 written.append(corner(rl + [pooled], params, os.path.join(stage_dir, "%sb_%s_repeats_%s.png" % (tag, name, a)),
                                       "%s %s: repeats vs pooled" % (tt[a], PRIOR_NAMES[prior]), truth, rng,
                                       args.max_samples, **ttl_kw))
@@ -750,8 +1199,11 @@ def main(argv=None):
                               ttl + ": all parameters, with the prior", truth, rng, args.full_max_samples,
                               prior=pr, full=True, **ttl_kw))
         allp = hs + [p for a in arms_in for p in reps.get((a, prior), [])] + ext + ([pr] if pr else [])
-        write_table(allp, full, os.path.join(tdir, "%s_%s" % (tag, name)), note="%s%s" % ("MOCK (truth: %s). " % {
-            k: float(round(v, 4)) for k, v in truth.items() if k in full} if mock else "", ttl))
+        cov_note = "".join(". %s: headline = %s; per-repeat dumps: %s" % (
+            a, COVERAGE[(a, prior)]["headline"], _rlist(COVERAGE[(a, prior)]["per_repeat"]) or "none")
+            for a in arms_in if a in variates and (a, prior) in COVERAGE)
+        write_table(allp, full, os.path.join(tdir, "%s_%s" % (tag, name)), note="%s%s%s" % ("MOCK (truth: %s). " % {
+            k: float(round(v, 4)) for k, v in truth.items() if k in full} if mock else "", ttl, cov_note))
 
     sv_L = [p for p in surveys if getattr(p, "model", "LCDM") == "LCDM"]
     sv_W = [p for p in surveys if getattr(p, "model", "LCDM") == "wCDM"]
@@ -820,6 +1272,13 @@ def main(argv=None):
                                        "%s $S_8$ summary (median, 68%%); rows tagged LCDM carry no $w$" % PRIOR_NAMES[W],
                                        truth, **ttl_kw))
 
+    v3 = None
+    if do3:
+        n0 = len(written)
+        v3 = stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_planck_and_surveys, as_lcdm,
+                             kids, comp, planck, sv_L, sv_W, s3, tdir, pre, ttl_kw)
+        v3["figures"] = [w for w in written[n0:] if w]
+
     meta = dict(source=args.source, label=None if mock else args.label, stage=args.stage, event=args.event if mock else None,
                 truth={k: v for k, v in truth.items()} if mock else None, provenance=prov, seed=args.seed,
                 max_samples=args.max_samples, full_max_samples=args.full_max_samples, prior_draws=args.prior_draws,
@@ -834,7 +1293,21 @@ def main(argv=None):
                            full_bins="%d x (N_eff/%d)^(1/6), clipped to %s" % (FULL_BINS, FULL_BINS_NREF, FULL_BINS_CLIP),
                            full_kde=FULL_KDE,
                            linewidths=LW, shade_alpha=SHADE_ALPHA, truth=TRUTH_KW, contour_levels="68 %, 95 %"))
-    with open(os.path.join(args.out_dir, pre + "manifest.json"), "w") as fh:
+    mpath = os.path.join(args.out_dir, pre + "manifest.json")
+    if v3 is not None:
+        meta["stage3_variates"] = v3
+        if args.stage == "3" and os.path.exists(mpath):
+            # MERGE: keep the stage-1/2 record, replace only what stage 3 owns
+            with open(mpath) as fh:
+                old = json.load(fh)
+            old["figures"] = [f for f in old.get("figures", []) if os.sep + "stage3_variates" + os.sep not in f] + v3["figures"]
+            old.setdefault("legend", {}).update(LEGEND_LOG)
+            old["provenance"] = [p for p in old.get("provenance", []) if p.get("arm") not in variates] + \
+                [p for p in prov if p.get("arm") in variates]
+            old["stage3_variates"] = v3
+            meta = old
+        write_stage3_readme(args.out_dir, v3, pre, args)
+    with open(mpath, "w") as fh:
         json.dump(meta, fh, indent=2, default=float)
     print("[done] %d figures -> %s" % (len([w for w in written if w]), args.out_dir))
 

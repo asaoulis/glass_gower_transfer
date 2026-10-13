@@ -106,6 +106,32 @@ def _load_physical(path: str, experiment: str, event: int = 0) -> Tuple[np.ndarr
     return np.concatenate([x, s8[:, None]], axis=1), names + ["S8"]
 
 
+def pooled_members(path: str) -> Optional[List[str]]:
+    """The member EXPERIMENT names a pooled dump was built from (metadata only, no samples).
+
+    Read from the dump's own ``pooled_provenance`` key (one per prior); the sibling
+    ``pooled_provenance.json`` is the fallback, used only when its ``prior_mode`` matches this
+    dump's (that file is shared by the arm's priors and is overwritten by the last pool job).
+    ``None`` when neither records the members."""
+    try:
+        with np.load(path, allow_pickle=False) as d:
+            if "pooled_provenance" in d.files:
+                exps = json.loads(str(d["pooled_provenance"])).get("experiments")
+                if exps:
+                    return [str(e) for e in exps]
+    except Exception:  # noqa: BLE001
+        pass
+    side = os.path.join(os.path.dirname(path), "pooled_provenance.json")
+    try:
+        with open(side) as fh:
+            pool = json.load(fh).get("pool", {})
+        if pool.get("prior_mode") == prior_of_dump(path) and pool.get("experiments"):
+            return [str(e) for e in pool["experiments"]]
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
 def _frame(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return x.mean(axis=0), x.std(axis=0, ddof=1)
 
