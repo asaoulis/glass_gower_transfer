@@ -439,3 +439,35 @@ for _r in _NLE_REPEATS:
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdq_z8_k6_r{_r}"] = "glass_encoder_finetune_nla_vdq_z8"
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_z_vdq_z8_k6_r{_r}"] = "glass_encoder_finetune_nla_z_vdq_z8"
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === PV-G kappa=2 JOINT NLE Stage A (user 2026-10-12: proceed if the joint-summary NPE test holds) ==
+# Test result (artifacts/k2_joint_test/K2_JOINT_TEST.md, r0-r3): NPE heads on concat(z_cosmo, z_bg) keep
+# the encoders' power at every k tried — paired FoM(Om,s8) joint/cosmo_ctl k16 1.04+-0.11, k12 1.05+-0.04,
+# k10 1.07+-0.07; b_g widths 0.95-0.999x the b_g-only control. k10 is the smallest k tested (cumulative
+# variance 99.78-99.90 %) and loses nothing on either side => the joint NLE uses k=10.
+# 15-param theta (9 NLA-M + b_g_bin1..6, kappa=2 boxes), sources cosmo,bg (same order as the test), and
+# the SAME raw-embedding cache as the test's joint heads (`vdqk2_joint_r<r>`; computed if absent).
+# Launch: embed --gpu v100 --mem-gb 32 --target glass_nle_pretrain_nla_m_vdqk2_joint_k10_r<r>
+#         --sources glass_encoder_finetune_nla_m_vdqk2_z8_cosmo,glass_encoder_finetune_nla_m_vdqk2_z8_bg
+_K2_JOINT_NLE_K = 10
+
+
+def _k2_joint_nle_a(r):
+    pre = _nle_pretrain_bgp(_VDQ_GLASS_K2, r, cosmo_param_names=list(_K2_JOINT_THETA),
+                            preset_overrides=_BG_BOXES_K2)
+    pre["whiten_embeddings"] = {"k": _K2_JOINT_NLE_K}
+    pre["embedding_cache_name"] = f"vdqk2_joint_r{r}"
+    pre["reuse_embedding_cache"] = True
+    return pre
+
+
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_joint_k10_r0"] = _k2_joint_nle_a(0)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_joint_k10_r1"] = _k2_joint_nle_a(1)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_joint_k10_r2"] = _k2_joint_nle_a(2)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_joint_k10_r3"] = _k2_joint_nle_a(3)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqk2_joint_k10_r4"] = _k2_joint_nle_a(4)
+
+for _r in _NLE_REPEATS:
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdqk2_joint_k10_r{_r}"] = _K2_JOINT_SOURCES
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
