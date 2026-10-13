@@ -119,6 +119,11 @@ STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level 
 VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--"}            # 08 overlay outlines
 # per-variate figure group: (number, file stem)
 VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA")}
+MODEL_PRIOR = {"LCDM": "LCDM_fixed_w0", "wCDM": "kids_s8_analytic"}
+
+
+def _fig_model(path: str) -> str:
+    return "wCDM" if "wCDM" in os.path.basename(path) else "LCDM"
 EXT_COLOURS = {"cosebis": PAL[2], "bandpowers": PAL[7], "xipm": PAL[0], "cosebis_plus_external": PAL[8],
                "novd": PAL[4], "vd": PAL[3], "planck": S.role_colour("real")}
 EXT_LINESTYLE = {"cosebis": "-", "bandpowers": "--", "xipm": ":", "cosebis_plus_external": "-.",
@@ -342,12 +347,12 @@ def _rlist(reps: Sequence[int]) -> str:
     return ", ".join("r%d" % r for r in reps)
 
 
-def load_ours(args, arms: Optional[Sequence[str]] = None, strict: bool = True
+def load_ours(args, arms: Optional[Sequence[str]] = None, strict: bool = True, priors: Optional[Sequence[str]] = None
               ) -> tuple[Dict[tuple, Post], Dict[tuple, List[Post]], Dict[str, float], List[dict]]:
     """{(arm, prior): headline Post}, {(arm, prior): [repeat Posts]}, truth (mock only), provenance.
     `strict=False` (stage-3 variates): an arm / prior with no dump is skipped with a note."""
     heads, reps, truth, prov = {}, {}, {}, []
-    priors = list(PRIOR_PARAMS)
+    priors = list(PRIOR_PARAMS) if priors is None else list(priors)
     arms = list(args.arms if arms is None else arms)
     if args.source == "mock":
         runs = mock_runs(args.matched_root, args.matched_tag, arms, args.repeats, priors)
@@ -763,7 +768,7 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
     """Write the stage-3 figures; return the manifest `stage3_variates` block. Every figure uses only
     the variates that have a posterior for its prior (none -> the figure is skipped with a note)."""
     L, W = "LCDM_fixed_w0", "kids_s8_analytic"
-    models = ((L, "LCDM"), (W, "wCDM"))
+    models = tuple(m for m in ((L, "LCDM"), (W, "wCDM")) if m[1] in args.models)
     head = heads.get
     fig_inputs = {}           # figure basename -> {arm: headline description}
 
@@ -804,6 +809,8 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
 
     # 09 S8 whiskers: 06 / 06b with the variate rows between the NLA-M field level and the 2-pt rows
     for pr, model, stem in ((L, "LCDM", "09_S8_summary_variates"), (W, "wCDM", "09b_S8_summary_variates_wCDM")):
+        if model not in args.models:
+            continue
         if not present[pr]:
             print("[skip] %s: no variate posterior yet" % stem); continue
         arms_rows = [a for a in ["nla_m"] + present[pr] + ["band"] if head((a, pr)) is not None]
@@ -825,12 +832,14 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
         if v not in VARIATE_GROUPS:
             print("[variates] %s: no figure-group number assigned (VARIATE_GROUPS) -> no per-variate suite" % v)
             continue
-        if not (present[L] and v in present[L]) and not (present[W] and v in present[W]):
+        if v not in present.get(L, []) and v not in present.get(W, []):
             print("[skip] %s suite: no posterior for either model" % v); continue
         num, stem = VARIATE_GROUPS[v]
         n0 = len(written)
-        group(num, stem + "_LCDM", L, [v], s3, kids + comp)
-        group(num, stem + "_wCDM", W, [v], s3, [])
+        if "LCDM" in args.models:
+            group(num, stem + "_LCDM", L, [v], s3, kids + comp)
+        if "wCDM" in args.models:
+            group(num, stem + "_wCDM", W, [v], s3, [])
         vs_planck_and_surveys([v], s3, "%se_%s_LCDM_vs_Planck" % (num, stem), "%sf_%s_LCDM_vs_surveys" % (num, stem),
                               "%sf_%s_wCDM_vs_surveys" % (num, stem), planck_W_stem="%se_%s_wCDM_vs_Planck" % (num, stem))
         for f in written[n0:]:
@@ -843,8 +852,9 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
     for f in ia["figures"]:
         fig_inputs[os.path.basename(f)] = ia.get("inputs", {}).get(os.path.basename(f), {})
 
+    run_priors = [MODEL_PRIOR[m] for m in args.models]
     cov = {"%s/%s" % (a, pr): dict(c, model=PRIOR_NAMES[pr]) for (a, pr), c in COVERAGE.items()
-           if a in variates or a == "nla_m"}
+           if (a in variates or a == "nla_m") and pr in run_priors}
     return dict(variates=list(variates), present={model: present[pr] for pr, model in models},
                 coverage=cov, figure_inputs=fig_inputs,
                 colours={a: arm_colour(a) for a in ["nla_m"] + list(variates)},
@@ -932,6 +942,8 @@ def ia_total_figure(heads, variates, s3, tdir, pre, args, ttl_kw) -> dict:
                      "bins plotted at the mean over realisations of the n(z)-weighted mean z (simulator LOS grid)"
                      % (A_PIV, IA_TOTAL_NZ_DRAWS, LOG10_M_PIVOT))
     for pr, model in (("LCDM_fixed_w0", "LCDM"), ("kids_s8_analytic", "wCDM")):
+        if model not in args.models:
+            continue
         arms = [a for a in ["nla_m"] + [v for v in ("nla_z", "nla") if v in variates] if heads.get((a, pr)) is not None]
         if "nla_m" not in arms:
             print("[skip] 12 A_IA,total %s: no NLA-M headline" % model); continue
@@ -971,6 +983,16 @@ def ia_total_figure(heads, variates, s3, tdir, pre, args, ttl_kw) -> dict:
                                 capthick=2.4, zorder=4)
                     hs.append((Line2D([], [], color=c, marker="o", ms=8, lw=2.4), lab))
                     yr += list(q16) + list(q84)
+            # reference rows (table only): the NLA-M SAMPLING-prior predictive of A_IA,total, so a reader can
+            # tell a data constraint from the prior (a_ia, b_ia have informative Gaussian priors)
+            pp = prior_post(arm_experiment("nla_m", ARMS["nla_m"][2][0]), pr, 200000, args.seed)
+            if pp is not None:
+                A = ia_total_draws("nla_m", pp, geom, args.sim_data_dir, rng)
+                q16, q50, q84 = np.quantile(A, [0.16, 0.5, 0.84], axis=0)
+                for i in range(geom["nbins"]):
+                    rows.append(dict(model="NLA-M sampling-prior predictive (reference)", arm="nla_m_prior",
+                                     posterior=pp.name, bin=i + 1, z_eff=geom["z_eff"][i], median=q50[i], p16=q16[i],
+                                     p84=q84[i], mean=A[:, i].mean(), std=A[:, i].std(), n_draws=len(A)))
             lo, hi = min(yr), max(yr)
             pad = 0.25 * (hi - lo) if hi > lo else 0.5
             ax.set_ylim(lo - pad, hi + pad)
@@ -1071,7 +1093,9 @@ def write_stage3_readme(out_dir: str, v3: dict, pre: str, args):
               % (arm_colour("nla_m"), arm_colour("nla_z"), arm_colour("nla"),
                  "; ".join("\"%s\" = %s" % (STAGE3_LABELS[a], STAGE3_NAMES[a]) for a in STAGE3_NAMES)), "",
               "`12` A_IA,total(z): %s. Bin effective redshifts z_eff = %s (unshifted n(z): %s); mean <a>_i = %s. "
-              "NLA-k is not part of this analysis." % (
+              "NLA-k is not part of this analysis. The `12` tables also list the NLA-M SAMPLING-prior predictive "
+              "(a_ia, b_ia Gaussian priors x the same massdep halo masses) as reference rows: compare before reading "
+              "the NLA-M points as a constraint." % (
                   (v3.get("ia_total") or {}).get("method") or "not produced (inputs missing)",
                   ", ".join("%.3f" % z for z in (v3.get("ia_total") or {}).get("z_eff") or []) or "--",
                   ", ".join("%.3f" % z for z in (v3.get("ia_total") or {}).get("z_eff_unshifted") or []) or "--",
@@ -1079,7 +1103,7 @@ def write_stage3_readme(out_dir: str, v3: dict, pre: str, args):
               "Same style and smoothing as stages 1-2 (manifest `style`): 3/4-parameter corners thinned to "
               "`--max-samples` by seeded uniform thinning (never a head slice), full / shared-parameter corners "
               "on all draws with the Silverman-scaled bins.", "", S3_END]
-    block = "\n".join(lines).replace("NLA-$z$", "NLA-z") + "\n"
+    block = "\n".join(lines).replace("NLA-$z$", "NLA-z").replace("$\\Lambda$CDM", "LCDM").replace("$w$CDM", "wCDM") + "\n"
     path = os.path.join(out_dir, pre + "README.md")
     txt = open(path).read() if os.path.exists(path) else "# Tier-4 reveal set (label %s)\n" % args.label
     if S3_BEGIN in txt and S3_END in txt:
@@ -1106,6 +1130,8 @@ def main(argv=None):
     ap.add_argument("--arms", nargs="+", default=["band", "nla_m"])
     ap.add_argument("--sim-data-dir", default=os.path.join(REPO, "kids-legacy-sbi", "data"),
                     help="stage 3 / 12: the simulator data dir (nofzs/, priors/massdep_*) for A_IA,total")
+    ap.add_argument("--models", nargs="+", choices=list(MODEL_PRIOR), default=list(MODEL_PRIOR),
+                    help="stage 3: cosmological models to (re)draw; the other model's stage-3 figures/records are kept")
     ap.add_argument("--variates", nargs="*", default=list(VARIATE_ARMS),
                     help="stage 3: IA-variate arms (whichever have dumps are plotted; the rest are skipped)")
     ap.add_argument("--repeats", nargs="+", type=int, default=[0, 1, 2, 3, 4])
@@ -1152,7 +1178,7 @@ def main(argv=None):
     base_arms = list(args.arms) if (do1 or do2) else [a for a in ("nla_m", "band") if a not in variates]
     heads, reps, truth, prov = load_ours(args, base_arms)
     if variates:
-        vh, vr, _vt, vp = load_ours(args, variates, strict=False)
+        vh, vr, _vt, vp = load_ours(args, variates, strict=False, priors=[MODEL_PRIOR[m] for m in args.models])
         heads.update(vh); reps.update(vr); prov.extend(vp)
     kids = load_kids(args.kids_dir, args.kids_stats) if args.kids_stats else []
     planck = load_planck(args.planck_dir, args.planck_burnin)
@@ -1300,6 +1326,17 @@ def main(argv=None):
             # MERGE: keep the stage-1/2 record, replace only what stage 3 owns
             with open(mpath) as fh:
                 old = json.load(fh)
+            # a `--models LCDM` run keeps the earlier wCDM stage-3 records (and vice versa)
+            ov3 = old.get("stage3_variates") or {}
+            keep = [f for f in ov3.get("figures", []) if _fig_model(f) not in args.models]
+            v3["figures"] = keep + v3["figures"]
+            run_priors = [MODEL_PRIOR[m] for m in args.models]
+            v3["coverage"] = {**{k: c for k, c in (ov3.get("coverage") or {}).items() if k.split("/", 1)[1] not in run_priors},
+                              **v3["coverage"]}
+            v3["figure_inputs"] = {**{k: c for k, c in (ov3.get("figure_inputs") or {}).items() if _fig_model(k) not in args.models},
+                                   **v3["figure_inputs"]}
+            v3["present"] = {**{k: c for k, c in (ov3.get("present") or {}).items() if k not in args.models}, **v3["present"]}
+            v3["models_last_run"] = list(args.models)
             old["figures"] = [f for f in old.get("figures", []) if os.sep + "stage3_variates" + os.sep not in f] + v3["figures"]
             old.setdefault("legend", {}).update(LEGEND_LOG)
             old["provenance"] = [p for p in old.get("provenance", []) if p.get("arm") not in variates] + \
