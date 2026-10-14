@@ -428,8 +428,10 @@ class NDELightningModule(BaseLightningModule):
         with torch.no_grad(), torch.autocast(device_type=theta.device.type, enabled=False):
             band_mu = band_mu.float()
             patch_mu = patch_mu.float()
-            z_band = enc.hybrid_head(enc._fuse_mu(band_mu, torch.zeros_like(patch_mu)))
-            z_map = enc.hybrid_head(enc._fuse_mu(torch.zeros_like(band_mu), patch_mu))
+            # head_with_side: keeps a side input (config.side_input) in the flow context.
+            head = getattr(enc, "head_with_side", enc.hybrid_head)
+            z_band = head(enc._fuse_mu(band_mu, torch.zeros_like(patch_mu)))
+            z_map = head(enc._fuse_mu(torch.zeros_like(band_mu), patch_mu))
             lq_band = self.flow.log_prob(theta.float().unsqueeze(0), z_band).mean()
             lq_map = self.flow.log_prob(theta.float().unsqueeze(0), z_map).mean()
         self.log("val_nll_bandonly", -lq_band, sync_dist=self.is_distributed)

@@ -814,7 +814,17 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         head_input = self.get_representation(data)
         z = self.hybrid_head(head_input)
         if self.side_input_module is not None:
-            z = torch.cat([z, self.side_input_module(data).to(z.dtype)], dim=-1)
+            side = self.side_input_module(data)
+            self._last_side = side.detach()
+            z = torch.cat([z, side.to(z.dtype)], dim=-1)
+        return z
+
+    def head_with_side(self, head_input: torch.Tensor) -> torch.Tensor:
+        """``hybrid_head`` plus the side input of the LAST forward: the summary the flow conditions
+        on, for monitors that re-run only the head on an ablated fused vector (npe.py)."""
+        z = self.hybrid_head(head_input)
+        if self.side_input_module is not None:
+            z = torch.cat([z, self._last_side.to(z.dtype)], dim=-1)
         return z
 
 
