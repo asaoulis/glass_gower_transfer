@@ -601,3 +601,29 @@ kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_joint_k10_r4"] = _k2_n
 for _r in _NLE_REPEATS:
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdqk2_joint_k10_r{_r}"] = _K2_NLA_JOINT_SOURCES
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === PV-G nla r3/r4 ENCODER REROLL under a NEW NAME (user 2026-10-14 ~14:30Z) =======================
+# nla r3 / r4 Stage B came out calibrated but out of line: FoM(Om,s8) 5.13 / 5.58 vs r0-2 6.05-7.04, S8 w68
+# 0.082 / 0.070 vs 0.058-0.068 (and they needed guard-c 3000 / 300). Both encoders were GLASS slow starters
+# (best -6.739 / -6.757 vs -6.83..-6.99). User: retrain the compressors as a reroll with a NEW NAME so no
+# frame / scaler / whitener / checkpoint dir is shared with the old chain. `_rr` = identical recipe to
+# `glass_encoder_finetune_nla_vdq_z8` at the SAME repeat index (same split seed, same foundation repeat warm
+# start; only the fresh flow-head init + data order differ). Guard-c stays at the sibling value 50 on the
+# `_rr` Stage B: it is the in-family gate (a trip = not fixed -> ask the user, do not raise).
+# Launch: train --exp glass_encoder_finetune_nla_vdq_z8_rr --repeat-indices <3|4>;
+#         embed --target glass_nle_pretrain_nla_vdq_z8_rr_k6_r<r> --sources glass_encoder_finetune_nla_vdq_z8_rr;
+#         embed --cpu --partition CORES64 --ncpu 64 --mem-gb 128 --wall_h 48 --skip-smoke
+#               --target gower_nle_finetune_nla_vdq_z8_rr_k6_r<r>_ens9_e150 --sources glass_encoder_finetune_nla_vdq_z8_rr
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_vdq_z8_rr"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX), 8,
+    "glass_encoder_finetune_nla_vdq_z8_rr")
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_rr_k6_r3"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 3, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_rr_k6_r4"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r3_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_rr_k6_r3", _VDQ_GOWER_NLA, 3, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_rr_k6_r4", _VDQ_GOWER_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
+for _r in (3, 4):
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdq_z8_rr_k6_r{_r}"] = "glass_encoder_finetune_nla_vdq_z8_rr"
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdq_z8_rr_k6_r{_r}_ens9_e150"] = "glass_encoder_finetune_nla_vdq_z8_rr"
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
