@@ -532,6 +532,18 @@ kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r4_ens9_e150"] =
 # reads thousands of nats, e890aec). The other repeats keep 50.
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r3b_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 100.0
 
+# ⭐ guard-c raised again on the three tripping rows (user decision 2026-10-14 ~07:10Z: "raise the guard on
+# repeats that failed"); every other variate row keeps 50. Observed ep0 gaps (Gower val NLL - Stage-A best):
+#   nla_z r3b: 94.4 (m0, 1st attempt), 77.8 (m0) / 111.3 (m2, job 1386492 died at member 2 under the 100 guard)
+#   nla   r4 : 75.5 (m0, job 1386497)          nla r3: 1293.9 (m0, job 1386496)
+# siblings 24.5-42.5. Resolution verified correct for all three (own encoder repeat, own Stage-A ckpt + whitener).
+# Diagnosis (local, Stage-B ens0 emb caches): a heavy tail of strongly negative-a_ia Gower mocks mapped off the GLASS
+# manifold along the low-variance whitened components 4-6 (frac |u|^2>100: r0 ~1 %, r4 10-14 %, r3 23-28 %); the
+# ep0-mean guard is dominated by them - not a broken warm start. New values = >=2.3x the worst observed gap.
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_z_vdq_z8_k6_r3b_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 300.0
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_k6_r4_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 300.0
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_k6_r3_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 3000.0
+
 for _r in _NLE_REPEATS:
     _sfx = "3b" if _r == 3 else str(_r)
     VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdq_z8_k6_r{_r}_ens9_e150"] = "glass_encoder_finetune_nla_vdq_z8"
