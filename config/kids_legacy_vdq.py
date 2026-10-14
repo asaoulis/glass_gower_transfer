@@ -663,3 +663,38 @@ kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo"
     _bg_side_input_row({"type": "frozen_encoder",
                         "ckpt_path": f"{_CKPT}/glass_encoder_finetune_nla_m_vdqk2_z8_cosmo/"}), 8,
     "glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo")
+
+
+# === kappa=1 b_g encoder conditioned on cosmology, FOUNDATION store (user 2026-10-14 ~21:35Z, "one last experiment") ===
+# The kappa=2 conditioned encoders (above) still constrain ONE bin. Retry on the ~6x larger kappa=1 foundation store
+# (glass_vdq_nla_m, 100k mocks, b_g ~ kappa=1 prior) with the FOUNDATION ITSELF as the frozen cosmology side encoder (it is
+# the 9-param cosmology encoder of that store; warm start = foundation too), then transfer to kappa=2.
+#   _bg_k1            : kappa=1 b_g-only baseline (no side input) -- the like-for-like reference on this store.
+#   _bg_condcosmo_k1  : + side_input = frozen foundation z8 summary.
+#   (k2) _bg_condcosmo_fromk1 : the kappa=2 condcosmo row warm-started from `_bg_condcosmo_k1` (its whole embedding_net)
+#                       instead of the foundation; side encoder = the kappa=2 cosmo encoder as in `_bg_condcosmo`, loaded
+#                       AFTER the warm start (overwrites the foundation copy that comes along in the k1 checkpoint).
+# epochs 30 (not 100): ~800 steps/epoch on 100k vs 128 on the 16k kappa=2 store (the kappa=2 b_g encoders peaked at ep17-22,
+# i.e. ~2.5k steps); 30 ep = ~24k steps, inside the 6 h GPU wall (~8-9 min/epoch on a100 incl. the frozen forward).
+from config.kids_legacy_bgp import _BG_BOXES  # noqa: E402  (kappa=1 boxes)
+_BG_K1_EPOCHS = 30
+
+
+def _bg_k1_row(side_input=None):
+    c = _encoder_finetune_vdq(_VDQ_GLASS, _BG_THETA, preset_overrides=_BG_BOXES)
+    c["epochs"] = _BG_K1_EPOCHS
+    if side_input is not None:
+        c["side_input"] = side_input
+    return c
+
+
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdq_z8_bg_k1"] = _assert_final_summary_dim(
+    _bg_k1_row(), 8, "glass_encoder_finetune_nla_m_vdq_z8_bg_k1")
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdq_z8_bg_condcosmo_k1"] = _assert_final_summary_dim(
+    _bg_k1_row({"type": "frozen_encoder", "ckpt_path": _VDQ_HYB_CKPT}), 8,
+    "glass_encoder_finetune_nla_m_vdq_z8_bg_condcosmo_k1")
+_c = _bg_side_input_row({"type": "frozen_encoder",
+                         "ckpt_path": f"{_CKPT}/glass_encoder_finetune_nla_m_vdqk2_z8_cosmo/"})
+_c["pretrained_embedding_ckpt_path"] = f"{_CKPT}/glass_encoder_finetune_nla_m_vdq_z8_bg_condcosmo_k1/"
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_fromk1"] = _assert_final_summary_dim(
+    _c, 8, "glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_fromk1")
