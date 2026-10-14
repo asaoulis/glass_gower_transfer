@@ -654,6 +654,14 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         else:
             self.hybrid_head = nn.Linear(in_features, self.model_output_dim)
         self.freeze_band = False
+        # Optional extra conditioning appended AFTER hybrid_head (config.side_input; see
+        # src/ml/models/side_input.py). None => forward unchanged.
+        self.side_input_module = None
+
+    def attach_side_input(self, module: nn.Module) -> None:
+        if self.use_kl:
+            raise ValueError("side_input is not supported with use_kl (the [mu, logvar] head output)")
+        self.side_input_module = module
 
     def _normalise_child_output(self, out: torch.Tensor | tuple[torch.Tensor, torch.Tensor], expected_mu_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (mu, logvar) for a child encoder output.
@@ -804,7 +812,10 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
 
     def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
         head_input = self.get_representation(data)
-        return self.hybrid_head(head_input)
+        z = self.hybrid_head(head_input)
+        if self.side_input_module is not None:
+            z = torch.cat([z, self.side_input_module(data).to(z.dtype)], dim=-1)
+        return z
 
 
 # Simple registry to integrate with the existing model selection flow

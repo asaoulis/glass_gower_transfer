@@ -34,6 +34,7 @@ class H5CosmoDataset(Dataset):
         transform=None,
         return_cosmo_id: bool = False,
         allow_missing_cosmo_params: bool = False,
+        side_input_fn=None,
     ):
         self.paths = list(paths)
         self.nested_keys = nested_keys
@@ -50,6 +51,10 @@ class H5CosmoDataset(Dataset):
         # non-VICReg path keeps the unchanged (data_dict, theta) 2-tuple contract. Used by the VICReg
         # train loader to group same-cosmology samples for the invariance term.
         self.return_cosmo_id = return_cosmo_id
+        # Opt-in: per-PATH extra conditioning vector stored under data["side_input"] (e.g. the true
+        # cosmology for an oracle-conditioned b_g encoder; see src/ml/data/side_inputs.py). Default
+        # None leaves every existing item byte-identical.
+        self.side_input_fn = side_input_fn
 
     def __len__(self) -> int:
         return len(self.paths)
@@ -78,6 +83,9 @@ class H5CosmoDataset(Dataset):
                 )
                 if self.transform is not None:
                     data = self.transform(data)
+                if self.side_input_fn is not None:
+                    # From the file ACTUALLY returned (post skip-bad-file fallback), never idx.
+                    data["side_input"] = self.side_input_fn(path)
                 if self.return_cosmo_id:
                     # CRITICAL: derive the id from the file ACTUALLY returned (post skip-bad-file
                     # fallback `path = self.paths[j]`), never the requested idx — so a corrupt-file
@@ -123,6 +131,7 @@ def build_datasets(
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
     N_test_cosmologies: Optional[int] = None,
     return_cosmo_id: bool = False,
+    side_input_fn=None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     train_paths, val_paths, test_paths = split_by_cosmology(
         patterns,
@@ -143,15 +152,17 @@ def build_datasets(
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
         as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=transform,
-        return_cosmo_id=return_cosmo_id,
+        return_cosmo_id=return_cosmo_id, side_input_fn=side_input_fn,
     )
     val_ds = H5CosmoDataset(
         val_paths, nested_keys, cosmo_params,
-        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=None
+        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=None,
+        side_input_fn=side_input_fn,
     )
     test_ds = H5CosmoDataset(
         test_paths, nested_keys, cosmo_params,
-        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=None
+        as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=None,
+        side_input_fn=side_input_fn,
     )
     return train_ds, val_ds, test_ds
 
@@ -188,6 +199,7 @@ def build_dataloaders(
     N_test_cosmologies: Optional[int] = None,
     use_cosmo_batch_sampler: bool = False,
     m_per_cosmo: int = 2,
+    side_input_fn=None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Return DataLoaders for train/val/test ensuring no cosmology leakage.
 
@@ -226,6 +238,7 @@ def build_dataloaders(
         fixed_test_sim_ids=fixed_test_sim_ids,
         N_test_cosmologies=N_test_cosmologies,
         return_cosmo_id=use_cosmo_batch_sampler,
+        side_input_fn=side_input_fn,
     )
 
     if val_batch_size is None:

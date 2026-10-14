@@ -11,6 +11,7 @@ from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
 # Centralized dataloader builder
 from .data.data_loaders import build_dataloaders, build_nested_keys_from_quantities
+from .data.side_inputs import build_side_input_fn, side_input_config
 from .data.data_loading import unpack_data, load_cosmo_params
 # Use new abstracted scalers
 from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler
@@ -323,6 +324,9 @@ def prepare_data_parameters(config):
         # use_vicreg_loss; every other mode keeps the plain random loader and 2-tuple batches).
         use_cosmo_batch_sampler=getattr(config, 'use_vicreg_loss', False),
         m_per_cosmo=int(getattr(config, 'vicreg_m_per_cosmo', 2)),
+        # Optional oracle conditioning (config.side_input type 'true_theta'); None for every
+        # config without a side_input, i.e. unchanged items.
+        side_input_fn=build_side_input_fn(config),
     )
 
     # Print dataset lengths for visibility
@@ -407,6 +411,29 @@ def prepare_data_and_model(config, data_parameters=None):
 
     return (train_loader, val_loader, test_loader), model, scalers
 
+def _attach_side_input(embedding_model, side_cfg, config, model_kwargs):
+    """Attach config.side_input to the encoder; returns the extra conditioning dim."""
+    from .models.side_input import DataKeySideInput, FrozenEncoderSideInput
+
+    if not hasattr(embedding_model, "attach_side_input"):
+        raise ValueError(f"side_input is only supported for kids_hybrid_bandpowers_maps, not {config.model_type}")
+    if side_cfg["type"] == "true_theta":
+        module = DataKeySideInput(len(side_cfg["params"]))
+    else:
+        # Same architecture as the trained encoder (no KL: the summary is the deterministic mu).
+        # config.latent_dim, NOT the hybrid_output_dim-overridden width: the trained encoder was
+        # built from the config value (hybrid_output_dim then sets its final summary width).
+        side_latent = int(side_cfg.get("latent_dim", config.latent_dim))
+        side_kwargs = {**model_kwargs, 'use_kl': False} if config.model_type in KIDS_MODEL_BUILDERS else model_kwargs
+        side_encoder = MODEL_BUILDERS[config.model_type](side_latent, **side_kwargs)
+        side_dim = int(side_kwargs.get('hybrid_output_dim') or side_latent)
+        module = FrozenEncoderSideInput(side_encoder, side_dim)
+    module = module.to(next(embedding_model.parameters()).device)
+    embedding_model.attach_side_input(module)
+    print(f"[build_model] side_input {side_cfg['type']} -> conditioning dim +{module.dim}")
+    return module.dim
+
+
 def build_model(config, test_dataloader=None):
 
     redundancy_dim = getattr(config, 'redundancy_dim', 0)
@@ -449,7 +476,12 @@ def build_model(config, test_dataloader=None):
         print(f"Using hybrid_output_dim={hybrid_output_dim} instead of latent_dim={latent_dim} for encoder output dimension.")
         latent_dim = hybrid_output_dim  # override latent_dim for encoder output when hybrid_output_dim is set
 
-    conditioning_dim = latent_dim + redundancy_dim
+    side_cfg = side_input_config(config)
+    side_dim = 0
+    if side_cfg is not None:
+        side_dim = _attach_side_input(embedding_model, side_cfg, config, model_kwargs)
+
+    conditioning_dim = latent_dim + redundancy_dim + side_dim
     inference_dim = len(config.cosmo_param_names)
     inference_mode = getattr(config, 'inference_mode', 'npe')
 
@@ -661,6 +693,36 @@ def build_model(config, test_dataloader=None):
             pretrained_embedding_ckpt,
             freeze=freeze_embedding_net,
         )
+
+    # Frozen side encoder (config.side_input type 'frozen_encoder'): loaded AFTER the embedding_net
+    # warm start, and skipped when checkpoint_path restored the full model (whose state already
+    # carries the side encoder) -- the same contract as the warm starts above.
+    if side_cfg is not None and side_cfg["type"] == "frozen_encoder":
+        if checkpoint_path:
+            print("[build_model] checkpoint_path set -> SKIPPING the side-encoder load so the "
+                  "loaded checkpoint's weights survive.")
+        elif not side_cfg.get("ckpt_path"):
+            # Only the local smoke gate sets allow_random_init (it never loads cluster checkpoints).
+            if not side_cfg.get("allow_random_init"):
+                raise ValueError("side_input frozen_encoder needs ckpt_path (the trained encoder folder)")
+            print("[build_model] side-input encoder left RANDOM (allow_random_init; smoke only)")
+        else:
+            side_ckpts, _ = get_best_checkpoint(side_cfg["ckpt_path"], config.pretrained_band_match_string)
+            side_ckpt = side_ckpts[0]
+            print(f"[build_model] side-input encoder <- {side_ckpt}")
+            src_state = torch.load(side_ckpt, map_location="cpu")
+            src_state = src_state.get("state_dict", src_state)
+            from .models.lightning.utils import load_partial_weights
+            side_mod = model.model.embedding_net.side_input_module
+            diag = load_partial_weights(side_mod.encoder, src_state, prefix="model.embedding_net.",
+                                        freeze=True, verbose=True)
+            # The WHOLE side encoder must come from the checkpoint (a partial load would leave
+            # random frozen weights with a perfectly finite loss).
+            if not diag["loaded"] or diag["missing"] or diag["skipped_shape"] or diag.get("skipped_missing"):
+                raise RuntimeError(f"side-input encoder load incomplete from {side_ckpt}: loaded "
+                                   f"{diag['loaded']}, missing {len(diag['missing'])}, shape "
+                                   f"{len(diag['skipped_shape'])}, unmatched {len(diag.get('skipped_missing') or [])}")
+            side_mod.freeze()
 
     # Deferred band load: AFTER the embedding_net load, so the band the config actually asked for
     # is the one that survives (see the LOAD-ORDER HAZARD note above). Runs whether or not an

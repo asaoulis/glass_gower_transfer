@@ -128,21 +128,22 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
     extra_priors = {p: known_priors[p] for p in params if p in known_priors}
     flow_params = [p for p in params if p not in extra_priors]
 
-    if len(flow_params) == 0:
-        raise ValueError("build_gower_prior: no parameters left to model with a flow")
-
     preset = _merged_preset(preset_overrides)
     # Full scaler used to scale analytic priors into [0,1]
     full_scaler = _build_cosmo_preset_scaler(preset, params)
-    # Flow scaler only needs the flow parameter subset
-    flow_scaler = _build_cosmo_preset_scaler(preset, flow_params)
 
-    flow = train_or_load_gower_prior(
-        csv_path=csv_path,
-        variables=flow_params,
-        scaler=flow_scaler,
-        drop_first=192,
-    )
+    # Every parameter analytic (e.g. a b_g-only theta): no empirical flow to train -- the prior is
+    # the product of the analytic marginals.
+    flow = None
+    if flow_params:
+        # Flow scaler only needs the flow parameter subset
+        flow_scaler = _build_cosmo_preset_scaler(preset, flow_params)
+        flow = train_or_load_gower_prior(
+            csv_path=csv_path,
+            variables=flow_params,
+            scaler=flow_scaler,
+            drop_first=192,
+        )
 
     prior = build_flow_with_extras_prior(
         flow,

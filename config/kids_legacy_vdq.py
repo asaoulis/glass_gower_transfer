@@ -627,3 +627,34 @@ for _r in (3, 4):
     VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdq_z8_rr_k6_r{_r}_ens9_e150"] = "glass_encoder_finetune_nla_vdq_z8_rr"
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === PV-G kappa=2 b_g encoder CONDITIONED ON COSMOLOGY (user 2026-10-14) ===========================
+# The b_g-only encoders (`..._vdqk2_z8_bg`) constrain ~ONE bin per repeat (a random one, posterior
+# std ~0.4x the truth spread) and leave the rest at the prior; the learnt bin is 10-30 % overconfident.
+# Hypothesis (user): b_g leaves a cosmology-dependent imprint, and a b_g-only head has to learn the
+# cosmology implicitly with no supervision. Test: give the b_g density head the cosmology as an extra
+# conditioning input (`side_input`, src/ml/data/side_inputs.py), so the CNN can learn features that
+# only carry b_g information GIVEN cosmology. Same recipe as `_bg` otherwise (VDQ foundation warm
+# start, fresh 6-param head, fixed LR, 100 ep, z8 summary; the flow conditions on [z_bg(8), side]).
+#   _bg_oracle     : side = the TRUE 9 NLA-M cosmology params (preset-scaled) -> the CEILING. If b_g
+#                    stays near the prior here, per-bin b_g is not in the maps at this noise level.
+#   _bg_condcosmo  : side = the FROZEN kappa=2 cosmology encoder's z8 summary of the same (augmented)
+#                    batch, same repeat (`glass_encoder_finetune_nla_m_vdqk2_z8_cosmo`) -> the
+#                    practical version (a real observation has no true theta).
+# ⚠️ Their embedding nets emit [z_bg, side]: never use these rows as NLE / embeddings SOURCES.
+# Evaluate with eval.py --mode standard (b_g-only theta prior = analytic truncated Gaussians).
+# Launch: train --exp <row> --gpu a100 --repeat-indices 0 --wall_h 6 --mem-gb 48
+def _bg_side_input_row(side_input):
+    c = _encoder_finetune_vdq(_VDQ_GLASS_K2, _BG_THETA, preset_overrides=_BG_BOXES_K2)
+    c["side_input"] = side_input
+    return c
+
+
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_oracle"] = _assert_final_summary_dim(
+    _bg_side_input_row({"type": "true_theta", "params": list(_COSMO_9_NLAM)}), 8,
+    "glass_encoder_finetune_nla_m_vdqk2_z8_bg_oracle")
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo"] = _assert_final_summary_dim(
+    _bg_side_input_row({"type": "frozen_encoder",
+                        "ckpt_path": f"{_CKPT}/glass_encoder_finetune_nla_m_vdqk2_z8_cosmo/"}), 8,
+    "glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo")

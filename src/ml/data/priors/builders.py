@@ -318,8 +318,10 @@ def build_flow_with_extras_prior(
         raise ModuleNotFoundError("build_flow_with_extras_prior(return_restricted=True) requires 'sbi' (RestrictedPrior).")
 
     name_to_idx = {n: i for i, n in enumerate(scaler.parameter_names)}
-    flow_dist = NFlowDistribution(flow=flow, dims=len(columns))
-    dists = [flow_dist]
+    # flow=None: every parameter has an analytic prior (the product of `extra_priors`).
+    dists = [] if flow is None else [NFlowDistribution(flow=flow, dims=len(columns))]
+    if not dists and not extra_priors:
+        raise ValueError("build_flow_with_extras_prior: neither a flow nor extra priors given")
 
     if extra_priors is not None:
         for name, dist in extra_priors.items():
