@@ -622,7 +622,12 @@ kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_rr_k6_r3"] = _variate
 kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_rr_k6_r4"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r3_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_rr_k6_r3", _VDQ_GOWER_NLA, 3, _COSMO_8_NLA, _A_IA_NLA_BOX)
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_rr_k6_r4", _VDQ_GOWER_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
-for _r in (3, 4):
+# r5 (user 2026-10-14 ~21:00Z): the r3 reroll did NOT move (three inits at split_seed 45: -6.739/-6.742/-6.710 vs r4's
+# reroll -6.757 -> -6.867 at its own split) -> r3's ceiling is the SPLIT. Replace r3 by a NEW index 5 (new GLASS + Gower
+# split, foundation repeat-5 warm start); the nla pool becomes r0, r1, r2, r4(rr), r5(rr).
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_rr_k6_r5"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 5, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r5_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_rr_k6_r5", _VDQ_GOWER_NLA, 5, _COSMO_8_NLA, _A_IA_NLA_BOX)
+for _r in (3, 4, 5):
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdq_z8_rr_k6_r{_r}"] = "glass_encoder_finetune_nla_vdq_z8_rr"
     VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdq_z8_rr_k6_r{_r}_ens9_e150"] = "glass_encoder_finetune_nla_vdq_z8_rr"
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
