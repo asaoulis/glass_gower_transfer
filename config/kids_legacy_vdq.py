@@ -698,3 +698,24 @@ _c = _bg_side_input_row({"type": "frozen_encoder",
 _c["pretrained_embedding_ckpt_path"] = f"{_CKPT}/glass_encoder_finetune_nla_m_vdq_z8_bg_condcosmo_k1/"
 kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_fromk1"] = _assert_final_summary_dim(
     _c, 8, "glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_fromk1")
+
+
+# === kappa=2 b_g conditioning on the sc8 (NO a1 noise-norm) store (user 2026-10-14 ~22:10Z) ======================
+# Hypothesis: the per-mock a1 rescale (E_sc8 / noise_std_sc8) divides out exactly the noise-AMPLITUDE channel that b_g
+# modulates. Re-bake of the SAME kappa=2 raw store without it (prebake --noise-norm none, job 1387199). The frozen cosmology
+# side encoder must be trained on the SAME product (the sc8a1 one would see out-of-distribution per-mock amplitudes), so:
+#   _cosmo_sc8          : the kappa=2 cosmology encoder on sc8 (recipe of `_cosmo`: 9p, foundation flow preloaded)
+#   _bg_sc8             : b_g-only baseline on sc8
+#   _bg_condcosmo_sc8   : b_g + frozen `_cosmo_sc8` summary (train AFTER `_cosmo_sc8`)
+# All warm-start from the (sc8a1-trained) VDQ foundation -- the only foundation there is; the whole encoder finetunes.
+_VDQ_GLASS_K2_SC8 = f"{_GPU5}/glass_vdqk2_nla_m_f16_sc8_{_EB}/output_*.h5"
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_cosmo_sc8"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_K2_SC8, _COSMO_9_NLAM, load_flow=True), 8,
+    "glass_encoder_finetune_nla_m_vdqk2_z8_cosmo_sc8")
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_sc8"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_K2_SC8, _BG_THETA, preset_overrides=_BG_BOXES_K2), 8,
+    "glass_encoder_finetune_nla_m_vdqk2_z8_bg_sc8")
+_c = _encoder_finetune_vdq(_VDQ_GLASS_K2_SC8, _BG_THETA, preset_overrides=_BG_BOXES_K2)
+_c["side_input"] = {"type": "frozen_encoder", "ckpt_path": f"{_CKPT}/glass_encoder_finetune_nla_m_vdqk2_z8_cosmo_sc8/"}
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_sc8"] = _assert_final_summary_dim(
+    _c, 8, "glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_sc8")
