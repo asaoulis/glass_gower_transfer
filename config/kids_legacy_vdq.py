@@ -539,3 +539,53 @@ for _r in _NLE_REPEATS:
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments), \
     sorted(set(VDQ_NLE_SOURCES) - set(kids_legacy_vdq_experiments))
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === PV-G kappa=2 + NLA ARM (user 2026-10-14: new variate row, k=2 with the NLA IA model, NOT NLA-M) ==
+# Mirrors the NLA-M kappa=2 production chain above, with the NLA theta/box swapped in:
+#   _cosmo : the 8 NLA params (`_COSMO_8_NLA`, a_ia box `_A_IA_NLA_BOX`), b_g marginalised over the broad
+#            kappa=2 prior. FRESH flow head: the NLA-M foundation's 9-param head (a_ia + b_ia, NLA-M a_ia
+#            box) does not match, exactly as for `glass_encoder_finetune_nla_vdq_z8`.
+#   _bg    : the 6 b_g_bin params ONLY (kappa=2 boxes `_BG_BOXES_K2`), fresh flow head.
+#   joint NLE Stage A: 14-param theta (8 NLA + b_g_bin1..6), sources cosmo,bg, whiten k=10 (the value the
+#            NLA-M kappa=2 joint-summary test validated; not re-tested on this arm). OWN raw-embedding cache
+#            `vdqk2_nla_joint_r<r>` — never the NLA-M `vdqk2_joint_r<r>` (different encoders/store).
+# Store: SIMS GLASS twin glass_mocks_nla_vdq_bgpk2 (datasets_checklist §K2N, 4000 x 4) -> bake below.
+# Gower Stage B: NOT written yet (as for the NLA-M kappa=2 arm) — needs the Gower bake
+# gower_vdqk2_nla_f16_sc8a1_* (§K2N-W) and a joint (k=10, two-source) Stage-B recipe.
+# Launch (encoders): train --gpu a100|l40s glass_encoder_finetune_nla_vdqk2_z8_{cosmo,bg}
+# Launch (Stage A):  embed --gpu v100 --mem-gb 32 --target glass_nle_pretrain_nla_vdqk2_joint_k10_r<r>
+#         --sources glass_encoder_finetune_nla_vdqk2_z8_cosmo,glass_encoder_finetune_nla_vdqk2_z8_bg
+_VDQ_GLASS_K2_NLA = f"{_GPU5}/glass_vdqk2_nla_f16_sc8a1_{_EB}/output_*.h5"
+_K2_NLA_JOINT_SOURCES = "glass_encoder_finetune_nla_vdqk2_z8_cosmo,glass_encoder_finetune_nla_vdqk2_z8_bg"
+_K2_NLA_JOINT_THETA = list(_COSMO_8_NLA) + list(_BG_THETA)
+_K2_NLA_JOINT_BOXES = {**_A_IA_NLA_BOX, **_BG_BOXES_K2}
+assert len(_K2_NLA_JOINT_THETA) == 14, _K2_NLA_JOINT_THETA
+
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_vdqk2_z8_cosmo"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_K2_NLA, _COSMO_8_NLA, preset_overrides=_A_IA_NLA_BOX), 8,
+    "glass_encoder_finetune_nla_vdqk2_z8_cosmo")
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_vdqk2_z8_bg"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VDQ_GLASS_K2_NLA, _BG_THETA, preset_overrides=_BG_BOXES_K2), 8,
+    "glass_encoder_finetune_nla_vdqk2_z8_bg")
+
+
+def _k2_nla_joint_nle_a(r):
+    pre = _nle_pretrain_bgp(_VDQ_GLASS_K2_NLA, r, cosmo_param_names=list(_K2_NLA_JOINT_THETA),
+                            preset_overrides=_K2_NLA_JOINT_BOXES)
+    pre["whiten_embeddings"] = {"k": _K2_JOINT_NLE_K}
+    pre["embedding_cache_name"] = f"vdqk2_nla_joint_r{r}"
+    pre["reuse_embedding_cache"] = True
+    return pre
+
+
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_joint_k10_r0"] = _k2_nla_joint_nle_a(0)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_joint_k10_r1"] = _k2_nla_joint_nle_a(1)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_joint_k10_r2"] = _k2_nla_joint_nle_a(2)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_joint_k10_r3"] = _k2_nla_joint_nle_a(3)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_joint_k10_r4"] = _k2_nla_joint_nle_a(4)
+
+for _r in _NLE_REPEATS:
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdqk2_joint_k10_r{_r}"] = _K2_NLA_JOINT_SOURCES
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
