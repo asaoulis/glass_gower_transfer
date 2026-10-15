@@ -33,7 +33,9 @@ ARMS = {
     # ⭐ VDQ variates (2026-10-13, user: "run the variate observation long sampling"): repointed from the
     # no-VD `_bgp_z8_hf` chains to the VDQ k6 Stage-B rows (training-runs/VD-final-train-models G-PLAN).
     # nla_z repeat 3 is the `_r3b` row -- see EXPERIMENT_OVERRIDES; never format this template at r=3.
-    "nla":         ("gower_nle_finetune_nla_vdq_z8_k6_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 3, 4)),
+    # nla repeats 4 and 5 are the `_rr` encoder-reroll rows (EXPERIMENT_OVERRIDES); r3 is RETIRED (its split's GLASS
+    # ceiling, user 2026-10-14 -> replaced by index 5), so the tuple is deliberately non-contiguous.
+    "nla":         ("gower_nle_finetune_nla_vdq_z8_k6_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 4, 5)),
     "nla_z":       ("gower_nle_finetune_nla_z_vdq_z8_k6_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
     "vd":          ("gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150",   "sc8a1", (0, 1, 2, 3, 4)),
     "k2":          ("gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3)),
@@ -48,6 +50,12 @@ ARMS = {
 # was fit on the old encoder and must never be scored). ALWAYS resolve names via `arm_experiment`.
 EXPERIMENT_OVERRIDES = {
     ("nla_z", 3): "gower_nle_finetune_nla_z_vdq_z8_k6_r3b_ens9_e150",
+    # nla encoder reroll (training-runs/VD-final-train-models AMENDMENT 10, user 2026-10-14): r4 and the new
+    # index 5 run on `glass_encoder_finetune_nla_vdq_z8_rr` (own frames/scalers/whitener). Stage-B gates:
+    # r4 passed guard-c 50; r5 tripped 50 (gap 52.66) and passed under the user-raised 150 (2026-10-15).
+    # Bundled evals in family: FoM(Om,s8) 6.79 / 7.05, S8 w68 0.060 / 0.057, TARP .025 / .026.
+    ("nla", 4): "gower_nle_finetune_nla_vdq_z8_rr_k6_r4_ens9_e150",
+    ("nla", 5): "gower_nle_finetune_nla_vdq_z8_rr_k6_r5_ens9_e150",
 }
 
 # Variate arms whose rows still name no-VD chains (see the VDQ CUTOVER note above).
