@@ -41,6 +41,7 @@ import argparse
 import glob
 import os
 import re
+import shutil
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -155,6 +156,11 @@ def main():
                          "with the per-patch (north/south) std. Combine with "
                          "--eb-variant sc8_<tag> for the A3s8 / A3s8_A1 arms.")
     ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--min-free-gb", type=float, default=100.0,
+                    help="disk-space guard on the output filesystem: stop cleanly (exit 3, resumable - "
+                         "existing outputs are skipped on re-run) if free space drops below this, or if "
+                         "the projected remaining bake would leave less than this free. The bake store "
+                         "shares a disk with live training data, so never fill it. 0 disables.")
     args = ap.parse_args()
 
     files = sorted(glob.glob(args.src_glob))
@@ -165,8 +171,10 @@ def main():
         keep = set(sorted({_simid(p) for p in files})[: args.limit_cosmos])
         files = [p for p in files if _simid(p) in keep]
     os.makedirs(args.out_dir, exist_ok=True)
+    free_gb = shutil.disk_usage(args.out_dir).free / 1e9
     print(f"[prebake] {len(files)} src files -> {args.out_dir}  dtype={args.dtype} "
-          f"format={args.format} compression={args.compression}")
+          f"format={args.format} compression={args.compression}  free={free_gb:.0f} GB "
+          f"(guard min_free_gb={args.min_free_gb:.0f})", flush=True)
 
     work = [(p, args.out_dir, args.eb_variant, args.dtype, args.format,
              args.compression, args.clevel, args.keep_variant_tag, args.noise_norm)
@@ -175,6 +183,7 @@ def main():
     ok = bad = skip = 0
     total_bytes = 0
     bad_list = []
+    stopped = None
     with ProcessPoolExecutor(max_workers=args.workers) as ex:
         futs = [ex.submit(_bake_one, w) for w in work]
         for i, fut in enumerate(as_completed(futs), 1):
@@ -190,7 +199,21 @@ def main():
             if i % 100 == 0 or i == len(futs):
                 print(f"  {i}/{len(futs)}  ok={ok} skip={skip} bad={bad}  "
                       f"{(time.perf_counter()-t0):.0f}s", flush=True)
+                if args.min_free_gb > 0 and i < len(futs):
+                    free_gb = shutil.disk_usage(args.out_dir).free / 1e9
+                    # each pending file is assumed new (skips only make this conservative)
+                    need_gb = (total_bytes / max(ok, 1)) * (len(futs) - i) / 1e9 if ok else 0.0
+                    if free_gb < args.min_free_gb or free_gb - need_gb < args.min_free_gb:
+                        stopped = (f"free={free_gb:.0f} GB, projected remaining={need_gb:.0f} GB, "
+                                   f"min_free_gb={args.min_free_gb:.0f}")
+                        ex.shutdown(wait=True, cancel_futures=True)
+                        break
 
+    if stopped:
+        print(f"[prebake] STOPPED by disk-space guard after {i}/{len(futs)} ({stopped}); "
+              f"ok={ok} skip={skip} bad={bad}. Free space, then re-run (existing outputs are skipped).",
+              flush=True)
+        sys.exit(3)
     print(f"[prebake] DONE ok={ok} skip={skip} bad={bad} in {(time.perf_counter()-t0):.0f}s")
     if total_bytes:
         print(f"[prebake] wrote {total_bytes/1e9:.2f} GB  ({total_bytes/max(ok,1)/1e6:.2f} MB/sample)")

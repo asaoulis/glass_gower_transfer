@@ -724,3 +724,15 @@ _c = _encoder_finetune_vdq(_VDQ_GLASS_K2_SC8, _BG_THETA, preset_overrides=_BG_BO
 _c["side_input"] = {"type": "frozen_encoder", "ckpt_path": f"{_CKPT}/glass_encoder_finetune_nla_m_vdqk2_z8_cosmo_sc8/"}
 kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_sc8"] = _assert_final_summary_dim(
     _c, 8, "glass_encoder_finetune_nla_m_vdqk2_z8_bg_condcosmo_sc8")
+
+
+# === kappa=1 b_g encoder on the sc8 (NO a1 noise-norm) FOUNDATION store (user 2026-10-15) =======================
+# Key test: does dropping the per-mock a1 rescale let a b_g-only encoder constrain MORE THAN ONE bin (at least bins 1-3)
+# on the ~6x larger kappa=1 store? Like-for-like with `_bg_k1` (30 ep, kappa=1 boxes, foundation warm start) except the
+# store: no-a1 re-bake of the raw gpu4 glass_mocks_nla_m_vdq_bgp (prebake --eb-variant sc8_<EB> --noise-norm none, f16).
+# No conditioned twin: its frozen cosmology side encoder would itself need a no-a1 kappa=1 retrain.
+_VDQ_GLASS_SC8 = f"{_GPU5}/glass_vdq_nla_m_f16_sc8_{_EB}/output_*.h5"
+_c = _bg_k1_row()
+_c["data_patterns"] = [_VDQ_GLASS_SC8] if isinstance(_c["data_patterns"], (list, tuple)) else _VDQ_GLASS_SC8
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdq_z8_bg_k1_sc8"] = _assert_final_summary_dim(
+    _c, 8, "glass_encoder_finetune_nla_m_vdq_z8_bg_k1_sc8")
