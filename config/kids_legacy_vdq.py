@@ -627,6 +627,11 @@ kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r4_ens9_e150"] 
 # split, foundation repeat-5 warm start); the nla pool becomes r0, r1, r2, r4(rr), r5(rr).
 kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdq_z8_rr_k6_r5"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_NLA, 5, _COSMO_8_NLA, _A_IA_NLA_BOX)
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r5_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdq_z8_rr_k6_r5", _VDQ_GOWER_NLA, 5, _COSMO_8_NLA, _A_IA_NLA_BOX)
+# ⭐ guard-c 50 -> 150 for **rr r5 ONLY** (user decision 2026-10-15 ~15:00Z: "raise the guard"). Stage-B job 1387242 died on
+# member 0: ep0 gap 52.66 nats (Gower val NLL 51.868 vs Stage-A best -0.791); siblings r0 29.9 / r1 41-42.5 / r2 30.8 /
+# rr r4 passed 50. Resolution verified (encoder _rr r5 ep32 -6.7496, Stage A _rr_k6_r5 ep139 -0.7914, own whitener).
+# 150 = >=2.3x the observed gap (the convention used for the other raised rows); rr r4 keeps 50.
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdq_z8_rr_k6_r5_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 150.0
 for _r in (3, 4, 5):
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_vdq_z8_rr_k6_r{_r}"] = "glass_encoder_finetune_nla_vdq_z8_rr"
     VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdq_z8_rr_k6_r{_r}_ens9_e150"] = "glass_encoder_finetune_nla_vdq_z8_rr"
