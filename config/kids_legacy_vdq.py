@@ -794,6 +794,11 @@ kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r5"] = _va
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r5_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r5", _VDQ_GOWER_K2_NLA, 5, _COSMO_8_NLA, _A_IA_NLA_BOX)
 VDQ_VARIATE_NLE_SOURCES["glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r5"] = _K2_NLA_COSMO_ENC
 VDQ_NLE_SOURCES["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r5_ens9_e150"] = _K2_NLA_COSMO_ENC
+# guard-c 50 -> 150 for **K2N r5 ONLY** (user rule 2026-10-17 "raise the guard if a repeat val loss looks sensible"): Stage-B job
+# 1389038 died on member 0: ep0 gap 60.250 nats (Gower val NLL 59.292 vs Stage-A best -0.958); siblings 27.6-36.7; resolution verified
+# (encoder pretrain_ncosmoNone_5 ep46 -6.5297, own Stage-A r5 whitener). Same pattern as nla rr r5 (52.66 -> 150, came out in family).
+# 150 = >=2.3x the gap; judged afterwards on per-member test NLL on the shared 100-id lock vs r1/r2/r4.
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r5_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 150.0
 
 for _r in _NLE_REPEATS:
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k6_r{_r}"] = _K2_COSMO_ENC
