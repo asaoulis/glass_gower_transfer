@@ -784,6 +784,16 @@ kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r4_ens9_e1
 # Stage-A r3 whitener) = the split_seed r3 pattern (nla r3 1294, nla_z r3b 94). 800 = >=2.3x the gap; trained member vals
 # are then checked against r0/1/2/4 (reroll as a new index if out of family).
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r3_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 800.0
+# K2N r5 REPLACES r3 (2026-10-17, per the user's "if not, reroll"): under guard 800 r3 trained but is out of family on the
+# SHARED 100-id Gower test lock: per-member test NLL 3.9-7.3 vs r1 1.85-2.26 / r2 0.15-1.80 / r4 0.18-0.77 (r3 encoder is the
+# weakest, -6.621). As for nla r3 (same-index `_rr` did not move it: split ceiling), the reroll is a NEW index 5 (new GLASS +
+# Gower split, foundation repeat-5 warm start). Encoder: `train --exp glass_encoder_finetune_nla_vdqk2_z8_cosmo
+# --repeat-indices 5` (same experiment dir, pretrain_ncosmoNone_5). Stage B guard back at the in-family 50.
+# The k2_nla pool becomes r0, r1, r2, r4, r5.
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r5"] = _variate_nle_a_vdq_k6(_VDQ_GLASS_K2_NLA, 5, _COSMO_8_NLA, _A_IA_NLA_BOX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r5_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r5", _VDQ_GOWER_K2_NLA, 5, _COSMO_8_NLA, _A_IA_NLA_BOX)
+VDQ_VARIATE_NLE_SOURCES["glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r5"] = _K2_NLA_COSMO_ENC
+VDQ_NLE_SOURCES["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r5_ens9_e150"] = _K2_NLA_COSMO_ENC
 
 for _r in _NLE_REPEATS:
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k6_r{_r}"] = _K2_COSMO_ENC
