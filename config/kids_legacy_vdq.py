@@ -778,6 +778,12 @@ kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r1_ens9_e1
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r2_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r2", _VDQ_GOWER_K2_NLA, 2, _COSMO_8_NLA, _A_IA_NLA_BOX)
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r3_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r3", _VDQ_GOWER_K2_NLA, 3, _COSMO_8_NLA, _A_IA_NLA_BOX)
 kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_vdqk2_z8_cosmo_k6_r4", _VDQ_GOWER_K2_NLA, 4, _COSMO_8_NLA, _A_IA_NLA_BOX)
+# ⭐ guard-c 50 -> 800 for **K2N r3 ONLY** (user 2026-10-17: "raise the guard if a repeat val loss looks sensible, if not,
+# reroll"). Stage-B job 1388428 died on member 0: ep0 gap 337.785 nats (Gower val NLL 337.999 vs Stage-A best 0.214);
+# siblings r0 31.8 / r1 27.6 / r2 33.8 / r4 36.7. Resolution verified (encoder pretrain_ncosmoNone_3 ep52 -6.6211, own
+# Stage-A r3 whitener) = the split_seed r3 pattern (nla r3 1294, nla_z r3b 94). 800 = >=2.3x the gap; trained member vals
+# are then checked against r0/1/2/4 (reroll as a new index if out of family).
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r3_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 800.0
 
 for _r in _NLE_REPEATS:
     VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdqk2_z8_cosmo_k6_r{_r}"] = _K2_COSMO_ENC
