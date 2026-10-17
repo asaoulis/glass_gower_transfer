@@ -38,11 +38,16 @@ ARMS = {
     "nla":         ("gower_nle_finetune_nla_vdq_z8_k6_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 4, 5)),
     "nla_z":       ("gower_nle_finetune_nla_z_vdq_z8_k6_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
     "vd":          ("gower_nle_finetune_nla_m_vd_bgp_z8_hf_r{r}_ens9_e150",   "sc8a1", (0, 1, 2, 3, 4)),
-    "k2":          ("gower_nle_finetune_nla_m_bgpk2_z16_k5_hf_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3)),
+    # ⭐ kappa=2 (2026-10-17, user "final model rows"): repointed from the no-VD `_bgpk2_z16_k5_hf` chain to the VDQ
+    # COSMOLOGY-ONLY chain (b_g marginalised by the kappa=2 sims; training-runs/VD-final-train-models AMENDMENT 14).
+    "k2":          ("gower_nle_finetune_nla_m_vdqk2_z8_cosmo_k6_r{r}_ens9_e150", "sc8a1", (0, 1, 2, 3, 4)),
     # The 2-pt-ONLY (bandpower) NLE chain (M16 procedure, VDQ stores). Same flagship Gower store,
     # same 200-id test lock, so "what do the maps buy over the 2-point function?" is single-variable.
     # `arm_experiments` RAISES on a requested-but-missing repeat rather than silently dropping it.
     "band":        ("gower_nle_finetune_band_nla_m_vdq_k8_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
+    # kappa=2 + NLA IA (VDQ, cosmology-only, b_g marginalised). APPENDED LAST on purpose: sample_observation derives
+    # per-arm seeds from list(ARMS).index(arm), so inserting earlier would shift every later arm's seeds.
+    "k2_nla":      ("gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r{r}_ens9_e150",    "sc8a1", (0, 1, 2, 3, 4)),
 }
 
 # Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run
@@ -59,7 +64,8 @@ EXPERIMENT_OVERRIDES = {
 }
 
 # Variate arms whose rows still name no-VD chains (see the VDQ CUTOVER note above).
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd", "k2"})
+# k2_nla is DELAYED only until its Gower Stage B exists (gower_vdqk2_nla bake); k2 went live 2026-10-17.
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd", "k2_nla"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
@@ -154,6 +160,7 @@ MATCH_TEMPLATES = {
     "nla_z": "ncosmoNone_{r}",
     "vd": "ncosmoNone_{r}",
     "k2": "ncosmoNone_{r}",
+    "k2_nla": "ncosmoNone_{r}",
     # M16 carries max_trainval_cosmos=[300] (length 1), so `nle_external.match_string_for` derives
     # `ncosmo300_{r}` -- VERIFIED against that resolver, not inferred from the experiment name.
     "band": "ncosmo300_{r}",
