@@ -95,7 +95,8 @@ COMPANION_NAMES = {"novd": "companion 2-pt SBI (score, no VD)", "vd": "companion
 COMPANION_LABELS = {"novd": "2-pt SBI, no VD", "vd": "2-pt SBI, VD"}
 PLANCK_NAME = "Planck 2018 TT,TE,EE+lowE+lensing"
 PLANCK_LABEL = "Planck 2018"
-ARM_LABELS = {"nla_m": "field level", "band": "2-pt", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA"}
+ARM_LABELS = {"nla_m": "field level", "band": "2-pt", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
+              "k2": r"field level, $\kappa=2$", "k2_nla": r"field level, $\kappa=2$ + NLA"}
 # Colours: the VD-report scheme (Paul Tol muted, `S.palette()`): field level teal PAL[6], 2-pt wine
 # PAL[5] (script-local overrides of the style's `nla_m`/`band` colours: the style's indigo flagship
 # clashed with the wine next to it -- user 2026-10-12 -- so Tier-4 draws the field arm teal while
@@ -109,16 +110,22 @@ PAL = S.palette()
 # indigo, rose, orange, purple = KiDS + ext.). Blue sits between indigo (DES) and cyan (companion) but is far from both in
 # lightness; red is the vibrant partner of the HSC orange (that scheme's two warm hues are designed to
 # be told apart) and redder than the rose. In the 08 overlay NLA is also dashed (identity without colour).
-ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311"}
+# kappa=2 b_g-prior variates (2026-10-17): dark gold / deep violet, script-local like the IA variates (k2 = NLA-M IA
+# with the 2x broader b_g prior marginalised; k2_nla = the same with NLA IA).
+ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311", "k2": "#997700", "k2_nla": "#5D3A9B"}
 VARIATE_ARMS = ("nla_z", "nla")
 # stage-3 legend labels (stage 1/2 keep "field level" for NLA-M: a rerun of those must not relabel them)
 STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
-                 "band": "2-pt"}
+                 "band": "2-pt", "k2": r"field level, NLA-M, $\kappa=2$", "k2_nla": r"field level, NLA, $\kappa=2$"}
 STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level NLE, NLA-z IA, VD",
-                "nla": "field-level NLE, NLA IA, VD", "band": "2-pt (bandpowers) NLE, NLA-M IA, VD"}
-VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--"}            # 08 overlay outlines
+                "nla": "field-level NLE, NLA IA, VD", "band": "2-pt (bandpowers) NLE, NLA-M IA, VD",
+                "k2": "field-level NLE, NLA-M IA, VD, kappa=2 b_g prior (b_g marginalised)",
+                "k2_nla": "field-level NLE, NLA IA, VD, kappa=2 b_g prior (b_g marginalised)"}
+VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-."}            # 08 overlay outlines
 # per-variate figure group: (number, file stem)
-VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA")}
+# 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14. Opt-in: pass `--variates nla_z nla k2 [k2_nla]`.
+VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA"), "k2": ("13", "field_k2"),
+                  "k2_nla": ("14", "field_k2NLA")}
 MODEL_PRIOR = {"LCDM": "LCDM_fixed_w0", "wCDM": "kids_s8_analytic"}
 
 
@@ -1185,7 +1192,8 @@ def main(argv=None):
     comp = load_companion(args.companion_dir)
     surveys = load_surveys(args.beyond2pt) if not args.no_surveys else []
     L, W = "LCDM_fixed_w0", "kids_s8_analytic"
-    tt = {"band": "2-pt", "nla_m": "field", "nla_z": "field NLA-z", "nla": "field NLA"}
+    tt = {"band": "2-pt", "nla_m": "field", "nla_z": "field NLA-z", "nla": "field NLA", "k2": "field kappa=2",
+          "k2_nla": "field kappa=2 NLA"}
     ttl_kw = dict(titles=args.titles, mock=mock)
     written = []
 
