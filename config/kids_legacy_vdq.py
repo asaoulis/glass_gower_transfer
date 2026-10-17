@@ -792,3 +792,72 @@ for _r in _NLE_REPEATS:
     VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r{_r}_ens9_e150"] = _K2_NLA_COSMO_ENC
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === 2-pt (bandpower) NLE chain for the NLA variate (user 2026-10-17, unblinding-investigation-2 T3b) ===
+# The real field NLA arm prefers A_IA ~ 0 (S8 0.786) while the NLA-M field arm is prior-locked at a_ia ~5.7
+# (S8 0.844); no free-amplitude 2-pt arm existed. Mirror of the P3b band chain (`kids_legacy_band_nla_m_vdq`
+# -> `glass_nle_pretrain_band_nla_m_vdq_k8_r{r}` -> `gower_nle_finetune_band_nla_m_vdq_k8_r{r}_ens9_e150`)
+# moved onto the NLA stores with the NLA theta (`_COSMO_8_NLA`, a_ia box `_A_IA_NLA_BOX` = U[-6, 6]), exactly as
+# the field NLA variate rows pass them. Kept: band arch/epochs, whiten k=8 (pure-whiten), ens9, 150 epochs,
+# guard-c 50, the NLE project.
+# ⚠️ FORCED DEVIATION (Stage B split): the Gower NLA store `gower_vdq_nla` was simulated on the 200-id
+# `--gower-sim-set fixed_test` set ONLY, so the band chain's `max_trainval_cosmos=[300]` + 200-id lock would put
+# every sim in test. Stage B therefore uses the field NLA Stage B split (`_variate_nle_b_vdq`): all trainval
+# cosmologies 80/20 + the 100-id lock `_GOWER_TEST_IDS_100` => match string `ncosmoNone_{r}` (not ncosmo300).
+# That also makes "2-pt vs field within the NLA variate" a single-variable comparison.
+# Stage I trains a NEW band MLP on the NLA GLASS store (theta must carry the free a_ia); Stage A reads that
+# band's OWN training store so its split reproduces the band's. Launch:
+#   train --exp kids_legacy_band_nla_vdq --gpu v100 --mem-gb 32 --wall_h 6 --repeat-indices 0,1,2
+#   embed --gpu v100 --mem-gb 32 --target glass_nle_pretrain_band_nla_vdq_k8_r<r> --sources kids_legacy_band_nla_vdq
+#   embed --cpu --partition CORES40 --target gower_nle_finetune_band_nla_vdq_k8_r<r>_ens9_e150 --sources kids_legacy_band_nla_vdq
+_BAND_NLA_REPEATS_VDQ = (0, 1, 2)
+_BAND_NLA_SCALER = {
+    "data": {"type": "standard", "keys": None},
+    "cosmo": {"type": "preset", "preset_overrides": dict(_A_IA_NLA_BOX)},
+}
+
+
+def _band_nla_vdq():
+    c = _band_bgp(_VDQ_GLASS_NLA)
+    c["cosmo_param_names"] = list(_COSMO_8_NLA)
+    c["scaler_options"] = {k: dict(v) for k, v in _BAND_NLA_SCALER.items()}
+    c["repeat_indices"] = list(_BAND_NLA_REPEATS_VDQ)
+    return c
+
+
+def _band_nla_nle_a_vdq(r):
+    pre = _nle_pretrain_bgp(_VDQ_GLASS_NLA, r, cosmo_param_names=list(_COSMO_8_NLA),
+                            preset_overrides=_A_IA_NLA_BOX)
+    pre["whiten_embeddings"] = {"k": _BAND_NLE_K_VDQ}
+    return pre
+
+
+def _band_nla_nle_b_vdq(r):
+    ft = _nle_finetune(f"glass_nle_pretrain_band_nla_vdq_k{_BAND_NLE_K_VDQ}_r{r}", ensemble_repeats=9,
+                       whiten_k=_BAND_NLE_K_VDQ, warmstart_max_gap_nats=50.0,
+                       gower_data=_VDQ_GOWER_NLA, gower_eb=None,
+                       cosmo_param_names=list(_COSMO_8_NLA), preset_overrides=_A_IA_NLA_BOX)
+    ft["max_trainval_cosmos"] = None             # forced deviation: the 200-id store (see above)
+    ft["train_frac"] = 0.8
+    ft["val_frac"] = 0.2
+    ft["test_frac"] = 0.0
+    ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    ft["epochs"] = 150
+    ft["project"] = _BGP_NLE_PROJECT
+    return _nle_bake_repeat(ft, r)
+
+
+assert _BAND_NLE_K_VDQ == 8, _BAND_NLE_K_VDQ
+kids_legacy_vdq_experiments["kids_legacy_band_nla_vdq"] = _band_nla_vdq()
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_vdq_k8_r0"] = _band_nla_nle_a_vdq(0)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_vdq_k8_r1"] = _band_nla_nle_a_vdq(1)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_vdq_k8_r2"] = _band_nla_nle_a_vdq(2)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_vdq_k8_r0_ens9_e150"] = _band_nla_nle_b_vdq(0)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_vdq_k8_r1_ens9_e150"] = _band_nla_nle_b_vdq(1)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_vdq_k8_r2_ens9_e150"] = _band_nla_nle_b_vdq(2)
+for _r in _BAND_NLA_REPEATS_VDQ:
+    VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_vdq_k{_BAND_NLE_K_VDQ}_r{_r}"] = "kids_legacy_band_nla_vdq"
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_vdq"
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)

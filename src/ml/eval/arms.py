@@ -48,6 +48,10 @@ ARMS = {
     # kappa=2 + NLA IA (VDQ, cosmology-only, b_g marginalised). APPENDED LAST on purpose: sample_observation derives
     # per-arm seeds from list(ARMS).index(arm), so inserting earlier would shift every later arm's seeds.
     "k2_nla":      ("gower_nle_finetune_nla_vdqk2_z8_cosmo_k6_r{r}_ens9_e150",    "sc8a1", (0, 1, 2, 3, 4)),
+    # 2-pt (bandpower) NLE, NLA IA (free a_ia ~ U[-6,6]), VDQ stores (2026-10-17, unblinding-investigation-2 T3b).
+    # APPENDED LAST for the same seed-stability reason as k2_nla. Stage B uses the field NLA variate split (the
+    # gower_vdq_nla store is the 200-id fixed set: all trainval 80/20 + 100-id lock) -> ncosmoNone_{r}.
+    "band_nla":    ("gower_nle_finetune_band_nla_vdq_k8_r{r}_ens9_e150",          "sc8a1", (0, 1, 2)),
 }
 
 # Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run
@@ -66,7 +70,8 @@ EXPERIMENT_OVERRIDES = {
 # Variate arms whose rows still name no-VD chains (see the VDQ CUTOVER note above).
 # k2 went live 2026-10-17 00:45Z; k2_nla went live 2026-10-17 once its Gower Stage B r0-4 existed (r3 under the
 # user-raised guard-c 800, rev 7a26762).
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd"})
+# band_nla is DELAYED until its Gower Stage B exists (repeats 0-2, trained from 2026-10-17).
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd", "band_nla"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
@@ -165,6 +170,7 @@ MATCH_TEMPLATES = {
     # M16 carries max_trainval_cosmos=[300] (length 1), so `nle_external.match_string_for` derives
     # `ncosmo300_{r}` -- VERIFIED against that resolver, not inferred from the experiment name.
     "band": "ncosmo300_{r}",
+    "band_nla": "ncosmoNone_{r}",      # max_trainval_cosmos=None (the 200-id gower_vdq_nla store)
 }
 assert set(MATCH_TEMPLATES) == set(ARMS), "MATCH_TEMPLATES and ARMS must cover the same arms"
 assert all(a in ARMS and r in ARMS[a][2] for a, r in EXPERIMENT_OVERRIDES), "override for an unknown (arm, repeat)"
