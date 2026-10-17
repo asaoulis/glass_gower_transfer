@@ -64,8 +64,9 @@ EXPERIMENT_OVERRIDES = {
 }
 
 # Variate arms whose rows still name no-VD chains (see the VDQ CUTOVER note above).
-# k2_nla is DELAYED only until its Gower Stage B exists (gower_vdqk2_nla bake); k2 went live 2026-10-17.
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd", "k2_nla"})
+# k2 went live 2026-10-17 00:45Z; k2_nla went live 2026-10-17 once its Gower Stage B r0-4 existed (r3 under the
+# user-raised guard-c 800, rev 7a26762).
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
