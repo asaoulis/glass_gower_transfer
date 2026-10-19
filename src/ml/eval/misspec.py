@@ -909,6 +909,37 @@ def run_misspecification_eval(
     return summary
 
 
+_EXTRA_COSMO_PREFIXES = ("b_g_bin", "galaxy_bias")
+
+
+def _read_nuisance_extras(test_paths) -> Dict[str, np.ndarray]:
+    """Per-event scalar ``cosmo_dict`` entries that are NOT inference parameters (the per-bin galaxy
+    biases ``b_g_bin1..6`` and ``galaxy_bias*``), as ``extra_<key>`` float64 arrays [N] (NaN where a
+    file lacks the key). These drive the per-event b_g detectability analysis of the kappa=2 variates
+    and otherwise live only in the cluster-side HDF5. Returns {} on any failure (additive dump)."""
+    try:
+        vals: Dict[str, List[float]] = {}
+        for i, p in enumerate(test_paths):
+            try:
+                f = h5py.File(p, "r")
+            except OSError:  # unreadable file -> NaN row, keep the rest
+                continue
+            with f:
+                grp = f["cosmo_dict"] if "cosmo_dict" in f else {}
+                for k in grp:
+                    if not k.startswith(_EXTRA_COSMO_PREFIXES):
+                        continue
+                    try:
+                        v = float(np.asarray(grp[k][()]).reshape(-1)[0])
+                    except (TypeError, ValueError, IndexError):
+                        continue
+                    vals.setdefault(k, [np.nan] * len(test_paths))[i] = v
+        return {f"extra_{k}": np.asarray(v, dtype=np.float64) for k, v in vals.items()}
+    except Exception as e:  # never let a diagnostic dump break the eval
+        print(f"[save-moments] WARNING: nuisance extras not read: {e}", flush=True)
+        return {}
+
+
 def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names):
     """Compact per-event companion to the full posterior-sample dump (KB, not hundreds of MB).
 
@@ -956,6 +987,7 @@ def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names)
             payload["test_files"] = np.array(files)
             payload["sim_ids"] = np.array([extract_cosmo_index(p) for p in test_paths], dtype=np.int64)
             payload["aug_ids"] = np.array([_parse_aug_id(f) for f in files], dtype=np.int64)
+            payload.update(_read_nuisance_extras(test_paths))
         np.savez_compressed(out_path, **payload)
         print(f"[save-moments] wrote {out_path}  (N={theta.shape[0]}, keys={sorted(payload)})",
               flush=True)
