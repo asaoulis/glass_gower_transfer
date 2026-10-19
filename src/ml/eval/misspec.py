@@ -279,6 +279,23 @@ GOWER_VDQ_VARIATES: List[Dict] = [
     # Phase V, landed 2026-10-09T04:30Z (SIMS BAKE LANDED, job 1382786; data-ls 800 files, 40 sims).
     {"name": "gower_vdq_gb1p0", "patterns": f"{_GPU5}/gower_vdq_gb1p0_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": []},
+    # Phase V, all data-ls-verified 2026-10-19 (file counts in brackets).
+    # NLA (A_IA^total) variate, BAKE LANDED 2026-10-13T17:57Z job 1386486 [15840].
+    {"name": "gower_vdq_nla", "patterns": f"{_GPU5}/gower_vdq_nla_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": ["a_ia"]},
+    # NLA-z variate, BAKE LANDED 2026-10-13T17:12Z job 1386460 [15880].
+    {"name": "gower_vdq_nla_z", "patterns": f"{_GPU5}/gower_vdq_nla_z_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": ["a_ia"]},
+    # b_g fixed at 1.3, rng-seed 4242 (paired with gb1p0) [800].
+    {"name": "gower_vdq_gb1p3", "patterns": f"{_GPU5}/gower_vdq_gb1p3_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": []},
+    # kappa=2 b_g prior, NLA-M, BAKE LANDED 2026-10-16T20:05Z job 1388184 [15912].
+    {"name": "gower_vdq_gbk2", "patterns": f"{_GPU5}/gower_vdqk2_nla_m_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": []},
+    # DOUBLE misspecification (kappa=2 b_g prior + NLA): sits on neither single axis.
+    # BAKE LANDED 2026-10-17T10:45Z job 1388423 [15836].
+    {"name": "gower_vdqk2_nla", "patterns": f"{_GPU5}/gower_vdqk2_nla_f16_{_BGP_EB_TAG}/output_*.h5",
+     "exclude_params": ["a_ia"]},
 ]
 
 
