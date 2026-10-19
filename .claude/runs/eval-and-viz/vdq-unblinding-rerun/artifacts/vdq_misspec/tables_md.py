@@ -85,14 +85,15 @@ def section_pack(pk):
              "floor (big variates: the in-dist repeat spread on the same parameters; gb slices: cluster-matched "
              "40 cos × 2 rows in-dist draws). z = (truth − mean)/sd over all (repeat, event) rows, 95% cosmology CI.\n")
     hdr = ["variate", "n"] + [f"KL[{w}] median" for w in kls] + [f"AUROC KL[{w}]" for w in kls] + \
-          [f"power5 KL[{kls[0]}]", "cal_full (z vs floor)", "cal(Ωm,σ8,w) (z vs floor)", "E[z_Ωm]", "E[z_σ8]", "E[z_S8]",
+          [f"power5 KL[{kls[0]}]", "cal_full (z vs floor)", "cal(Ωm,σ8,w) (z vs floor)", "E[z_Ωm]", "E[z_σ8]", "E[z_S8]", "median z_S8",
            "P(\\|z_S8\\|>0.5) [excess]", "P(\\|z_S8\\|>1) [excess]"]
     L.append("| " + " | ".join(hdr) + " |")
     L.append("|" + "---|" * len(hdr))
     for v in vs:
         r = kla["variates"][v]
         s = C.SHORT[v]
-        cells = [s, str(r[f"kl_{kls[0]}"]["n_events"])]
+        dr = r.get("n_dropped_nonfinite_per_repeat") or []
+        cells = [s, str(r[f"kl_{kls[0]}"]["n_events"]) + (f" (drop {min(dr)}-{max(dr)}/rep)" if dr and max(dr) else "")]
         for w in kls:
             e = r[f"kl_{w}"]
             cells.append(ci(e["median"], e["median_ci95"]))
@@ -107,7 +108,9 @@ def section_pack(pk):
         c = r["cal"]
         for cc in ("cal_full", "cal3"):
             zf = c.get(f"{cc}_z_vs_floor")
-            cells.append(f"{c[f'{cc}_mean']:.4f}±{c[f'{cc}_sd']:.4f}" + (f" ({zf:+.1f})" if zf is not None else ""))
+            # a z built from a tiny floor sd is meaningless far above the floor: quote the ratio there
+            tag = "" if zf is None else (f" ({zf:+.1f})" if abs(zf) <= 20 else f" ({c[f'{cc}_ratio_to_floor']:.0f}× floor)")
+            cells.append(f"{c[f'{cc}_mean']:.4f}±{c[f'{cc}_sd']:.4f}" + tag)
             num(f"{key}_{s}_{cc}", c[f"{cc}_mean"])
         if len(c["available_params"]) < 9:
             cells[-2] += f" [{len(c['available_params'])}p]"
@@ -115,6 +118,10 @@ def section_pack(pk):
             z = r["z"][p]
             cells.append(ci(z["mean_z"], z["mean_z_ci95"], 2, True))
             num(f"{key}_{s}_meanz_{p}", z["mean_z"])
+        zz = r["z"]["S8"]
+        cells.append(ci(zz["median_z"], zz["median_z_ci95"], 2, True) if "median_z" in zz else "–")
+        if "median_z" in zz:
+            num(f"{key}_{s}_medianz_S8", zz["median_z"])
         for t in ("0.5", "1"):
             z = r["z"]["S8"]
             cells.append(f"{z[f'P_absz_gt_{t}']:.2f} [{z[f'P_absz_gt_{t}_excess']:+.2f}]")
@@ -164,7 +171,22 @@ def section_pack(pk):
                 num(f"{key}_gbpair_dz_{p}", x["dz_mean_over_repeats"])
         for v, a in bg["a_ia"].items():
             L.append(f"- `{v}`: A_IA^total ∈ [{a['A_total_min']:.2f}, {a['A_total_max']:.2f}] (median {a['A_total_median']:.2f}; {a['convention']})")
-        L.append(f"- gbk2 per-event b_g: {bg['gbk2_per_event_bg']}")
+        for v, b in bg.get("bg_severity", {}).items():
+            if "error" in b:
+                L.append(f"- `{v}` per-event b_g: {b['error']}")
+                continue
+            L.append(f"- `{v}` per-event galaxy-bias severity d = |z_bg| vs the κ=1 prior (χ6 median 2.35 / 95th 3.55): "
+                     f"median {b['d_median']:.2f}, 90th {b['d_p90']:.2f}; {b['frac_any_bin_outside_3sigma']:.1%} of events have a bin "
+                     f"outside ±3σ. KL power (in-dist 5% false alarm) inside / outside support: "
+                     f"{b['kl_power_inside_support']:.3f} / {b['kl_power_outside_support']:.3f}.")
+            L.append("")
+            L.append("  | d bin | n (cos) | KL power [95%] | mean-p power [95%] | E[z_Ωm] [95%] | E[z_S8] [95%] |")
+            L.append("  |---|---|---|---|---|---|")
+            for e in b["bins"]:
+                mp = ci(e["power_meanp"], e["power_meanp_ci95"], 2) if "power_meanp" in e else "–"
+                L.append(f"  | [{e['d_lo']:g}, {e['d_hi']:g}) | {e['n']} ({e['n_cos']}) | {ci(e['power_kl'], e['power_kl_ci95'], 2)} | {mp} | "
+                         f"{ci(e['mean_z_omega_m'], e['mean_z_omega_m_ci95'], 2, True)} | {ci(e['mean_z_S8'], e['mean_z_S8_ci95'], 2, True)} |")
+            L.append("")
         L.append("")
     return L
 
@@ -184,6 +206,27 @@ def main():
          "the phase6 CONDITIONAL-kNN mean-p** (`cond_knn`, needs the true θ) — a different detector under the same "
          "name. Those readings are superseded by this table; phase6 survives only as the mock-side `meanp_cond` "
          "detection-power column.\n"]
+    L += ["## Provenance (data quirks that affect the numbers)\n",
+          "- **2-pt nla / nla_z / vdqk2_nla KL rebuilt offline.** Those misspec cells ran as 5 separate per-repeat jobs "
+          "(the 5-repeat job timed out), so their `misspec_repeat_disagreement_*` files were rebuilt by the orchestrator "
+          "with `rebuild_kl.py` (`misspec._compute_repeat_disagreement` on mean/std² from the moments npz; validated "
+          "against the in-job 2-pt gbk2 file: kl_mean 0.063070 == 0.063070, max rel dev 2.7e-6). Every other cell has an "
+          "in-job KL file.",
+          "- **Dropped events (NLA family).** The misspec eval drops events whose posterior samples are non-finite "
+          "(far-OOD sampling degeneracy): 10-27 % per repeat, concentrated at A_IA^total < -3 (37-67 % of those events). "
+          "The cross-repeat KL keeps only events retained in ALL repeats (field 1166/1260/1227, 2-pt 1131/1145/1176 of "
+          "1592/1590/1592). KL, calibration and z statistics for these variates describe the RETAINED events -- a lower "
+          "bound on the misspecification. Oddity recorded, not explained: 2-pt repeat 1 dropped 0 events on all three "
+          "NLA-family variates (others 73-349).",
+          "- **Field summaries of the 5 new variates were encoded on CPU** (CORES40; a zombie process blocked the GPU), "
+          "against a CPU-encoded train cloud, while the local `_idtest` null and the observation score are GPU-encoded. "
+          "Measured in `meanp_knn.py`: in-job p vs local recomputation differ by <= 1 rank step of the null on 0.2-0.8 % "
+          "of (row, encoder) cells (gbk2: <= 2 steps on 1.1 %); 2-pt summaries (GPU) show 0 deviation except gb1p0 (CPU, "
+          "1 step on 1 %). Immaterial at the table's resolution.",
+          "- **Per-event b_g** (kappa=2 variates) comes from the FIELD misspec moments `extra_b_g_bin1..6` (commit af9c295) "
+          "and is mapped by test file onto the 2-pt pack (same lock + store).",
+          "- In-dist `_idtest` md5 unchanged by the fetch; both obs-score gates reproduce `meanp_recalibrated` to 6 d.p.",
+          ""]
     for key in ("field", "band"):
         L += section_pack(C.PACKS[key])
     L += ["## Standing caveats\n",

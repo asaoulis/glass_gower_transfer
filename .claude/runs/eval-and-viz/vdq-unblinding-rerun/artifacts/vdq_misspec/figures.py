@@ -115,8 +115,9 @@ def fig_tarp(subset):
             if col == 0:
                 ax.set_ylabel(S.tex("expected coverage"))
                 axr.set_ylabel(S.tex("ECP $-$ level"))
-            lim = max(0.05, float(np.nanmax(np.abs(axr.get_ylim()))))
-            axr.set_ylim(-lim, lim)
+        lim = max(0.05, max(float(np.nanmax(np.abs(a_.get_ylim()))) for a_ in axes[1]))
+        for a_ in axes[1]:
+            a_.set_ylim(-lim, lim)
         S.legend(axes[0, 1], loc="lower right", fontsize="small")
         _save(fig, "fig_tarp_coverage" + ("_om_s8_w" if subset else "_full"))
 
@@ -153,7 +154,8 @@ def _kde_region(ax, x, y, color, logx, frac=0.9):
     kde = gaussian_kde(np.vstack([lx, ly]))
     level = np.quantile(kde(np.vstack([lx, ly])), 1 - frac)
     # the OOD axis (-log10 p) is bounded below at 0: do not let the KDE spill into x < 0
-    gx = np.linspace(lx.min() - 0.3 if logx else max(lx.min() - 0.3, 0.0), lx.max() + 0.3, 140)
+    # (and it saturates at the null's resolution, -log10(1/(n_null+1)) = 3.2: no KDE beyond it)
+    gx = np.linspace(lx.min() - 0.3 if logx else max(lx.min() - 0.3, 0.0), lx.max() + (0.3 if logx else 0.0), 140)
     gy = np.linspace(ly.min() - 0.3, ly.max() + 0.3, 140)
     GX, GY = np.meshgrid(gx, gy)
     GZ = kde(np.vstack([GX.ravel(), GY.ravel()])).reshape(GX.shape)
@@ -220,13 +222,15 @@ def fig_axis(axis):
             _obs_line(axc, _obs_x(pk, axis))
             _obs_line(axm, _obs_x(pk, axis))
             axc.set_yscale("log")
+            lo_, hi_ = axc.get_ylim()
+            axc.set_ylim(lo_, hi_ * 6)          # headroom so the panel letter clears the top markers
             axm.set_yscale("log")
             if logx:
                 axm.set_xscale("log")
             else:
-                axm.set_xlim(left=-0.05)
+                axm.set_xlim(-0.05, 3.35)
             axc.set_title(S.tex(pk["title"]), loc="left")
-            S.panel_label(axc, "(a)" if col == 0 else "(b)", x=0.04, y=0.94)
+            S.panel_label(axc, "(a)" if col == 0 else "(b)", x=0.96, y=0.94, ha="right")
             if col == 0:
                 axc.set_ylabel(S.tex(r"TARP cal.\ error ($\Omega_\mathrm{m}, \sigma_8, w$)"))
                 axm.set_ylabel(S.tex(r"Mahalanobis $d$ of truth"))
@@ -362,13 +366,14 @@ def fig_zscore():
                 for k_, (p, mk) in enumerate(params):
                     e = z[p]
                     y = ymap[v] + (k_ - 1) * 0.22
-                    lo, hi = e["mean_z_ci95"]
-                    ax.errorbar(e["mean_z"], y, xerr=[[e["mean_z"] - lo], [hi - e["mean_z"]]], fmt=mk, ms=8,
+                    st = "median_z" if "median_z" in e else "mean_z"
+                    lo, hi = e[f"{st}_ci95"]
+                    ax.errorbar(e[st], y, xerr=[[e[st] - lo], [hi - e[st]]], fmt=mk, ms=8,
                                 color=C.colour(v), mec=C.colour(v), mew=1.6,
                                 mfc=C.colour(v) if p != "omega_m" else "white", elinewidth=1.6, capsize=0)
             ax.set_yticks(ys)
             ax.set_yticklabels([S.tex(C.name(v)) for v in C.VARIATES])
-            ax.set_xlabel(S.tex(r"mean $z = (\theta_0 - \mu)/\sigma$"))
+            ax.set_xlabel(S.tex(r"median $z = (\theta_0 - \mu)/\sigma$"))
             ax.set_title(S.tex(pk["title"]), loc="left")
             S.panel_label(ax, "(a)" if col == 0 else "(b)", x=0.03, y=0.98)
         lim = max(abs(x) for a_ in axes for x in a_.get_xlim())
@@ -379,7 +384,7 @@ def fig_zscore():
         _save(fig, "fig_zscore_bias")
 
     # appendix: z histograms vs N(0,1), rows = params, cols = packs
-    xg = np.linspace(-5, 5, 300)
+    xg = np.linspace(-6, 6, 300)
     with S.context():
         fig, axes = plt.subplots(3, 2, figsize=(2 * PANEL_W, 3 * PANEL_H * 0.75), sharex=True,
                                  gridspec_kw={"hspace": 0.1, "wspace": 0.15})
@@ -394,8 +399,8 @@ def fig_zscore():
                     if not m.any():
                         continue
                     z = rows[f"z_{p}"][m]
-                    z = np.clip(z[np.isfinite(z)], -5, 5)
-                    ax.hist(z, bins=50 if z.size > 2000 else 25, range=(-5, 5), density=True, histtype="step", lw=_lw(v), color=C.colour(v))
+                    z = z[np.isfinite(z)]          # NOT clipped: overflow would pile into spikes at the edges
+                    ax.hist(z, bins=50 if z.size > 2000 else 25, range=(-6, 6), density=False, weights=np.full(z.size, 1.0 / (z.size * 12.0 / (50 if z.size > 2000 else 25))), histtype="step", lw=_lw(v), color=C.colour(v))
                 ax.set_yticks([])
                 if col == 0:
                     ax.set_ylabel(S.label(p))
@@ -413,10 +418,14 @@ def fig_zscore():
 # F-6 galaxy-bias slices
 # =============================================================================================
 def fig_bg():
+    """(a) paired b_g = 1.3 minus 1.0 shift in units of the in-dist posterior width (both packs);
+    (b) kappa=2: detection power vs per-event b_g severity d; (c) kappa=2: mean z vs d."""
     params = ["omega_m", "sigma_8", "w0"]
+    pack_col = {"field": S.role_colour("flagship"), "band": S.arm_colour("band")}
     with S.context():
-        fig, axes = plt.subplots(1, 2, figsize=(2 * PANEL_W, PANEL_H), gridspec_kw={"wspace": 0.28})
-        ax = axes[0]
+        fig = plt.figure(figsize=(2 * PANEL_W, 2 * PANEL_H))
+        gs = fig.add_gridspec(2, 2, hspace=0.32, wspace=0.26)
+        ax = fig.add_subplot(gs[0, 0])
         have = False
         for k_, key in enumerate(PACK_ORDER):
             t = _tables(C.PACKS[key], "bgia")
@@ -424,39 +433,66 @@ def fig_bg():
                 continue
             have = True
             for i, p in enumerate(params):
-                s = t["gb_pair"]["summary"][p]
+                sm = t["gb_pair"]["summary"][p]
                 x = i + (k_ - 0.5) * 0.3
-                ax.bar(x, s["dtheta_over_sigma"], width=0.28, color=S.role_colour("flagship") if key == "field" else S.arm_colour("band"),
-                       alpha=0.85, label=S.tex(C.PACKS[key]["title"]) if i == 0 else None)
-                ax.errorbar(x, s["dtheta_over_sigma"], yerr=s["dtheta_sd_over_repeats"] / s["sigma_post_indist"],
+                ax.bar(x, sm["dtheta_over_sigma"], width=0.28, color=pack_col[key], alpha=0.85,
+                       label=S.tex(C.PACKS[key]["title"]) if i == 0 else None)
+                ax.errorbar(x, sm["dtheta_over_sigma"], yerr=sm["dtheta_sd_over_repeats"] / sm["sigma_post_indist"],
                             color="black", lw=1.4, capsize=3)
         ax.axhline(0, color=S.role_colour("reference"), lw=1.0)
         ax.set_xticks(range(len(params)))
         ax.set_xticklabels([S.label(p) for p in params])
-        ax.set_ylabel(S.tex(r"$\Delta\bar\theta / \sigma_\mathrm{post}$ ($b_g{=}1.3$ minus $1.0$)"))
+        ax.set_ylabel(S.tex(r"$\Delta\bar\theta / \sigma_\mathrm{post}$"))
+        ax.set_title(S.tex(r"$b_g = 1.3$ minus $b_g = 1.0$ (paired)"), loc="left", fontsize="medium")
         S.panel_label(ax, "(a)", x=0.03, y=0.96)
         if have:
-            S.legend(ax, loc="lower left", fontsize="small")
-        else:
-            ax.text(0.5, 0.5, S.tex(r"$b_g = 1.3$ slice not yet fetched"), transform=ax.transAxes, ha="center", color="0.4")
-        # (b) gbk2 population: z_S8 distribution vs in-dist (per-event b_g distance pending the h5 dump)
-        ax = axes[1]
-        for key, ls in (("field", "-"), ("band", "--")):
-            pk = C.PACKS[key]
-            rows = K.rows(pk)
-            for v in (C.IN_DIST, "gower_vdq_gbk2"):
-                m = rows["variate"] == v
-                if not m.any():
+            S.legend(ax, loc="upper right", fontsize="small")
+        # (b) power vs d, (c) mean z_S8 / z_Om vs d -- kappa=2
+        axp = fig.add_subplot(gs[0, 1])
+        axz = fig.add_subplot(gs[1, :])
+        v = "gower_vdq_gbk2"
+        for k_, key in enumerate(PACK_ORDER):
+            t = _tables(C.PACKS[key], "bgia")
+            b = (t or {}).get("bg_severity", {}).get(v)
+            if not b or "bins" not in b:
+                continue
+            xc = np.array([0.5 * (e["d_lo"] + min(e["d_hi"], 8.0)) for e in b["bins"]]) + (k_ - 0.5) * 0.12
+            for det, ls, mk in (("kl", "-", "o"), ("meanp", "--", "s")):
+                key_ = f"power_{det}"
+                if not all(key_ in e for e in b["bins"]):
                     continue
-                z = np.sort(rows["z_S8"][m][np.isfinite(rows["z_S8"][m])])
-                ax.plot(z, np.linspace(0, 1, z.size), color=C.colour(v), ls=ls, lw=_lw(v) - 0.6)
-        ax.set_xlim(-3.5, 3.5)
-        ax.set_xlabel(S.tex(r"$z_{S_8} = (S_8^\mathrm{true} - \mu)/\sigma$"))
-        ax.set_ylabel(S.tex("cumulative fraction"))
-        S.panel_label(ax, "(b)", x=0.03, y=0.96)
-        hs = [Line2D([], [], color=C.colour(v), lw=2.2, label=S.tex(C.name(v))) for v in (C.IN_DIST, "gower_vdq_gbk2")]
-        hs += [Line2D([], [], color="0.3", ls=ls, lw=2, label=S.tex(C.PACKS[k]["title"])) for k, ls in (("field", "-"), ("band", "--"))]
-        S.legend(ax, handles=hs, loc="lower right", fontsize="small")
+                y = np.array([e[key_] for e in b["bins"]])
+                lo = np.array([e[key_ + "_ci95"][0] for e in b["bins"]])
+                hi = np.array([e[key_ + "_ci95"][1] for e in b["bins"]])
+                axp.errorbar(xc, y, yerr=[y - lo, hi - y], color=pack_col[key], ls=ls, marker=mk, ms=7, lw=2, capsize=3)
+            for p, mk, off in (("S8", "D", 0.0), ("omega_m", "o", 0.06)):
+                y = np.array([e[f"mean_z_{p}"] for e in b["bins"]])
+                lo = np.array([e[f"mean_z_{p}_ci95"][0] for e in b["bins"]])
+                hi = np.array([e[f"mean_z_{p}_ci95"][1] for e in b["bins"]])
+                axz.errorbar(xc + off, y, yerr=[y - lo, hi - y], color=pack_col[key], marker=mk, ms=8, lw=0,
+                             elinewidth=1.8, capsize=3, mfc=pack_col[key] if p == "S8" else "white", mew=1.6)
+        for a_ in (axp, axz):
+            a_.axvspan(0, 3.55, color="0.9", zorder=0)
+            a_.set_xlim(0, 8.2)
+        axp.axhline(0.05, color=S.role_colour("reference"), ls=":", lw=1.2)
+        axp.set_ylim(0, 1)
+        axp.set_xlabel(S.tex(r"$b_g$ severity $d = |z_{b_g}|$ ($\kappa{=}1$ prior)"))
+        axp.set_ylabel(S.tex("detection power"))
+        axp.set_title(S.tex(r"$b_g$ prior $\kappa = 2$"), loc="left", fontsize="medium")
+        S.panel_label(axp, "(b)", x=0.03, y=0.96)
+        axz.axhline(0, color=S.role_colour("reference"), ls="--", lw=1.2)
+        axz.set_xlabel(S.tex(r"$b_g$ severity $d = |z_{b_g}|$ ($\kappa{=}1$ prior; shaded: within the $\chi_6$ 95th percentile)"))
+        axz.set_ylabel(S.tex(r"mean $z$"))
+        S.panel_label(axz, "(c)", x=0.015, y=0.95)
+        hs = [Line2D([], [], color=pack_col[k], lw=2.4, label=S.tex(C.PACKS[k]["title"])) for k in PACK_ORDER]
+        hs += [Line2D([], [], color="0.3", ls="-", marker="o", lw=2, label=S.tex("KL")),
+               Line2D([], [], color="0.3", ls="--", marker="s", lw=2, label=S.tex(r"mean-$p$ (kNN)"))]
+        S.legend(axp, handles=hs, loc="upper left", bbox_to_anchor=(0.12, 1.0), fontsize="small")
+        hz = [Line2D([], [], color="0.3", marker="D", ls="", ms=8, label=S.label("S8")),
+              Line2D([], [], color="0.3", marker="o", ls="", ms=8, mfc="white", mew=1.6, label=S.label("omega_m"))]
+        yl = axz.get_ylim()
+        axz.set_ylim(yl[0], yl[1] + 0.45 * (yl[1] - yl[0]))     # room for the legend above the points
+        S.legend(axz, handles=hz + hs[:2], loc="upper center", fontsize="small", ncol=4)
         _save(fig, "fig_bg_slices")
 
 

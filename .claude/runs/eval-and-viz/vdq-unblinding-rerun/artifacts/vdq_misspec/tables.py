@@ -251,6 +251,8 @@ def kl_axis(pk, variates, n_boot, seed, floor_draws):
             row[f"kl_{w}"] = e
         # ---- calibration ----
         cf, cs, avail = _cal_json(pk, v)
+        drops = [K.results(pk, v, j).get("n_dropped_nonfinite", 0) for j in range(len(pk["repeats"]))]
+        row["n_dropped_nonfinite_per_repeat"] = drops
         row["cal"] = {"available_params": avail, "cal_full_per_repeat": cf.tolist(), "cal3_per_repeat": cs.tolist(),
                       "cal_full_mean": float(cf.mean()), "cal_full_sd": float(cf.std()),
                       "cal3_mean": float(cs.mean()), "cal3_sd": float(cs.std())}
@@ -304,7 +306,10 @@ def kl_axis(pk, variates, n_boot, seed, floor_draws):
             ok = np.isfinite(z)
             zt[p] = {"mean_z": float(np.mean(z[ok])), "mean_z_ci95": K.cluster_ci(z[ok], sims[ok], n_boot=n_boot, seed=seed),
                      "mean_z_ci68": K.cluster_ci(z[ok], sims[ok], n_boot=n_boot, seed=seed, q=(16, 84)),
-                     "sd_z": float(np.std(z[ok]))}
+                     "sd_z": float(np.std(z[ok])),
+                     # the mean is TAIL-dominated for the NLA family (|z| > 6 tails); the median is the robust shift
+                     "median_z": float(np.median(z[ok])),
+                     "median_z_ci95": K.cluster_ci(z[ok], sims[ok], np.median, n_boot=n_boot, seed=seed)}
             for t in K.THRESH:
                 pr = float(np.mean(np.abs(z[ok]) > t))
                 zt[p][f"P_absz_gt_{t:g}"] = pr
@@ -400,9 +405,88 @@ def bgia(pk, variates, n_boot, seed):
               f"[{rec['A_total_min']:.2f},{rec['A_total_max']:.2f}] median {rec['A_total_median']:.2f} ({rec['convention']})",
               flush=True)
     out["a_ia"] = aia
-    out["gbk2_per_event_bg"] = ("BLOCKED: per-event b_g_bin1..6 are not in the npz (theta is the 9-vector); needs a "
-                                "data-h5 dump of gower_vdqk2_nla_m test files (orchestrator)")
+    out["bg_severity"] = {}
+    for v in ("gower_vdq_gbk2", C.DOUBLE):
+        if v in variates:
+            try:
+                out["bg_severity"][v] = bg_severity(pk, v, n_boot, seed)
+            except FileNotFoundError as e:
+                out["bg_severity"][v] = {"error": str(e)}
     return out
+
+
+# kappa=1 NLA-M training prior on b_g (src/KiDS/simulation_config.py GALAXY_BIAS_PRIOR_*; +-3 sigma truncated)
+BG_MU = np.array([1.0181, 1.0698, 1.1302, 1.2427, 1.3739, 1.4805])
+BG_SIGMA = np.array([0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985])
+D_EDGES = [0.0, 2.0, 3.0, 4.0, 5.0, 6.5, 50.0]
+
+
+def bg_records(v):
+    """Per-event b_g_bin1..6 by test file, from the FIELD pack's misspec moments (extra_b_g_bin*,
+    commit af9c295). The 2-pt pack shares the lock + store, so it maps by test file."""
+    f = os.path.join(C.PACKS["field"]["misspec"], v, f"misspec_posterior_moments_{C.PACKS['field']['matches'][0]}.npz")
+    d = K.load_npz(f)
+    if "extra_b_g_bin1" not in d:
+        raise FileNotFoundError(f"{f} has no extra_b_g_bin* fields")
+    B = np.stack([np.asarray(d[f"extra_b_g_bin{i}"], float) for i in range(1, 7)], axis=1)
+    return dict(zip([K.b(x) for x in d["test_files"]], B))
+
+
+def bg_severity(pk, v, n_boot, seed):
+    """Per-event galaxy-bias severity d = |z_bg| (chi_6 under the kappa=1 prior) and max_i |z_i|, and the
+    detection power / bias as a function of it (memory ood-diagnostics-blind-to-bg: report per-event
+    detectability vs distance, never a bare 'undetectable')."""
+    rec = bg_records(v)
+    f_v, s_v, k_v = K.kl_event(pk, v, pk["kl"])
+    _f, _s, k_i = K.kl_event(pk, C.IN_DIST, pk["kl"])
+    thr = float(np.quantile(k_i, 0.95))
+    B = np.array([rec.get(f, np.full(6, np.nan)) for f in f_v])
+    Z = (B - BG_MU) / BG_SIGMA
+    d = np.sqrt(np.nansum(Z ** 2, 1))
+    mx = np.nanmax(np.abs(Z), 1)
+    ok = np.isfinite(B).all(1)
+    mp = {}
+    if os.path.exists(pk["meanp_npz"]):
+        dm = K.load_npz(pk["meanp_npz"])
+        m = dm["variate"] == v
+        mp = dict(zip([K.b(x) for x in dm["test_files"][m]], dm["meanp_knn_recal"][m]))
+    p_v = np.array([mp.get(f, np.nan) for f in f_v])
+    rows = K.rows(pk, [v])
+    zS8, zOm = {}, {}
+    for f, a, c in zip(rows["file"], rows["z_S8"], rows["z_omega_m"]):
+        zS8.setdefault(f, []).append(a)
+        zOm.setdefault(f, []).append(c)
+    zs = np.array([np.nanmean(zS8.get(f, [np.nan])) for f in f_v])
+    zo = np.array([np.nanmean(zOm.get(f, [np.nan])) for f in f_v])
+    res = {"n_events": int(ok.sum()), "n_missing_bg": int((~ok).sum()), "kl_threshold_in_dist_p95": thr,
+           "d_median": float(np.median(d[ok])), "d_p90": float(np.percentile(d[ok], 90)),
+           "frac_any_bin_outside_3sigma": float(np.mean(mx[ok] > 3)),
+           "chi6_reference": {"median": 2.35, "p95": 3.55}, "bins": []}
+    out_sup = ok & (mx > 3)
+    res["kl_auroc_outside_support"] = K.auroc(k_i, k_v[out_sup]) if out_sup.any() else None
+    res["kl_power_outside_support"] = float(np.mean(k_v[out_sup] > thr)) if out_sup.any() else None
+    res["kl_power_inside_support"] = float(np.mean(k_v[ok & ~out_sup] > thr))
+    for lo, hi in zip(D_EDGES[:-1], D_EDGES[1:]):
+        m = ok & (d >= lo) & (d < hi)
+        if m.sum() < 10:
+            continue
+        sims = s_v[m]
+        e = {"d_lo": lo, "d_hi": hi, "n": int(m.sum()), "n_cos": int(len(np.unique(sims))),
+             "power_kl": float(np.mean(k_v[m] > thr)),
+             "power_kl_ci95": K.cluster_ci((k_v[m] > thr).astype(float), sims, n_boot=n_boot, seed=seed),
+             "mean_z_S8": float(np.nanmean(zs[m])), "mean_z_S8_ci95": K.cluster_ci(zs[m], sims, np.nanmean, n_boot=n_boot, seed=seed),
+             "mean_z_omega_m": float(np.nanmean(zo[m])),
+             "mean_z_omega_m_ci95": K.cluster_ci(zo[m], sims, np.nanmean, n_boot=n_boot, seed=seed)}
+        if np.isfinite(p_v[m]).any():
+            e["power_meanp"] = float(np.nanmean(p_v[m] < 0.05))
+            e["power_meanp_ci95"] = K.cluster_ci((p_v[m] < 0.05).astype(float), sims, n_boot=n_boot, seed=seed)
+        res["bins"].append(e)
+    print(f"[bgia] {pk['key']} {v}: b_g severity median d {res['d_median']:.2f}, outside +-3sigma "
+          f"{res['frac_any_bin_outside_3sigma']:.1%}; KL power in/out support {res['kl_power_inside_support']:.3f}/"
+          f"{res['kl_power_outside_support']}; bins " + "; ".join(
+              f"d[{b['d_lo']:g},{b['d_hi']:g}) n={b['n']} P_kl={b['power_kl']:.2f} zS8={b['mean_z_S8']:+.2f}" for b in res["bins"]),
+          flush=True)
+    return res
 
 
 def b_ok(variates, v):
