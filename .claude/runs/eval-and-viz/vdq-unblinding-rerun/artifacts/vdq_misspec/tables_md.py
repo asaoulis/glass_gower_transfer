@@ -76,6 +76,29 @@ def section_pack(pk):
         cells.append(f"{m['frac_p_lt_0.05']:.3f} [{m['in_dist_frac_p_lt_0.05']:.3f}]" if m else "–")
         cells.append(f"{m['median_p_pte']:.3g}" if m else "–")
         L.append("| " + " | ".join(cells) + " |")
+    # population match: the KL axis keeps only events retained in ALL repeats (non-finite sampling drops),
+    # the kNN axis uses every summaries row -- compare the two on the same events too
+    d = K.load_npz(pk["meanp_npz"])
+    mi = d["variate"] == C.IN_DIST
+    pi = d["meanp_knn_recal"][mi]
+    _f, _s, k_ind_ = K.kl_event(pk, C.IN_DIST, pk["kl"])
+    parts = []
+    for v in C.NLA_FAMILY:
+        if v not in vs:
+            continue
+        files, _sv, kv_ = K.kl_event(pk, v, pk["kl"])
+        m = d["variate"] == v
+        f = np.array([K.b(x) for x in d["test_files"][m]])
+        pv = d["meanp_knn_recal"][m]
+        keep = np.isin(f, files)
+        am = K.auroc(-np.log10(pi), -np.log10(pv[keep]))
+        num(f"{key}_{C.SHORT[v]}_auroc_meanp_knn_klmatched", am)
+        parts.append(f"{C.SHORT[v]}: meanp_knn {am:.3f} (flag05 {np.mean(pv[keep] < 0.05):.2f}, n={int(keep.sum())}) vs KL "
+                     f"{K.auroc(k_ind_, kv_):.3f}")
+    if parts:
+        L.append("")
+        L.append("**Population-matched (NLA family).** On ONLY the events the KL axis retains (sampling drops removed): "
+                 + "; ".join(parts) + ". The kNN axis stays the stronger detector, by a smaller margin than the all-event AUROCs suggest.")
     L.append("")
     # ---------------- KL axis
     L.append(f"### KL (cross-repeat disagreement) axis + calibration + bias\n")
@@ -147,6 +170,7 @@ def section_pack(pk):
         rd = _reading(os.path.join(pk["tier2_dir"], sub, f"obs_reading_{o['label']}.json"))
         if not rd:
             continue
+        bt = _reading(os.path.join(pk["tier2_dir"], sub, "bias_tables.json"))
         for d in ("meanp", "kl"):
             if d not in rd or rd[d].get("per_param") is None:
                 continue
@@ -157,6 +181,10 @@ def section_pack(pk):
                          f"n={rd[d]['n_rows']}: E[z_S8] = {s8['mean_z']:+.2f} (CI68 {s8['mean_z_ci68'][0]:+.2f}..{s8['mean_z_ci68'][1]:+.2f}); "
                          + "; ".join(f"P(|z_S8|>{t}) {s8[f'P_absz_gt_{t}']['pooled']:.2f} [excess {s8[f'P_absz_gt_{t}']['excess']:+.2f}]"
                                      for t in ("0.5", "1")))
+                if bt and d in bt:
+                    from src.observation.checks.tier2 import lookup
+                    mix = lookup(bt[d], float(rd[d]["value"]))["variate_mix"]
+                    L.append("    - bin variate mix (rows): " + ", ".join(f"{C.SHORT.get(k_, k_)} {n_}" for k_, n_ in mix.items()))
     L.append("")
     # ---------------- b_g / IA
     if bg:
