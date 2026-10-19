@@ -110,6 +110,15 @@ def main(argv=None):
     if args.rows_cache and os.path.exists(args.rows_cache):
         with np.load(args.rows_cache, allow_pickle=False) as d:
             rows = {("file" if k == "files" else k): d[k] for k in d.files}
+        # a cache may hold MORE variates than requested (one cache, per-variate + pooled tables):
+        # keep exactly --variates, and refuse a request the cache cannot satisfy
+        have = set(str(v) for v in np.unique(rows["variate"]))
+        if not set(variates) <= have:
+            raise SystemExit(f"rows cache {args.rows_cache} lacks {sorted(set(variates) - have)} -- rebuild it")
+        keep = np.isin(rows["variate"], variates)
+        if not keep.all():
+            rows = {k: v[keep] for k, v in rows.items()}
+            print(f"[tier2-tables] rows cache filtered to {variates} ({int(keep.sum())} rows)", flush=True)
     if rows is None:
         rows = load_rows(args.base_dir, experiment=args.experiment, variates=variates, repeats=list(args.repeats),
                          phase6_dir=(args.phase6_dir if args.meanp_source == "phase6" else None),
