@@ -71,8 +71,9 @@ EXPERIMENT_OVERRIDES = {
 # k2 went live 2026-10-17 00:45Z; k2_nla went live 2026-10-17 once its Gower Stage B r0-4 existed (r3 under the
 # user-raised guard-c 800, rev 7a26762). k2_nla r3 RETIRED -> r5 (2026-10-17): r3 per-member test NLL 3.9-7.3 on the shared
 # 100-id lock vs siblings 0.15-2.26 (out of family); r5 (new split, guard-c 150 for an ep0 gap of 60.25) = 1.98-2.45 (in family).
-# band_nla is DELAYED until its Gower Stage B exists (repeats 0-2, trained from 2026-10-17).
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd", "band_nla"})
+# band_nla went live 2026-10-19 once its Gower Stage B r0-2 existed (r0/r2 under the user-rule guard-c 150, rev 96bffe9;
+# member frames recovered per repeat before external scoring).
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")

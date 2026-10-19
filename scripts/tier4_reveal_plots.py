@@ -116,16 +116,18 @@ ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3
 VARIATE_ARMS = ("nla_z", "nla")
 # stage-3 legend labels (stage 1/2 keep "field level" for NLA-M: a rerun of those must not relabel them)
 STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
-                 "band": "2-pt", "k2": r"field level, NLA-M, $\kappa=2$", "k2_nla": r"field level, NLA, $\kappa=2$"}
+                 "band": "2-pt", "k2": r"field level, NLA-M, $\kappa=2$", "k2_nla": r"field level, NLA, $\kappa=2$",
+                 "band_nla": "2-pt, NLA"}
 STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level NLE, NLA-z IA, VD",
                 "nla": "field-level NLE, NLA IA, VD", "band": "2-pt (bandpowers) NLE, NLA-M IA, VD",
                 "k2": "field-level NLE, NLA-M IA, VD, kappa=2 b_g prior (b_g marginalised)",
-                "k2_nla": "field-level NLE, NLA IA, VD, kappa=2 b_g prior (b_g marginalised)"}
-VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-."}            # 08 overlay outlines
+                "k2_nla": "field-level NLE, NLA IA, VD, kappa=2 b_g prior (b_g marginalised)",
+                "band_nla": "2-pt (bandpowers) NLE, NLA IA (free A_IA), VD"}
+VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":"}            # 08 overlay outlines
 # per-variate figure group: (number, file stem)
-# 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14. Opt-in: pass `--variates nla_z nla k2 [k2_nla]`.
+# 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14, the 2-pt NLA arm (T3b) 15. Opt-in: pass `--variates nla_z nla k2 [k2_nla] [band_nla]`.
 VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA"), "k2": ("13", "field_k2"),
-                  "k2_nla": ("14", "field_k2NLA")}
+                  "k2_nla": ("14", "field_k2NLA"), "band_nla": ("15", "2pt_NLA")}
 MODEL_PRIOR = {"LCDM": "LCDM_fixed_w0", "wCDM": "kids_s8_analytic"}
 
 
@@ -1193,7 +1195,7 @@ def main(argv=None):
     surveys = load_surveys(args.beyond2pt) if not args.no_surveys else []
     L, W = "LCDM_fixed_w0", "kids_s8_analytic"
     tt = {"band": "2-pt", "nla_m": "field", "nla_z": "field NLA-z", "nla": "field NLA", "k2": "field kappa=2",
-          "k2_nla": "field kappa=2 NLA"}
+          "k2_nla": "field kappa=2 NLA", "band_nla": "2-pt NLA"}
     ttl_kw = dict(titles=args.titles, mock=mock)
     written = []
 
