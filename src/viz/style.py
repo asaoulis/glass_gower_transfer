@@ -324,9 +324,9 @@ def arm_name(arm: str) -> str:
 # Saving (paper: svg 300 dpi + png 200 dpi, tight bbox)
 # --------------------------------------------------------------------------------------------
 def save(fig, path: str | os.PathLike, formats: Sequence[str] = ("png", "pdf"),
-         transparent: bool = False, close: bool = True) -> list[str]:
+         transparent: bool = False, close: bool = True, png_dpi: int | None = None) -> list[str]:
     """Save `fig` as every format in `formats` next to `path` (extension replaced). PNG at
-    200 dpi, vector formats at 300 dpi, tight bbox -- the paper's settings."""
+    200 dpi (or ``png_dpi``), vector formats at 300 dpi, tight bbox -- the paper's settings."""
     base, _ = os.path.splitext(str(path))
     os.makedirs(os.path.dirname(base) or ".", exist_ok=True)
     written = []
@@ -336,7 +336,7 @@ def save(fig, path: str | os.PathLike, formats: Sequence[str] = ("png", "pdf"),
     with plt.style.context(styles()), plt.rc_context({"font.family": "serif"}):
         for fmt in formats:
             p = f"{base}.{fmt}"
-            fig.savefig(p, dpi=PNG_DPI if fmt == "png" else VECTOR_DPI, bbox_inches="tight",
+            fig.savefig(p, dpi=(png_dpi or PNG_DPI) if fmt == "png" else VECTOR_DPI, bbox_inches="tight",
                         transparent=transparent)
             written.append(p)
     if close:

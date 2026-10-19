@@ -26,13 +26,14 @@ if str(REPO) not in sys.path:
 import numpy as np  # noqa: E402
 
 
-def _curves_figure(rows, tables, out_png, params=("omega_m", "sigma_8", "S8"), thresholds=(0.3, 0.5, 1.0)):
+def _curves_figure(rows, tables, out_png, params=("omega_m", "sigma_8", "S8"), thresholds=(0.3, 0.5, 1.0),
+                   in_dist_name="gower_bgp_nla_m"):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     dets = list(tables)
     fig, axes = plt.subplots(len(params), len(dets), figsize=(4.6 * len(dets), 3.2 * len(params)), squeeze=False)
-    in_dist = rows["variate"] == "gower_bgp_nla_m"
+    in_dist = rows["variate"] == in_dist_name
     for j, det in enumerate(dets):
         t = tables[det]
         for i, p in enumerate(params):
@@ -73,9 +74,32 @@ def main(argv=None):
                          "(om_s8, S8, om_s8_w0, om_s8_fullcov). See artifacts/KL_SUBSET_STUDY.md. "
                          "The choice is STAMPED into bias_tables.json and the markdown header: a "
                          "table must never be read against an observation scored differently.")
+    # Pack / variate plumbing (2026-10-19, vdq-unblinding-rerun P1.2). Defaults = the previous
+    # hardcoded behaviour (old no-VD BGP field pack, its 7 variates, repeats 0-4), so a call
+    # without these flags is byte-identical to before.
+    ap.add_argument("--experiment", default="gower_npe_finetune_nla_m_bgp_z8_ens1",
+                    help="pack name used for the scaler box (S8 from samples, KL subsets)")
+    ap.add_argument("--variates", nargs="+", default=None,
+                    help="variate dirs under misspec/ and summaries/ (default: tier2.VARIATES_DEFAULT)")
+    ap.add_argument("--in-dist", default=None, help="in-distribution variate (default: tier2.IN_DIST)")
+    ap.add_argument("--repeats", nargs="+", type=int, default=[0, 1, 2, 3, 4],
+                    help="encoder repeats of the pack (field VDQ pack: 0 2 3 4 5)")
+    ap.add_argument("--meanp-source", choices=("phase6", "obs_knn"), default="phase6",
+                    help="phase6 = the multiencoder_ood combined_p (cond_knn mean-p, needs true theta; "
+                         "mock-side only); obs_knn = the OBS-IDENTICAL encoder-mean of the unconditional "
+                         "kNN p recalibrated against the _idtest null (artifacts/vdq_misspec/meanp_knn.py), "
+                         "the statistic obs-score's meanp_recalibrated actually is")
+    ap.add_argument("--meanp-npz", default=None, help="meanp_knn.py output (required for --meanp-source obs_knn)")
     args = ap.parse_args(argv)
 
-    from src.observation.checks.tier2 import adopted_kl_for, bias_table, format_markdown, load_rows, lookup
+    from src.observation.checks.tier2 import (IN_DIST, VARIATES_DEFAULT, adopted_kl_for, bias_table,
+                                              format_markdown, load_rows, lookup)
+    variates = list(args.variates) if args.variates else list(VARIATES_DEFAULT)
+    in_dist = args.in_dist or IN_DIST
+    if in_dist not in variates:
+        raise SystemExit(f"--in-dist {in_dist} is not in --variates {variates}")
+    if args.meanp_source == "obs_knn" and not args.meanp_npz:
+        raise SystemExit("--meanp-source obs_knn needs --meanp-npz (artifacts/vdq_misspec/meanp_knn.py output)")
     if args.kl_params is None:
         args.kl_params = adopted_kl_for(args.base_dir)
         print("[tier2-tables] kl_params not given -> adopted statistic for this pack: %s"
@@ -87,20 +111,35 @@ def main(argv=None):
         with np.load(args.rows_cache, allow_pickle=False) as d:
             rows = {("file" if k == "files" else k): d[k] for k in d.files}
     if rows is None:
-        rows = load_rows(args.base_dir, phase6_dir=args.phase6_dir,
+        rows = load_rows(args.base_dir, experiment=args.experiment, variates=variates, repeats=list(args.repeats),
+                         phase6_dir=(args.phase6_dir if args.meanp_source == "phase6" else None),
                          match_template=args.match_template, kl_params=args.kl_params)
         if args.rows_cache:
             np.savez(args.rows_cache, **{("files" if k == "file" else k): v for k, v in rows.items()})
+    if args.meanp_source == "obs_knn":
+        # event-level join on (variate, test-file basename): the same value on every repeat row of
+        # an event, exactly like the phase6 column it replaces
+        with np.load(args.meanp_npz, allow_pickle=False) as d:
+            key = {(str(v), os.path.basename(str(f))): float(x)
+                   for v, f, x in zip(d["variate"], d["test_files"], d["meanp_knn_recal"])}
+        rows["meanp"] = np.array([key.get((str(v), str(f)), np.nan) for v, f in zip(rows["variate"], rows["file"])])
+        miss = int(np.sum(~np.isfinite(rows["meanp"])))
+        print(f"[tier2-tables] meanp <- obs-identical meanp_knn_recal from {args.meanp_npz} "
+              f"({miss}/{len(rows['meanp'])} rows unmatched)", flush=True)
     tables = {}
     for det, kw in (("meanp", {}), ("knn_p", {}), ("kl", {"lower_is_ood": False})):
         if not np.any(np.isfinite(rows[det])):
             # a KL-axis-only pack (no summary extraction / no phase6) -> that detector has no data
             print("[tier2-tables] %s is entirely NaN -- skipping its table" % det, flush=True)
             continue
-        tables[det] = bias_table(rows, det, n_boot=args.n_boot, **kw)
+        tables[det] = bias_table(rows, det, n_boot=args.n_boot, in_dist=in_dist, **kw)
     provenance = {"base_dir": args.base_dir, "match_template": args.match_template,
                   "kl_params": args.kl_params, "phase6_dir": args.phase6_dir,
-                  "n_boot": args.n_boot, "detectors": sorted(tables)}
+                  "n_boot": args.n_boot, "detectors": sorted(tables),
+                  "experiment": args.experiment, "variates": variates, "in_dist": in_dist,
+                  "repeats": list(args.repeats), "meanp_source": args.meanp_source,
+                  "meanp_npz": args.meanp_npz,
+                  "variates_in_rows": sorted(str(v) for v in np.unique(rows["variate"]))}
     with open(out / "bias_tables.json", "w") as fh:
         json.dump({"_provenance": provenance, **tables}, fh, default=float)
     md = ["# Tier-2 bias tables (pooled over variates, equal weight per row)\n",
@@ -109,8 +148,10 @@ def main(argv=None):
           % (args.kl_params, args.match_template, os.path.basename(args.base_dir.rstrip("/"))),
           # The pack name here was hardcoded to the FIELD pack whatever --base-dir said, so a
           # band-pack table misattributed its own rows -- and this is the line a reader trusts.
-          "Rows = (variate, encoder repeat, event) of `%s` x 7 Gower variates; "
-          % os.path.basename(args.base_dir.rstrip("/")) +
+          "Rows = (variate, encoder repeat, event) of `%s` x %d Gower variates (%s; in-dist `%s`; "
+          "meanp source `%s`); "
+          % (os.path.basename(args.base_dir.rstrip("/")), len(np.unique(rows["variate"])),
+             ", ".join(f"`{v}`" for v in np.unique(rows["variate"])), in_dist, args.meanp_source) +
           "z = (truth - posterior mean)/posterior std; S8 from the full sample dumps; CI68 = cosmology-block bootstrap; "
           "'excess' = P(|z|>t) minus the in-distribution value in the SAME bin. A calibrated posterior has "
           "P(|z|>0.3/0.5/1) = 0.76/0.62/0.32, so only the excess is evidence of bias.\n"]
@@ -136,7 +177,7 @@ def main(argv=None):
               "that no score can bound.")
     with open(out / "per_variate.json", "w") as fh:
         json.dump(per_var, fh, indent=2)
-    _curves_figure(rows, tables, str(out / "bias_curves.png"))
+    _curves_figure(rows, tables, str(out / "bias_curves.png"), in_dist_name=in_dist)
 
     # observation readings
     for f in args.obs_score:

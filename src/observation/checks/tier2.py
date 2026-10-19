@@ -51,6 +51,9 @@ ADOPTED_KL = "om_s8_fullcov"
 ADOPTED_KL_BY_PACK = {
     "gower_npe_finetune_band_nla_m_bgp_ens9": "full",     # M17, 2-pt only
     "gower_npe_finetune_band_nla_m_vdq_ens9": "full",     # VDQ 2-pt pack, same reasoning
+    # VDQ field pack: the global default, registered EXPLICITLY (2026-10-19) so the stamp is a
+    # lookup, not a fall-through; matches obs_score_A2vdq.json kl_params.
+    "gower_npe_finetune_nla_m_vdq_z8_ens1": "om_s8_fullcov",
 }
 
 
