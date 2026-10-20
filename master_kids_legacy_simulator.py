@@ -594,11 +594,11 @@ IA_PRIOR_OVERRIDES = {
     # each block is importance-weighted by p(a_ia | phi_i, x) / q_ppc(a_ia); the conditional posteriors
     # shift by up to ~1.3 sigma across the top-weight sims and are narrower than the pooled marginal, so a
     # slightly wider q keeps those ratios bounded (block-ESS ~0.8 N) at almost no cost.
-    # NLA: pooled -0.114 +- 0.232; NLA-z: -0.04 +- 0.26 (plan §F; re-check vs its loglik before submit).
+    # NLA: pooled -0.114 +- 0.232 (4 repeats); NLA-z: -0.077 +- 0.282 (5 repeats, nle-loglik quadrature).
     # b_z keeps its generation prior. Same draw count as 'default', so RNG streams stay aligned.
     'ppc': {
         'nla':   {'a_ia': ('normal', -0.114, 0.29)},
-        'nla_z': {'a_ia': ('normal', -0.04, 0.33)},
+        'nla_z': {'a_ia': ('normal', -0.077, 0.35)},
     },
 }
 
