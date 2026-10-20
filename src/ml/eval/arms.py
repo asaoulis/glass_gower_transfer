@@ -52,6 +52,9 @@ ARMS = {
     # APPENDED LAST for the same seed-stability reason as k2_nla. Stage B uses the field NLA variate split (the
     # gower_vdq_nla store is the 200-id fixed set: all trainval 80/20 + 100-id lock) -> ncosmoNone_{r}.
     "band_nla":    ("gower_nle_finetune_band_nla_vdq_k8_r{r}_ens9_e150",          "sc8a1", (0, 1, 2)),
+    # 2-pt (bandpower) NLE, NLA-z IA (a_ia ~ U[-6,6] + b_z), VDQ stores (2026-10-20, NLA-z PPC counterpart of band_nla).
+    # APPENDED LAST (seed stability). Same 200-id Gower store split as nla_z -> ncosmoNone_{r}.
+    "band_nla_z":  ("gower_nle_finetune_band_nla_z_vdq_k8_r{r}_ens9_e150",        "sc8a1", (0, 1, 2)),
 }
 
 # Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run
@@ -73,7 +76,8 @@ EXPERIMENT_OVERRIDES = {
 # 100-id lock vs siblings 0.15-2.26 (out of family); r5 (new split, guard-c 150 for an ep0 gap of 60.25) = 1.98-2.45 (in family).
 # band_nla went live 2026-10-19 once its Gower Stage B r0-2 existed (r0/r2 under the user-rule guard-c 150, rev 96bffe9;
 # member frames recovered per repeat before external scoring).
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd"})
+# band_nla_z: DELAYED until its Gower Stage B r0-2 exist and are evaluated (task eval-and-viz/band-nla-z-2pt-nle); then drop it.
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd", "band_nla_z"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
@@ -173,6 +177,7 @@ MATCH_TEMPLATES = {
     # `ncosmo300_{r}` -- VERIFIED against that resolver, not inferred from the experiment name.
     "band": "ncosmo300_{r}",
     "band_nla": "ncosmoNone_{r}",      # max_trainval_cosmos=None (the 200-id gower_vdq_nla store)
+    "band_nla_z": "ncosmoNone_{r}",    # max_trainval_cosmos=None (the 200-id gower_vdq_nla_z store)
 }
 assert set(MATCH_TEMPLATES) == set(ARMS), "MATCH_TEMPLATES and ARMS must cover the same arms"
 assert all(a in ARMS and r in ARMS[a][2] for a, r in EXPERIMENT_OVERRIDES), "override for an unknown (arm, repeat)"

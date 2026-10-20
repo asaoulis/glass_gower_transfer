@@ -883,3 +883,57 @@ for _r in _BAND_NLA_REPEATS_VDQ:
     VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_vdq_k{_BAND_NLE_K_VDQ}_r{_r}"] = "kids_legacy_band_nla_vdq"
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_vdq"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === 2-pt (bandpower) NLE chain for the NLA-z variate (user 2026-10-20, vdq-posterior-predictive PPC) ========
+# Mirror of the `band_nla` chain above moved onto the NLA-z stores with the NLA-z theta (`_COSMO_9_NLAZ` = the 8
+# NLA params + b_z; a_ia box `_A_IA_NLA_BOX`, b_z uses the global preset box) -- exactly as the field NLA-z rows
+# (`glass_nle_pretrain_nla_z_vdq_z8_k6_r*` / `gower_nle_finetune_nla_z_vdq_z8_k6_r*_ens9_e150`) pass them. Kept:
+# band arch/epochs, whiten k=8, ens9, 150 epochs, guard-c 50, the NLE project. Same FORCED DEVIATION as band_nla:
+# the Gower NLA-z store `gower_vdq_nla_z` is the 200-id fixed set only => all trainval 80/20 + the 100-id lock,
+# match string `ncosmoNone_{r}`. Launch:
+#   train --exp kids_legacy_band_nla_z_vdq --gpu v100 --mem-gb 32 --wall_h 6 --repeat-indices 0,1,2
+#   embed --gpu v100 --mem-gb 32 --target glass_nle_pretrain_band_nla_z_vdq_k8_r<r> --sources kids_legacy_band_nla_z_vdq
+#   embed --cpu --partition CORES40 --target gower_nle_finetune_band_nla_z_vdq_k8_r<r>_ens9_e150 --sources kids_legacy_band_nla_z_vdq
+def _band_nla_z_vdq():
+    c = _band_bgp(_VDQ_GLASS_NLA_Z)
+    c["cosmo_param_names"] = list(_COSMO_9_NLAZ)
+    c["scaler_options"] = {k: dict(v) for k, v in _BAND_NLA_SCALER.items()}
+    c["repeat_indices"] = list(_BAND_NLA_REPEATS_VDQ)
+    return c
+
+
+def _band_nla_z_nle_a_vdq(r):
+    pre = _nle_pretrain_bgp(_VDQ_GLASS_NLA_Z, r, cosmo_param_names=list(_COSMO_9_NLAZ),
+                            preset_overrides=_A_IA_NLA_BOX)
+    pre["whiten_embeddings"] = {"k": _BAND_NLE_K_VDQ}
+    return pre
+
+
+def _band_nla_z_nle_b_vdq(r):
+    ft = _nle_finetune(f"glass_nle_pretrain_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{r}", ensemble_repeats=9,
+                       whiten_k=_BAND_NLE_K_VDQ, warmstart_max_gap_nats=50.0,
+                       gower_data=_VDQ_GOWER_NLA_Z, gower_eb=None,
+                       cosmo_param_names=list(_COSMO_9_NLAZ), preset_overrides=_A_IA_NLA_BOX)
+    ft["max_trainval_cosmos"] = None             # forced deviation: the 200-id store (see above)
+    ft["train_frac"] = 0.8
+    ft["val_frac"] = 0.2
+    ft["test_frac"] = 0.0
+    ft["fixed_test_sim_ids"] = _GOWER_TEST_IDS_100
+    ft["epochs"] = 150
+    ft["project"] = _BGP_NLE_PROJECT
+    return _nle_bake_repeat(ft, r)
+
+
+kids_legacy_vdq_experiments["kids_legacy_band_nla_z_vdq"] = _band_nla_z_vdq()
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r0"] = _band_nla_z_nle_a_vdq(0)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r1"] = _band_nla_z_nle_a_vdq(1)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r2"] = _band_nla_z_nle_a_vdq(2)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r0_ens9_e150"] = _band_nla_z_nle_b_vdq(0)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r1_ens9_e150"] = _band_nla_z_nle_b_vdq(1)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_ens9_e150"] = _band_nla_z_nle_b_vdq(2)
+for _r in _BAND_NLA_REPEATS_VDQ:
+    VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}"] = "kids_legacy_band_nla_z_vdq"
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_z_vdq"
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
