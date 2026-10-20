@@ -46,7 +46,7 @@ R2_FEATURE_INDEX = [s * 56 + k for s in (0, 1) for k, (i, j, l) in enumerate(_TR
 _VECTOR_LOADER = {"preload_data": True, "num_workers": 0, "pin_memory": False, "persistent_workers": None,
                   "prefetch_factor": None}
 
-HOS_MLP_DEFAULT = {"input_dim": 112, "hidden": 256, "depth": 3, "dropout": 0.1, "input_transform": None}  # SWEEP
+HOS_MLP_DEFAULT = {"input_dim": 112, "hidden": 128, "depth": 2, "dropout": 0.1, "input_transform": None}  # sweep A1-A4
 
 
 def hos_glass_row(hos_kwargs=None, data_patterns=_HOS_GLASS, band_ckpt=_BAND_CKPT, **top):
@@ -74,8 +74,9 @@ def hos_glass_row(hos_kwargs=None, data_patterns=_HOS_GLASS, band_ckpt=_BAND_CKP
         "eb_map_variant": None,
         "augment_eb_patches": False,
         "batch_size": 256,                        # SWEEP
-        "lr": 3e-4,                               # SWEEP
-        "epochs": 100,                            # SWEEP (epoch tuning)
+        "lr": 3e-4,                               # sweep A2/A4
+        "optimizer_kwargs": {"weight_decay": 0.1, "betas": (0.9, 0.999)},   # sweep A2/A4 (best epochs 63-104)
+        "epochs": 120,                            # sweep A4: ceil(1.25 x median best epoch 102), capped at 120
         "scheduler_type": "cyclic",
         "scheduler_kwargs": {"warmup": 2000, "min_factor": 0.1, "cyclic_period_steps": 6000},
         "use_KL_loss": False,
@@ -97,6 +98,7 @@ def hos_gower_row(glass_ckpt=_HOS_CKPT, hos_kwargs=None, data_patterns=_HOS_GOWE
               "match_num_cosmo", "repeat_indices", "val_check_interval"):
         c[k] = copy.deepcopy(pack[k])
     c.pop("pretrained_band_ckpt_path", None)      # the whole model comes from the GLASS checkpoint
+    c.pop("optimizer_kwargs", None)               # Stage B keeps the default weight decay (as swept in B1)
     c["checkpoint_path"] = glass_ckpt
     c["freeze_band"] = False                      # SWEEP (Stage B: all / band frozen / band + HOS frozen)
     c["project"] = "gower-finetuning-hos"
