@@ -588,6 +588,15 @@ IA_PRIOR_OVERRIDES = {
         'nla_z': {'a_ia': ('uniform', -0.272397, -0.272397),
                   'b_z':  ('uniform', -3.700000, -3.700000)},
     },
+    # 'ppc' — posterior-predictive regeneration (task eval-and-viz/vdq-posterior-predictive, plan §M7/§R):
+    # a_ia narrowed from the U[-6, 6] generation box to ~mu +- 5 sigma of the pooled real-data field
+    # posterior (NLA -0.11 +- 0.23; NLA-z -0.04 +- 0.26), so the within-cosmology nuisance importance
+    # weights p(a_ia | phi, x) / q_ppc stay bounded. b_z keeps its generation prior. Same draw count as
+    # 'default' (uniform -> uniform), so RNG streams stay aligned.
+    'ppc': {
+        'nla':   {'a_ia': ('uniform', -1.30, 1.10)},
+        'nla_z': {'a_ia': ('uniform', -1.40, 1.30)},
+    },
 }
 
 # Non-IA-prior nuisances pinned by a prior set. `log10_M_eff` is NOT sampled by
@@ -597,6 +606,7 @@ IA_PRIOR_OVERRIDES = {
 NUISANCE_PINS = {
     'default': {},
     'matched': {'log10_M_eff': 'prior_mean'},   # multiplies the nla_m IA amplitude
+    'ppc': {},
 }
 
 
