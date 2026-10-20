@@ -254,53 +254,38 @@ def quadrature_nodes(param_names: Sequence[str], n_nodes: int, seed: int = 0):
 
 
 @torch.no_grad()
-def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior_g, *,
-                        n_nodes: int = 128, seed: int = 0, log_every: int = 200) -> Dict[str, np.ndarray]:
-    """log of  (1/J) sum_j L(t_e | phi_i, nu_j) pi_s(phi_i, nu_j) / g(nu_j)  for every event e and
-    design cosmology i  ( = log p(phi_i | t_e) + log Z_e, the analysis-prior marginal at phi_i ),
-    plus log q_D(phi_i), the design density in phi (the Gower prior with every non-PHI parameter
-    pinned to a fixed reference value: build_gower_prior factorises, so this is q_D(phi) times a
-    constant common to all i)."""
-    param_names = list(param_names)
+def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, nodes, log_g, *,
+                   log_every=200, label="design"):
+    """log (1/J) sum_j L(t_e|phi_c, eta_j) pi_s(phi_c, eta_j)/g(eta_j) for events X [E,k] at phi [C,3].
+    -> (logmarg [E,C], node_ess [E,C], log-integrand of event 0 [C,J])."""
     iphi = [param_names.index(n) for n in PHI_NAMES]
-    sims, first = np.unique(table["block_sim"], return_index=True)
-    phi = table["block_theta_raw"][first][:, iphi]                       # [C, 3] physical
-    node_names, nodes, log_g = quadrature_nodes(param_names, n_nodes, seed)
     inode = [param_names.index(n) for n in node_names]
     C, J, D = phi.shape[0], nodes.shape[0], len(param_names)
     raw = np.empty((C, J, D))
     raw[:, :, iphi] = phi[:, None, :]
     raw[:, :, inode] = nodes[None, :, :]
-    raw = raw.reshape(C * J, D)
-    scaled = np.asarray(cosmo_scaler.transform(raw), dtype=np.float64)
+    scaled = np.asarray(cosmo_scaler.transform(raw.reshape(C * J, D)), dtype=np.float64)
     # g in the SAME scaled space as the priors: scaled density = physical density * prod(box width)
     width = np.asarray(cosmo_scaler.max, np.float64) - np.asarray(cosmo_scaler.min, np.float64)
     log_g_scaled = log_g + float(np.sum(np.log(width[inode])))
     Th = torch.as_tensor(scaled, dtype=torch.float32)
     lps = prior_s.log_prob(Th).detach().cpu().numpy().reshape(C, J).astype(np.float64)
     base = lps - log_g_scaled[None, :]                                   # [C, J]
-
-    # design density: Gower prior at (phi_i, reference nu)
-    ref = table["block_theta_raw"][first].copy()
-    ref_vals = {"mnu": 0.1, "h": 0.7022, "ns": 0.9649, "ombh2": 0.02237, "a_ia": 5.74, "b_ia": 0.44,
-                "b_z": -3.7, "b_src": 0.5}
-    for k, n in zip(inode, node_names):
-        ref[:, k] = ref_vals.get(n, 0.0) if not (n == "a_ia" and "b_ia" not in node_names) else 0.0
-    lq = prior_g.log_prob(torch.as_tensor(cosmo_scaler.transform(ref), dtype=torch.float32))
-    lq = lq.detach().cpu().numpy().reshape(-1).astype(np.float64)
-
+    live = np.isfinite(base).any(1)                                      # skip phi outside pi_s
+    Th_live = Th.reshape(C, J, D)[torch.as_tensor(live)].reshape(-1, D)
     E = int(X.shape[0])
     logmarg = np.full((E, C), -np.inf, dtype=np.float64)
     node_ess = np.zeros((E, C), dtype=np.float32)
-    obs_integrand = None
+    integ0 = None
     t0 = time.time()
     for e in range(E):
         xe = X[e:e + 1]
-        Lq = np.empty(C * J, dtype=np.float64)
-        for s in range(0, C * J, 16384):
-            th = Th[s:s + 16384]
+        Lq = np.empty(Th_live.shape[0], dtype=np.float64)
+        for s in range(0, Th_live.shape[0], 16384):
+            th = Th_live[s:s + 16384]
             Lq[s:s + th.shape[0]] = ens.log_prob(xe.expand(th.shape[0], -1), th).reshape(-1).cpu().numpy()
-        f = Lq.reshape(C, J) + base                                      # log integrand
+        f = np.full((C, J), -np.inf)
+        f[live] = Lq.reshape(-1, J) + base[live]                         # log integrand
         with np.errstate(invalid="ignore"):
             m = np.max(f, axis=1, keepdims=True)
             ok = np.isfinite(m[:, 0])
@@ -309,17 +294,68 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
             logmarg[e, ok] = m[ok, 0] + np.log(sw[ok]) - np.log(J)
             node_ess[e] = np.where(ok, sw ** 2 / np.maximum((wj ** 2).sum(1), 1e-300), 0.0)
         if e == 0:
-            obs_integrand = f.astype(np.float32)
+            integ0 = f.astype(np.float32)
         if log_every and (e + 1) % log_every == 0:
             el = time.time() - t0
-            print(f"[ppc-loglik] quadrature {e + 1}/{E} ({el:.0f}s, ~{el / (e + 1) * (E - e - 1):.0f}s left)",
+            print(f"[ppc-loglik] quadrature[{label}] {e + 1}/{E} ({el:.0f}s, ~{el / (e + 1) * (E - e - 1):.0f}s left)",
                   flush=True)
-    print(f"[ppc-loglik] cosmology marginals: {E} events x {C} cosmologies x {J} nodes in "
-          f"{time.time() - t0:.0f}s", flush=True)
-    return {"cos_sim": sims.astype(np.int32), "cos_phi_raw": phi, "cos_logq_design": lq,
-            "logmarg": logmarg.astype(np.float32), "node_ess": node_ess,
-            "node_names": np.array(node_names), "nodes_raw": nodes, "nodes_log_g": log_g,
-            "integrand_event0": obs_integrand}
+    print(f"[ppc-loglik] quadrature[{label}]: {E} events x {C} phi points ({int(live.sum())} in prior) x {J} "
+          f"nodes in {time.time() - t0:.0f}s", flush=True)
+    return logmarg, node_ess, integ0
+
+
+def phi_grid_points(cosmo_scaler, param_names, n: int, seed: int = 1) -> np.ndarray:
+    """Scrambled-Sobol points over the scaler's (Om, s8, w0) box (physical units) -- a dense,
+    design-independent grid on which the analysis-prior phi-marginal is evaluated (emulator route)."""
+    from scipy.stats import qmc
+    idx = [list(param_names).index(n_) for n_ in PHI_NAMES]
+    lo = np.asarray(cosmo_scaler.min, np.float64)[idx]
+    hi = np.asarray(cosmo_scaler.max, np.float64)[idx]
+    U = qmc.Sobol(d=3, scramble=True, seed=int(seed)).random(int(n))
+    return lo + U * (hi - lo)
+
+
+@torch.no_grad()
+def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior_g, *,
+                        n_nodes: int = 128, seed: int = 0, phi_grid: int = 0,
+                        phi_grid_events: int = 0) -> Dict[str, np.ndarray]:
+    """log of  (1/J) sum_j L(t_e | phi_i, eta_j) pi_s(phi_i, eta_j) / g(eta_j)  for every event e and
+    design cosmology i  ( = log p(phi_i | t_e) + log Z_e, the analysis-prior marginal at phi_i ),
+    plus log q_D(phi_i), the design density in phi (the Gower prior with every non-PHI parameter
+    pinned to a fixed reference value: build_gower_prior factorises, so this is q_D(phi) times a
+    constant common to all i). Optionally the same marginal on a dense phi grid for the first
+    `phi_grid_events` events (the observation first)."""
+    param_names = list(param_names)
+    iphi = [param_names.index(n) for n in PHI_NAMES]
+    sims, first = np.unique(table["block_sim"], return_index=True)
+    phi = table["block_theta_raw"][first][:, iphi]                       # [C, 3] physical
+    node_names, nodes, log_g = quadrature_nodes(param_names, n_nodes, seed)
+    inode = [param_names.index(n) for n in node_names]
+    logmarg, node_ess, integ0 = _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s,
+                                               node_names, nodes, log_g)
+
+    # design density: Gower prior at (phi_i, reference eta)
+    ref = table["block_theta_raw"][first].copy()
+    ref_vals = {"mnu": 0.1, "h": 0.7022, "ns": 0.9649, "ombh2": 0.02237, "a_ia": 5.74, "b_ia": 0.44,
+                "b_z": -3.7, "b_src": 0.5}
+    if "b_ia" not in node_names:
+        ref_vals["a_ia"] = 0.0                                           # inside U[-6, 6]
+    for k, n in zip(inode, node_names):
+        ref[:, k] = ref_vals.get(n, 0.0)
+    lq = prior_g.log_prob(torch.as_tensor(cosmo_scaler.transform(ref), dtype=torch.float32))
+    lq = lq.detach().cpu().numpy().reshape(-1).astype(np.float64)
+    out = {"cos_sim": sims.astype(np.int32), "cos_phi_raw": phi, "cos_logq_design": lq,
+           "logmarg": logmarg.astype(np.float32), "node_ess": node_ess,
+           "node_names": np.array(node_names), "nodes_raw": nodes, "nodes_log_g": log_g,
+           "integrand_event0": integ0}
+    if phi_grid and phi_grid_events:
+        G = phi_grid_points(cosmo_scaler, param_names, phi_grid)
+        ne = min(int(phi_grid_events), int(X.shape[0]))
+        lg, ng, _ = _quad_marginal(ens, X[:ne], G, param_names, cosmo_scaler, prior_s,
+                                   node_names, nodes, log_g, log_every=50, label="grid")
+        out.update({"grid_phi_raw": G, "grid_logmarg": lg.astype(np.float32),
+                    "grid_node_ess": ng, "grid_n_events": np.int32(ne)})
+    return out
 
 
 def run_ppc_loglik(
@@ -337,6 +373,8 @@ def run_ppc_loglik(
     priors: Sequence[str] = ("kids_s8_analytic", "gower"),
     n_nodes: int = 128,
     node_seed: int = 0,
+    phi_grid: int = 2048,
+    phi_grid_events: int = 301,
     dry_run: bool = False,
 ) -> Dict[str, object]:
     from ..models.lightning.ensemble_flow import build_grouped_ensemble_likelihood
@@ -463,7 +501,8 @@ def run_ppc_loglik(
         prior_s, fx = build_prior_for_mode("kids_s8_analytic", param_names, preset_overrides=overrides)
         prior_g, _ = build_prior_for_mode("gower", param_names, preset_overrides=overrides)
         quad = cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior_g,
-                                   n_nodes=int(n_nodes), seed=int(node_seed))
+                                   n_nodes=int(n_nodes), seed=int(node_seed), phi_grid=int(phi_grid or 0),
+                                   phi_grid_events=int(phi_grid_events or 0))
 
     obs_members = np.zeros((0, Theta.shape[0]), dtype=np.float32)
     if len(obs_paths):

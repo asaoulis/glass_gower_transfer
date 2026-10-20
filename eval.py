@@ -336,6 +336,10 @@ def main(argv=None):
                         help="--mode nle-loglik: thin the null events to about this many (strided)")
     parser.add_argument("--ppc-nodes", type=int, default=128,
                         help="--mode nle-loglik: quadrature nodes for the cosmology marginal (0 = off)")
+    parser.add_argument("--ppc-phi-grid", type=int, default=2048,
+                        help="--mode nle-loglik: dense (Om,s8,w0) Sobol grid size for the emulator route (0 = off)")
+    parser.add_argument("--ppc-phi-grid-events", type=int, default=301,
+                        help="--mode nle-loglik: events (obs first, then null) scored on the phi grid")
     parser.add_argument("--ppc-threads", type=int, default=None,
                         help="--mode nle-loglik: torch threads (and cosmo_dict reader threads)")
     parser.add_argument("--external-dry-run", action="store_true",
@@ -495,6 +499,8 @@ def main(argv=None):
                     require_member_frames=args.require_member_frames,
                     n_threads=args.ppc_threads,
                     n_nodes=args.ppc_nodes,
+                    phi_grid=args.ppc_phi_grid,
+                    phi_grid_events=args.ppc_phi_grid_events,
                     dry_run=args.external_dry_run,
                 )
         return 0
