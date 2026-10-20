@@ -193,6 +193,135 @@ def _collect_loader(loader):
     return torch.cat(xs, 0).float(), torch.cat(ths, 0).float()
 
 
+# --------------------------------------------------------------------------------------------
+# cosmology marginal by quadrature
+# --------------------------------------------------------------------------------------------
+# The design fixes only the N-body cosmology. Its (Om, s8, w0) are the parameters the posterior
+# actually constrains; everything else (mnu, h, ns, ombh2 -- prior-dominated -- and the IA
+# nuisances) is integrated out of each design point's weight with the NLE itself, so the weights
+# are the EXACT analysis-prior marginal p(Om, s8, w0 | t) at the design points and do not inherit
+# the Monte-Carlo noise of each sim's 20 random nuisance draws or the design-vs-analysis-prior
+# mismatch in h / w (the cause of the pilot's cos-ESS collapse to 1.6; log.md 2026-10-20).
+PHI_NAMES = ("omega_m", "sigma_8", "w0")
+
+# Node proposal g per integrated parameter, PHYSICAL units: ('u', lo, hi) or ('n', mean, sd).
+# Uniform boxes = the kids_s8_analytic supports (build_s8_box_known_priors / ia_marginal_priors),
+# so no node is wasted outside the analysis prior except through its joint (S8, omega_c) box.
+NODE_PROPOSALS = {
+    "mnu": ("u", 0.06, 0.14), "h": ("u", 0.64, 0.78), "ns": ("u", 0.948, 0.984),
+    "ombh2": ("u", 0.022, 0.0228), "b_z": ("n", -3.7, 4.3), "b_src": ("u", -0.5, 1.5),
+}
+_FORTUNA_MEAN = (5.74, 0.44)
+_FORTUNA_SD = (0.29, 0.03)
+_FORTUNA_RHO = -0.59
+
+
+def quadrature_nodes(param_names: Sequence[str], n_nodes: int, seed: int = 0):
+    """Fixed (common-random-number) nodes for every non-PHI parameter.
+
+    -> (node_names, nodes [J, K] physical, log_g [J] physical-space proposal log-density).
+    Scrambled Sobol, so a 1-D a_ia integral is stratified. NLA-M's (a_ia, b_ia) is drawn from the
+    Fortuna Gaussian (= the analysis prior block), NLA / NLA-z / TATT a_ia from U[-6, 6]."""
+    from scipy.stats import norm, qmc
+    names = [n for n in param_names if n not in PHI_NAMES]
+    J = int(n_nodes)
+    U = qmc.Sobol(d=len(names), scramble=True, seed=int(seed)).random(J)
+    U = np.clip(U, 1e-9, 1 - 1e-9)
+    nodes = np.empty((J, len(names)))
+    log_g = np.zeros(J)
+    nla_m = "b_ia" in names
+    for k, n in enumerate(names):
+        if nla_m and n in ("a_ia", "b_ia"):
+            continue
+        spec = NODE_PROPOSALS.get(n, ("u", -6.0, 6.0) if n == "a_ia" else None)
+        if spec is None:
+            raise ValueError(f"no quadrature proposal for parameter {n!r}")
+        if spec[0] == "u":
+            nodes[:, k] = spec[1] + U[:, k] * (spec[2] - spec[1])
+            log_g += -np.log(spec[2] - spec[1])
+        else:
+            nodes[:, k] = spec[1] + spec[2] * norm.ppf(U[:, k])
+            log_g += norm.logpdf(nodes[:, k], spec[1], spec[2])
+    if nla_m:
+        ia, ib = names.index("a_ia"), names.index("b_ia")
+        z1, z2 = norm.ppf(U[:, ia]), norm.ppf(U[:, ib])
+        sa, sb, r = _FORTUNA_SD[0], _FORTUNA_SD[1], _FORTUNA_RHO
+        a = _FORTUNA_MEAN[0] + sa * z1
+        b = _FORTUNA_MEAN[1] + sb * (r * z1 + np.sqrt(1 - r * r) * z2)
+        nodes[:, ia], nodes[:, ib] = a, b
+        log_g += (norm.logpdf(z1) + norm.logpdf(z2) - np.log(sa * sb * np.sqrt(1 - r * r)))
+    return names, nodes, log_g
+
+
+@torch.no_grad()
+def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior_g, *,
+                        n_nodes: int = 128, seed: int = 0, log_every: int = 200) -> Dict[str, np.ndarray]:
+    """log of  (1/J) sum_j L(t_e | phi_i, nu_j) pi_s(phi_i, nu_j) / g(nu_j)  for every event e and
+    design cosmology i  ( = log p(phi_i | t_e) + log Z_e, the analysis-prior marginal at phi_i ),
+    plus log q_D(phi_i), the design density in phi (the Gower prior with every non-PHI parameter
+    pinned to a fixed reference value: build_gower_prior factorises, so this is q_D(phi) times a
+    constant common to all i)."""
+    param_names = list(param_names)
+    iphi = [param_names.index(n) for n in PHI_NAMES]
+    sims, first = np.unique(table["block_sim"], return_index=True)
+    phi = table["block_theta_raw"][first][:, iphi]                       # [C, 3] physical
+    node_names, nodes, log_g = quadrature_nodes(param_names, n_nodes, seed)
+    inode = [param_names.index(n) for n in node_names]
+    C, J, D = phi.shape[0], nodes.shape[0], len(param_names)
+    raw = np.empty((C, J, D))
+    raw[:, :, iphi] = phi[:, None, :]
+    raw[:, :, inode] = nodes[None, :, :]
+    raw = raw.reshape(C * J, D)
+    scaled = np.asarray(cosmo_scaler.transform(raw), dtype=np.float64)
+    # g in the SAME scaled space as the priors: scaled density = physical density * prod(box width)
+    width = np.asarray(cosmo_scaler.max, np.float64) - np.asarray(cosmo_scaler.min, np.float64)
+    log_g_scaled = log_g + float(np.sum(np.log(width[inode])))
+    Th = torch.as_tensor(scaled, dtype=torch.float32)
+    lps = prior_s.log_prob(Th).detach().cpu().numpy().reshape(C, J).astype(np.float64)
+    base = lps - log_g_scaled[None, :]                                   # [C, J]
+
+    # design density: Gower prior at (phi_i, reference nu)
+    ref = table["block_theta_raw"][first].copy()
+    ref_vals = {"mnu": 0.1, "h": 0.7022, "ns": 0.9649, "ombh2": 0.02237, "a_ia": 5.74, "b_ia": 0.44,
+                "b_z": -3.7, "b_src": 0.5}
+    for k, n in zip(inode, node_names):
+        ref[:, k] = ref_vals.get(n, 0.0) if not (n == "a_ia" and "b_ia" not in node_names) else 0.0
+    lq = prior_g.log_prob(torch.as_tensor(cosmo_scaler.transform(ref), dtype=torch.float32))
+    lq = lq.detach().cpu().numpy().reshape(-1).astype(np.float64)
+
+    E = int(X.shape[0])
+    logmarg = np.full((E, C), -np.inf, dtype=np.float64)
+    node_ess = np.zeros((E, C), dtype=np.float32)
+    obs_integrand = None
+    t0 = time.time()
+    for e in range(E):
+        xe = X[e:e + 1]
+        Lq = np.empty(C * J, dtype=np.float64)
+        for s in range(0, C * J, 16384):
+            th = Th[s:s + 16384]
+            Lq[s:s + th.shape[0]] = ens.log_prob(xe.expand(th.shape[0], -1), th).reshape(-1).cpu().numpy()
+        f = Lq.reshape(C, J) + base                                      # log integrand
+        with np.errstate(invalid="ignore"):
+            m = np.max(f, axis=1, keepdims=True)
+            ok = np.isfinite(m[:, 0])
+            wj = np.where(ok[:, None], np.exp(f - np.where(ok[:, None], m, 0.0)), 0.0)
+            sw = wj.sum(1)
+            logmarg[e, ok] = m[ok, 0] + np.log(sw[ok]) - np.log(J)
+            node_ess[e] = np.where(ok, sw ** 2 / np.maximum((wj ** 2).sum(1), 1e-300), 0.0)
+        if e == 0:
+            obs_integrand = f.astype(np.float32)
+        if log_every and (e + 1) % log_every == 0:
+            el = time.time() - t0
+            print(f"[ppc-loglik] quadrature {e + 1}/{E} ({el:.0f}s, ~{el / (e + 1) * (E - e - 1):.0f}s left)",
+                  flush=True)
+    print(f"[ppc-loglik] cosmology marginals: {E} events x {C} cosmologies x {J} nodes in "
+          f"{time.time() - t0:.0f}s", flush=True)
+    return {"cos_sim": sims.astype(np.int32), "cos_phi_raw": phi, "cos_logq_design": lq,
+            "logmarg": logmarg.astype(np.float32), "node_ess": node_ess,
+            "node_names": np.array(node_names), "nodes_raw": nodes, "nodes_log_g": log_g,
+            "integrand_event0": obs_integrand}
+
+
 def run_ppc_loglik(
     experiment: str,
     match_string: str,
@@ -206,6 +335,8 @@ def run_ppc_loglik(
     require_member_frames: bool = False,
     n_threads: Optional[int] = None,
     priors: Sequence[str] = ("kids_s8_analytic", "gower"),
+    n_nodes: int = 128,
+    node_seed: int = 0,
     dry_run: bool = False,
 ) -> Dict[str, object]:
     from ..models.lightning.ensemble_flow import build_grouped_ensemble_likelihood
@@ -321,6 +452,19 @@ def run_ppc_loglik(
     print(f"[ppc-loglik] loglik matrix {L.shape} in {time.time() - t0:.0f}s; "
           f"finite={np.isfinite(L).mean():.4f}", flush=True)
 
+    # ---- cosmology marginal by quadrature (the PPC cosmology weights; plan.md §M3 rev. 2) -------
+    overrides = None
+    try:
+        overrides = _config_preset_overrides(p.config)
+    except Exception:
+        pass
+    quad = {}
+    if n_nodes and n_nodes > 0:
+        prior_s, fx = build_prior_for_mode("kids_s8_analytic", param_names, preset_overrides=overrides)
+        prior_g, _ = build_prior_for_mode("gower", param_names, preset_overrides=overrides)
+        quad = cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior_g,
+                                   n_nodes=int(n_nodes), seed=int(node_seed))
+
     obs_members = np.zeros((0, Theta.shape[0]), dtype=np.float32)
     if len(obs_paths):
         obs_members = np.stack([loglik_matrix(lambda x, th, m=m: m.forward(x, cond=th), X[:1], Theta)[0]
@@ -336,12 +480,8 @@ def run_ppc_loglik(
         "loglik_obs_members": obs_members.astype(np.float32),
         "block_theta_scaled": theta_scaled.astype(np.float64),
         **table,
+        **quad,
     }
-    overrides = None
-    try:
-        overrides = _config_preset_overrides(p.config)
-    except Exception:
-        pass
     prior_status = {}
     for mode in priors:
         try:
@@ -362,6 +502,8 @@ def run_ppc_loglik(
             "n_null": len(null_paths), "n_null_ok": int(ok[~is_obs].sum()), "truth_max_dev": max_dev,
             "theta_table": tt["stats"], "param_names": param_names, "priors": prior_status,
             "likelihood": "grouped" if grouped is not None else "serial",
+            "quadrature": {"n_nodes": int(n_nodes or 0), "node_seed": int(node_seed),
+                           "node_names": list(quad.get("node_names", []))},
             "pipeline": p.provenance, "npz": npz}
     with open(os.path.join(out_dir, stem + ".json"), "w") as fh:
         json.dump(_jsonable(prov), fh, indent=2)
