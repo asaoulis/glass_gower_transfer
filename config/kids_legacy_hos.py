@@ -100,7 +100,9 @@ def hos_gower_row(glass_ckpt=_HOS_CKPT, hos_kwargs=None, data_patterns=_HOS_GOWE
     c.pop("pretrained_band_ckpt_path", None)      # the whole model comes from the GLASS checkpoint
     c.pop("optimizer_kwargs", None)               # Stage B keeps the default weight decay (as swept in B1)
     c["checkpoint_path"] = glass_ckpt
-    c["freeze_band"] = False                      # SWEEP (Stage B: all / band frozen / band + HOS frozen)
+    # Stage B keeps the 2-pt pack keys (lr 1e-5, 10 epochs, all trainable): the B1 grid (lr x epochs x freeze, r0+r1)
+    # is flat within 0.011 nats of its top cell vs ~0.03 seed noise; freezing band (-0.03) or band+HOS (-0.12) hurts.
+    c["freeze_band"] = False
     c["project"] = "gower-finetuning-hos"
     c.update(top)
     return c
