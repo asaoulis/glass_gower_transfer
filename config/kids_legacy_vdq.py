@@ -933,6 +933,11 @@ kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r2"] = _band_n
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r0_ens9_e150"] = _band_nla_z_nle_b_vdq(0)
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r1_ens9_e150"] = _band_nla_z_nle_b_vdq(1)
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_ens9_e150"] = _band_nla_z_nle_b_vdq(2)
+# guard-c 50 -> 150 for band_nla_z r0 ONLY (standing user rule "raise the guard if a repeat's val loss looks sensible", max 150):
+# Stage-B job 1391289 died at ep0 with gap 50.552 nats (Gower val NLL 39.974 vs Stage-A best -10.579; band_nla r1 passed at 40.47).
+# Resolution verified in the log: own Stage-A whitener (glass_nle_pretrain_band_nla_z_vdq_k8_r0, fit on 12739 rows) + own Stage-A
+# best flow (ep144 -10.5787), 110 keys loaded. Judged afterwards on the shared 100-id-lock per-member test NLL vs band_nla (-5.67..-8.02).
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r0_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 150.0
 for _r in _BAND_NLA_REPEATS_VDQ:
     VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}"] = "kids_legacy_band_nla_z_vdq"
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_z_vdq"
