@@ -1,0 +1,39 @@
+{
+  "min_id": 200,
+  "max_id": 739,
+  "selection": "ppc_top_weight",
+  "selection_params": {
+    "posterior": "real KiDS-Legacy A2, field NLA wCDM NLE (gower_nle_finetune_nla_vdq_z8_k6 / _rr_k6, repeats 0,1,2,4 pooled), analysis prior kids_s8_analytic",
+    "weights": "NLE quadrature cosmology marginal W_i over the 199-id NLA design (task eval-and-viz/vdq-posterior-predictive, plan.md \u00a7M3 REVISED)",
+    "cut": "smallest set carrying >= 90% of sum W_i",
+    "cos_ess": 13.7
+  },
+  "order": "ascending",
+  "n_selected": 22,
+  "purpose": "Posterior-predictive regeneration of NLA mocks with a_ia ~ the real posterior (--ia-prior-set ppc), plan.md \u00a7M7/\u00a7R.",
+  "generated_by": ".claude/runs/eval-and-viz/vdq-posterior-predictive (K_nla.npy)",
+  "sim_ids": [
+    200,
+    202,
+    212,
+    251,
+    253,
+    267,
+    298,
+    337,
+    370,
+    490,
+    534,
+    576,
+    582,
+    604,
+    665,
+    669,
+    673,
+    691,
+    723,
+    727,
+    736,
+    739
+  ]
+}
