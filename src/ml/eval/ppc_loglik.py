@@ -257,7 +257,9 @@ def quadrature_nodes(param_names: Sequence[str], n_nodes: int, seed: int = 0):
 def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, nodes, log_g, *,
                    log_every=200, label="design"):
     """log (1/J) sum_j L(t_e|phi_c, eta_j) pi_s(phi_c, eta_j)/g(eta_j) for events X [E,k] at phi [C,3].
-    -> (logmarg [E,C], node_ess [E,C], log-integrand of event 0 [C,J])."""
+    -> (logmarg [E,C], node_ess [E,C], log-integrand of event 0 [C,J], node_mom) with node_mom =
+    {"mean": [E,C,K], "cov": [E,C,K,K]} the integrand-weighted moments of the integrated parameters,
+    i.e. p(eta | phi_c, t_e) -- what a nuisance-resampling PPC draws its nuisances from."""
     iphi = [param_names.index(n) for n in PHI_NAMES]
     inode = [param_names.index(n) for n in node_names]
     C, J, D = phi.shape[0], nodes.shape[0], len(param_names)
@@ -276,6 +278,9 @@ def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, 
     E = int(X.shape[0])
     logmarg = np.full((E, C), -np.inf, dtype=np.float64)
     node_ess = np.zeros((E, C), dtype=np.float32)
+    K = nodes.shape[1]
+    mom_mean = np.full((E, C, K), np.nan, dtype=np.float32)
+    mom_cov = np.full((E, C, K, K), np.nan, dtype=np.float32)
     integ0 = None
     t0 = time.time()
     for e in range(E):
@@ -293,6 +298,11 @@ def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, 
             sw = wj.sum(1)
             logmarg[e, ok] = m[ok, 0] + np.log(sw[ok]) - np.log(J)
             node_ess[e] = np.where(ok, sw ** 2 / np.maximum((wj ** 2).sum(1), 1e-300), 0.0)
+            pj = wj[ok] / sw[ok][:, None]                                # [C_ok, J]
+            mu = pj @ nodes                                              # [C_ok, K]
+            mom_mean[e, ok] = mu
+            dev = nodes[None, :, :] - mu[:, None, :]
+            mom_cov[e, ok] = np.einsum("cj,cjk,cjl->ckl", pj, dev, dev)
         if e == 0:
             integ0 = f.astype(np.float32)
         if log_every and (e + 1) % log_every == 0:
@@ -301,7 +311,7 @@ def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, 
                   flush=True)
     print(f"[ppc-loglik] quadrature[{label}]: {E} events x {C} phi points ({int(live.sum())} in prior) x {J} "
           f"nodes in {time.time() - t0:.0f}s", flush=True)
-    return logmarg, node_ess, integ0
+    return logmarg, node_ess, integ0, {"mean": mom_mean, "cov": mom_cov}
 
 
 def phi_grid_points(cosmo_scaler, param_names, n: int, seed: int = 1) -> np.ndarray:
@@ -331,8 +341,8 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
     phi = table["block_theta_raw"][first][:, iphi]                       # [C, 3] physical
     node_names, nodes, log_g = quadrature_nodes(param_names, n_nodes, seed)
     inode = [param_names.index(n) for n in node_names]
-    logmarg, node_ess, integ0 = _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s,
-                                               node_names, nodes, log_g)
+    logmarg, node_ess, integ0, mom = _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s,
+                                                    node_names, nodes, log_g)
 
     # design density: Gower prior at (phi_i, reference eta)
     ref = table["block_theta_raw"][first].copy()
@@ -347,7 +357,7 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
     out = {"cos_sim": sims.astype(np.int32), "cos_phi_raw": phi, "cos_logq_design": lq,
            "logmarg": logmarg.astype(np.float32), "node_ess": node_ess,
            "node_names": np.array(node_names), "nodes_raw": nodes, "nodes_log_g": log_g,
-           "integrand_event0": integ0}
+           "integrand_event0": integ0, "node_post_mean": mom["mean"], "node_post_cov": mom["cov"]}
     if phi_grid and phi_grid_events:
         G = phi_grid_points(cosmo_scaler, param_names, phi_grid)
         # the observation (row 0 when given) + a STRIDED subset of the null events, so the grid null
@@ -359,7 +369,7 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
         if k and null_idx.size > k:
             null_idx = null_idx[np.linspace(0, null_idx.size - 1, k).round().astype(int)]
         gidx = np.r_[np.arange(n_obs), null_idx[:k]].astype(int)
-        lg, ng, _ = _quad_marginal(ens, X[gidx], G, param_names, cosmo_scaler, prior_s,
+        lg, ng, _, _ = _quad_marginal(ens, X[gidx], G, param_names, cosmo_scaler, prior_s,
                                    node_names, nodes, log_g, log_every=50, label="grid")
         out.update({"grid_phi_raw": G, "grid_logmarg": lg.astype(np.float32),
                     "grid_node_ess": ng, "grid_event_index": gidx})
