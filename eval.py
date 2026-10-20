@@ -202,7 +202,7 @@ def main(argv=None):
     parser.add_argument("--mode",
                         choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
                                  "observe-build", "observe-strip", "obs-reference", "obs-score", "pool",
-                                 "catalogue-digest"],
+                                 "catalogue-digest", "nle-loglik"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -325,6 +325,17 @@ def main(argv=None):
                              "persisted input frame (scalers.pt from --mode recover-scalers). Without it a "
                              "member with no frame silently falls back to member 0's refit frame, which "
                              "differs per member (ensemble_seed-dependent scaler subsample).")
+    # --- --mode nle-loglik: NLE log L(t_e | theta_b) at every mock block, for the PPC weights ----
+    parser.add_argument("--ppc-theta-store", default=None,
+                        help="--mode nle-loglik: store whose (sim,outer,rot) blocks supply the theta "
+                             "grid (default: the experiment's own data store)")
+    parser.add_argument("--ppc-null", choices=["lock", "none"], default="lock",
+                        help="--mode nle-loglik: also score the experiment's test-lock events (inner 0) "
+                             "as fake observations for the PPC null")
+    parser.add_argument("--ppc-max-null", type=int, default=None,
+                        help="--mode nle-loglik: thin the null events to about this many (strided)")
+    parser.add_argument("--ppc-threads", type=int, default=None,
+                        help="--mode nle-loglik: torch threads (and cosmo_dict reader threads)")
     parser.add_argument("--external-dry-run", action="store_true",
                         help="--mode nle-external: resolve the pipeline and stop before sampling.")
     parser.add_argument("--data-store", default=None,
@@ -461,6 +472,29 @@ def main(argv=None):
                     dry_run=args.external_dry_run,
                     require_member_frames=args.require_member_frames,
                 )
+    elif mode == "nle-loglik":
+        # PPC importance weights: the ensemble NLE log-likelihood of the observation (--data-store)
+        # and of the test-lock null events at every block of a mock store. src/ml/eval/ppc_loglik.py.
+        from src.ml.eval.ppc_loglik import run_ppc_loglik
+        from src.ml.eval.nle_external import match_string_for
+
+        if not args.experiments:
+            raise SystemExit("--mode nle-loglik requires --experiments <stage_b_experiment>")
+        for exp in args.experiments:
+            for r in (args.repeat_indices or (0,)):
+                run_ppc_loglik(
+                    exp, match_string_for(exp, r),
+                    theta_store=args.ppc_theta_store,
+                    obs_store=args.data_store,
+                    tag=args.data_tag or "A2",
+                    null=args.ppc_null,
+                    max_null_events=args.ppc_max_null,
+                    batch_size=args.emb_batch_size,
+                    require_member_frames=args.require_member_frames,
+                    n_threads=args.ppc_threads,
+                    dry_run=args.external_dry_run,
+                )
+        return 0
     elif mode == "recover-scalers":
         # Recover the training-time input frame of an already-trained run and persist it per
         # ensemble member. See src/ml/eval/scaler_recovery.py for why this is necessary and why
