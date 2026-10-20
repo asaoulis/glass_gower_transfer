@@ -400,9 +400,10 @@ def main(argv=None):
     if mode == "hos-bake":
         if not args.data_store:
             raise SystemExit("--mode hos-bake requires --data-store <gpu5 store name>")
+        from config.default import get_default_config as _default_config   # main() rebinds the name later
         from src.ml.data.hos import run_bake
         from src.ml.eval.misspec import _GPU5
-        out_dir = os.path.join(get_default_config().base_path, "checkpoints", "hos_sidecars", args.data_store)
+        out_dir = os.path.join(_default_config().base_path, "checkpoints", "hos_sidecars", args.data_store)
         counts = run_bake(f"{_GPU5}/{args.data_store}/output_*.h5", out_dir, workers=args.hos_workers,
                           shard=args.hos_shard, nshards=args.hos_nshards, limit=args.hos_limit,
                           ext=not args.hos_no_ext, log=lambda m: print(m, flush=True))
