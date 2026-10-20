@@ -318,7 +318,7 @@ def phi_grid_points(cosmo_scaler, param_names, n: int, seed: int = 1) -> np.ndar
 @torch.no_grad()
 def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior_g, *,
                         n_nodes: int = 128, seed: int = 0, phi_grid: int = 0,
-                        phi_grid_events: int = 0) -> Dict[str, np.ndarray]:
+                        phi_grid_events: int = 0, n_obs_rows: int = 0) -> Dict[str, np.ndarray]:
     """log of  (1/J) sum_j L(t_e | phi_i, eta_j) pi_s(phi_i, eta_j) / g(eta_j)  for every event e and
     design cosmology i  ( = log p(phi_i | t_e) + log Z_e, the analysis-prior marginal at phi_i ),
     plus log q_D(phi_i), the design density in phi (the Gower prior with every non-PHI parameter
@@ -350,11 +350,19 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
            "integrand_event0": integ0}
     if phi_grid and phi_grid_events:
         G = phi_grid_points(cosmo_scaler, param_names, phi_grid)
-        ne = min(int(phi_grid_events), int(X.shape[0]))
-        lg, ng, _ = _quad_marginal(ens, X[:ne], G, param_names, cosmo_scaler, prior_s,
+        # the observation (row 0 when given) + a STRIDED subset of the null events, so the grid null
+        # spans every cosmology (the null list is sorted by filename = by sim).
+        E = int(X.shape[0])
+        n_obs = int(n_obs_rows)
+        k = max(0, min(int(phi_grid_events) - n_obs, E - n_obs))
+        null_idx = np.arange(n_obs, E)
+        if k and null_idx.size > k:
+            null_idx = null_idx[np.linspace(0, null_idx.size - 1, k).round().astype(int)]
+        gidx = np.r_[np.arange(n_obs), null_idx[:k]].astype(int)
+        lg, ng, _ = _quad_marginal(ens, X[gidx], G, param_names, cosmo_scaler, prior_s,
                                    node_names, nodes, log_g, log_every=50, label="grid")
         out.update({"grid_phi_raw": G, "grid_logmarg": lg.astype(np.float32),
-                    "grid_node_ess": ng, "grid_n_events": np.int32(ne)})
+                    "grid_node_ess": ng, "grid_event_index": gidx})
     return out
 
 
@@ -502,7 +510,7 @@ def run_ppc_loglik(
         prior_g, _ = build_prior_for_mode("gower", param_names, preset_overrides=overrides)
         quad = cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior_g,
                                    n_nodes=int(n_nodes), seed=int(node_seed), phi_grid=int(phi_grid or 0),
-                                   phi_grid_events=int(phi_grid_events or 0))
+                                   phi_grid_events=int(phi_grid_events or 0), n_obs_rows=len(obs_paths))
 
     obs_members = np.zeros((0, Theta.shape[0]), dtype=np.float32)
     if len(obs_paths):
