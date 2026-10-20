@@ -79,6 +79,7 @@ def hos_glass_row(hos_kwargs=None, data_patterns=_HOS_GLASS, band_ckpt=_BAND_CKP
         "scheduler_type": "cyclic",
         "scheduler_kwargs": {"warmup": 2000, "min_factor": 0.1, "cyclic_period_steps": 6000},
         "use_KL_loss": False,
+        "precision": "32",                        # tiny model: fp32 everywhere (CPU sweeps: bf16 autocast ~2x slower)
         "project": "hos-hybrid",
         "repeat_indices": [0, 1, 2, 3, 4],
         **_VECTOR_LOADER,
@@ -107,6 +108,7 @@ def band_side_row():
     """The cluster band-only Gower pack, re-pointed at the sidecar store (local apples-to-apples baseline)."""
     c = copy.deepcopy(_VDQ["gower_npe_finetune_band_nla_m_vdq_ens9"])
     c["data_patterns"] = _HOS_GOWER
+    c["precision"] = "32"
     c["checkpoint_path"] = _BAND_CKPT
     c.update(_VECTOR_LOADER)
     return c

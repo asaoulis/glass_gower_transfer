@@ -124,7 +124,7 @@ def _expand(spec):
     return out
 
 
-def run(spec_path, parallel, cores_per, core_offset):
+def run(spec_path, parallel, cores_per, core_offset, cpu=False):
     spec = json.load(open(spec_path))
     trials = _expand(spec)
     todo = [t for t in trials if not os.path.exists(os.path.join(MODELS, "checkpoints", t["name"], "DONE"))]
@@ -134,8 +134,10 @@ def run(spec_path, parallel, cores_per, core_offset):
     slots = {i: None for i in range(parallel)}
     queue = list(todo)
     env = {**os.environ, "GLASS_MODELS_ROOT": MODELS, "WANDB_MODE": "offline",
-           "WANDB_DIR": os.path.join(MODELS, "wandb"), "OMP_NUM_THREADS": str(min(4, cores_per)),
+           "WANDB_DIR": os.path.join(MODELS, "wandb"), "OMP_NUM_THREADS": str(cores_per if cpu else min(4, cores_per)),
            "PYTHONPATH": REPO}
+    if cpu:     # tiny models are GPU kernel-launch bound (~141 ms/step) but ~44 ms/step on 8 CPU threads
+        env["CUDA_VISIBLE_DEVICES"] = ""
     while queue or any(slots.values()):
         for i, p in slots.items():
             if p is not None and p[0].poll() is not None:
@@ -196,11 +198,12 @@ if __name__ == "__main__":
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run"); r.add_argument("--spec", required=True); r.add_argument("--parallel", type=int, default=5)
     r.add_argument("--cores-per", type=int, default=8); r.add_argument("--core-offset", type=int, default=0)
+    r.add_argument("--cpu", action="store_true", help="train on CPU (hide the GPU); OMP threads = cores-per")
     c = sub.add_parser("collect"); c.add_argument("--spec", required=True); c.add_argument("--out", default=None)
     t = sub.add_parser("run-trial"); t.add_argument("path")
     a = ap.parse_args()
     if a.cmd == "run":
-        run(a.spec, a.parallel, a.cores_per, a.core_offset)
+        run(a.spec, a.parallel, a.cores_per, a.core_offset, cpu=a.cpu)
     elif a.cmd == "collect":
         collect(a.spec, a.out)
     else:

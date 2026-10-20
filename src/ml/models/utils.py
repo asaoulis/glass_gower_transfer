@@ -111,7 +111,10 @@ def fit_model(
     accumulate_grad_batches=1,
     log_throughput=False,
     val_check_interval=None,
+    precision=None,
 ):
+    """`precision` (opt-in, config.precision): Lightning precision override, e.g. "32" for small models trained on
+    CPU (bf16 autocast is ~2x slower there). None keeps the default choice below."""
     # Stage fsspec's checkpoint temp files on the models filesystem, not the
     # compute node's small /tmp (see src/ml/tmpdir.py -- this is the errno-28 fix).
     redirect_tempdir(base_path)
@@ -150,7 +153,8 @@ def fit_model(
     # push the flow's rational-quadratic spline to bf16 and crash at its index_put. The scoped
     # autocast already gives the bf16 tensor-core/bandwidth win on the encoder (the 90% cost).
     amp_encoder_on = bool(getattr(getattr(model, "model", None), "amp_encoder", False))
-    precision = "32" if amp_encoder_on else "bf16-mixed"
+    if precision is None:
+        precision = "32" if amp_encoder_on else "bf16-mixed"
 
     trainer = pl.Trainer(
         max_epochs=epochs,
@@ -271,6 +275,7 @@ def train_model(config):
                 accumulate_grad_batches=accumulate_grad_batches,
                 log_throughput=bool(getattr(cfg, "log_throughput", False)),
                 val_check_interval=getattr(cfg, "val_check_interval", None),
+                precision=getattr(cfg, "precision", None),
             )
             if wandb_logger is not None:
                 wandb.finish()

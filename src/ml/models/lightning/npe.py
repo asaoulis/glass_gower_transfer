@@ -448,9 +448,15 @@ class NDELightningModule(BaseLightningModule):
             if pm.shape[0] > pm.shape[1]:
                 pm = pm - pm.mean(dim=0, keepdim=True)
                 cov = (pm.T @ pm) / (pm.shape[0] - 1)
-                ev = torch.linalg.eigvalsh(cov).clamp(min=0)
-                p_ratio = (ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12)).item()
-                self.log("val_patch_pr", p_ratio, sync_dist=self.is_distributed)
+                # Diagnostic only: never let it kill training (CPU LAPACK eigh can fail to converge on a finite,
+                # near-degenerate 8x8 cov). float64 + skip the log on failure / non-finite input.
+                try:
+                    ev = torch.linalg.eigvalsh(cov.double()).clamp(min=0) if torch.isfinite(cov).all() else None
+                except RuntimeError:
+                    ev = None
+                if ev is not None:
+                    p_ratio = (ev.sum() ** 2 / (ev.pow(2).sum() + 1e-12)).item()
+                    self.log("val_patch_pr", p_ratio, sync_dist=self.is_distributed)
                 self.log(
                     "val_patch_std", pm.std(dim=0).mean().item(), sync_dist=self.is_distributed
                 )
