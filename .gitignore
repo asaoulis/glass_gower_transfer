@@ -27,6 +27,8 @@ wandb/
 # Committed data files: locked fixed test-set sim_id lists (override the *.json ignore)
 !config/fixed_test_sets/
 !config/fixed_test_sets/*.json
+!config/hos_assets/
+!config/hos_assets/*.npz
 lightning_logs/
 sbi-logs/
 logs/

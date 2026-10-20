@@ -61,6 +61,7 @@ def get_default_config():
     }
     config.prefetch_factor = None      # DataLoader prefetch_factor (workers>0)
     config.persistent_workers = None   # keep workers alive across epochs (None=auto)
+    config.preload_data = False        # cache every item in RAM at dataset build (small vector stores, e.g. HOS sidecars)
 
     # Data loading (new dataset interface)
     config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5"

@@ -31,6 +31,7 @@ from config.euclid import euclid_experiments
 from config.kids_legacy_dn import kids_legacy_dn_experiments
 from config.kids_legacy_bgp import kids_legacy_bgp_experiments
 from config.kids_legacy_vdq import kids_legacy_vdq_experiments
+from config.kids_legacy_hos import kids_legacy_hos_experiments
 from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
 from src.ml.eval.misspec import VARIATE_SETS
@@ -48,6 +49,7 @@ experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
 experiments.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
 experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
 experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
+experiments.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
 experiments.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation (closed; do not extend)
 
 # What a bare `python eval.py` runs. Explicit --mode wins. The gatekeeper passes eval.py CLI
@@ -202,7 +204,7 @@ def main(argv=None):
     parser.add_argument("--mode",
                         choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
                                  "observe-build", "observe-strip", "obs-reference", "obs-score", "pool",
-                                 "catalogue-digest", "nle-loglik"],
+                                 "catalogue-digest", "nle-loglik", "hos-bake"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -358,6 +360,14 @@ def main(argv=None):
     parser.add_argument("--ood-k", type=int, default=10, help="summaries mode: kNN k for the OOD scores")
     parser.add_argument("--ood-n-perm", type=int, default=200,
                         help="summaries mode: permutations for the MMD two-sample p-value")
+    # --mode hos-bake (src/ml/data/hos.py): per-mock HOS sidecars of a baked gpu5 store (--data-store), written
+    # FLAT under {base_path}/checkpoints/hos_sidecars/<store>/ (+ per-shard transfer tars in <store>_tar/ for `fetch`).
+    parser.add_argument("--hos-workers", type=int, default=30, help="--mode hos-bake: worker processes")
+    parser.add_argument("--hos-shard", type=int, default=None, help="--mode hos-bake: bake only this shard index")
+    parser.add_argument("--hos-nshards", type=int, default=20, help="--mode hos-bake: shard count (sim_id %% n)")
+    parser.add_argument("--hos-limit", type=int, default=None, help="--mode hos-bake: first N files only (test)")
+    parser.add_argument("--hos-no-ext", action="store_true",
+                        help="--mode hos-bake: R1 vector only (skip the hos_ext superset)")
     # Unblinding front end (src/observation): catalogue -> observation -> baked per-arm stores.
     # Fail-soft: a bug in the (independent) observation package must never break the other modes.
     try:
@@ -387,6 +397,16 @@ def main(argv=None):
     if mode == "obs-score":
         from src.observation.cluster_modes import run_obs_score
         return run_obs_score(args)
+    if mode == "hos-bake":
+        if not args.data_store:
+            raise SystemExit("--mode hos-bake requires --data-store <gpu5 store name>")
+        from src.ml.data.hos import run_bake
+        from src.ml.eval.misspec import _GPU5
+        out_dir = os.path.join(get_default_config().base_path, "checkpoints", "hos_sidecars", args.data_store)
+        counts = run_bake(f"{_GPU5}/{args.data_store}/output_*.h5", out_dir, workers=args.hos_workers,
+                          shard=args.hos_shard, nshards=args.hos_nshards, limit=args.hos_limit,
+                          ext=not args.hos_no_ext, log=lambda m: print(m, flush=True))
+        return 0 if counts["bad"] == 0 else 1
     if mode == "pool":
         from src.ml.eval.pool_mode import run_pool_mode
         return run_pool_mode(args)

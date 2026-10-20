@@ -14,6 +14,9 @@ DEFAULT_QUANTITY_PATHS = {
     "bandpower_ls": ("cls_results", "full", "bandpower_ls"),
     "mixed_bandpowers": ("cls_results", "full", "mixed_bandpowers"),
     "cls": ("cls_results", "full", "cls"),
+    # HOS sidecars (src/ml/data/hos.py): R1 third-moment vector (112) and the (4, 77) moment superset
+    "hos": ("hos", "vector"),
+    "hos_ext": ("hos_ext", "moments"),
 }
 
 

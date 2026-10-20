@@ -14,7 +14,7 @@ from .data.data_loaders import build_dataloaders, build_nested_keys_from_quantit
 from .data.side_inputs import build_side_input_fn, side_input_config
 from .data.data_loading import unpack_data, load_cosmo_params
 # Use new abstracted scalers
-from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler
+from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler, PerDimStandardScaler
 
 # Merge model registries (compressors + kids-specific architectures)
 MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
@@ -133,8 +133,14 @@ def _fit_data_key_scalers_from_paths(
     keys_to_scale: Optional[Sequence[str]] = None,
     max_obs=1_000,
     seed: int = 0,
+    per_dim_keys: Optional[Sequence[str]] = None,
 ) -> Dict[str, BaseScaler]:
+    """Fit one scaler per data key on a subsample of `train_paths`. Default: each file is flattened and a SCALAR
+    scaler is fitted (LogNormalScaler for band powers, StandardScaler otherwise). Keys in `per_dim_keys` (opt-in,
+    e.g. the HOS feature vector, whose entries differ by orders of magnitude) are instead stacked as (N, D) rows and
+    get a PerDimStandardScaler. The per-key subsample RNG sequence is unchanged by this option."""
     key_scalers: Dict[str, BaseScaler] = {}
+    per_dim_keys = set(per_dim_keys or ())
     if keys_to_scale is None:
         keys_to_scale = list(nested_keys.keys())
 
@@ -187,13 +193,15 @@ def _fit_data_key_scalers_from_paths(
                 import warnings
                 warnings.warn(f"[scaler-fit] skipping unreadable file ({type(e).__name__}): {p}")
                 continue
-            vals.append(arr.reshape(-1))
+            vals.append(arr.reshape(1, -1) if key in per_dim_keys else arr.reshape(-1))
         if not vals:
             continue
         stacked = np.concatenate(vals, axis=0)
 
         # Choose scaler: ensure 'bandpowers' uses LogNormalScaler
-        if "bandpowers" in key.lower():
+        if key in per_dim_keys:
+            scaler = PerDimStandardScaler()
+        elif "bandpowers" in key.lower():
             scaler: BaseScaler = LogNormalScaler()
         else:
             scaler = StandardScaler()
@@ -327,6 +335,7 @@ def prepare_data_parameters(config):
         # Optional oracle conditioning (config.side_input type 'true_theta'); None for every
         # config without a side_input, i.e. unchanged items.
         side_input_fn=build_side_input_fn(config),
+        preload=bool(getattr(config, 'preload_data', False)),
     )
 
     # Print dataset lengths for visibility
@@ -359,6 +368,8 @@ def prepare_data_parameters(config):
         # just a statistics one: at Euclid's 28 MB/mock, the 1000 default would need ~28 GB/key.
         max_obs=_resolve_scaler_fit_max_obs(config),
         seed=int(getattr(config, 'scaler_fit_seed', 0) or 0),
+        # scaler_options may be an ml_collections ConfigDict (not a dict subclass): duck-type the lookup.
+        per_dim_keys=(getattr(scaler_options, 'get', lambda *_: None)('data') or {}).get('per_dim_keys'),
     )
 
     cosmo_scaler = None
@@ -743,6 +754,21 @@ def build_model(config, test_dataloader=None):
     backbone_lr = getattr(config, 'pretrained_backbone_lr', None)
     if backbone_lr is not None and backbone_module_name is not None:
         model.pretrained_backbone_lrs = {backbone_module_name: float(backbone_lr)}
+
+    # Opt-in (HOS hybrid Stage B): freeze the hybrid's patch/HOS branch AFTER every load, so a fine-tune can adapt
+    # only the band/fusion/flow. Its dropout is zeroed too: a frozen branch should be deterministic in training.
+    if getattr(config, 'freeze_patch_encoder', False):
+        patch_enc = getattr(model.embedding_net, 'patch_encoder', None)
+        if patch_enc is None:
+            raise ValueError("freeze_patch_encoder=True but embedding_net has no patch_encoder")
+        n = 0
+        for p in patch_enc.parameters():
+            p.requires_grad = False
+            n += 1
+        for m in patch_enc.modules():
+            if isinstance(m, torch.nn.Dropout):
+                m.p = 0.0
+        print(f"[build_model] freeze_patch_encoder: froze embedding_net.patch_encoder ({n} param tensors, dropout off)")
 
     _apply_ml_perf(model, config)
 

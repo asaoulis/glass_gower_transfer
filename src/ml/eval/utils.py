@@ -99,6 +99,19 @@ def compute_log_prob(model):
         test_log_prob = model.compute_avg_log_prob()
     return {"test_log_prob": test_log_prob}
 
+def _resolve_prior_csv(csv_path):
+    """The Gower prior CSV default is the cluster checkout path. Off-cluster (local evals), fall back to
+    $GLASS_GOWER_PRIOR_CSV, then the repo-relative copy. The cluster behaviour is unchanged (the path exists)."""
+    if csv_path and os.path.exists(csv_path):
+        return csv_path
+    env = os.environ.get("GLASS_GOWER_PRIOR_CSV")
+    if env and os.path.exists(env):
+        return env
+    repo = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", ".."))
+    local = os.path.join(repo, "kids-legacy-sbi", "data", "gower_st", "PKDGRAV3_on_DiRAC_DES_330.csv")
+    return local if os.path.exists(local) else csv_path
+
+
 def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv", preset_overrides=None):
     """Build the Gower Street prior in *scaled* space ([0,1]^D).
 
@@ -108,6 +121,7 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
       they appear in `params`.
     """
 
+    csv_path = _resolve_prior_csv(csv_path)
     params = list(params)
     known_priors = build_gower_paper_known_priors()
     # Model-aware IA priors override the static (NLA-M) entries: NLA / NLA-z / TATT carry
@@ -215,6 +229,7 @@ def build_cosmo_param_sampler(
     ``(sim_id, base_seed)`` always yields the same physical cosmology dict. ``params`` should be the
     cosmology parameter names only (e.g. omega_m, sigma_8, ombh2, h, ns, w0, mnu).
     """
+    csv_path = _resolve_prior_csv(csv_path)
     params = list(params)
     known_priors = build_gower_paper_known_priors()
     known_priors = {**known_priors, **ia_marginal_priors(params)}

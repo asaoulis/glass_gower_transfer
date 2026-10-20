@@ -398,6 +398,7 @@ def _load_experiment_config(experiment_name: str):
     from config.kids_legacy_dn import kids_legacy_dn_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
     from config.kids_legacy_vdq import kids_legacy_vdq_experiments
+    from config.kids_legacy_hos import kids_legacy_hos_experiments
     from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 
     exps = dict(base_experiments)
@@ -408,6 +409,7 @@ def _load_experiment_config(experiment_name: str):
     exps.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
     exps.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
     exps.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
+    exps.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
     exps.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation
     experiment_config = exps[experiment_name]
 
