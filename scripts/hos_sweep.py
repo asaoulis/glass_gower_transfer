@@ -6,9 +6,10 @@
 
 Spec JSON:
   {"stage": "A1", "base": "glass" | "gower" | "band_side",
-   "common": {<top-level config overrides>}, "common_hos": {<map_kwargs overrides>},
+   "common": {<top-level config overrides>}, "common_hos": {<HOS MLP map_kwargs overrides>},
+   "common_mk": {<merged into model_kwargs>}, "common_opt": {<merged into optimizer_kwargs, e.g. weight_decay>},
    "glass_ckpt": "<checkpoint dir>"            (gower base only; per-repeat '_{r}' resolution as in production),
-   "trials": [{"id": "h256_d3", "hos": {...}, "top": {...}}, ...]}
+   "trials": [{"id": "h256_d3", "hos": {...}, "top": {...}, "mk": {...}, "opt": {...}}, ...]}
 Each trial trains `hossw_<stage>_<id>` exactly like train.py (get_default_config + row + overrides, the
 max_trainval_cosmos list loop, train_model) under $GLASS_MODELS_ROOT (default /data/alex/hos_models) with
 WANDB_MODE=offline. Trials are resumable: a trial with a DONE marker is skipped. Each run dir gets a val_history.csv
@@ -86,7 +87,11 @@ def run_trial(path):
     else:
         raise ValueError(t["base"])
     row.update(copy.deepcopy(t.get("top") or {}))
+    if t.get("mk"):                                 # merged INTO model_kwargs (e.g. band_dropout_p)
+        row["model_kwargs"] = {**row["model_kwargs"], **t["mk"]}
     config = get_default_config()
+    if t.get("opt"):                                # merged INTO the default optimizer_kwargs (e.g. weight_decay)
+        row["optimizer_kwargs"] = {**dict(config.optimizer_kwargs), **t["opt"]}
     config.experiment_name = t["name"]
     for k, v in row.items():
         if k != "max_trainval_cosmos":
@@ -111,8 +116,11 @@ def _expand(spec):
     for tr in spec["trials"]:
         hos = {**(spec.get("common_hos") or {}), **(tr.get("hos") or {})}
         top = {**(spec.get("common") or {}), **(tr.get("top") or {})}
+        mk = {**(spec.get("common_mk") or {}), **(tr.get("mk") or {})}
+        opt = {**(spec.get("common_opt") or {}), **(tr.get("opt") or {})}
         out.append(dict(name=_trial_name(spec["stage"], tr["id"]), id=tr["id"], stage=spec["stage"], base=spec["base"],
-                        hos=hos or None, top=top, glass_ckpt=tr.get("glass_ckpt", spec.get("glass_ckpt"))))
+                        hos=hos or None, top=top, mk=mk or None, opt=opt or None,
+                        glass_ckpt=tr.get("glass_ckpt", spec.get("glass_ckpt"))))
     return out
 
 
@@ -172,7 +180,8 @@ def collect(spec_path, out=None):
                     n_val, last_v, first_v = len(vals), vals[-1], vals[0]
             rows.append(dict(stage=t["stage"], trial=t["id"], run=os.path.basename(rd.rstrip("/")), best_val=bv,
                              best_epoch=be, last_val=last_v, first_val=first_v, n_val=n_val, done=os.path.exists(done),
-                             wall_s=wall, hos=json.dumps(t["hos"]), top=json.dumps(t["top"])))
+                             wall_s=wall, hos=json.dumps(t["hos"]), top=json.dumps(t["top"]), mk=json.dumps(t["mk"]),
+                             opt=json.dumps(t["opt"])))
     out = out or os.path.join(MODELS, "logs", "sweep", f"sweep_{spec['stage']}.csv")
     with open(out, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=list(rows[0]) if rows else ["stage"])
