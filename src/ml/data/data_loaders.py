@@ -19,6 +19,54 @@ def _warn_bad_file(path, err):
         warnings.warn(f"[dataloader] skipping unreadable file ({type(err).__name__}): {path}")
 
 
+def _read_for_cache(args):
+    path, nested_keys, cosmo_params, dtype, stack_groups, allow_missing = args
+    from .data_loading import unpack_data
+    try:
+        return unpack_data(path, nested_keys, cosmo_params, as_torch=False, dtype=dtype, stack_groups=stack_groups,
+                           allow_missing_cosmo=allow_missing)
+    except (OSError, KeyError):
+        return None
+
+
+def _dir_cache(directory: str, ds: "H5CosmoDataset", workers: int):
+    """(basename->row, keys, {key: (N, ...) array}, cosmo (N, P), ok (N,)) for every output_*.h5 in `directory`."""
+    import glob
+    import hashlib
+    import json
+    keys = sorted(ds.nested_keys)
+    tag = json.dumps([[k, list(ds.nested_keys[k])] for k in keys] + [list(ds.cosmo_params), np.dtype(ds.dtype).str,
+                     bool(ds.stack_groups), bool(ds.allow_missing_cosmo_params)])
+    files = sorted(glob.glob(os.path.join(directory, "output_*.h5")))
+    if not files:
+        return None
+    key = hashlib.sha1((tag + "|" + str(len(files)) + "|" + os.path.basename(files[0]) + "|"
+                        + os.path.basename(files[-1])).encode()).hexdigest()[:16]
+    cdir = os.path.join(directory, ".preload_cache")
+    cpath = os.path.join(cdir, f"{key}.npz")
+    if not os.path.exists(cpath):
+        from concurrent.futures import ProcessPoolExecutor
+        args = [(f, ds.nested_keys, ds.cosmo_params, ds.dtype, ds.stack_groups, ds.allow_missing_cosmo_params)
+                for f in files]
+        with ProcessPoolExecutor(max_workers=max(1, workers)) as ex:
+            items = list(ex.map(_read_for_cache, args, chunksize=256))
+        ref = next(it for it in items if it is not None)
+        ok = np.array([it is not None for it in items])
+        arrays = {k: np.stack([it[0][k] if it is not None else np.zeros_like(ref[0][k]) for it in items]) for k in keys}
+        cosmo = np.stack([it[1] if it is not None else np.zeros_like(ref[1]) for it in items])
+        os.makedirs(cdir, exist_ok=True)
+        tmp = cpath + f".tmp{os.getpid()}.npz"
+        np.savez(tmp, names=np.array([os.path.basename(f) for f in files]), ok=ok, cosmo=cosmo, tag=tag,
+                 **{f"k_{i}": arrays[k] for i, k in enumerate(keys)})
+        os.replace(tmp, cpath)
+        print(f"[H5CosmoDataset] wrote dir cache {cpath} ({len(files)} files, {int(ok.sum())} ok)")
+    d = np.load(cpath, allow_pickle=False)
+    if str(d["tag"]) != tag:
+        return None
+    arrays = {k: d[f"k_{i}"] for i, k in enumerate(keys)}
+    return {n: i for i, n in enumerate(d["names"])}, keys, arrays, d["cosmo"], d["ok"]
+
+
 class H5CosmoDataset(Dataset):
     """Dataset that loads items via unpack_data for given HDF5 paths."""
 
@@ -36,7 +84,7 @@ class H5CosmoDataset(Dataset):
         allow_missing_cosmo_params: bool = False,
         side_input_fn=None,
         preload: bool = False,
-        preload_threads: int = 16,
+        preload_workers: int = 8,
     ):
         self.paths = list(paths)
         self.nested_keys = nested_keys
@@ -62,26 +110,34 @@ class H5CosmoDataset(Dataset):
         # Filled eagerly with a thread pool; unreadable files are not cached and keep the skip-bad-file policy.
         self._mem: Dict[int, tuple] = {}
         if preload:
-            self._preload(int(preload_threads))
+            self._preload(int(preload_workers))
 
     def _read(self, path):
         from .data_loading import unpack_data
         return unpack_data(path, self.nested_keys, self.cosmo_params, as_torch=False, dtype=self.dtype,
                            stack_groups=self.stack_groups, allow_missing_cosmo=self.allow_missing_cosmo_params)
 
-    def _preload(self, threads: int):
-        from concurrent.futures import ThreadPoolExecutor
-
-        def one(j):
-            try:
-                return j, self._read(self.paths[j])
-            except (OSError, KeyError):
-                return j, None
-        with ThreadPoolExecutor(max_workers=max(1, threads)) as ex:
-            for j, item in ex.map(one, range(len(self.paths))):
-                if item is not None:
-                    self._mem[j] = item
-        print(f"[H5CosmoDataset] preloaded {len(self._mem)}/{len(self.paths)} items")
+    def _preload(self, workers: int):
+        """Fill the RAM cache. When every path lives in ONE directory, go through a directory-level on-disk cache
+        (`<dir>/.preload_cache/<key>.npz`: every output_*.h5 of the dir, read once with the same `_read` in a process
+        pool -- h5py serialises threads on the GIL -- and written atomically), so repeated runs on the same store
+        (sweeps, ensemble members, train/val/test of one run) skip ~10^5 HDF5 opens. Otherwise read directly."""
+        dirs = {os.path.dirname(os.path.abspath(p)) for p in self.paths}
+        cache = _dir_cache(dirs.pop(), self, workers) if len(dirs) == 1 else None
+        if cache is not None:
+            index, keys, arrays, cosmo, ok = cache
+            for j, p in enumerate(self.paths):
+                i = index.get(os.path.basename(p))
+                if i is not None and ok[i]:
+                    self._mem[j] = ({k: arrays[k][i] for k in keys}, cosmo[i])
+        else:
+            for j, p in enumerate(self.paths):
+                try:
+                    self._mem[j] = self._read(p)
+                except (OSError, KeyError):
+                    pass
+        print(f"[H5CosmoDataset] preloaded {len(self._mem)}/{len(self.paths)} items"
+              f"{' (dir cache)' if cache is not None else ''}")
 
     def __len__(self) -> int:
         return len(self.paths)
