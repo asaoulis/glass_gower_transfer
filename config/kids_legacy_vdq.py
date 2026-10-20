@@ -938,6 +938,10 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_ens9_e150"]
 # Resolution verified in the log: own Stage-A whitener (glass_nle_pretrain_band_nla_z_vdq_k8_r0, fit on 12739 rows) + own Stage-A
 # best flow (ep144 -10.5787), 110 keys loaded. Judged afterwards on the shared 100-id-lock per-member test NLL vs band_nla (-5.67..-8.02).
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r0_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 150.0
+# ... and for r1 ONLY: Stage-B job 1391294 died at ep0 with gap 95.586 nats (Gower val NLL 83.798 vs Stage-A best -11.788; higher than any
+# band_nla repeat, max 70.4). Resolution verified: own whitener (..._band_nla_z_vdq_k8_r1, 12739 rows) + own best flow (ep149 -11.7883),
+# 110 keys loaded. Retained only if its per-member test NLL on the 100-id lock is in family (judge afterwards; drop/replace if not).
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r1_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 150.0
 for _r in _BAND_NLA_REPEATS_VDQ:
     VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}"] = "kids_legacy_band_nla_z_vdq"
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_z_vdq"
