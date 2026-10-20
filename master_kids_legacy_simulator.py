@@ -589,13 +589,16 @@ IA_PRIOR_OVERRIDES = {
                   'b_z':  ('uniform', -3.700000, -3.700000)},
     },
     # 'ppc' — posterior-predictive regeneration (task eval-and-viz/vdq-posterior-predictive, plan §M7/§R):
-    # a_ia narrowed from the U[-6, 6] generation box to ~mu +- 5 sigma of the pooled real-data field
-    # posterior (NLA -0.11 +- 0.23; NLA-z -0.04 +- 0.26), so the within-cosmology nuisance importance
-    # weights p(a_ia | phi, x) / q_ppc stay bounded. b_z keeps its generation prior. Same draw count as
-    # 'default' (uniform -> uniform), so RNG streams stay aligned.
+    # a_ia drawn from (a mildly inflated Gaussian fit to) the pooled real-data field posterior, instead of
+    # the U[-6, 6] generation box. Inflation x1.25: the regenerated cosmologies are fixed design points and
+    # each block is importance-weighted by p(a_ia | phi_i, x) / q_ppc(a_ia); the conditional posteriors
+    # shift by up to ~1.3 sigma across the top-weight sims and are narrower than the pooled marginal, so a
+    # slightly wider q keeps those ratios bounded (block-ESS ~0.8 N) at almost no cost.
+    # NLA: pooled -0.114 +- 0.232; NLA-z: -0.04 +- 0.26 (plan §F; re-check vs its loglik before submit).
+    # b_z keeps its generation prior. Same draw count as 'default', so RNG streams stay aligned.
     'ppc': {
-        'nla':   {'a_ia': ('uniform', -1.30, 1.10)},
-        'nla_z': {'a_ia': ('uniform', -1.40, 1.30)},
+        'nla':   {'a_ia': ('normal', -0.114, 0.29)},
+        'nla_z': {'a_ia': ('normal', -0.04, 0.33)},
     },
 }
 
