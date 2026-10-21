@@ -1007,7 +1007,13 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_8e5_e40
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_3e5_e150"] = _band_nla_z_lr_sweep_b(3e-5, 150)
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_3e5_e400"] = _band_nla_z_lr_sweep_b(3e-5, 400)
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_2e4_e150"] = _band_nla_z_lr_sweep_b(2e-4, 150)
-for _tag in ("8e5_e150", "8e5_e400", "3e5_e150", "3e5_e400", "2e4_e150"):
+# Round 1 result (paired best val NLL per member vs production r2 m0-m2 -9.67/-9.55/-9.79; rerun 8e5_e150 reproduces to 0.1):
+# 3e5_e150 +1.1 worse, 2e4_e150 -0.8 better, 8e5_e400 m0 -1.0 better => Stage B is under-trained, not over-stepped.
+# Round 2 pushes LR/epochs up.
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_2e4_e400"] = _band_nla_z_lr_sweep_b(2e-4, 400)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_4e4_e150"] = _band_nla_z_lr_sweep_b(4e-4, 150)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_4e4_e400"] = _band_nla_z_lr_sweep_b(4e-4, 400)
+for _tag in ("8e5_e150", "8e5_e400", "3e5_e150", "3e5_e400", "2e4_e150", "2e4_e400", "4e4_e150", "4e4_e400"):
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_{_tag}"] = "kids_legacy_band_nla_z_vdq"
 
 # NLE-dynamics sweep on the r2 band (user 2026-10-21: "focus on the NLE training dynamics ... the truncation dimension may
@@ -1041,6 +1047,11 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k4_r2_sw_ens3"] =
     "glass_nle_pretrain_band_nla_z_vdq_k4_r2_sw", 4)
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_a400_ens3"] = _band_nla_z_sweep_b(
     "glass_nle_pretrain_band_nla_z_vdq_k8_r2_sw_a400", 8)
+# Does the val-NLL gain of a higher Stage-B LR buy FoM? Same as the k8 ens3 baseline but lr 2e-4 (round-1 winner at 150 ep).
+_ft = _band_nla_z_sweep_b("glass_nle_pretrain_band_nla_z_vdq_k8_r2", 8)
+_ft["lr"] = 2e-4
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_lr2e4_ens3"] = _ft
+VDQ_NLE_SOURCES["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_lr2e4_ens3"] = "kids_legacy_band_nla_z_vdq"
 for _n in ("glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw", "glass_nle_pretrain_band_nla_z_vdq_k4_r2_sw",
            "glass_nle_pretrain_band_nla_z_vdq_k8_r2_sw_a400", "gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_base_ens3",
            "gower_nle_finetune_band_nla_z_vdq_k6_r2_sw_ens3", "gower_nle_finetune_band_nla_z_vdq_k4_r2_sw_ens3",
