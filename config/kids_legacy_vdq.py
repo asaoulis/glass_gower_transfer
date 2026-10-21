@@ -1052,6 +1052,12 @@ _ft = _band_nla_z_sweep_b("glass_nle_pretrain_band_nla_z_vdq_k8_r2", 8)
 _ft["lr"] = 2e-4
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_lr2e4_ens3"] = _ft
 VDQ_NLE_SOURCES["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_lr2e4_ens3"] = "kids_legacy_band_nla_z_vdq"
+# ... and lr 4e-4 = the pre-2026-07-06 NLE-finetune default (cut to 8e-5 then, "gentler, ALL variates"): round-2 m0 -11.10 at
+# 150 ep (-1.4 vs production). Calibration (TARP) must be checked before it can enter a production row.
+_ft = _band_nla_z_sweep_b("glass_nle_pretrain_band_nla_z_vdq_k8_r2", 8)
+_ft["lr"] = 4e-4
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_lr4e4_ens3"] = _ft
+VDQ_NLE_SOURCES["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_lr4e4_ens3"] = "kids_legacy_band_nla_z_vdq"
 for _n in ("glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw", "glass_nle_pretrain_band_nla_z_vdq_k4_r2_sw",
            "glass_nle_pretrain_band_nla_z_vdq_k8_r2_sw_a400", "gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_base_ens3",
            "gower_nle_finetune_band_nla_z_vdq_k6_r2_sw_ens3", "gower_nle_finetune_band_nla_z_vdq_k4_r2_sw_ens3",
