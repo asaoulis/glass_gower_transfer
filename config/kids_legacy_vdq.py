@@ -1085,4 +1085,51 @@ for _n in ("glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw", "glass_nle_pretrain_ban
            "gower_nle_finetune_band_nla_z_vdq_k6_r2_sw_ens3", "gower_nle_finetune_band_nla_z_vdq_k4_r2_sw_ens3",
            "gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_a400_ens3"):
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq"
+
+# === Truncation k6 as the FoM lever (2026-10-21 ~18Z) =============================================================
+# Sweep evals on the r2 band (ens3, bundled eval): k8 base 8e-5 FoM(Om,s8) 2.321 / S8 w68 .115, k8 lr 2e-4 2.322 / .115
+# (test lp 1 nat better, Om/s8 posterior sd identical to 2e-4), prod k8 ens9 2.304 / .114 => Stage-B LR/epochs/ensemble size
+# do NOT move the Om-s8 width; k6 3.156 / .087 (TARP .041), k4 3.029 / .085 (TARP .034) do. Confound: k6/k4 had fresh
+# Stage As. Discriminators: r2b (k8, fresh Stage A, same band) and `_k6_r2_sw2` (2nd k6 Stage A on the r2 band).
+# k6 Stage A for the other bands is pre-staged; the k6 production Stage B rows are 8e-5 / 150 ep (Stage-B epochs do not
+# move FoM) and are submitted ONLY if the discriminators confirm k.
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw2"] = _band_nla_z_sweep_a(6)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k6_r2_sw2_ens3"] = _band_nla_z_sweep_b(
+    "glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw2", 6)
+
+
+def _band_nla_z_k6_a(r):
+    pre = _band_nla_z_nle_a_vdq(r)
+    pre["whiten_embeddings"] = {"k": 6}
+    return pre
+
+
+def _band_nla_z_k6_b(r, pretrain_exp):
+    ft = _band_nla_z_nle_b_vdq(r, pretrain_exp)
+    ft["whiten_embeddings"] = {"k": 6}
+    return ft
+
+
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k6_r0"] = _band_nla_z_k6_a(0)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k6_r3"] = _band_nla_z_k6_a(3)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k6_r4"] = _band_nla_z_k6_a(4)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_rr_k6_r1"] = _band_nla_z_k6_a(1)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k6_r0_ens9_e150"] = _band_nla_z_k6_b(
+    0, "glass_nle_pretrain_band_nla_z_vdq_k6_r0")
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k6_r3_ens9_e150"] = _band_nla_z_k6_b(
+    3, "glass_nle_pretrain_band_nla_z_vdq_k6_r3")
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k6_r4_ens9_e150"] = _band_nla_z_k6_b(
+    4, "glass_nle_pretrain_band_nla_z_vdq_k6_r4")
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k6_r1_ens9_e150"] = _band_nla_z_k6_b(
+    1, "glass_nle_pretrain_band_nla_z_vdq_rr_k6_r1")
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k6_r2_ens9_e150"] = _band_nla_z_k6_b(
+    2, "glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw")
+for _n in ("glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw2", "gower_nle_finetune_band_nla_z_vdq_k6_r2_sw2_ens3",
+           "glass_nle_pretrain_band_nla_z_vdq_k6_r0", "glass_nle_pretrain_band_nla_z_vdq_k6_r3",
+           "glass_nle_pretrain_band_nla_z_vdq_k6_r4", "gower_nle_finetune_band_nla_z_vdq_k6_r0_ens9_e150",
+           "gower_nle_finetune_band_nla_z_vdq_k6_r3_ens9_e150", "gower_nle_finetune_band_nla_z_vdq_k6_r4_ens9_e150",
+           "gower_nle_finetune_band_nla_z_vdq_k6_r2_ens9_e150"):
+    VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq"
+for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k6_r1", "gower_nle_finetune_band_nla_z_vdq_rr_k6_r1_ens9_e150"):
+    VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
