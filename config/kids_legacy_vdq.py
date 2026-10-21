@@ -967,7 +967,17 @@ assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
 # Launch:
 #   train --exp kids_legacy_band_nla_z_vdq --repeat-indices 3,4 ; train --exp kids_legacy_band_nla_z_vdq_rr --repeat-indices 1
 #   embed --gpu v100 --ncpu 1 --mem-gb 24 --target glass_nle_pretrain_band_nla_z_vdq{,_rr}_k8_r<r>[b] --sources <its band row>
-#   embed --cpu --partition CORES40 --target gower_nle_finetune_band_nla_z_vdq{,_rr}_k8_r<r>[b]_ens9_e150 --sources <its band row>
+#   embed --cpu --partition CORES40 --wall_h 30 --target gower_nle_finetune_band_nla_z_vdq{,_rr}_k8_r<r>[b]_ens9_e400 --sources <its band row>
+# ⭐ Stage B of these slots = lr 4e-4, 400 epochs (`_ens9_e400`), NOT the production 8e-5 / 150: the r2-split sweep below found
+# the production Stage B under-trained (paired m0 best val NLL 8e-5/150 -9.67, 2e-4/400 -11.46, 4e-4/150 -11.10, 4e-4/400
+# -12.20; held-out val still improving => under-fit, not over-fit). Calibration is checked on the `_sw_lr{2e4,4e4}_ens3`
+# eval rows before any of these enters the arm. r0 keeps its original 8e-5 / 150 chain.
+def _band_nla_z_nle_b_e400(r, pretrain_exp=None):
+    ft = _band_nla_z_nle_b_vdq(r, pretrain_exp)
+    ft.update(lr=4e-4, epochs=400)
+    return ft
+
+
 _band_nla_z_rr = _band_nla_z_vdq()
 _band_nla_z_rr["repeat_indices"] = [1]
 kids_legacy_vdq_experiments["kids_legacy_band_nla_z_vdq_rr"] = _band_nla_z_rr
@@ -975,17 +985,17 @@ kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r3"] = _band_n
 kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r4"] = _band_nla_z_nle_a_vdq(4)
 kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1"] = _band_nla_z_nle_a_vdq(1)
 kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r2b"] = _band_nla_z_nle_a_vdq(2)
-kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r3_ens9_e150"] = _band_nla_z_nle_b_vdq(3)
-kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e150"] = _band_nla_z_nle_b_vdq(4)
-kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e150"] = _band_nla_z_nle_b_vdq(
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r3_ens9_e400"] = _band_nla_z_nle_b_e400(3)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e400"] = _band_nla_z_nle_b_e400(4)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e400"] = _band_nla_z_nle_b_e400(
     1, "glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1")
-kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e150"] = _band_nla_z_nle_b_vdq(
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e400"] = _band_nla_z_nle_b_e400(
     2, "glass_nle_pretrain_band_nla_z_vdq_k8_r2b")
 for _n in ("glass_nle_pretrain_band_nla_z_vdq_k8_r3", "glass_nle_pretrain_band_nla_z_vdq_k8_r4",
-           "glass_nle_pretrain_band_nla_z_vdq_k8_r2b", "gower_nle_finetune_band_nla_z_vdq_k8_r3_ens9_e150",
-           "gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e150", "gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e150"):
+           "glass_nle_pretrain_band_nla_z_vdq_k8_r2b", "gower_nle_finetune_band_nla_z_vdq_k8_r3_ens9_e400",
+           "gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e400", "gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e400"):
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq"
-for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1", "gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e150"):
+for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1", "gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e400"):
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr"
 
 # Stage-B LR/epoch side sweep on the r2 split (user 2026-10-21: "experiment with different (lower) LRs"). Production Stage B
