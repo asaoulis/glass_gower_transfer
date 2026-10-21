@@ -1006,6 +1006,9 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e400"
 # own Stage-A dir, 110 keys loaded. r3 passed guard 50.
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e400"]["whiten_warmstart_max_gap_nats"] = 150.0
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e400"]["whiten_warmstart_max_gap_nats"] = 150.0
+# ... and r3 ONLY: job 1391589 passed member ens0 but died at member ens1 ep0 (gap 54.980, 43.314 vs Stage-A best -11.665). Verified:
+# own whitener (..._k8_r3, 12739 rows) + own Stage-A flow (pretrain_ncosmoNone_3 ep147 -11.6655), 110 keys loaded.
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r3_ens9_e400"]["whiten_warmstart_max_gap_nats"] = 150.0
 
 # Stage-B LR/epoch side sweep on the r2 split (user 2026-10-21: "experiment with different (lower) LRs"). Production Stage B
 # (lr 8e-5, exp decay, 150 ep) still descends at ep150 in every member (no LR-too-high signature), so the grid spans
