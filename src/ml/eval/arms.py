@@ -55,6 +55,10 @@ ARMS = {
     # 2-pt (bandpower) NLE, NLA-z IA (a_ia ~ U[-6,6] + b_z), VDQ stores (2026-10-20, NLA-z PPC counterpart of band_nla).
     # APPENDED LAST (seed stability). Same 200-id Gower store split as nla_z -> ncosmoNone_{r}.
     "band_nla_z":  ("gower_nle_finetune_band_nla_z_vdq_k8_r{r}_ens9_e150",        "sc8a1", (0, 1, 2)),
+    # Beyond-2-pt HOS hybrid NLE (2026-10-21, eval-and-viz/hos-hybrid-training): frozen band + R1 third-moment MLP,
+    # the band P3b chain on the HOS sidecar stores. APPENDED LAST (seed stability). Bake `sc8a1_hos` = the HOS sidecars
+    # of the sc8a1 observation store (nle_external.store_glob resolves the `_hos` suffix).
+    "hos":         ("gower_nle_finetune_hos_nla_m_vdq_k8_r{r}_ens9_e150",         "sc8a1_hos", (0, 1, 2, 3, 4)),
 }
 
 # Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run
@@ -180,6 +184,7 @@ MATCH_TEMPLATES = {
     "band": "ncosmo300_{r}",
     "band_nla": "ncosmoNone_{r}",      # max_trainval_cosmos=None (the 200-id gower_vdq_nla store)
     "band_nla_z": "ncosmoNone_{r}",    # max_trainval_cosmos=None (the 200-id gower_vdq_nla_z store)
+    "hos": "ncosmo300_{r}",            # the band M16 split (max_trainval_cosmos=[300]); verified vs match_string_for
 }
 assert set(MATCH_TEMPLATES) == set(ARMS), "MATCH_TEMPLATES and ARMS must cover the same arms"
 assert all(a in ARMS and r in ARMS[a][2] for a, r in EXPERIMENT_OVERRIDES), "override for an unknown (arm, repeat)"
