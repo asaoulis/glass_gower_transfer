@@ -1001,6 +1001,11 @@ for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1", "gower_nle_finetune_ban
 # vs Stage-A best -12.025). Resolution verified: own whitener (glass_nle_pretrain_band_nla_z_vdq_k8_r2b, 12739 rows) + own Stage-A dir,
 # 110 keys loaded. In family with the r0-r2 gaps 50.6 / 95.6 / 54.1.
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e400"]["whiten_warmstart_max_gap_nats"] = 150.0
+# ... and for r4 ONLY (job 1391590: gap 50.938, Gower val 41.541 vs Stage-A best -9.397) and rr r1 ONLY (job 1391591: gap 92.657,
+# 81.142 vs -11.516; the original r1 split gapped 95.6 too). Both verified: own whitener (..._k8_r4 / ..._rr_k8_r1, 12739 rows) +
+# own Stage-A dir, 110 keys loaded. r3 passed guard 50.
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e400"]["whiten_warmstart_max_gap_nats"] = 150.0
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e400"]["whiten_warmstart_max_gap_nats"] = 150.0
 
 # Stage-B LR/epoch side sweep on the r2 split (user 2026-10-21: "experiment with different (lower) LRs"). Production Stage B
 # (lr 8e-5, exp decay, 150 ep) still descends at ep150 in every member (no LR-too-high signature), so the grid spans
