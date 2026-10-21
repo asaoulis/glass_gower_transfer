@@ -997,6 +997,10 @@ for _n in ("glass_nle_pretrain_band_nla_z_vdq_k8_r3", "glass_nle_pretrain_band_n
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq"
 for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1", "gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e400"):
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr"
+# guard-c 50 -> 150 for r2b ONLY (user pre-authorised 2026-10-21): job 1391581 died at ep0 with gap 66.563 nats (Gower val NLL 54.538
+# vs Stage-A best -12.025). Resolution verified: own whitener (glass_nle_pretrain_band_nla_z_vdq_k8_r2b, 12739 rows) + own Stage-A dir,
+# 110 keys loaded. In family with the r0-r2 gaps 50.6 / 95.6 / 54.1.
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e400"]["whiten_warmstart_max_gap_nats"] = 150.0
 
 # Stage-B LR/epoch side sweep on the r2 split (user 2026-10-21: "experiment with different (lower) LRs"). Production Stage B
 # (lr 8e-5, exp decay, 150 ep) still descends at ep150 in every member (no LR-too-high signature), so the grid spans
