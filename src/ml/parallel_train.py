@@ -1,9 +1,10 @@
 """Single-node CPU training waves: many small trainings at once on one CPU node (`eval.py --mode hos-train`).
 
 A wave is a list of task dicts (config/kids_legacy_hos.py:HOS_TRAIN_WAVES):
-  {"kind": "train" | "embed", "exp": <experiment>, "repeat": r, "group": <store tag>, "after": [<exp>...],
-   "env": {...}, "sources": [...] (embed only)}
-`train` runs `python train.py <exp>` with REPEAT_INDICES=r; `embed` runs `python train_embeddings.py <exp> <sources>`.
+  {"kind": "train" | "embed" | "eval", "exp": <experiment>, "repeat": r, "group": <store tag>,
+   "after": [<label or exp>...], "env": {...}, "sources": [...] (embed), "args": [...] + "label" (eval)}
+`train` runs `python train.py <exp>` with REPEAT_INDICES=r; `embed` runs `python train_embeddings.py <exp> <sources>`;
+`eval` runs `python eval.py <args>` (e.g. one ensemble member's `--mode recover-scalers`).
 Each task gets its own disjoint slice of the job's CPU affinity (taskset), OMP/MKL threads = slice size, no GPU, and its
 own log file. Scheduling: list order is priority; a task starts when a slot is free, every `after` task has finished
 with rc 0 (a failed dependency skips it), and the first task of its `group` has built the store's preload cache (its
@@ -23,10 +24,14 @@ def _cmd(t, py):
         return [py, "train.py", t["exp"]]
     if t["kind"] == "embed":
         return [py, "train_embeddings.py", t["exp"], *t["sources"]]
+    if t["kind"] == "eval":
+        return [py, "eval.py", *t["args"]]
     raise ValueError(f"unknown task kind {t['kind']!r}")
 
 
 def _label(t):
+    if t.get("label"):
+        return t["label"]
     return t["exp"] if t["kind"] == "embed" else f"{t['exp']}_r{t['repeat']}"
 
 
@@ -74,7 +79,8 @@ def run_wave(tasks, *, repo, log_dir, parallel=None, cores_per=None, stagger_s=2
                 log(f"[ptrain] done {lab} rc={p.returncode} ({(time.time() - t0) / 60:.1f} min)")
         for i in list(pending):
             t, lab = tasks[i], labels[i]
-            deps = [d for e in t.get("after", []) for d in by_exp.get(e, [])]   # outside this wave = already done
+            # a label, else every task of that experiment; names outside this wave count as already done
+            deps = [d for e in t.get("after", []) for d in ([e] if e in labels else by_exp.get(e, []))]
             if any(rc.get(d, 0) != 0 for d in deps if d in rc):
                 rc[lab] = None
                 pending.remove(i)

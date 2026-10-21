@@ -218,6 +218,15 @@ HOS_TRAIN_WAVES = {
            for r in HOS_NLE_REPEATS]
         + [_ptask("embed", _stage_b(r), r, "gower_hos", after=[_stage_a(r)], env={"RUN_EVALUATION": "0"})
            for r in HOS_NLE_REPEATS]),
+    # Per-member input frames for external (observation) scoring: `recover-scalers` for every Stage-B member (scalers.pt,
+    # the frame that member trained in), then `--verify-frames` per repeat once its 9 members are done.
+    "hos_rs": (
+        [dict(_ptask("eval", _stage_b(r), r, "gower_hos"), label=f"rs_r{r}_m{m}",
+              args=["--mode", "recover-scalers", "--experiments", _stage_b(r), "--repeat-indices", str(r),
+                    "--members", str(m)]) for r in HOS_NLE_REPEATS for m in range(9)]
+        + [dict(_ptask("eval", _stage_b(r), r, "gower_hos", after=[f"rs_r{r}_m{m}" for m in range(9)]),
+                label=f"verify_r{r}", args=["--mode", "recover-scalers", "--verify-frames", "--experiments", _stage_b(r),
+                                            "--repeat-indices", str(r)]) for r in HOS_NLE_REPEATS]),
     # Eval-only re-run of the trained Stage B ensembles (same names, RUN_TRAINING=0 reuses the members + embedding
     # cache): the train-time deferred ensemble MCMC on the fixed test lock. One repeat per node (--repeat-indices r).
     "hos_nle_eval": [_ptask("embed", _stage_b(r), r, "gower_hos", env={"RUN_TRAINING": "0"}) for r in HOS_NLE_REPEATS],
