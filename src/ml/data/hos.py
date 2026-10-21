@@ -132,15 +132,20 @@ def shard_of(path, nshards=20):
     return (int(m.group(1)) if m else 0) % nshards
 
 
-def bake_one(src, dst, foot, mask_sha, ext=True, rev="unknown"):
+def bake_one(src, dst, foot, mask_sha, ext=True, rev="unknown", variant="r1ext"):
     """Write the sidecar of one baked mock. Never drops a file: on a read error the sidecar carries a NaN vector
-    and `hos/_error` (counted as 'bad'). Returns ('ok'|'skip'|'bad', dst, message)."""
+    and `hos/_error` (counted as 'bad'). Returns ('ok'|'skip'|'bad', dst, message).
+    variant 'r1ext' (default) = hos/vector (+ hos_ext); 'x' ALSO writes group hos_x (src/ml/data/hos_x.py superset,
+    task hos-3pt-information) with dataset `vector` + attrs names / blocks / version / provenance."""
     import h5py
     if os.path.exists(dst):
         return ("skip", dst, "")
     err = ""
     vec = np.full(len(R1_NAMES), np.nan)
     exm = np.full((len(SCALES_EXT), len(EXT_NAMES)), np.nan)
+    if variant == "x":
+        from src.ml.data import hos_x as HX          # lazy: hos_x imports this module
+        xvec = np.full(len(HX.HOSX_BAKE_NAMES), np.nan)
     bp, cosmo, noise = None, {}, {}
     try:
         with h5py.File(src, "r") as f:
@@ -158,6 +163,8 @@ def bake_one(src, dst, foot, mask_sha, ext=True, rev="unknown"):
             vec = r1_from_ext(exm)
         else:
             vec = third_moments(maps, foot).ravel()
+        if variant == "x":
+            xvec = HX.hosx_bake_vector(maps, foot)
     except Exception as ex:   # truncated / corrupt / missing group: keep the basename, flag it
         err = f"{type(ex).__name__}: {ex}"
     tmp = dst + ".tmp"
@@ -176,6 +183,10 @@ def bake_one(src, dst, foot, mask_sha, ext=True, rev="unknown"):
             xg.create_dataset("moments", data=exm)
             xg.attrs["names"] = json.dumps(EXT_NAMES)
             xg.attrs["scales"] = json.dumps(SCALES_EXT)
+        if variant == "x":
+            hx = g.create_group("hos_x")
+            hx.create_dataset("vector", data=xvec)
+            hx.attrs.update(HX.bake_attrs(mask_sha=mask_sha, git_rev=rev, source=os.path.basename(src)))
         if bp is not None:
             g.create_group("cls_results").create_group("full").create_dataset("mixed_bandpowers", data=bp)
         cg = g.create_group("cosmo_dict")
@@ -192,13 +203,13 @@ def bake_one(src, dst, foot, mask_sha, ext=True, rev="unknown"):
 
 
 def _job(args):
-    src, dst, ext, rev = args
+    src, dst, ext, rev, variant = args
     foot, sha = load_footprint()
-    return bake_one(src, dst, foot, sha, ext=ext, rev=rev)
+    return bake_one(src, dst, foot, sha, ext=ext, rev=rev, variant=variant)
 
 
 def run_bake(src_glob, out_dir, workers=16, shard=None, nshards=20, limit=None, ext=True, min_free_gb=20.0,
-             archive=True, log=print):
+             archive=True, log=print, variant="r1ext"):
     """Bake every file of `src_glob` into the FLAT dir `out_dir/<basename>` (resumable: skips existing). The flat
     layout mirrors the bake, so `collect_paths` (sorted full paths) orders files exactly like the bake and
     `split_by_cosmology` reproduces the frozen band's split. `shard` restricts to sim_id % nshards == shard.
@@ -216,8 +227,9 @@ def run_bake(src_glob, out_dir, workers=16, shard=None, nshards=20, limit=None, 
     rev = _git_rev()
     jobs = []
     for f in files:
-        jobs.append((f, os.path.join(out_dir, os.path.basename(f)), ext, rev))
-    log(f"[hos-bake] {len(jobs)} files from {src_glob} -> {out_dir} (workers {workers}, ext {ext}, rev {rev})")
+        jobs.append((f, os.path.join(out_dir, os.path.basename(f)), ext, rev, variant))
+    log(f"[hos-bake] {len(jobs)} files from {src_glob} -> {out_dir} (workers {workers}, ext {ext}, variant {variant}, "
+        f"rev {rev})")
     counts = {"ok": 0, "skip": 0, "bad": 0}
     bad = []
     t0 = time.time()
@@ -231,7 +243,7 @@ def run_bake(src_glob, out_dir, workers=16, shard=None, nshards=20, limit=None, 
                 if shutil.disk_usage(out_dir).free / 1e9 < min_free_gb:
                     log(f"[hos-bake] STOPPED by disk guard (< {min_free_gb} GB free)")
                     break
-    write_manifest(out_dir, src_glob, log=log)
+    write_manifest(out_dir, src_glob, log=log, variant=variant)
     if archive:
         write_shard_archives(out_dir, nshards, log=log)
     log(f"[hos-bake] DONE ok={counts['ok']} skip={counts['skip']} bad={counts['bad']} total={len(jobs)}")
@@ -258,31 +270,39 @@ def write_shard_archives(out_dir, nshards=20, log=print):
             for f in groups.get(k, []):
                 tf.add(f, arcname=os.path.basename(f))
             if k == 0:
-                for extra in ("manifest.json", "hos_table.npz"):
+                for extra in ("manifest.json", "hos_table.npz", "hosx_table.npz"):
                     if os.path.exists(os.path.join(out_dir, extra)):
                         tf.add(os.path.join(out_dir, extra), arcname=extra)
         os.replace(tmp, dst)
     log(f"[hos-bake] archives: {nshards} shards in {tdir} ({len(fs)} sidecars)")
 
 
-def write_manifest(out_dir, src_glob="", log=print):
-    """manifest.json (counts, sim ids, mask hash, names) + hos_table.npz (basenames, R1 vectors, ext, key cosmo)."""
+def write_manifest(out_dir, src_glob="", log=print, variant="r1ext"):
+    """manifest.json (counts, sim ids, mask hash, names) + hos_table.npz (basenames, R1 vectors, ext, key cosmo);
+    variant 'x' adds hosx_names / hosx_blocks / hosx_version to the manifest + hosx_table.npz (basenames, hos_x, cosmo)."""
     import glob
     import h5py
     fs = sorted(glob.glob(os.path.join(out_dir, "output_*.h5")))
     keys = ("omega_m", "sigma_8", "w0", "h", "ns", "ombh2", "mnu", "a_ia", "b_ia")
-    V, X, C, names, nbad = [], [], [], [], 0
+    V, X, C, XX, names, nbad = [], [], [], [], [], 0
     for f in fs:
         with h5py.File(f, "r") as g:
             V.append(g["hos/vector"][()])
             X.append(g["hos_ext/moments"][()] if "hos_ext" in g else np.full((len(SCALES_EXT), len(EXT_NAMES)), np.nan))
             C.append([float(g["cosmo_dict"][k][()]) if k in g["cosmo_dict"] else np.nan for k in keys])
             nbad += int("_error" in g["hos"])
+            if variant == "x":
+                XX.append(g["hos_x/vector"][()])
         names.append(os.path.basename(f))
     _, sha = load_footprint()
     sims = sorted({int(m.group(1)) for n in names for m in [_SIMID_RE.search(n)] if m})
     man = dict(n_files=len(fs), n_bad=nbad, n_sim_ids=len(sims), src_glob=src_glob, mask_sha256=sha,
                names=R1_NAMES, ext_names=EXT_NAMES, ext_scales=list(SCALES_EXT), map_convention=MAP_CONVENTION)
+    if variant == "x":
+        from src.ml.data import hos_x as HX
+        man.update(hosx_names=HX.HOSX_BAKE_NAMES, hosx_blocks=HX.HOSX_BAKE_BLOCK_INDEX, hosx_version=HX.HOSX_VERSION)
+        np.savez(os.path.join(out_dir, "hosx_table.npz"), basenames=np.array(names), hosx=np.array(XX),
+                 cosmo=np.array(C), cosmo_keys=np.array(keys), hosx_names=np.array(HX.HOSX_BAKE_NAMES))
     with open(os.path.join(out_dir, "manifest.json"), "w") as fh:
         json.dump(man, fh, indent=1)
     np.savez(os.path.join(out_dir, "hos_table.npz"), basenames=np.array(names), hos=np.array(V), ext=np.array(X),

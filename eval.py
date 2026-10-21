@@ -368,6 +368,9 @@ def main(argv=None):
     parser.add_argument("--hos-limit", type=int, default=None, help="--mode hos-bake: first N files only (test)")
     parser.add_argument("--hos-no-ext", action="store_true",
                         help="--mode hos-bake: R1 vector only (skip the hos_ext superset)")
+    parser.add_argument("--hos-variant", choices=["r1ext", "x"], default="r1ext",
+                        help="--mode hos-bake: 'x' also bakes the hos_x superset (src/ml/data/hos_x.py) into "
+                             "hos_sidecars/<store>_hosx/ (the default r1ext bake is unchanged)")
     # --mode hos-train (src/ml/parallel_train.py): run named CPU training waves (config/kids_legacy_hos.py:HOS_TRAIN_WAVES,
     # named by --experiments; --repeat-indices keeps only those repeats) as concurrent pinned processes on this node.
     parser.add_argument("--hos-parallel", type=int, default=None, help="--mode hos-train: concurrent tasks")
@@ -407,10 +410,11 @@ def main(argv=None):
         from config.default import get_default_config as _default_config   # main() rebinds the name later
         from src.ml.data.hos import run_bake
         from src.ml.eval.misspec import _GPU5
-        out_dir = os.path.join(_default_config().base_path, "checkpoints", "hos_sidecars", args.data_store)
+        out_dir = os.path.join(_default_config().base_path, "checkpoints", "hos_sidecars",
+                               args.data_store + ("_hosx" if args.hos_variant == "x" else ""))
         counts = run_bake(f"{_GPU5}/{args.data_store}/output_*.h5", out_dir, workers=args.hos_workers,
                           shard=args.hos_shard, nshards=args.hos_nshards, limit=args.hos_limit,
-                          ext=not args.hos_no_ext, log=lambda m: print(m, flush=True))
+                          ext=not args.hos_no_ext, log=lambda m: print(m, flush=True), variant=args.hos_variant)
         return 0 if counts["bad"] == 0 else 1
     if mode == "hos-train":
         from config.default import get_default_config as _default_config   # main() rebinds the name later

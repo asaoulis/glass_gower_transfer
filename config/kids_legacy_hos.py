@@ -240,3 +240,50 @@ HOS_TRAIN_WAVES = {
     # cache): the train-time deferred ensemble MCMC on the fixed test lock. One repeat per node (--repeat-indices r).
     "hos_nle_eval": [_ptask("embed", _stage_b(r), r, "gower_hos", env={"RUN_TRAINING": "0"}) for r in HOS_NLE_REPEATS],
 }
+
+
+# === hos_x superset (task eval-and-viz/hos-3pt-information; APPEND-ONLY, no existing row changes) ====================
+# Sidecars of the hos_x bake (`eval.py --mode hos-bake --hos-variant x`) live in a NEW dir <store>_hosx/ (never '_hos':
+# nle_external.store_glob resolves <store>_hos for the production arm). They carry hos/vector + hos_ext unchanged plus
+# hos_x/vector (1344 = R1 | Geq | Gpool | Gmrg | Ceq | Cmrg, src/ml/data/hos_x.py), with the SAME basenames as the R1
+# sidecars, so the frozen band's split, its scaler subsample and the Gower lock are identical. A row selects its feature
+# set by hos_x group keys (hos_x.group_index); dict-diff vs the R1 rows = data_patterns, dataset_quantities ('hos_x'),
+# the per-dim scaler key, map_kwargs input_key / input_dim / feature_index (and checkpoint_path for the Gower rows).
+from src.ml.data.hos_x import HOSX_BAKE_NAMES, group_index  # noqa: E402
+
+_HOSX_GLASS = f"{_SIDE}/glass_vdq_nla_m_f16_sc8a1_{_EB}_hosx/output_*.h5"
+_HOSX_GOWER = f"{_SIDE}/gower_vdq_nla_m_f16_sc8a1_{_EB}_hosx/output_*.h5"
+
+
+def _hosx_top():
+    return {"dataset_quantities": ["mixed_bandpowers", "hos_x"],      # band FIRST (scaler subsample order)
+            "scaler_options": {"data": {"type": "standard", "keys": None, "per_dim_keys": ["hos_x"]},
+                               "cosmo": {"type": "preset"}}}
+
+
+def hosx_kwargs(groups, hos_kwargs=None):
+    return {"input_key": "hos_x", "input_dim": len(HOSX_BAKE_NAMES), "feature_index": group_index(groups),
+            **(hos_kwargs or {})}
+
+
+def hosx_glass_row(groups, hos_kwargs=None, data_patterns=_HOSX_GLASS, **top):
+    """hos_glass_row on the hos_x store with the feature set = union of the hos_x `groups`."""
+    return hos_glass_row(hos_kwargs=hosx_kwargs(groups, hos_kwargs), data_patterns=data_patterns,
+                         **{**_hosx_top(), **top})
+
+
+def hosx_gower_row(glass_ckpt, groups, hos_kwargs=None, data_patterns=_HOSX_GOWER, **top):
+    """hos_gower_row (Gower NPE ens9 pack keys) on the hos_x store, warm-started from the GLASS hosx row."""
+    return hos_gower_row(glass_ckpt=glass_ckpt, hos_kwargs=hosx_kwargs(groups, hos_kwargs), data_patterns=data_patterns,
+                         **{**_hosx_top(), **top})
+
+
+# Phase-C finalists (artifacts/PHASE_A.md): R1 control on the hosx store + Cmrg/no4 (production candidate) + Cmrg (incl.
+# theta = 4', information reference) + Gmrg (Gaussian Linke-like).
+HOSX_FINALISTS = {"r1": ["R1"], "cmrgno4": ["R1", "Cmrg/no4"], "cmrg": ["R1", "Cmrg"], "gmrg": ["R1", "Gmrg"]}
+for _tag, _groups in HOSX_FINALISTS.items():
+    _g = f"kids_legacy_hosx_{_tag}_nla_m_vdq"
+    kids_legacy_hos_experiments[_g] = _assert_final_summary_dim(hosx_glass_row(_groups), 8, _g)
+    _w = f"gower_npe_finetune_hosx_{_tag}_nla_m_vdq_ens9"
+    kids_legacy_hos_experiments[_w] = _assert_final_summary_dim(
+        hosx_gower_row(f"{_MODELS}/checkpoints/{_g}/", _groups), 8, _w)

@@ -5,7 +5,8 @@
   python scripts/hos_sweep.py run-trial <trial.json>          (internal; one subprocess per trial)
 
 Spec JSON:
-  {"stage": "A1", "base": "glass" | "gower" | "band_side",
+  {"stage": "A1", "base": "glass" | "gower" | "band_side" | "glassx" | "gowerx",
+   "groups": [<hos_x group keys>]             (glassx / gowerx only; per trial override "groups"),
    "common": {<top-level config overrides>}, "common_hos": {<HOS MLP map_kwargs overrides>},
    "common_mk": {<merged into model_kwargs>}, "common_opt": {<merged into optimizer_kwargs, e.g. weight_decay>},
    "glass_ckpt": "<checkpoint dir>"            (gower base only; per-repeat '_{r}' resolution as in production),
@@ -74,7 +75,7 @@ def run_trial(path):
     pl.Trainer.__init__ = _patched
 
     from config.default import get_default_config
-    from config.kids_legacy_hos import hos_glass_row, hos_gower_row, band_side_row
+    from config.kids_legacy_hos import hos_glass_row, hos_gower_row, band_side_row, hosx_glass_row, hosx_gower_row
     from src.ml.models.utils import train_model
 
     t = json.load(open(path))
@@ -84,6 +85,10 @@ def run_trial(path):
         row = hos_gower_row(glass_ckpt=t["glass_ckpt"], hos_kwargs=t.get("hos"))
     elif t["base"] == "band_side":
         row = band_side_row()
+    elif t["base"] == "glassx":                     # hos_x store, feature set = union of hos_x group keys
+        row = hosx_glass_row(t["groups"], hos_kwargs=t.get("hos"))
+    elif t["base"] == "gowerx":
+        row = hosx_gower_row(t["glass_ckpt"], t["groups"], hos_kwargs=t.get("hos"))
     else:
         raise ValueError(t["base"])
     row.update(copy.deepcopy(t.get("top") or {}))
@@ -120,7 +125,9 @@ def _expand(spec):
         opt = {**(spec.get("common_opt") or {}), **(tr.get("opt") or {})}
         out.append(dict(name=_trial_name(spec["stage"], tr["id"]), id=tr["id"], stage=spec["stage"], base=spec["base"],
                         hos=hos or None, top=top, mk=mk or None, opt=opt or None,
-                        glass_ckpt=tr.get("glass_ckpt", spec.get("glass_ckpt"))))
+                        glass_ckpt=tr.get("glass_ckpt", spec.get("glass_ckpt")),
+                        **({"groups": tr.get("groups", spec.get("groups"))} if spec["base"] in ("glassx", "gowerx")
+                           else {})))
     return out
 
 

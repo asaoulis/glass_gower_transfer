@@ -16,6 +16,7 @@ DEFAULT_QUANTITY_PATHS = {
     "cls": ("cls_results", "full", "cls"),
     # HOS sidecars (src/ml/data/hos.py): R1 third-moment vector (112) and the (4, 77) moment superset
     "hos": ("hos", "vector"),
+    "hos_x": ("hos_x", "vector"),
     "hos_ext": ("hos_ext", "moments"),
 }
 
