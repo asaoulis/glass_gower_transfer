@@ -1132,4 +1132,8 @@ for _n in ("glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw2", "gower_nle_finetune_ba
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq"
 for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k6_r1", "gower_nle_finetune_band_nla_z_vdq_rr_k6_r1_ens9_e150"):
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr"
+# USER 2026-10-21 ~19:10Z: "move everything over to k6" => the k6 rows above are the band_nla_z production rows for r0-r4.
+# guard-c 50 -> 150 for rr k6 r1 ONLY (pre-authorised): job 1392080 died at ep0 (gap 56.500, 47.251 vs Stage-A best -9.249).
+# Verified: own whitener (glass_nle_pretrain_band_nla_z_vdq_rr_k6_r1, k=6, 12739 rows), Stage-A best = that row's W&B best, 110 keys.
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k6_r1_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 150.0
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
