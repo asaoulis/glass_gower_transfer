@@ -207,6 +207,17 @@ def build_nested_keys_from_quantities(quantities: Sequence[str], eb_variant=None
     return _build(quantities, eb_variant=eb_variant)
 
 
+def _load_exclude_basenames(spec):
+    """`exclude_files`: a JSON file (repo-relative or absolute; a list of basenames or {"basenames": [...]}) or a list
+    of basenames."""
+    if isinstance(spec, str):
+        import json
+        with open(spec) as fh:
+            d = json.load(fh)
+        spec = d["basenames"] if isinstance(d, dict) else d
+    return {os.path.basename(str(x)) for x in spec}
+
+
 def build_datasets(
     patterns: Union[str, Sequence[str]],
     nested_keys: Dict[str, Tuple[str, ...]],
@@ -232,6 +243,7 @@ def build_datasets(
     return_cosmo_id: bool = False,
     side_input_fn=None,
     preload: bool = False,
+    exclude_files: Optional[Union[str, Sequence[str]]] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     train_paths, val_paths, test_paths = split_by_cosmology(
         patterns,
@@ -249,6 +261,15 @@ def build_datasets(
         fixed_test_sim_ids=fixed_test_sim_ids,
         N_test_cosmologies=N_test_cosmologies,
     )
+    if exclude_files:
+        # Drop listed files AFTER the cosmology split, so the split itself (which cosmology lands in train / val /
+        # test) is exactly the unfiltered one; only the listed mocks leave their split.
+        drop = _load_exclude_basenames(exclude_files)
+        n0 = (len(train_paths), len(val_paths), len(test_paths))
+        train_paths, val_paths, test_paths = ([p for p in ps if os.path.basename(p) not in drop]
+                                              for ps in (train_paths, val_paths, test_paths))
+        print(f"[build_datasets] exclude_files: {len(drop)} listed; dropped train/val/test "
+              f"{n0[0] - len(train_paths)}/{n0[1] - len(val_paths)}/{n0[2] - len(test_paths)}", flush=True)
     train_ds = H5CosmoDataset(
         train_paths, nested_keys, cosmo_params,
         as_torch=as_torch, dtype=dtype, stack_groups=stack_groups, transform=transform,
@@ -301,6 +322,7 @@ def build_dataloaders(
     m_per_cosmo: int = 2,
     side_input_fn=None,
     preload: bool = False,
+    exclude_files: Optional[Union[str, Sequence[str]]] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Return DataLoaders for train/val/test ensuring no cosmology leakage.
 
@@ -341,6 +363,7 @@ def build_dataloaders(
         return_cosmo_id=use_cosmo_batch_sampler,
         side_input_fn=side_input_fn,
         preload=preload,
+        exclude_files=exclude_files,
     )
 
     if val_batch_size is None:

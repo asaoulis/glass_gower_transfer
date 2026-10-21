@@ -58,7 +58,8 @@ ARMS = {
     # Beyond-2-pt HOS hybrid NLE (2026-10-21, eval-and-viz/hos-hybrid-training): frozen band + R1 third-moment MLP,
     # the band P3b chain on the HOS sidecar stores. APPENDED LAST (seed stability). Bake `sc8a1_hos` = the HOS sidecars
     # of the sc8a1 observation store (nle_external.store_glob resolves the `_hos` suffix).
-    "hos":         ("gower_nle_finetune_hos_nla_m_vdq_k8_r{r}_ens9_e150",         "sc8a1_hos", (0, 1, 2, 3, 4)),
+    # 2026-10-21: repointed to the `_xo` rows (Gower HOS outlier cut, user F2); the uncut Stage B never trained.
+    "hos":         ("gower_nle_finetune_hos_nla_m_vdq_k8_r{r}_ens9_e150_xo",      "sc8a1_hos", (0, 1, 2, 3, 4)),
 }
 
 # Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run

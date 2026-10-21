@@ -287,3 +287,52 @@ for _tag, _groups in HOSX_FINALISTS.items():
     _w = f"gower_npe_finetune_hosx_{_tag}_nla_m_vdq_ens9"
     kids_legacy_hos_experiments[_w] = _assert_final_summary_dim(
         hosx_gower_row(f"{_MODELS}/checkpoints/{_g}/", _groups), 8, _w)
+
+
+# === Gower HOS outlier cut (user 2026-10-21: "just drop these extreme outliers", option F2) ============================
+# 60 Gower mocks (17 sims) whose R1 vector sits > 50 robust sigma from the GLASS distribution (extended low-z bin-1
+# structures; hos-hybrid-training artifacts/GOWER_HOS_OUTLIERS.md) broke NLE Stage B guard-c and inflated the Gower HOS
+# scaler. `exclude_files` drops them AFTER the cosmology split (split unchanged; the eval lock's noise-index-0 test subset
+# holds none of them). NEW names (`_xo`): the contaminated packs' checkpoints stay where they are and never mix in.
+# Every Gower arm gets the same cut (HOS, R2 control, band-only `_side` baseline), so the comparison stays like-for-like.
+GOWER_HOS_OUTLIERS = "config/hos_assets/gower_hos_outliers.json"   # repo-relative, like fixed_test_sim_ids
+
+
+def _xo(c):
+    c = copy.deepcopy(c)
+    c["exclude_files"] = GOWER_HOS_OUTLIERS
+    return c
+
+
+_XO = {e: f"{e}_xo" for e in ("gower_npe_finetune_hos_nla_m_vdq_ens9", "gower_npe_finetune_hos_r2_nla_m_vdq_ens9",
+                              "gower_npe_finetune_band_nla_m_vdq_ens9_side")}
+_XO.update({_stage_b(r): f"{_stage_b(r)}_xo" for r in HOS_NLE_REPEATS})
+for _old, _new in _XO.items():
+    kids_legacy_hos_experiments[_new] = _xo(kids_legacy_hos_experiments[_old])
+    if _old in HOS_NLE_SOURCES:
+        HOS_NLE_SOURCES[_new] = HOS_NLE_SOURCES[_old]
+# Literal keys (run_remote.py:known_experiment scans for them): gower_npe_finetune_hos_nla_m_vdq_ens9_xo,
+# gower_npe_finetune_hos_r2_nla_m_vdq_ens9_xo, gower_npe_finetune_band_nla_m_vdq_ens9_side_xo,
+# gower_nle_finetune_hos_nla_m_vdq_k8_r0_ens9_e150_xo .. gower_nle_finetune_hos_nla_m_vdq_k8_r4_ens9_e150_xo
+
+
+def _xo_task(t, relabelled=()):
+    t = copy.deepcopy(t)
+    t["exp"] = _XO.get(t["exp"], t["exp"])
+    t["after"] = [f"{a}_xo" if a in relabelled else _XO.get(a, a) for a in t.get("after", [])]
+    t["args"] = [_XO.get(a, a) for a in t.get("args", [])] or t.pop("args", None) or []
+    if not t["args"]:
+        t.pop("args")
+    if t.get("label"):
+        t["label"] += "_xo"
+    if t["kind"] == "embed":
+        t["sources"] = [HOS_NLE_SOURCES[t["exp"]]]
+    return t
+
+
+# The `_xo` waves: same tasks on the cut rows. hos_train_xo drops NLE Stage A (unchanged: GLASS only; its checkpoints
+# exist, and an `after` naming a task outside the wave counts as done).
+HOS_TRAIN_WAVES["hos_train_xo"] = [_xo_task(t) for t in HOS_TRAIN_WAVES["hos_train"] if t["exp"] in _XO]
+for _w in ("hos_npe_eval", "hos_rs", "hos_nle_eval"):
+    _rel = {t["label"] for t in HOS_TRAIN_WAVES[_w] if t.get("label")}
+    HOS_TRAIN_WAVES[f"{_w}_xo"] = [_xo_task(t, _rel) for t in HOS_TRAIN_WAVES[_w]]

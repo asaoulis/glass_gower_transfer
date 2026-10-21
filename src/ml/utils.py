@@ -336,6 +336,7 @@ def prepare_data_parameters(config):
         # config without a side_input, i.e. unchanged items.
         side_input_fn=build_side_input_fn(config),
         preload=bool(getattr(config, 'preload_data', False)),
+        exclude_files=getattr(config, 'exclude_files', None),
     )
 
     # Print dataset lengths for visibility
