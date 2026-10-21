@@ -910,8 +910,9 @@ def _band_nla_z_nle_a_vdq(r):
     return pre
 
 
-def _band_nla_z_nle_b_vdq(r):
-    ft = _nle_finetune(f"glass_nle_pretrain_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{r}", ensemble_repeats=9,
+def _band_nla_z_nle_b_vdq(r, pretrain_exp=None):
+    pretrain_exp = pretrain_exp or f"glass_nle_pretrain_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{r}"
+    ft = _nle_finetune(pretrain_exp, ensemble_repeats=9,
                        whiten_k=_BAND_NLE_K_VDQ, warmstart_max_gap_nats=50.0,
                        gower_data=_VDQ_GOWER_NLA_Z, gower_eb=None,
                        cosmo_param_names=list(_COSMO_9_NLAZ), preset_overrides=_A_IA_NLA_BOX)
@@ -948,4 +949,64 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_ens9_e150"]
 for _r in _BAND_NLA_REPEATS_VDQ:
     VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}"] = "kids_legacy_band_nla_z_vdq"
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_z_vdq_k{_BAND_NLE_K_VDQ}_r{_r}_ens9_e150"] = "kids_legacy_band_nla_z_vdq"
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === band_nla_z 5-repeat retrain (user 2026-10-21, task eval-and-viz/band-nla-z-5rep-retrain) ===================
+# Target: arm band_nla_z = repeats 0-4, EVERY repeat matching r0 (FoM(Om,s8) >= 3.4, S8 w68 <= 0.08, TARP <= ~0.06).
+# r0 passes and is kept. Stage-I eval (job 1391458, GLASS test FoM(Om,s8)): band_nla_z 3.43 / 3.03 / 3.29 vs band_nla
+# 3.74 / 4.14 / 3.72 -> the Stage-I spread is band_nla-like; r2 loses 30 % in the NLE chain (3.29 -> 2.30; median
+# per-observation corr(Om,s8) -0.81 vs r0 -0.90 = a looser degeneracy, not lost Om/s8 information). Hence:
+# - r1: BAND reroll (weakest Stage I) -> `kids_legacy_band_nla_z_vdq_rr` (identical recipe, own ckpt dir: a same-name
+#   rerun would share pretrain_ncosmoNone_1 and folder-min would pick by GLASS val) + chain `_rr_k8_r1`.
+# - r2: NLE-chain reroll on its EXISTING band -> `_k8_r2b` (the nla_z `_r3b` precedent).
+# - r3, r4: fresh indices on the original rows (fresh dirs; Stage I via `--repeat-indices 3,4` at the CLI).
+# Same index => same split_seed => match string stays `ncosmoNone_{r}`; the arm resolves the reroll rows through
+# EXPERIMENT_OVERRIDES in src/ml/eval/arms.py. guard-c starts at 50 (raise <= 150 per repeat after verifying own whitener
+# + own best Stage-A flow in the log; pre-authorised by the user 2026-10-21).
+# Launch:
+#   train --exp kids_legacy_band_nla_z_vdq --repeat-indices 3,4 ; train --exp kids_legacy_band_nla_z_vdq_rr --repeat-indices 1
+#   embed --gpu v100 --ncpu 1 --mem-gb 24 --target glass_nle_pretrain_band_nla_z_vdq{,_rr}_k8_r<r>[b] --sources <its band row>
+#   embed --cpu --partition CORES40 --target gower_nle_finetune_band_nla_z_vdq{,_rr}_k8_r<r>[b]_ens9_e150 --sources <its band row>
+_band_nla_z_rr = _band_nla_z_vdq()
+_band_nla_z_rr["repeat_indices"] = [1]
+kids_legacy_vdq_experiments["kids_legacy_band_nla_z_vdq_rr"] = _band_nla_z_rr
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r3"] = _band_nla_z_nle_a_vdq(3)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r4"] = _band_nla_z_nle_a_vdq(4)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1"] = _band_nla_z_nle_a_vdq(1)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r2b"] = _band_nla_z_nle_a_vdq(2)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r3_ens9_e150"] = _band_nla_z_nle_b_vdq(3)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e150"] = _band_nla_z_nle_b_vdq(4)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e150"] = _band_nla_z_nle_b_vdq(
+    1, "glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1")
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e150"] = _band_nla_z_nle_b_vdq(
+    2, "glass_nle_pretrain_band_nla_z_vdq_k8_r2b")
+for _n in ("glass_nle_pretrain_band_nla_z_vdq_k8_r3", "glass_nle_pretrain_band_nla_z_vdq_k8_r4",
+           "glass_nle_pretrain_band_nla_z_vdq_k8_r2b", "gower_nle_finetune_band_nla_z_vdq_k8_r3_ens9_e150",
+           "gower_nle_finetune_band_nla_z_vdq_k8_r4_ens9_e150", "gower_nle_finetune_band_nla_z_vdq_k8_r2b_ens9_e150"):
+    VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq"
+for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k8_r1", "gower_nle_finetune_band_nla_z_vdq_rr_k8_r1_ens9_e150"):
+    VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr"
+
+# Stage-B LR/epoch side sweep on the r2 split (user 2026-10-21: "experiment with different (lower) LRs"). Production Stage B
+# (lr 8e-5, exp decay, 150 ep) still descends at ep150 in every member (no LR-too-high signature), so the grid spans
+# lower LR, higher LR and longer training. ens3 + run_evaluation=False: member j shares ensemble_seed j (= the same
+# train/val reshuffle) with production r2 member j, so val NLL compares PAIRWISE per member. Warm-starts from the
+# existing r2 Stage A (guard 150 as production r2; resolution already verified for that Stage A). A winner still needs
+# one full bundled eval before it becomes the recipe.
+#   embed --cpu --partition CORES40 --ncpu 8 --target gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_<tag> --sources kids_legacy_band_nla_z_vdq
+def _band_nla_z_lr_sweep_b(lr, epochs):
+    ft = _band_nla_z_nle_b_vdq(2)
+    ft.update(ensemble_repeats=3, run_evaluation=False, lr=lr, epochs=epochs, whiten_warmstart_max_gap_nats=150.0)
+    return ft
+
+
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_8e5_e150"] = _band_nla_z_lr_sweep_b(8e-5, 150)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_8e5_e400"] = _band_nla_z_lr_sweep_b(8e-5, 400)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_3e5_e150"] = _band_nla_z_lr_sweep_b(3e-5, 150)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_3e5_e400"] = _band_nla_z_lr_sweep_b(3e-5, 400)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_2e4_e150"] = _band_nla_z_lr_sweep_b(2e-4, 150)
+for _tag in ("8e5_e150", "8e5_e400", "3e5_e150", "3e5_e400", "2e4_e150"):
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_{_tag}"] = "kids_legacy_band_nla_z_vdq"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
