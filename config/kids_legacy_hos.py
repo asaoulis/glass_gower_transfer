@@ -227,6 +227,15 @@ HOS_TRAIN_WAVES = {
         + [dict(_ptask("eval", _stage_b(r), r, "gower_hos", after=[f"rs_r{r}_m{m}" for m in range(9)]),
                 label=f"verify_r{r}", args=["--mode", "recover-scalers", "--verify-frames", "--experiments", _stage_b(r),
                                             "--repeat-indices", str(r)]) for r in HOS_NLE_REPEATS]),
+    # In-distribution misspec eval (FoM / TARP / test log-prob on the 200-id lock) of the three Gower NPE ens9 packs, one
+    # task per (pack, repeat), on the HOS sidecar copy of the gower_vdq_nla_m store (misspec variate set gower_vdq_hos).
+    "hos_npe_eval": [
+        dict(_ptask("eval", e, r, g), label=f"npe_eval_{e}_r{r}",
+             args=["--mode", "misspec", "--misspec-base", e, "--variates", "gower_vdq_hos", "--repeat-indices", str(r)])
+        for e, g in (("gower_npe_finetune_hos_nla_m_vdq_ens9", "gower_hos"),
+                     ("gower_npe_finetune_hos_r2_nla_m_vdq_ens9", "gower_hos"),
+                     ("gower_npe_finetune_band_nla_m_vdq_ens9_side", "gower_band"))
+        for r in HOS_NLE_REPEATS],
     # Eval-only re-run of the trained Stage B ensembles (same names, RUN_TRAINING=0 reuses the members + embedding
     # cache): the train-time deferred ensemble MCMC on the fixed test lock. One repeat per node (--repeat-indices r).
     "hos_nle_eval": [_ptask("embed", _stage_b(r), r, "gower_hos", env={"RUN_TRAINING": "0"}) for r in HOS_NLE_REPEATS],

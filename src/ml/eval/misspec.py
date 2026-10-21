@@ -299,8 +299,16 @@ GOWER_VDQ_VARIATES: List[Dict] = [
 ]
 
 
+# HOS hybrid (eval-and-viz/hos-hybrid-training): the in-distribution VDQ variate read from its HOS sidecars (same
+# basenames, so the fixed test lock and the split are the map store's), resolved under $GLASS_MODELS_ROOT.
+def _hos_variates():
+    from config.kids_legacy_hos import _HOS_GOWER
+    return [{"name": "gower_vdq_nla_m", "patterns": _HOS_GOWER, "exclude_params": [], "in_distribution": True}]
+
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
     "gower_vdq": GOWER_VDQ_VARIATES,
+    "gower_vdq_hos": _hos_variates(),
     "gower_bgp": GOWER_BGP_VARIATES,
     # The BGP variates PLUS the two external boxes, so the external points land on the same
     # detector axes (Mahalanobis / kNN / cross-repeat KL) as the existing misspec campaign.
