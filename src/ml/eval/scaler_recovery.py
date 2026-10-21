@@ -246,6 +246,12 @@ def recover_key_scalers(
               f"(max {dev1max:.3e}) after {calls['n']} closure evals", flush=True)
         for k, m in learn.items():
             p0, p1 = params_initial[k], m.params()
+            if isinstance(p0["mean"], list):     # per-feature frame: report the largest per-feature move
+                dm = float(np.max(np.abs(np.subtract(p1["mean"], p0["mean"]))))
+                ds = float(np.max(np.abs(np.subtract(p1["std"], p0["std"]))))
+                print(f"[recover]   {k}: {len(p0['mean'])} features, max |d mean| {dm:.3e}, "
+                      f"max |d std| {ds:.3e}", flush=True)
+                continue
             print(f"[recover]   {k}: mean {p0['mean']:.6f} -> {p1['mean']:.6f}, "
                   f"std {p0['std']:.6f} -> {p1['std']:.6f}", flush=True)
 
