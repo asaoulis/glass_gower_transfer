@@ -237,7 +237,8 @@ def match_string_for(experiment: str, repeat: int) -> str:
     from config.experiments import experiments as _exps
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
     from config.kids_legacy_vdq import kids_legacy_vdq_experiments as _vdq
-    merged = {**_exps, **_bgp, **_vdq}   # same merge order as eval.py / train_embeddings.py
+    from config.kids_legacy_hos import kids_legacy_hos_experiments as _hos
+    merged = {**_exps, **_bgp, **_vdq, **_hos}   # same merge order as eval.py / train_embeddings.py
     exp = merged.get(experiment, {})
     n = exp.get("max_trainval_cosmos", None)
     if isinstance(n, (list, tuple)):
@@ -250,7 +251,8 @@ def resolve_source_experiments(experiment: str) -> Sequence[str]:
     """The frozen source encoder(s) for a Stage-B row, from the config side (one place)."""
     from config.kids_legacy_bgp import HF_RETRAIN_SOURCES, FLAGSHIP_NLE_SOURCES
     from config.kids_legacy_vdq import VDQ_NLE_SOURCES
-    for table in (HF_RETRAIN_SOURCES, FLAGSHIP_NLE_SOURCES, VDQ_NLE_SOURCES):
+    from config.kids_legacy_hos import HOS_NLE_SOURCES
+    for table in (HF_RETRAIN_SOURCES, FLAGSHIP_NLE_SOURCES, VDQ_NLE_SOURCES, HOS_NLE_SOURCES):
         if experiment in table:
             src = table[experiment]
             return [src] if isinstance(src, str) else list(src)
@@ -481,8 +483,9 @@ def rebuild_production_frame(experiment: str, repeat: int = 0, *,
     from config.experiments import experiments as _exps
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
     from config.kids_legacy_vdq import kids_legacy_vdq_experiments as _vdq
+    from config.kids_legacy_hos import kids_legacy_hos_experiments as _hos
 
-    merged = {**_exps, **_bgp, **_vdq}   # same merge order as match_string_for / eval.py
+    merged = {**_exps, **_bgp, **_vdq, **_hos}   # same merge order as match_string_for / eval.py
     if experiment not in merged:
         raise KeyError(f"experiment {experiment!r} not found in the config tables")
     match = match_string_for(experiment, repeat)

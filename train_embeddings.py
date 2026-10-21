@@ -1,3 +1,4 @@
+import os
 import sys
 
 from config.experiments import experiments
@@ -37,5 +38,16 @@ if __name__ == "__main__":
 
     target_experiment = sys.argv[1]
     source_experiments = sys.argv[2:]
+
+    # Submit-time overrides (cf. train.py REPEAT_INDICES): RUN_EVALUATION / RUN_TRAINING = 0|1 replace the target row's
+    # run_evaluation / run_training, so a node can train several Stage-B ensembles at once with the node-wide deferred
+    # MCMC eval off, then re-run it eval-only (RUN_TRAINING=0, same experiment name) per repeat on a whole node.
+    for _env, _key in (("RUN_EVALUATION", "run_evaluation"), ("RUN_TRAINING", "run_training")):
+        _v = os.environ.get(_env, "").strip()
+        if _v:
+            if _v not in ("0", "1"):
+                raise SystemExit(f"{_env} must be 0 or 1, got {_v!r}")
+            experiments[target_experiment][_key] = _v == "1"
+            print(f"[train_embeddings.py] {_env} override -> {_key}={_v == '1'}")
 
     train_embeddings_experiment(EmbeddingTrainArgs(target_experiment, source_experiments))

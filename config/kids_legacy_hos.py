@@ -134,3 +134,91 @@ kids_legacy_hos_experiments["gower_npe_finetune_hos_r2_nla_m_vdq_ens9"] = _asser
 kids_legacy_hos_experiments["kids_legacy_hos_nla_m_vdq_smoke"] = hos_glass_row(
     data_patterns="/data/alex/hos_models/fixture/sidecars/output_*.h5", band_ckpt=None, freeze_band=False,
     epochs=1, repeat_indices=[0])
+
+
+# === HOS NLE chain: the band P3b k=8 procedure (config/kids_legacy_vdq.py `_band_nle_a_vdq` / `_band_nle_b_vdq`) on the
+# HOS sidecar stores. Frozen source = the per-repeat GLASS hybrid `kids_legacy_hos_nla_m_vdq/pretrain_ncosmoNone_{r}` (one
+# compression head per repeat, NOT the Gower ens9 NPE pack); whiten k=8 (pure whiten of the 8-D summary); Stage B ens9,
+# 150 epochs, guard-c 50, max_trainval_cosmos [300] + the 200-id fixed test lock. Dict-diff vs the band rows: the sidecar
+# data_patterns, the HOS scaler (per-dim `hos`, identical to the source's so the GLASS split + input frame reproduce the
+# encoder's), the vector-store loader keys, fp32 and (Stage B) the Stage-A checkpoint dir under $GLASS_MODELS_ROOT.
+from config.kids_legacy_vdq import _band_nle_a_vdq, _band_nle_b_vdq  # noqa: E402
+
+HOS_NLE_K = 8
+HOS_NLE_REPEATS = (0, 1, 2, 3, 4)
+_HOS_SOURCE = "kids_legacy_hos_nla_m_vdq"
+
+
+def _hos_nle_common(c, data_patterns):
+    c["data_patterns"] = data_patterns
+    c["scaler_options"] = copy.deepcopy(kids_legacy_hos_experiments[_HOS_SOURCE]["scaler_options"])
+    c["precision"] = "32"
+    c.update(_VECTOR_LOADER)
+    return c
+
+
+def hos_nle_a_row(r):
+    return _hos_nle_common(_band_nle_a_vdq(r), _HOS_GLASS)
+
+
+def hos_nle_b_row(r):
+    c = _hos_nle_common(_band_nle_b_vdq(r), _HOS_GOWER)
+    c["pretrained_band_ckpt_path"] = f"{_MODELS}/checkpoints/glass_nle_pretrain_hos_nla_m_vdq_k{HOS_NLE_K}_r{r}/"
+    return c
+
+
+# Source encoders of the HOS NLE rows (read by src/ml/eval/nle_external.py; the e890aec rule: never guessed at eval).
+HOS_NLE_SOURCES = {}
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_hos_experiments["glass_nle_pretrain_hos_nla_m_vdq_k8_r0"] = hos_nle_a_row(0)
+kids_legacy_hos_experiments["glass_nle_pretrain_hos_nla_m_vdq_k8_r1"] = hos_nle_a_row(1)
+kids_legacy_hos_experiments["glass_nle_pretrain_hos_nla_m_vdq_k8_r2"] = hos_nle_a_row(2)
+kids_legacy_hos_experiments["glass_nle_pretrain_hos_nla_m_vdq_k8_r3"] = hos_nle_a_row(3)
+kids_legacy_hos_experiments["glass_nle_pretrain_hos_nla_m_vdq_k8_r4"] = hos_nle_a_row(4)
+kids_legacy_hos_experiments["gower_nle_finetune_hos_nla_m_vdq_k8_r0_ens9_e150"] = hos_nle_b_row(0)
+kids_legacy_hos_experiments["gower_nle_finetune_hos_nla_m_vdq_k8_r1_ens9_e150"] = hos_nle_b_row(1)
+kids_legacy_hos_experiments["gower_nle_finetune_hos_nla_m_vdq_k8_r2_ens9_e150"] = hos_nle_b_row(2)
+kids_legacy_hos_experiments["gower_nle_finetune_hos_nla_m_vdq_k8_r3_ens9_e150"] = hos_nle_b_row(3)
+kids_legacy_hos_experiments["gower_nle_finetune_hos_nla_m_vdq_k8_r4_ens9_e150"] = hos_nle_b_row(4)
+for _r in HOS_NLE_REPEATS:
+    HOS_NLE_SOURCES[f"glass_nle_pretrain_hos_nla_m_vdq_k{HOS_NLE_K}_r{_r}"] = _HOS_SOURCE
+    HOS_NLE_SOURCES[f"gower_nle_finetune_hos_nla_m_vdq_k{HOS_NLE_K}_r{_r}_ens9_e150"] = _HOS_SOURCE
+assert set(HOS_NLE_SOURCES) <= set(kids_legacy_hos_experiments)
+
+
+# === Single-node CPU training waves (`eval.py --mode hos-train --experiments <wave>`, src/ml/parallel_train.py) ========
+# The HOS models are tiny and CPU-efficient (GPU kernel-launch bound), so one CORES64 node trains many of them at once.
+# A task is a train.py run of one repeat (REPEAT_INDICES env) or a train_embeddings.py run against its registered source;
+# `group` = one sidecar store + key set (the first task of a group builds the store's .preload_cache before the rest
+# start); `after` = tasks that must finish with rc 0 first. Order = launch priority.
+def _ptask(kind, exp, repeat, group, after=(), env=None):
+    t = {"kind": kind, "exp": exp, "repeat": int(repeat), "group": group, "after": list(after), "env": dict(env or {})}
+    if kind == "embed":
+        t["sources"] = [HOS_NLE_SOURCES[exp]]
+    return t
+
+
+def _stage_a(r):
+    return f"glass_nle_pretrain_hos_nla_m_vdq_k{HOS_NLE_K}_r{r}"
+
+
+def _stage_b(r):
+    return f"gower_nle_finetune_hos_nla_m_vdq_k{HOS_NLE_K}_r{r}_ens9_e150"
+
+
+HOS_TRAIN_WAVES = {
+    # NLE Stage A r0-4, the 15 Gower NPE ens9 fine-tunes (HOS, R2 control, band-only `_side` baseline), then NLE Stage B
+    # once its own Stage A is done, with the deferred ensemble MCMC OFF (RUN_EVALUATION=0: 5 x the node-wide MCMC would
+    # fight over one node; it runs per repeat in `hos_nle_eval`).
+    "hos_train": (
+        [_ptask("embed", _stage_a(r), r, "glass_hos") for r in HOS_NLE_REPEATS]
+        + [_ptask("train", e, r, g) for e, g in (("gower_npe_finetune_hos_nla_m_vdq_ens9", "gower_hos"),
+                                                  ("gower_npe_finetune_hos_r2_nla_m_vdq_ens9", "gower_hos"),
+                                                  ("gower_npe_finetune_band_nla_m_vdq_ens9_side", "gower_band"))
+           for r in HOS_NLE_REPEATS]
+        + [_ptask("embed", _stage_b(r), r, "gower_hos", after=[_stage_a(r)], env={"RUN_EVALUATION": "0"})
+           for r in HOS_NLE_REPEATS]),
+    # Eval-only re-run of the trained Stage B ensembles (same names, RUN_TRAINING=0 reuses the members + embedding
+    # cache): the train-time deferred ensemble MCMC on the fixed test lock. One repeat per node (--repeat-indices r).
+    "hos_nle_eval": [_ptask("embed", _stage_b(r), r, "gower_hos", env={"RUN_TRAINING": "0"}) for r in HOS_NLE_REPEATS],
+}

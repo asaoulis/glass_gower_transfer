@@ -204,7 +204,7 @@ def main(argv=None):
     parser.add_argument("--mode",
                         choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
                                  "observe-build", "observe-strip", "obs-reference", "obs-score", "pool",
-                                 "catalogue-digest", "nle-loglik", "hos-bake"],
+                                 "catalogue-digest", "nle-loglik", "hos-bake", "hos-train"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -368,6 +368,10 @@ def main(argv=None):
     parser.add_argument("--hos-limit", type=int, default=None, help="--mode hos-bake: first N files only (test)")
     parser.add_argument("--hos-no-ext", action="store_true",
                         help="--mode hos-bake: R1 vector only (skip the hos_ext superset)")
+    # --mode hos-train (src/ml/parallel_train.py): run named CPU training waves (config/kids_legacy_hos.py:HOS_TRAIN_WAVES,
+    # named by --experiments; --repeat-indices keeps only those repeats) as concurrent pinned processes on this node.
+    parser.add_argument("--hos-parallel", type=int, default=None, help="--mode hos-train: concurrent tasks")
+    parser.add_argument("--hos-cores-per", type=int, default=None, help="--mode hos-train: cpus per task")
     # Unblinding front end (src/observation): catalogue -> observation -> baked per-arm stores.
     # Fail-soft: a bug in the (independent) observation package must never break the other modes.
     try:
@@ -408,6 +412,20 @@ def main(argv=None):
                           shard=args.hos_shard, nshards=args.hos_nshards, limit=args.hos_limit,
                           ext=not args.hos_no_ext, log=lambda m: print(m, flush=True))
         return 0 if counts["bad"] == 0 else 1
+    if mode == "hos-train":
+        from config.default import get_default_config as _default_config   # main() rebinds the name later
+        from config.kids_legacy_hos import HOS_TRAIN_WAVES
+        from src.ml.parallel_train import run_wave
+        import time
+        if not args.experiments:
+            raise SystemExit(f"--mode hos-train requires --experiments <wave> (one of {sorted(HOS_TRAIN_WAVES)})")
+        tasks = [t for w in args.experiments for t in HOS_TRAIN_WAVES[w]
+                 if args.repeat_indices is None or t["repeat"] in args.repeat_indices]
+        tag = "_".join(args.experiments) + "_" + os.environ.get("SLURM_JOB_ID", time.strftime("%Y%m%d%H%M%S"))
+        log_dir = os.path.join(_default_config().base_path, "checkpoints", "hos_ptrain_logs", tag)
+        rc = run_wave(tasks, repo=os.path.dirname(os.path.abspath(__file__)), log_dir=log_dir,
+                      parallel=args.hos_parallel, cores_per=args.hos_cores_per, log=lambda m: print(m, flush=True))
+        return 0 if all(v == 0 for v in rc.values()) else 1
     if mode == "pool":
         from src.ml.eval.pool_mode import run_pool_mode
         return run_pool_mode(args)
