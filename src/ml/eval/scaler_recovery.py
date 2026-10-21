@@ -41,7 +41,7 @@ from typing import Dict, List, Optional, Sequence
 import numpy as np
 import torch
 
-from ..data.scaling import LogNormalScaler, StandardScaler
+from ..data.scaling import LogNormalScaler, PerDimStandardScaler, StandardScaler
 
 
 @dataclass
@@ -75,9 +75,17 @@ class _LearnableScaler(torch.nn.Module):
     def __init__(self, scaler):
         super().__init__()
         self.kind = type(scaler).__name__
-        if self.kind not in ("LogNormalScaler", "StandardScaler"):
-            raise TypeError(f"cannot recover a {self.kind}: only scalar mean/std scalers are affine")
+        if self.kind not in ("LogNormalScaler", "StandardScaler", "PerDimStandardScaler"):
+            raise TypeError(f"cannot recover a {self.kind}: only mean/std scalers are affine")
         self.eps = float(np.asarray(getattr(scaler, "eps", 1e-8)).ravel()[0])
+        if self.kind == "PerDimStandardScaler":
+            # per-feature mean/std vectors (e.g. the HOS vector); the same affine map, one pair per feature.
+            # PerDimStandardScaler.transform clamps std at 1e-12, so the log-std init does too.
+            mean0 = torch.as_tensor(np.asarray(scaler.mean, dtype=np.float64))
+            std0 = torch.as_tensor(np.clip(np.asarray(scaler.std, dtype=np.float64), 1e-12, None))
+            self.mean = torch.nn.Parameter(mean0.clone())
+            self.log_std = torch.nn.Parameter(torch.log(std0))
+            return
         mean0 = float(np.asarray(scaler.mean).ravel()[0])
         std0 = float(np.asarray(scaler.std).ravel()[0])
         self.mean = torch.nn.Parameter(torch.tensor(mean0, dtype=torch.float64))
@@ -91,12 +99,19 @@ class _LearnableScaler(torch.nn.Module):
         return (x - self.mean.to(torch.float32)) / torch.exp(self.log_std).to(torch.float32)
 
     def to_scaler(self):
+        if self.kind == "PerDimStandardScaler":
+            out = PerDimStandardScaler()
+            out.mean = self.mean.detach().cpu().numpy().astype(np.float32)
+            out.std = torch.exp(self.log_std).detach().cpu().numpy().astype(np.float32)
+            return out
         out = LogNormalScaler(eps=self.eps) if self.kind == "LogNormalScaler" else StandardScaler()
         out.mean = float(self.mean.detach())
         out.std = float(torch.exp(self.log_std).detach())
         return out
 
     def params(self) -> Dict[str, float]:
+        if self.kind == "PerDimStandardScaler":
+            return {"mean": self.mean.detach().cpu().tolist(), "std": torch.exp(self.log_std).detach().cpu().tolist()}
         return {"mean": float(self.mean.detach()), "std": float(torch.exp(self.log_std).detach())}
 
 
