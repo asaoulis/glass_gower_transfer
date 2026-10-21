@@ -1009,4 +1009,41 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_3e5_e40
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_2e4_e150"] = _band_nla_z_lr_sweep_b(2e-4, 150)
 for _tag in ("8e5_e150", "8e5_e400", "3e5_e150", "3e5_e400", "2e4_e150"):
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_z_vdq_k8_r2_lrs_{_tag}"] = "kids_legacy_band_nla_z_vdq"
+
+# NLE-dynamics sweep on the r2 band (user 2026-10-21: "focus on the NLE training dynamics ... the truncation dimension may
+# matter"). Whitening truncation k in {6, 4} vs pure-whiten k=8, and a 400-epoch Stage A (production Stage A still descends
+# at ep150). Val NLL is NOT commensurable across k (densities in different dimensions), so these Stage-B rows run the
+# bundled eval: ens3 everywhere (incl. a k8 ens3 baseline on the production r2 Stage A) => FoM(Om,s8) compares at equal
+# ensemble size. guard-c 150 up front (diagnostic rows; own-whitener resolution still checked in each log).
+def _band_nla_z_sweep_a(k, epochs=None):
+    pre = _band_nla_z_nle_a_vdq(2)
+    pre["whiten_embeddings"] = {"k": k}
+    if epochs:
+        pre["epochs"] = epochs
+    return pre
+
+
+def _band_nla_z_sweep_b(pretrain_exp, k):
+    ft = _band_nla_z_nle_b_vdq(2, pretrain_exp)
+    ft["whiten_embeddings"] = {"k": k}
+    ft.update(ensemble_repeats=3, whiten_warmstart_max_gap_nats=150.0)
+    return ft
+
+
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw"] = _band_nla_z_sweep_a(6)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k4_r2_sw"] = _band_nla_z_sweep_a(4)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_k8_r2_sw_a400"] = _band_nla_z_sweep_a(8, epochs=400)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_base_ens3"] = _band_nla_z_sweep_b(
+    "glass_nle_pretrain_band_nla_z_vdq_k8_r2", 8)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k6_r2_sw_ens3"] = _band_nla_z_sweep_b(
+    "glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw", 6)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k4_r2_sw_ens3"] = _band_nla_z_sweep_b(
+    "glass_nle_pretrain_band_nla_z_vdq_k4_r2_sw", 4)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_a400_ens3"] = _band_nla_z_sweep_b(
+    "glass_nle_pretrain_band_nla_z_vdq_k8_r2_sw_a400", 8)
+for _n in ("glass_nle_pretrain_band_nla_z_vdq_k6_r2_sw", "glass_nle_pretrain_band_nla_z_vdq_k4_r2_sw",
+           "glass_nle_pretrain_band_nla_z_vdq_k8_r2_sw_a400", "gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_base_ens3",
+           "gower_nle_finetune_band_nla_z_vdq_k6_r2_sw_ens3", "gower_nle_finetune_band_nla_z_vdq_k4_r2_sw_ens3",
+           "gower_nle_finetune_band_nla_z_vdq_k8_r2_sw_a400_ens3"):
+    VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
