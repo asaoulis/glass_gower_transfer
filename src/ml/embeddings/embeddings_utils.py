@@ -220,7 +220,10 @@ def load_pretrained_models(
             f"{len(exp_names)} source experiments; they must correspond one-to-one."
         )
     models = []
-    dataset_quantities = set()
+    # Ordered, de-duplicated (NOT a set): the scaler fit draws each key's subsample in key order
+    # from one seeded generator, so a set's per-process string-hash order made every multi-key
+    # run's input frame a coin flip (see nle_external.run_scaler_recovery).
+    dataset_quantities = {}
     checkpoint_paths = []
 
     # Prefer explicit repeat-bound match string (e.g. 'ncosmo30_0').
@@ -255,7 +258,7 @@ def load_pretrained_models(
         if hasattr(model, "use_KL"):
             model.use_KL = False
         models.append(model)
-        dataset_quantities.update(getattr(cfg, "dataset_quantities", []))
+        dataset_quantities.update(dict.fromkeys(getattr(cfg, "dataset_quantities", [])))
         checkpoint_paths.append(checkpoint_path)
 
     dataset_quantities = list(dataset_quantities)

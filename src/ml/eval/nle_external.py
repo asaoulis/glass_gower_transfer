@@ -53,6 +53,7 @@ import glob as _glob
 import json
 import os
 from dataclasses import dataclass, field
+from itertools import permutations as _permutations
 from typing import Dict, Optional, Sequence
 
 import numpy as np
@@ -964,26 +965,46 @@ def run_scaler_recovery(
         # reproduces member j's frame EXACTLY -- the LBFGS refinement below is then a no-op and the
         # initial z_dev is the proof. Older (unseeded) runs fall back to the fit as before.
         m_ens = _re.search(r"_ens(\d+)_", name)
-        init_scalers, init_method = frame.scalers["data"], "member0_refit"
-        if m_ens is not None:
-            cfg_j = _copy(cfg)
-            cfg_j.split_seed = 42
-            set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat, ensemble_idx=int(m_ens.group(1)))
-            sc_j, _tr, _va, _te = prepare_data_parameters(cfg_j)
-            del _tr, _va, _te
-            init_scalers, init_method = sc_j["data"], f"member{int(m_ens.group(1))}_refit"
+        # The seeded subsample is drawn per key IN KEY ORDER from one generator, so the frame also
+        # depends on the order of `dataset_quantities`. Runs trained before that order was pinned
+        # (load_pretrained_models built it as list(set(...))) got it from the training process's
+        # string-hash seed: with two keys, each member trained in one of exactly two frames, and a
+        # refit hit it ~50% of the time (measured on HOS r3 ens5: hos-first 9.4e-7 EXACT,
+        # bandpowers-first 2.289e-2, for every PYTHONHASHSEED). So try each key order and keep the
+        # one that reproduces the cache; the acceptance rule below is unchanged.
+        orders = [list(cfg.dataset_quantities)]
+        if m_ens is not None and 1 < len(orders[0]) <= 4:
+            orders += [list(o) for o in _permutations(orders[0]) if list(o) != orders[0]]
+        res, init_method = None, "member0_refit"
+        for order in orders:
+            init_scalers, method_i = frame.scalers["data"], "member0_refit"
+            if m_ens is not None:
+                cfg_j = _copy(cfg)
+                cfg_j.split_seed = 42
+                cfg_j.dataset_quantities = order
+                set_seed_for_repeat_and_ensemble(cfg_j, repeat_idx=repeat, ensemble_idx=int(m_ens.group(1)))
+                sc_j, _tr, _va, _te = prepare_data_parameters(cfg_j)
+                del _tr, _va, _te
+                method_i = f"member{int(m_ens.group(1))}_refit"
+                init_scalers = sc_j["data"]
+                if len(orders) > 1:
+                    method_i += "[" + ",".join(order) + "]"
 
-        # RAW loader: empty key_scalers => DataDictScalerTransform passes values straight through.
-        # Order must match the cache, which the reproduction gate proves (CHECK 2, theta exact).
-        raw_loader, _ = _wrap_paths_as_loader(
-            paths, nested_keys, list(cfg.cosmo_param_names), {}, None,
-            batch_size=batch_size, num_workers=2,
-            eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
-        )
-        print(f"[recover] --- {name} (init: {init_method}, {len(paths)} events spread over {n_all})", flush=True)
-        # NB frame.scalers is {'data': {...}, 'cosmo': ...}; recovery wants the KEY scalers.
-        res = recover_key_scalers(encoders, raw_loader, z_cached, init_scalers,
-                                  max_events=len(paths), steps=steps)
+            # RAW loader: empty key_scalers => DataDictScalerTransform passes values straight through.
+            # Order must match the cache, which the reproduction gate proves (CHECK 2, theta exact).
+            raw_loader, _ = _wrap_paths_as_loader(
+                paths, nested_keys, list(cfg.cosmo_param_names), {}, None,
+                batch_size=batch_size, num_workers=2,
+                eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
+            )
+            print(f"[recover] --- {name} (init: {method_i}, {len(paths)} events spread over {n_all})", flush=True)
+            # NB frame.scalers is {'data': {...}, 'cosmo': ...}; recovery wants the KEY scalers.
+            res_i = recover_key_scalers(encoders, raw_loader, z_cached, init_scalers,
+                                        max_events=len(paths), steps=steps)
+            if res is None or res_i.z_dev_median_after < res.z_dev_median_after:
+                res, init_method = res_i, method_i
+            if res_i.z_dev_median_before <= 1e-6:
+                break
 
         ok = res.z_dev_median_after <= accept_dev
         exact = res.z_dev_median_before <= 1e-6
