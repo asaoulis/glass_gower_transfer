@@ -150,6 +150,8 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=None, help="colour/order randomisation seed (default: random)")
     ap.add_argument("--max-samples", type=int, default=20000)
     ap.add_argument("--no-titles", action="store_true", help="no suptitles on the headline plots A/B/B'/D (captions live in the figure-set README)")
+    ap.add_argument("--short-legend", action="store_true",
+                    help="Plot D legend reads r0..rN / pooled (the arm is named in the title) instead of '<arm>, rN'")
     ap.add_argument("--palette", default=S.DEFAULT_PALETTE, choices=list(S.PALETTES),
                     help="colour option from src.viz.style (arms keep their identity in every option)")
     args = ap.parse_args(argv)
@@ -281,7 +283,7 @@ def main(argv=None):
                 continue
             stp = standardise_self(pr["path"], pr["experiment"])
             chains = [_chain(_thin(stp.z, args.max_samples), stp.names, [q for q in args.params if q in stp.names],
-                             f"{S.arm_name(arm)}, pooled", "real")]
+                             "pooled" if args.short_legend else f"{S.arm_name(arm)}, pooled", "real")]
             reps = sorted(reps, key=lambda r: r["match"])
             ramp = S.sequential(max(len(reps), 2))
             for i, r in enumerate(reps):
@@ -289,10 +291,12 @@ def main(argv=None):
                 p = write_standardised(st, str(std_dir / label / r["experiment"]), f"pooledframe_{args.prior}_{r['match']}")
                 manifest["standardised"].append(p)
                 chains.append(_chain(_thin(st.z, args.max_samples), st.names, [q for q in args.params if q in st.names],
-                                     f"{S.arm_name(arm)}, {_rep(r['match'])}", "outline", ramp[i], linewidth=1.1))
+                                     _rep(r["match"]) if args.short_legend else f"{S.arm_name(arm)}, {_rep(r['match'])}",
+                                     "outline", ramp[i], linewidth=1.1))
             chains = chains[1:] + chains[:1]          # repeats underneath, the pooled posterior on top
             _plot(chains, str(out / f"plotD_{label}_{arm}.png"),
-                  title=f"Plot D: label {label}, arm {arm}: repeats in the POOLED frame (seed spread in sigma of the pooled)")
+                  title=f"Plot D: label {label}, arm {S.arm_name(arm) if args.short_legend else arm}: repeats in the POOLED frame"
+                        + ("" if args.short_legend else " (seed spread in sigma of the pooled)"))
             manifest["figures"].append(str(out / f"plotD_{label}_{arm}.png"))
 
         # ---- Plot B PER ARM (no cross-arm frames): each arm's headline posterior vs ITS matched mocks

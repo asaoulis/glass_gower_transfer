@@ -394,7 +394,14 @@ def run_ppc_loglik(
     phi_grid: int = 2048,
     phi_grid_events: int = 301,
     dry_run: bool = False,
+    summaries_only: bool = False,
 ) -> Dict[str, object]:
+    """NLE log-likelihood of the observation + null events at every block of `theta_store` (PPC weights).
+
+    `summaries_only`: no likelihoods -- embed the observation and EVERY file of the theta store
+    through the same pipeline (member-0 frame, as the sampler) and write
+    ppc_summaries_<theta_store>_<match>.npz (event_files/event_is_obs/event_x + the theta table), the
+    replicate summaries of a summary-space PPC. The null set is replaced by the whole store."""
     from ..models.lightning.ensemble_flow import build_grouped_ensemble_likelihood
     from ..models.lightning.ensemble_nle import _EnsembleLikelihoodModel
     from .nle_external import (_jsonable, _paths_of, build_prior_for_mode, output_dir,
@@ -442,6 +449,8 @@ def run_ppc_loglik(
             # Deterministic thinning that keeps every cosmology: stride through the sorted list.
             stride = int(np.ceil(len(null_paths) / int(max_null_events)))
             null_paths = null_paths[::stride]
+    if summaries_only:
+        null_paths = list(tt["kept_paths"])        # every replicate of the store, not just the lock
     paths = list(obs_paths) + list(null_paths)
     if not paths:
         raise ValueError("nothing to score: give --data-store (observation) and/or --ppc-null lock")
@@ -454,7 +463,7 @@ def run_ppc_loglik(
         raise RuntimeError(f"param order mismatch: config {param_names} vs pipeline {p.param_names}")
     out_dir = output_dir(p.config, f"ppc_{tag}")
     os.makedirs(out_dir, exist_ok=True)
-    stem = f"ppc_loglik_{theta_store}_{p.match_string}"
+    stem = f"{'ppc_summaries' if summaries_only else 'ppc_loglik'}_{theta_store}_{p.match_string}"
     if dry_run:
         print(f"[ppc-loglik] DRY RUN -- would write {out_dir}/{stem}.npz", flush=True)
         return {"output_dir": out_dir, "dry_run": True}
@@ -490,6 +499,19 @@ def run_ppc_loglik(
     if (~is_obs).sum() and ok[~is_obs].mean() < 0.99:
         raise RuntimeError("more than 1% of null events fail the theta self-check -- the loader and "
                            "the theta table disagree (row misalignment or a different scaler)")
+    if summaries_only:
+        npz = os.path.join(out_dir, stem + ".npz")
+        np.savez(npz, event_files=np.array([os.path.basename(s) for s in paths]), event_is_obs=is_obs,
+                 event_ok=ok, event_x=X.numpy().astype(np.float32), **table)
+        prov = {"experiment": experiment, "match_string": p.match_string, "theta_store": theta_store,
+                "obs_store": obs_store, "mode": "summaries_only", "n_obs": len(obs_paths),
+                "n_replicates": len(null_paths), "n_replicates_ok": int(ok[~is_obs].sum()),
+                "truth_max_dev": max_dev, "theta_table": tt["stats"], "param_names": param_names,
+                "pipeline": p.provenance, "npz": npz}
+        with open(os.path.join(out_dir, stem + ".json"), "w") as fh:
+            json.dump(_jsonable(prov), fh, indent=2)
+        print(f"[ppc-loglik] summaries-only: wrote {npz} ({X.shape[0]} rows x {X.shape[1]})", flush=True)
+        return prov
 
     members = list(p.model.members)
     for m in members:

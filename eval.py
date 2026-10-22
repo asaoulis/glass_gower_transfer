@@ -340,6 +340,9 @@ def main(argv=None):
                         help="--mode nle-loglik: quadrature nodes for the cosmology marginal (0 = off)")
     parser.add_argument("--ppc-phi-grid", type=int, default=2048,
                         help="--mode nle-loglik: dense (Om,s8,w0) Sobol grid size for the emulator route (0 = off)")
+    parser.add_argument("--ppc-summaries-only", action="store_true",
+                        help="--mode nle-loglik: no likelihoods; write the arm's summaries t(x) for the observation "
+                             "and EVERY theta-store file (summary-space PPC replicates)")
     parser.add_argument("--ppc-phi-grid-events", type=int, default=301,
                         help="--mode nle-loglik: events (obs first, then null) scored on the phi grid")
     parser.add_argument("--ppc-threads", type=int, default=None,
@@ -545,6 +548,7 @@ def main(argv=None):
                     phi_grid=args.ppc_phi_grid,
                     phi_grid_events=args.ppc_phi_grid_events,
                     dry_run=args.external_dry_run,
+                    summaries_only=args.ppc_summaries_only,
                 )
         return 0
     elif mode == "recover-scalers":
