@@ -1136,4 +1136,12 @@ for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr_k6_r1", "gower_nle_finetune_ban
 # guard-c 50 -> 150 for rr k6 r1 ONLY (pre-authorised): job 1392080 died at ep0 (gap 56.500, 47.251 vs Stage-A best -9.249).
 # Verified: own whitener (glass_nle_pretrain_band_nla_z_vdq_rr_k6_r1, k=6, 12739 rows), Stage-A best = that row's W&B best, 110 keys.
 kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr_k6_r1_ens9_e150"]["whiten_warmstart_max_gap_nats"] = 150.0
+# 2026-10-22: k6 on the original r2 band tops out below 3.4 (sw 3.156, sw2 3.300, S8 .085), r3 band Stage I 3.27 is at
+# risk too -> rr bands (Stage-I screen job 1392302: rr r2 3.878 / S8 .063, rr r3 3.419 / .066) get the same k6 chain.
+for _r in (2, 3):
+    kids_legacy_vdq_experiments[f"glass_nle_pretrain_band_nla_z_vdq_rr_k6_r{_r}"] = _band_nla_z_k6_a(_r)
+    kids_legacy_vdq_experiments[f"gower_nle_finetune_band_nla_z_vdq_rr_k6_r{_r}_ens9_e150"] = _band_nla_z_k6_b(
+        _r, f"glass_nle_pretrain_band_nla_z_vdq_rr_k6_r{_r}")
+    for _n in (f"glass_nle_pretrain_band_nla_z_vdq_rr_k6_r{_r}", f"gower_nle_finetune_band_nla_z_vdq_rr_k6_r{_r}_ens9_e150"):
+        VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
