@@ -1150,4 +1150,10 @@ for _r in (2, 3):
 _band_nla_z_rr2 = _band_nla_z_vdq()
 _band_nla_z_rr2["repeat_indices"] = [1, 3, 4]
 kids_legacy_vdq_experiments["kids_legacy_band_nla_z_vdq_rr2"] = _band_nla_z_rr2
+# rr2 screen (job 1392396): r3 3.426, r4 3.079 -> neither >= 3.5. Stage-I FoM over 10 seeds 3.03-3.88 (mean ~3.36, sd ~0.24),
+# so ~1 in 4 bands clears 3.5 -> roll more seeds in parallel (one row per seed: same-index runs must not share a dir).
+for _tag, _idx in (("rr3", [1, 3, 4]), ("rr4", [3, 4])):
+    _row = _band_nla_z_vdq()
+    _row["repeat_indices"] = _idx
+    kids_legacy_vdq_experiments[f"kids_legacy_band_nla_z_vdq_{_tag}"] = _row
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
