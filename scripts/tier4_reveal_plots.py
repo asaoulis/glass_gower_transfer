@@ -112,7 +112,9 @@ PAL = S.palette()
 # be told apart) and redder than the rose. In the 08 overlay NLA is also dashed (identity without colour).
 # kappa=2 b_g-prior variates (2026-10-17): dark gold / deep violet, script-local like the IA variates (k2 = NLA-M IA
 # with the 2x broader b_g prior marginalised; k2_nla = the same with NLA IA).
-ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311", "k2": "#997700", "k2_nla": "#5D3A9B"}
+# 2-pt NLA: Tol-vibrant magenta (the style's sand fallback is the KiDS-Legacy COSEBIs colour in the 09 whiskers).
+ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311", "k2": "#997700", "k2_nla": "#5D3A9B",
+               "band_nla": "#EE3377"}
 VARIATE_ARMS = ("nla_z", "nla")
 # stage-3 legend labels (stage 1/2 keep "field level" for NLA-M: a rerun of those must not relabel them)
 STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
@@ -189,6 +191,11 @@ def arm_colour(arm: str) -> str:
 
 def arm_label(arm: str) -> str:
     return ARM_LABELS.get(arm, S.arm_name(arm))
+
+
+def blind_label(args, arm: str) -> str:
+    """Blind-store label to read `arm` from: `--arm-label ARM=LABEL` overrides `--label` per arm."""
+    return dict(s.split("=", 1) for s in (getattr(args, "arm_label", None) or [])).get(arm, args.label)
 
 
 def tint_ramp(hex_colour: str, n: int, lo: float = 0.62, hi: float = 0.18) -> List[str]:
@@ -369,7 +376,7 @@ def load_ours(args, arms: Optional[Sequence[str]] = None, strict: bool = True, p
         runs = mock_runs(args.matched_root, args.matched_tag, arms, args.repeats, priors)
         event = args.event
     else:
-        runs = [r for r in list_raw_runs(BLIND_ROOT) if r["label"] == args.label and r["arm"] in arms]
+        runs = [r for r in list_raw_runs(BLIND_ROOT) if r["label"] == blind_label(args, r["arm"]) and r["arm"] in arms]
         event = 0
     if not runs:
         if strict:
@@ -402,6 +409,8 @@ def load_ours(args, arms: Optional[Sequence[str]] = None, strict: bool = True, p
             reps[(arm, prior)] = rl
             on_disk = [int(r["match"].rsplit("_", 1)[-1]) for r in rr]
             cov = dict(per_repeat=on_disk, pooled_members=None, headline="")
+            if args.source == "real" and blind_label(args, arm) != args.label:
+                cov["label"] = blind_label(args, arm)
             full_set = sorted(int(r) for r in ARMS[arm][2])
             if pooled:
                 x, names = _load_physical(pooled[0]["path"], pooled[0]["experiment"], 0)
@@ -434,6 +443,8 @@ def load_ours(args, arms: Optional[Sequence[str]] = None, strict: bool = True, p
                 x, names = rl[0].x, rl[0].names
                 hname = "%s (repeat %s only, no pool)" % (S.arm_name(arm), rr[0]["match"].rsplit("_", 1)[-1])
                 cov["headline"] = "single repeat %s (no pool)" % _rlist(on_disk)
+            if "label" in cov:
+                cov["headline"] += " [label %s]" % cov["label"]
             COVERAGE[(arm, prior)] = cov
             role = "flagship" if arm in ("nla_m",) + VARIATE_ARMS else "arm"
             heads[(arm, prior)] = Post(hname, x, names, kind="ours", colour=arm_colour(arm), role=role, key=arm,
@@ -1135,6 +1146,9 @@ def main(argv=None):
     ap.add_argument("--stage", choices=("1", "2", "3", "all"), default="all",
                     help="1 = 2-pt, 2 = field + 2-pt, 3 = IA variates (merges into an existing manifest), all")
     ap.add_argument("--label", default="A2long", help="real: blind-store label")
+    ap.add_argument("--arm-label", nargs="*", default=[], metavar="ARM=LABEL",
+                    help="real: read these arms from another blind-store label (e.g. band_nla_z=A2 before its A2long "
+                         "dumps exist); recorded in the figure inputs as '[label X]'")
     ap.add_argument("--matched-root", default="/data/alex/variate_samples_kids")
     ap.add_argument("--matched-tag", default="gower_match_vdq")
     ap.add_argument("--event", type=int, default=0, help="mock: event index of the matched dump")
