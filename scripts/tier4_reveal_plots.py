@@ -578,7 +578,9 @@ def _legend_handles(posts: List[Post], prior: Optional[Post], truth: bool):
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
     hs = []
-    for p in sorted(posts, key=lambda p: (LEGEND_ORDER.get(p.kind, 0), ROLE_ORDER.get(p.role, 2) if p.kind == "ours" else 0)):
+    # an explicit Post.legend_rank (set by --hos-headline figures) orders first; everything else keeps kind/role order
+    for p in sorted(posts, key=lambda p: (getattr(p, "legend_rank", None) is None, getattr(p, "legend_rank", 0) or 0,
+                                          LEGEND_ORDER.get(p.kind, 0), ROLE_ORDER.get(p.role, 2) if p.kind == "ours" else 0)):
         kw = p.chain_kwargs()
         if kw.get("shade"):
             hs.append(Patch(facecolor=mc.to_rgba(p.colour, 0.55), edgecolor=p.colour, lw=kw["linewidth"],
@@ -781,12 +783,24 @@ def write_table(posts: List[Post], params: Sequence[str], out_base: str, note: s
 # --------------------------------------------------------------------------------------------
 # stage 3: the IA variates (08 overlay, 09 S8 whiskers, 10+ per-variate suites)
 # --------------------------------------------------------------------------------------------
-def _s3copy(p: Post, arm: str, **over) -> Post:
+def _s3copy(p: Post, arm: str, legend_rank=None, **over) -> Post:
     """A stage-3 relabelled copy (same draws): "field level, NLA-M" etc. in the shared figures."""
     kw = dict(weights=p.weights, kind=p.kind, colour=p.colour, role=p.role, key=p.key, linestyle=p.linestyle,
               linewidth=p.linewidth, label=STAGE3_LABELS.get(arm, p.label))
     kw.update(over)
-    return Post(p.name, p.x, p.names, **kw)
+    q = Post(p.name, p.x, p.names, **kw)
+    if legend_rank is not None:
+        q.legend_rank = legend_rank
+    return q
+
+
+def _hos_trio(head, pr):
+    """--hos-headline styling: 2-pt solid outline (legend first), HOS filled, field level dashed outline."""
+    return [_s3copy(head(("band", pr)), "band", kind="variate", role="outline", linewidth=LW["variate"],
+                    linestyle="-", legend_rank=0),
+            _s3copy(head(("hos", pr)), "hos", kind="ours", role="flagship", linestyle="-", legend_rank=1),
+            _s3copy(head(("nla_m", pr)), "nla_m", kind="variate", role="outline", linewidth=LW["variate"],
+                    linestyle="--", legend_rank=2)]
 
 
 def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_planck_and_surveys, as_lcdm,
@@ -818,6 +832,8 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
         posts = [_s3copy(base, "nla_m")] + [
             _s3copy(head((v, pr)), v, kind="variate", role="outline", linewidth=LW["variate"],
                     linestyle=VARIATE_LINESTYLE.get(v, "-")) for v in present[pr]]
+        if getattr(args, "hos_headline", False) and present[pr] == ["hos"]:
+            posts = [p for p in _hos_trio(head, pr) if p.label != STAGE3_LABELS["band"]]
         arms_pr = [("nla_m", pr)] + [(v, pr) for v in present[pr]]
         ttl = "%s: field level, IA variates vs NLA-M" % PRIOR_NAMES[pr]
         f = corner(posts, PRIOR_PARAMS[pr], os.path.join(s3, "%s08a_IA_overlay_%s_corner.png" % (pre, model)), ttl,
@@ -841,6 +857,8 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
         posts = [_s3copy(head(("nla_m", pr)), "nla_m")] + [
             _s3copy(head((a, pr)), a, kind="variate", role="outline", linewidth=LW["variate"], linestyle=ls)
             for a, ls in trio[1:]]
+        if getattr(args, "hos_headline", False):
+            posts = _hos_trio(head, pr)
         arms_pr = [(a, pr) for a, _ in trio]
         ttl = "%s: field level vs 2-pt vs 2-pt + third moments (HOS), NLA-M" % PRIOR_NAMES[pr]
         f = corner(posts, PRIOR_PARAMS[pr], os.path.join(s3, "%s17g_HOS_vs_field_2pt_%s_corner.png" % (pre, model)),
@@ -857,7 +875,9 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
             continue
         if not present[pr]:
             print("[skip] %s: no variate posterior yet" % stem); continue
-        arms_rows = [a for a in ["nla_m"] + present[pr] + ["band"] if head((a, pr)) is not None]
+        order = (["band", "hos", "nla_m"] if getattr(args, "hos_headline", False) and present[pr] == ["hos"]
+                 else ["nla_m"] + present[pr] + ["band"])
+        arms_rows = [a for a in order if head((a, pr)) is not None]
         rows = [_s3copy(head((a, pr)), a) for a in arms_rows]
         if pr == L:
             groups = [rows, comp + kids, sv_L, [planck] if planck else []]
@@ -1198,6 +1218,9 @@ def main(argv=None):
     ap.add_argument("--no-surveys", action="store_true", help="skip the DES Y3 / HSC Y3 overlays (07 + whisker rows)")
     ap.add_argument("--beyond2pt", action="store_true", help="also include the HSC cluster-abundance chain (different S8 definition)")
     ap.add_argument("--prior-draws", type=int, default=200000, help="prior draws for the full-parameter corner diagonal")
+    ap.add_argument("--hos-headline", action="store_true",
+                    help="stage 3 with --variates hos: HOS filled as the headline, 2-pt solid outline first, field "
+                         "level dashed outline (08 overlay, 17g trio, 09 row order 2-pt / HOS / field)")
     ap.add_argument("--titles", action="store_true",
                     help="draw figure titles (off by default: file names + captions carry them)")
     ap.add_argument("--layout", choices=LAYOUTS, default="paper",
