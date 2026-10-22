@@ -1144,4 +1144,10 @@ for _r in (2, 3):
         _r, f"glass_nle_pretrain_band_nla_z_vdq_rr_k6_r{_r}")
     for _n in (f"glass_nle_pretrain_band_nla_z_vdq_rr_k6_r{_r}", f"gower_nle_finetune_band_nla_z_vdq_rr_k6_r{_r}_ens9_e150"):
         VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr"
+# 2026-10-22 ~02:40Z: k6 final / Stage-I FoM ratio = 0.95-1.03 (r0 3.525/3.43, orig r2 3.140/3.29, orig r3 3.103/3.27,
+# sw2 3.300/3.29), so the pending r1 (rr band 3.41), r4 (3.375) and rr r3 (3.42) can each land either side of 3.4.
+# Second spare bands (own ckpt dir) for those indices; screen at Stage-I FoM >= 3.5 before any NLE chain.
+_band_nla_z_rr2 = _band_nla_z_vdq()
+_band_nla_z_rr2["repeat_indices"] = [1, 3, 4]
+kids_legacy_vdq_experiments["kids_legacy_band_nla_z_vdq_rr2"] = _band_nla_z_rr2
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
