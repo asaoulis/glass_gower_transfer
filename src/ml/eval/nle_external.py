@@ -145,8 +145,12 @@ def build_prior_for_mode(prior_mode: str, param_names, *, preset_overrides=None)
 def store_glob(name: str) -> str:
     """A store basename -> its output glob: gpu5 first, then the gpu4 datasets root (the matched
     near-fiducial stores `gower_match_*_bgp` live there). `<store>_hos` names the HOS sidecars of
-    `<store>` (`eval.py --mode hos-bake`, under {base_path}/checkpoints/hos_sidecars/<store>/)."""
+    `<store>` (`eval.py --mode hos-bake`, under {base_path}/checkpoints/hos_sidecars/<store>/); `<store>_hosx` the hos_x
+    sidecars (`--hos-variant x`, under hos_sidecars/<store>_hosx/)."""
     import os as _os
+    if name.endswith("_hosx"):         # hos_x sidecars keep the suffix in their dir name (hos_sidecars/<store>_hosx/)
+        from config.default import get_default_config
+        return _os.path.join(get_default_config().base_path, "checkpoints", "hos_sidecars", name, "output_*.h5")
     if name.endswith("_hos"):
         from config.default import get_default_config
         return _os.path.join(get_default_config().base_path, "checkpoints", "hos_sidecars", name[:-4], "output_*.h5")

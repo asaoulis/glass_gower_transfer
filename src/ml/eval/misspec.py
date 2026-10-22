@@ -306,9 +306,16 @@ def _hos_variates():
     return [{"name": "gower_vdq_nla_m", "patterns": _HOS_GOWER, "exclude_params": [], "in_distribution": True}]
 
 
+def _hosx_variates():
+    """The same in-distribution variate read from the hos_x sidecars (R1+Gmrg arm, eval-and-viz/hos-gmrg-observation)."""
+    from config.kids_legacy_hos import _HOSX_GOWER
+    return [{"name": "gower_vdq_nla_m", "patterns": _HOSX_GOWER, "exclude_params": [], "in_distribution": True}]
+
+
 VARIATE_SETS: Dict[str, List[Dict]] = {
     "gower_vdq": GOWER_VDQ_VARIATES,
     "gower_vdq_hos": _hos_variates(),
+    "gower_vdq_hosx": _hosx_variates(),
     "gower_bgp": GOWER_BGP_VARIATES,
     # The BGP variates PLUS the two external boxes, so the external points land on the same
     # detector axes (Mahalanobis / kNN / cross-repeat KL) as the existing misspec campaign.

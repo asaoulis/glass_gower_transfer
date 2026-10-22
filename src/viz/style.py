@@ -140,22 +140,22 @@ ROLES: dict[str, dict] = {
     "tol-muted": {
         "real": "#000000", "flagship": 1, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 0, "pass": 3, "T": 0, "S": 1,
-        "arms": {"nla_m": 1, "nla_m_nobgp": 4, "nla": 0, "nla_z": 5, "vd": 6, "k2": 7, "band": 3, "k2_nla": 8, "band_nla": 2, "band_nla_z": "#994F00", "hos": "#AA3377"},
+        "arms": {"nla_m": 1, "nla_m_nobgp": 4, "nla": 0, "nla_z": 5, "vd": 6, "k2": 7, "band": 3, "k2_nla": 8, "band_nla": 2, "band_nla_z": "#994F00", "hos": "#AA3377", "hos_gmrg": "#33BBEE"},
     },
     "tol-bright": {
         "real": "#000000", "flagship": 0, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 1, "pass": 2, "T": 1, "S": 0,
-        "arms": {"nla_m": 0, "nla_m_nobgp": 4, "nla": 1, "nla_z": 5, "vd": 2, "k2": 3, "band": 6, "k2_nla": "#7A5195", "band_nla": "#EE7733", "band_nla_z": "#994F00", "hos": "#AA3377"},
+        "arms": {"nla_m": 0, "nla_m_nobgp": 4, "nla": 1, "nla_z": 5, "vd": 2, "k2": 3, "band": 6, "k2_nla": "#7A5195", "band_nla": "#EE7733", "band_nla_z": "#994F00", "hos": "#AA3377", "hos_gmrg": "#33BBEE"},
     },
     "tol-high-contrast": {
         "real": "#000000", "flagship": 0, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 2, "pass": 4, "T": 2, "S": 0,
-        "arms": {"nla_m": 0, "nla_m_nobgp": 3, "nla": 2, "nla_z": 5, "vd": 1, "k2": 4, "band": 6, "k2_nla": 7, "band_nla": 1, "band_nla_z": "#994F00", "hos": "#AA3377"},
+        "arms": {"nla_m": 0, "nla_m_nobgp": 3, "nla": 2, "nla_z": 5, "vd": 1, "k2": 4, "band": 6, "k2_nla": 7, "band_nla": 1, "band_nla_z": "#994F00", "hos": "#AA3377", "hos_gmrg": "#33BBEE"},
     },
     "survey": {
         "real": "#000000", "flagship": 0, "mock": "#B0B0B0", "reference": "#444444",
         "stop": 1, "pass": 2, "T": 1, "S": 0,
-        "arms": {"nla_m": 0, "nla_m_nobgp": 6, "nla": 1, "nla_z": 4, "vd": 2, "k2": 3, "band": 5, "k2_nla": "#8C564B", "band_nla": "#BCBD22", "band_nla_z": "#994F00", "hos": "#AA3377"},
+        "arms": {"nla_m": 0, "nla_m_nobgp": 6, "nla": 1, "nla_z": 4, "vd": 2, "k2": 3, "band": 5, "k2_nla": "#8C564B", "band_nla": "#BCBD22", "band_nla_z": "#994F00", "hos": "#AA3377", "hos_gmrg": "#33BBEE"},
     },
 }
 
@@ -163,7 +163,7 @@ ROLES: dict[str, dict] = {
 # (`plt.cm.viridis(np.linspace(0.12, 0.82, n))`, fidelity + coverage figures).
 SEQUENTIAL_CMAP = "viridis"
 DIVERGING_CMAP = "RdBu_r"        # z-score heatmaps, symmetric about 0
-ARM_ORDER = ("nla_m", "nla_m_nobgp", "nla", "nla_z", "vd", "k2", "k2_nla", "band", "band_nla", "band_nla_z", "hos")
+ARM_ORDER = ("nla_m", "nla_m_nobgp", "nla", "nla_z", "vd", "k2", "k2_nla", "band", "band_nla", "band_nla_z", "hos", "hos_gmrg")
 
 
 def _check_arm_drift() -> None:
@@ -309,6 +309,7 @@ ARM_NAMES = {
     "band": r"2-pt (bandpowers, VD)", "band_nla": r"2-pt (bandpowers, VD), NLA",
     "band_nla_z": r"2-pt (bandpowers, VD), NLA-$z$",
     "hos": r"2-pt + third moments (HOS, VD)",
+    "hos_gmrg": r"2-pt + third moments + Gmrg (HOS, VD)",
 }
 LABEL_NAMES = {"T": r"T (GLASS $b_g{=}1$ catalogue: known-OOD control)",
                "S": r"S (held-out $N$-body mock: in-distribution control)"}

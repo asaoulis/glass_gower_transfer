@@ -340,3 +340,89 @@ HOS_TRAIN_WAVES["hos_train_xo"] = [_xo_task(t) for t in HOS_TRAIN_WAVES["hos_tra
 for _w in ("hos_npe_eval", "hos_rs", "hos_nle_eval"):
     _rel = {t["label"] for t in HOS_TRAIN_WAVES[_w] if t.get("label")}
     HOS_TRAIN_WAVES[f"{_w}_xo"] = [_xo_task(t, _rel) for t in HOS_TRAIN_WAVES[_w]]
+
+
+# === R1 + Gmrg PRODUCTION arm (task eval-and-viz/hos-gmrg-observation = U7 of hos-3pt-information; APPEND-ONLY) =======
+# The R1 production chain (GLASS NPE -> NLE Stage A k=8 -> Gower Stage B ens9 e150 `_xo` -> recover-scalers -> obs MCMC)
+# on the hos_x store with the feature set R1 + Gmrg (476). GLASS NPE = the existing `kids_legacy_hosx_gmrg_nla_m_vdq` row,
+# trained per repeat INSIDE the CPU wave (the hybrid is GPU kernel-launch bound; CPU ~3x faster per step). Dict-diff of the
+# NLE rows vs the R1 `_xo` rows: data_patterns (hosx stores), the per-dim `hos_x` scaler (== the gmrg source's), the
+# Stage-A checkpoint dir and exclude_files = F2 + the 18 Gmrg > 50 robust-sigma Gower mocks (same F2 rule on the Gmrg
+# vector; config/hos_assets/gower_hosx_gmrg_outliers.json, gitignored dir -> git add -f).
+_HOSX_GMRG_SOURCE = "kids_legacy_hosx_gmrg_nla_m_vdq"
+GOWER_HOSX_GMRG_OUTLIERS = "config/hos_assets/gower_hosx_gmrg_outliers.json"
+
+
+def _hosx_gmrg_nle_common(c, data_patterns):
+    c["data_patterns"] = data_patterns
+    c["scaler_options"] = copy.deepcopy(kids_legacy_hos_experiments[_HOSX_GMRG_SOURCE]["scaler_options"])
+    c["precision"] = "32"
+    c.update(_VECTOR_LOADER)
+    return c
+
+
+def hosx_gmrg_nle_a_row(r):
+    return _hosx_gmrg_nle_common(_band_nle_a_vdq(r), _HOSX_GLASS)
+
+
+def hosx_gmrg_nle_b_row(r):
+    c = _hosx_gmrg_nle_common(_band_nle_b_vdq(r), _HOSX_GOWER)
+    c["pretrained_band_ckpt_path"] = f"{_MODELS}/checkpoints/glass_nle_pretrain_hosx_gmrg_nla_m_vdq_k{HOS_NLE_K}_r{r}/"
+    c["sampling_num_jobs"] = 63                    # as hos_nle_b_row (eval-only, --wall_h 48)
+    c["exclude_files"] = GOWER_HOSX_GMRG_OUTLIERS
+    return c
+
+
+def _gmrg_a(r):
+    return f"glass_nle_pretrain_hosx_gmrg_nla_m_vdq_k{HOS_NLE_K}_r{r}"
+
+
+def _gmrg_b(r):
+    return f"gower_nle_finetune_hosx_gmrg_nla_m_vdq_k{HOS_NLE_K}_r{r}_ens9_e150_xo"
+
+
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_hos_experiments["glass_nle_pretrain_hosx_gmrg_nla_m_vdq_k8_r0"] = hosx_gmrg_nle_a_row(0)
+kids_legacy_hos_experiments["glass_nle_pretrain_hosx_gmrg_nla_m_vdq_k8_r1"] = hosx_gmrg_nle_a_row(1)
+kids_legacy_hos_experiments["glass_nle_pretrain_hosx_gmrg_nla_m_vdq_k8_r2"] = hosx_gmrg_nle_a_row(2)
+kids_legacy_hos_experiments["glass_nle_pretrain_hosx_gmrg_nla_m_vdq_k8_r3"] = hosx_gmrg_nle_a_row(3)
+kids_legacy_hos_experiments["glass_nle_pretrain_hosx_gmrg_nla_m_vdq_k8_r4"] = hosx_gmrg_nle_a_row(4)
+kids_legacy_hos_experiments["gower_nle_finetune_hosx_gmrg_nla_m_vdq_k8_r0_ens9_e150_xo"] = hosx_gmrg_nle_b_row(0)
+kids_legacy_hos_experiments["gower_nle_finetune_hosx_gmrg_nla_m_vdq_k8_r1_ens9_e150_xo"] = hosx_gmrg_nle_b_row(1)
+kids_legacy_hos_experiments["gower_nle_finetune_hosx_gmrg_nla_m_vdq_k8_r2_ens9_e150_xo"] = hosx_gmrg_nle_b_row(2)
+kids_legacy_hos_experiments["gower_nle_finetune_hosx_gmrg_nla_m_vdq_k8_r3_ens9_e150_xo"] = hosx_gmrg_nle_b_row(3)
+kids_legacy_hos_experiments["gower_nle_finetune_hosx_gmrg_nla_m_vdq_k8_r4_ens9_e150_xo"] = hosx_gmrg_nle_b_row(4)
+# Gower NPE ens9 pack (in-distribution NPE eval vs gower_npe_finetune_hos_nla_m_vdq_ens9_xo; not on the obs path).
+kids_legacy_hos_experiments["gower_npe_finetune_hosx_gmrg_nla_m_vdq_ens9_xo"] = dict(
+    copy.deepcopy(kids_legacy_hos_experiments["gower_npe_finetune_hosx_gmrg_nla_m_vdq_ens9"]),
+    exclude_files=GOWER_HOSX_GMRG_OUTLIERS)
+for _r in HOS_NLE_REPEATS:
+    HOS_NLE_SOURCES[_gmrg_a(_r)] = _HOSX_GMRG_SOURCE
+    HOS_NLE_SOURCES[_gmrg_b(_r)] = _HOSX_GMRG_SOURCE
+assert set(HOS_NLE_SOURCES) <= set(kids_legacy_hos_experiments)
+
+_GMRG_NPE = "gower_npe_finetune_hosx_gmrg_nla_m_vdq_ens9_xo"
+# Waves (literal names: hosx_gmrg_train, hosx_gmrg_rs, hosx_gmrg_npe_eval, hosx_gmrg_nle_eval). GLASS NPE r -> Stage A r
+# -> Stage B r (RUN_EVALUATION=0) by LABEL (one exp name, five repeats); the Gower NPE packs fill the free slots last.
+HOS_TRAIN_WAVES["hosx_gmrg_train"] = (
+    [dict(_ptask("train", _HOSX_GMRG_SOURCE, r, "glass_hosx"), label=f"glass_gmrg_r{r}") for r in HOS_NLE_REPEATS]
+    + [dict(_ptask("embed", _gmrg_a(r), r, "glass_hosx", after=[f"glass_gmrg_r{r}"]), label=f"nle_a_gmrg_r{r}")
+       for r in HOS_NLE_REPEATS]
+    + [dict(_ptask("embed", _gmrg_b(r), r, "gower_hosx", after=[f"nle_a_gmrg_r{r}"], env={"RUN_EVALUATION": "0"}),
+            label=f"nle_b_gmrg_r{r}") for r in HOS_NLE_REPEATS]
+    + [dict(_ptask("train", _GMRG_NPE, r, "gower_hosx", after=[f"glass_gmrg_r{r}"]), label=f"npe_gmrg_r{r}")
+       for r in HOS_NLE_REPEATS])
+HOS_TRAIN_WAVES["hosx_gmrg_rs"] = (
+    [dict(_ptask("eval", _gmrg_b(r), r, "gower_hosx"), label=f"rs_gmrg_r{r}_m{m}",
+          args=["--mode", "recover-scalers", "--experiments", _gmrg_b(r), "--repeat-indices", str(r), "--members", str(m)])
+     for r in HOS_NLE_REPEATS for m in range(9)]
+    + [dict(_ptask("eval", _gmrg_b(r), r, "gower_hosx", after=[f"rs_gmrg_r{r}_m{m}" for m in range(9)]),
+            label=f"verify_gmrg_r{r}", args=["--mode", "recover-scalers", "--verify-frames", "--experiments", _gmrg_b(r),
+                                             "--repeat-indices", str(r)]) for r in HOS_NLE_REPEATS])
+HOS_TRAIN_WAVES["hosx_gmrg_npe_eval"] = [
+    dict(_ptask("eval", _GMRG_NPE, r, "gower_hosx"), label=f"npe_eval_gmrg_r{r}",
+         args=["--mode", "misspec", "--misspec-base", _GMRG_NPE, "--variates", "gower_vdq_hosx", "--repeat-indices", str(r)])
+    for r in HOS_NLE_REPEATS]
+HOS_TRAIN_WAVES["hosx_gmrg_nle_eval"] = [
+    dict(_ptask("embed", _gmrg_b(r), r, "gower_hosx", env={"RUN_TRAINING": "0"}), label=f"nle_eval_gmrg_r{r}")
+    for r in HOS_NLE_REPEATS]
