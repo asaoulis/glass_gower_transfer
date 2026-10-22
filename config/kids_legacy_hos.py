@@ -164,6 +164,10 @@ def hos_nle_a_row(r):
 def hos_nle_b_row(r):
     c = _hos_nle_common(_band_nle_b_vdq(r), _HOS_GOWER)
     c["pretrained_band_ckpt_path"] = f"{_MODELS}/checkpoints/glass_nle_pretrain_hos_nla_m_vdq_k{HOS_NLE_K}_r{r}/"
+    # Eval MCMC pool: the default 36 workers put the 1592-mock test set (124 items) in ~3.5 waves of
+    # >8 h each, past the 24 h wall (2026-10-22, hos_nle_eval_xo r0-4). 63 on a 64-core node, as the
+    # vdq variate chains (_VARIATE_NLE_B_SAMPLING_JOBS); eval-only, run it with --wall_h 48.
+    c["sampling_num_jobs"] = 63
     return c
 
 
