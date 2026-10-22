@@ -1156,4 +1156,12 @@ for _tag, _idx in (("rr3", [1, 3, 4]), ("rr4", [3, 4])):
     _row = _band_nla_z_vdq()
     _row["repeat_indices"] = _idx
     kids_legacy_vdq_experiments[f"kids_legacy_band_nla_z_vdq_{_tag}"] = _row
+# Screens 1392414/15: rr3 r1 3.255, r3 3.548, r4 3.027; rr4 r3 3.554, r4 3.071. Index 4 bands all sit at 3.03-3.08 (orig r4
+# 3.375 is the best of them): the Stage-I test set follows the split seed, so screen values compare only within an index.
+# r3 gets the rr4 band (3.554, S8 .065) as its k6 chain; rr3 r3 (3.548) is the spare.
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_z_vdq_rr4_k6_r3"] = _band_nla_z_k6_a(3)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr4_k6_r3_ens9_e150"] = _band_nla_z_k6_b(
+    3, "glass_nle_pretrain_band_nla_z_vdq_rr4_k6_r3")
+for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr4_k6_r3", "gower_nle_finetune_band_nla_z_vdq_rr4_k6_r3_ens9_e150"):
+    VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr4"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
