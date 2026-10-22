@@ -54,7 +54,10 @@ ARMS = {
     "band_nla":    ("gower_nle_finetune_band_nla_vdq_k8_r{r}_ens9_e150",          "sc8a1", (0, 1, 2)),
     # 2-pt (bandpower) NLE, NLA-z IA (a_ia ~ U[-6,6] + b_z), VDQ stores (2026-10-20, NLA-z PPC counterpart of band_nla).
     # APPENDED LAST (seed stability). Same 200-id Gower store split as nla_z -> ncosmoNone_{r}.
-    "band_nla_z":  ("gower_nle_finetune_band_nla_z_vdq_k8_r{r}_ens9_e150",        "sc8a1", (0, 1, 2)),
+    # 2026-10-22 (user, eval-and-viz/band-nla-z-5rep-retrain): repointed from the k8 r0-2 chain to whitening truncation k6
+    # on all five repeats (k8 FoM spread 1.56x, set by near-null whitened PCs, not Stage B). Rerolled bands at r1/r2 via
+    # EXPERIMENT_OVERRIDES. Bundled evals FoM(Om,s8) 3.525 / 3.046 / 3.261 / 3.103 / 3.088 (S8 w68 .075-.088, TARP .030-.037).
+    "band_nla_z":  ("gower_nle_finetune_band_nla_z_vdq_k6_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 3, 4)),
     # Beyond-2-pt HOS hybrid NLE (2026-10-21, eval-and-viz/hos-hybrid-training): frozen band + R1 third-moment MLP,
     # the band P3b chain on the HOS sidecar stores. APPENDED LAST (seed stability). Bake `sc8a1_hos` = the HOS sidecars
     # of the sc8a1 observation store (nle_external.store_glob resolves the `_hos` suffix).
@@ -73,6 +76,10 @@ EXPERIMENT_OVERRIDES = {
     # Bundled evals in family: FoM(Om,s8) 6.79 / 7.05, S8 w68 0.060 / 0.057, TARP .025 / .026.
     ("nla", 4): "gower_nle_finetune_nla_vdq_z8_rr_k6_r4_ens9_e150",
     ("nla", 5): "gower_nle_finetune_nla_vdq_z8_rr_k6_r5_ens9_e150",
+    # band_nla_z k6 rerolls (2026-10-22): r1/r2 run on the `kids_legacy_band_nla_z_vdq_rr` Stage-I bands (same index /
+    # split seed, own Stage A whitener). Bundled evals: r1 3.046 / S8 .088, r2 3.261 / S8 .080.
+    ("band_nla_z", 1): "gower_nle_finetune_band_nla_z_vdq_rr_k6_r1_ens9_e150",
+    ("band_nla_z", 2): "gower_nle_finetune_band_nla_z_vdq_rr_k6_r2_ens9_e150",
 }
 
 # Variate arms whose rows still name no-VD chains (see the VDQ CUTOVER note above).
