@@ -114,24 +114,28 @@ PAL = S.palette()
 # with the 2x broader b_g prior marginalised; k2_nla = the same with NLA IA).
 # 2-pt NLA: Tol-vibrant magenta (the style's sand fallback is the KiDS-Legacy COSEBIs colour in the 09 whiskers).
 ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311", "k2": "#997700", "k2_nla": "#5D3A9B",
-               "band_nla": "#EE3377"}
+               "band_nla": "#EE3377", "hos": "#0077BB"}   # hos: Tol-vibrant blue (the style's magenta ~ the 2-pt wine;
+                                                           # shared with NLA-z, so plot hos and nla_z in separate runs)
 VARIATE_ARMS = ("nla_z", "nla")
 # stage-3 legend labels (stage 1/2 keep "field level" for NLA-M: a rerun of those must not relabel them)
 STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
                  "band": "2-pt", "k2": r"field level, NLA-M, $\kappa=2$", "k2_nla": r"field level, NLA, $\kappa=2$",
-                 "band_nla": "2-pt, NLA", "band_nla_z": r"2-pt, NLA-$z$"}
+                 "band_nla": "2-pt, NLA", "band_nla_z": r"2-pt, NLA-$z$", "hos": "2-pt + third moments (HOS)"}
 STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level NLE, NLA-z IA, VD",
                 "nla": "field-level NLE, NLA IA, VD", "band": "2-pt (bandpowers) NLE, NLA-M IA, VD",
                 "k2": "field-level NLE, NLA-M IA, VD, kappa=2 b_g prior (b_g marginalised)",
                 "k2_nla": "field-level NLE, NLA IA, VD, kappa=2 b_g prior (b_g marginalised)",
                 "band_nla": "2-pt (bandpowers) NLE, NLA IA (free A_IA), VD",
-                "band_nla_z": "2-pt (bandpowers) NLE, NLA-z IA (a_ia + b_z), VD"}
-VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":", "band_nla_z": ":"}  # 08 overlay outlines
+                "band_nla_z": "2-pt (bandpowers) NLE, NLA-z IA (a_ia + b_z), VD",
+                "hos": "EE bandpowers + R1 third moments hybrid NLE (HOS), NLA-M IA, VD"}
+VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":", "band_nla_z": ":", "hos": "-"}  # 08 overlay outlines
 # per-variate figure group: (number, file stem)
-# 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14, the 2-pt NLA arm (T3b) 15, the 2-pt NLA-z arm 16.
-# Opt-in: pass `--variates nla_z nla k2 [k2_nla] [band_nla] [band_nla_z]`.
+# 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14, the 2-pt NLA arm (T3b) 15, the 2-pt NLA-z arm 16,
+# the HOS hybrid (EE + third moments, NLA-M) 17 (+ 17g: field / 2-pt / HOS on one corner).
+# Opt-in: pass `--variates nla_z nla k2 [k2_nla] [band_nla] [band_nla_z] [hos]` (hos: usually with --arm-label hos=A2).
 VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA"), "k2": ("13", "field_k2"),
-                  "k2_nla": ("14", "field_k2NLA"), "band_nla": ("15", "2pt_NLA"), "band_nla_z": ("16", "2pt_NLAz")}
+                  "k2_nla": ("14", "field_k2NLA"), "band_nla": ("15", "2pt_NLA"), "band_nla_z": ("16", "2pt_NLAz"),
+                  "hos": ("17", "HOS")}
 MODEL_PRIOR = {"LCDM": "LCDM_fixed_w0", "wCDM": "kids_s8_analytic"}
 
 
@@ -829,6 +833,24 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
                          "loosely." % (ttl, "; ".join("%s = %s" % (a, COVERAGE.get((a, pr), {}).get("headline", "?"))
                                                       for a, pr in arms_pr)))
 
+    # 17g: the NLA-M trio on one corner -- field level filled, 2-pt and the HOS hybrid as outlines
+    for pr, model in models:
+        trio = [("nla_m", None), ("band", "--"), ("hos", "-")]
+        if "hos" not in present[pr] or any(head((a, pr)) is None for a, _ in trio):
+            continue
+        posts = [_s3copy(head(("nla_m", pr)), "nla_m")] + [
+            _s3copy(head((a, pr)), a, kind="variate", role="outline", linewidth=LW["variate"], linestyle=ls)
+            for a, ls in trio[1:]]
+        arms_pr = [(a, pr) for a, _ in trio]
+        ttl = "%s: field level vs 2-pt vs 2-pt + third moments (HOS), NLA-M" % PRIOR_NAMES[pr]
+        f = corner(posts, PRIOR_PARAMS[pr], os.path.join(s3, "%s17g_HOS_vs_field_2pt_%s_corner.png" % (pre, model)),
+                   ttl, truth, rng, args.max_samples, **ttl_kw)
+        written.append(f); note_inputs(f, arms_pr)
+        shared = [n for n in posts[0].names if n != "S8" and all(n in q.names for q in posts)] + ["S8"]
+        write_table(posts, shared, os.path.join(tdir, "%s17g_HOS_vs_field_2pt_%s" % (pre, model)),
+                    note="%s. Inputs: %s." % (ttl, "; ".join("%s = %s" % (a, COVERAGE.get((a, p_), {}).get("headline", "?"))
+                                                           for a, p_ in arms_pr)))
+
     # 09 S8 whiskers: 06 / 06b with the variate rows between the NLA-M field level and the 2-pt rows
     for pr, model, stem in ((L, "LCDM", "09_S8_summary_variates"), (W, "wCDM", "09b_S8_summary_variates_wCDM")):
         if model not in args.models:
@@ -1211,7 +1233,7 @@ def main(argv=None):
     surveys = load_surveys(args.beyond2pt) if not args.no_surveys else []
     L, W = "LCDM_fixed_w0", "kids_s8_analytic"
     tt = {"band": "2-pt", "nla_m": "field", "nla_z": "field NLA-z", "nla": "field NLA", "k2": "field kappa=2",
-          "k2_nla": "field kappa=2 NLA", "band_nla": "2-pt NLA", "band_nla_z": "2-pt NLA-z"}
+          "k2_nla": "field kappa=2 NLA", "band_nla": "2-pt NLA", "band_nla_z": "2-pt NLA-z", "hos": "HOS"}
     ttl_kw = dict(titles=args.titles, mock=mock)
     written = []
 
