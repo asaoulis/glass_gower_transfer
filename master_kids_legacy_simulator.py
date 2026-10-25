@@ -762,7 +762,10 @@ def save_catalogue_h5(path, catalogue, cosmo_dict, extra_attrs=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
         g = f.create_group("catalogue")
-        for col, dt in CATALOGUE_DTYPES.items():
+        cols = dict(CATALOGUE_DTYPES)
+        if catalogue.dtype.names and "W" in catalogue.dtype.names:
+            cols["W"] = np.float32          # VD v2 (vd_table='v2pr') per-galaxy shear weight
+        for col, dt in cols.items():
             g.create_dataset(col, data=np.asarray(catalogue[col]).astype(dt, copy=False))
         g.attrs["n_galaxies"] = int(catalogue.shape[0])
         for k, v in (extra_attrs or {}).items():
