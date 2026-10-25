@@ -155,7 +155,17 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 	)
 
 	vd_map = load_vd_maps(data_dir, nside)  # (nbins, npix) at run nside
-	vd_map_smooth = smooth_vd_tracer(vd_map, mask)
+	vd_weights = None
+	if vd_table == "v2pr":
+		# VD v2 (PR #3): coverage-corrected tracer T/f drives counts (5' smoothed), sigma_eps (raw) and the
+		# weights' depth bins; the RAW tracer keeps driving the LOS n(z) and the m-bias digitise.
+		from src.KiDS.variable_depth_config import (coverage_corrected_tracer, vd2_contrast_fwhm_arcmin,
+		                                            vd2_weight_tables, VariableDepthWeights)
+		vd_map_corr = coverage_corrected_tracer(vd_map, mask)
+		vd_map_smooth = smooth_vd_tracer(vd_map_corr, mask, vd2_contrast_fwhm_arcmin)
+		vd_weights = VariableDepthWeights(vd2_weight_tables, vd_map_corr, nside)
+	else:
+		vd_map_smooth = smooth_vd_tracer(vd_map, mask)
 
 	# Count-contrast: the A' n_eff table on the smoothed tracer (0 on holes), mask-normalised so
 	# <contrast>_mask = 1. That normalisation makes Sum_pix mask*contrast = Sum_pix mask exactly,
@@ -181,8 +191,17 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 			lambda x, i=i: np.where(x > 0, np.where(north, _fit(x, i, 0), _fit(x, i, 1)), 0.0)
 			for i in range(nbins)
 		]
+	elif vd_table == "v2pr":
+		from src.KiDS.variable_depth_config import (vd2_patch_dec_split, vd2_per_patch_poly, vd2_quadcap_coef,
+		                                            vd2_quadcap_hi, vd2_quadcap_lo, vd2_quadcap_nbar)
+		north = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)[1] > vd2_patch_dec_split
+		_contrast_raw = [
+			lambda x, i=i: np.where(x > 0, vd2_per_patch_poly(x, north, vd2_quadcap_coef[:, i], vd2_quadcap_lo[:, i],
+			                                                  vd2_quadcap_hi[:, i], vd2_quadcap_nbar[:, i]), 0.0)
+			for i in range(nbins)
+		]
 	else:
-		raise ValueError(f"vd_table must be 'pooled', 'patch' or 'quadcap', got {vd_table!r}")
+		raise ValueError(f"vd_table must be 'pooled', 'patch', 'quadcap' or 'v2pr', got {vd_table!r}")
 	_disc_corr = np.array([
 		1.0 / np.average(_contrast_raw[i](vd_map_smooth[i]), weights=mask)
 		for i in range(nbins)
@@ -191,6 +210,13 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		lambda x, i=i: _disc_corr[i] * _contrast_raw[i](x)
 		for i in range(nbins)
 	]
+	if vd_weights is not None:
+		# N = rho n_eff: the PR multiplies the effective mask by the per-pixel boost AFTER the mask
+		# normalisation. Folding it into the (full-sky) contrast function keeps it inside var_depth_mask,
+		# so effective_mask rotates it with the footprint exactly like the depth map.
+		_boost = [vd_weights.boost_map(i) for i in range(nbins)]
+		_n_contrast_v2 = n_contrast_vd
+		n_contrast_vd = [lambda x, i=i: _n_contrast_v2[i](x) * _boost[i] for i in range(nbins)]
 
 	# sigma_eps VD model: clipped quadratic in the tracer, rescaled so <sigma_eps>_mask = sigma_e[i].
 	_se_raw = [
@@ -247,7 +273,19 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		vardepth_los_tracer=vd_map,
 		vardepth_tomo_functions=n_contrast_vd,
 	)
-	vd_shapes = VariableDepthShapeDispersion(sigma_eps_var, vd_map, nside)
+	if vd_weights is not None:
+		from src.KiDS.variable_depth_config import (vd2_patch_dec_split, vd2_per_patch_poly, vd2_sigma_clip,
+		                                            vd2_sigma_coef, vd2_sigma_hi, vd2_sigma_lo)
+		north = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)[1] > vd2_patch_dec_split
+		if np.all(np.asarray(sigma_e) == 0):
+			sigma_eps_var = [lambda x: np.zeros_like(x) for i in range(nbins)]
+		else:
+			sigma_eps_var = [lambda x, i=i: np.clip(vd2_per_patch_poly(x, north, vd2_sigma_coef[:, i], vd2_sigma_lo[:, i],
+			                                                           vd2_sigma_hi[:, i]), *vd2_sigma_clip) for i in range(nbins)]
+		vd_shapes = VariableDepthShapeDispersion(sigma_eps_var, vd_map_corr, nside)
+	else:
+		vd_shapes = VariableDepthShapeDispersion(sigma_eps_var, vd_map, nside)
+	vd_shapes.vd_weights = vd_weights      # None except vd_table="v2pr"
 
 	# Banner: angular contrast and the shell-summed total (angular x LOS) count factor per tomo bin.
 	shells = [np.concatenate([[z0], los_z_integration[(los_z_integration > z0) & (los_z_integration < z1)], [z1]]) for z0, z1 in zb_tuple]

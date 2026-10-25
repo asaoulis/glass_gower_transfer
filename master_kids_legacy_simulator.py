@@ -164,7 +164,7 @@ def parse_args():
     )
 
     parser.add_argument(
-        "--vd-table", type=str, default=None, choices=["pooled", "patch", "quadcap"],
+        "--vd-table", type=str, default=None, choices=["pooled", "patch", "quadcap", "v2pr"],
         help="Variable-depth count-contrast table (default quadcap when VD resolves ON): 'quadcap' = "
              "per-patch quadratic fit, constant beyond the outermost calibration bins; 'pooled' = one "
              "survey-wide table (the A' table); 'patch' = one table per KiDS patch on tail-resolved "
@@ -334,7 +334,7 @@ def parse_args():
 
 
 # Variable-depth provenance code stamped per mock as cosmo_dict/vd_code (a float, loader-safe).
-VD_TABLE_CODES = {"off": 0, "pooled": 1, "patch": 2, "quadcap": 3}
+VD_TABLE_CODES = {"off": 0, "pooled": 1, "patch": 2, "quadcap": 3, "v2pr": 4}   # 4 = VD v2 (PR #3, opt-in)
 VD_TABLE_DEFAULT = "quadcap"   # VD-final-train (2026-09-29): the production VD table
 
 
@@ -1480,9 +1480,13 @@ if __name__ == "__main__":
                         ang = 0
                         cls_results = {cl_type:{} for cl_type in ['full', 'north', 'south']}
 
+                        # VD v2: per-galaxy weights W enter the estimator as in the real A2 build
+                        # (weighted counts / smoothed-counts normalisation: sum W e / sum W per pixel).
+                        _gal_w = ({"weights": catalogue["W"]} if catalogue.dtype.names and "W" in catalogue.dtype.names
+                                  else {})
                         alm, alm_rand = make_alm_shear_convergence(
                             catalogue, m_bias_for_shear, nbins, nside, lmax, nosh=False, mask=mask,
-                            normalization=SHEAR_NORMALIZATION,
+                            normalization=SHEAR_NORMALIZATION, **_gal_w,
                             # Noise-only (random-rotation) alm: pass the block's dedicated stream
                             # instead of letting it fall back to the GLOBAL numpy RNG, which no
                             # seed can control. Unseeded mode is statistically unchanged.
@@ -1514,7 +1518,7 @@ if __name__ == "__main__":
                             alm_sc8, alm_rand_sc8 = make_alm_shear_convergence(
                                 catalogue, m_bias_for_shear, nbins, nside, lmax, nosh=False,
                                 mask=mask, normalization="smoothed_counts",
-                                smoothed_counts_fwhm_arcmin=A3S8_FWHM_ARCMIN,
+                                smoothed_counts_fwhm_arcmin=A3S8_FWHM_ARCMIN, **_gal_w,
                                 rng=sc8_rng,
                             )
 

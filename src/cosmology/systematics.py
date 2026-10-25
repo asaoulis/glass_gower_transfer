@@ -48,6 +48,12 @@ class BaseSystematics(ABC):
         """
         return base_mask
 
+    has_weights = False
+
+    def sample_weights(self, tomo, lon, lat, *, rng):
+        """Per-galaxy shear weights; None = unit weights (no RNG draw)."""
+        return None
+
     def sample_ellipticity(self, tomo, lon, lat, count, sigma_e, *, rng):
         """Draw intrinsic galaxy ellipticities. Default: scalar per-bin dispersion.
 
@@ -200,6 +206,15 @@ class VariableDepthSystematics(NLASystematics):
 
     def sample_ellipticity(self, tomo, lon, lat, count, sigma_e, *, rng):
         return self.vd_shapes.sample(tomo, lon, lat, rng=rng)
+
+    @property
+    def has_weights(self):
+        return getattr(self.vd_shapes, "vd_weights", None) is not None
+
+    def sample_weights(self, tomo, lon, lat, *, rng):
+        """VD v2 per-galaxy shear weights (survey-frame lon/lat); None (no RNG draw) unless vd_table='v2pr'."""
+        w = getattr(self.vd_shapes, "vd_weights", None)
+        return None if w is None else w.sample(tomo, lon, lat, rng)
 
     def apply_shear_bias(self, tomo, shear, lat, *, lon=None):
         gal_pix = hp.ang2pix(self.nside, lon, lat, lonlat=True)

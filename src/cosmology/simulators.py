@@ -193,6 +193,9 @@ class BaseSimulator(ABC):
         self.rotator = Rotator(nside, self.lmax)
 
         self.systematics = systematics or NoSystematics()
+        if getattr(self.systematics, "has_weights", False):
+            # VD v2 (vd_table='v2pr'): per-galaxy shear weights W ride along as an extra column.
+            self.row_dtype = np.empty(0, dtype=self.row_dtype.descr + [('W', float)]).dtype
         print(f"Using systematics model: {self.systematics}", flush=True)
 
     @abstractmethod
@@ -332,6 +335,11 @@ class BaseSimulator(ABC):
                             rows['ZBIN'] = tomo
                             rows['E1'] = E1
                             rows['E2'] = E2
+                            # VD v2 weights: drawn LAST so every earlier draw keeps its place in the
+                            # stream; production systematics return None and draw nothing.
+                            gal_w = self.systematics.sample_weights(tomo, lon_survey, lat_survey, rng=self.rng)
+                            if gal_w is not None:
+                                rows['W'] = gal_w
                             all_catalogues_lists[aug_idx].append(rows)
 
             if self.debug:
