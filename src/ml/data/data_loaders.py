@@ -244,6 +244,7 @@ def build_datasets(
     side_input_fn=None,
     preload: bool = False,
     exclude_files: Optional[Union[str, Sequence[str]]] = None,
+    include_files_regex: Optional[str] = None,
 ) -> Tuple[H5CosmoDataset, H5CosmoDataset, H5CosmoDataset]:
     train_paths, val_paths, test_paths = split_by_cosmology(
         patterns,
@@ -260,6 +261,7 @@ def build_datasets(
         N_extra_test_cosmologies=N_extra_test_cosmologies,
         fixed_test_sim_ids=fixed_test_sim_ids,
         N_test_cosmologies=N_test_cosmologies,
+        include_files_regex=include_files_regex,
     )
     if exclude_files:
         # Drop listed files AFTER the cosmology split, so the split itself (which cosmology lands in train / val /
@@ -323,6 +325,7 @@ def build_dataloaders(
     side_input_fn=None,
     preload: bool = False,
     exclude_files: Optional[Union[str, Sequence[str]]] = None,
+    include_files_regex: Optional[str] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """Return DataLoaders for train/val/test ensuring no cosmology leakage.
 
@@ -364,6 +367,7 @@ def build_dataloaders(
         side_input_fn=side_input_fn,
         preload=preload,
         exclude_files=exclude_files,
+        include_files_regex=include_files_regex,
     )
 
     if val_batch_size is None:

@@ -68,6 +68,14 @@ ARMS = {
     # APPENDED LAST (seed stability). Bake `sc8a1_hosx` -> hos_sidecars/obs_kids_A2_sc8a1_hosx (store_glob `_hosx` rule).
     # BLIND until the user accepts its PPCs (riskier: 1.5-2x b_g, ~3x IA-mismatch sensitivity vs R1, SYSTEMATICS.md).
     "hos_gmrg":    ("gower_nle_finetune_hosx_gmrg_nla_m_vdq_k8_r{r}_ens9_e150_xo", "sc8a1_hosx", (0, 1, 2, 3, 4)),
+    # VD v2 (Kiyam PR #3, --vd-table v2pr, mocks vd_code 4) NLA-M kappa=1 variate (2026-10-27, training-runs/
+    # vdq2-production-training-runs): field = K2M recipe (k6, ens9 e150, 100-id lock -> ncosmoNone_{r}), 2-pt = the frozen
+    # original band, same split. `vdqctl*` = the matched QUADCAP control (same recipe on size-matched subsets of the main
+    # VDQ stores), so vd2pr vs vdqctl isolates the VD table. APPENDED LAST (seed stability). DELAYED until Stage B exists.
+    "vd2pr":       ("gower_nle_finetune_nla_m_vd2pr_z8_k6_r{r}_ens9_e150",        "sc8a1", (0, 1, 2, 3, 4)),
+    "vd2pr_band":  ("gower_nle_finetune_band_nla_m_vd2pr_k6_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
+    "vdqctl":      ("gower_nle_finetune_nla_m_vdqctl_z8_k6_r{r}_ens9_e150",       "sc8a1", (0, 1, 2, 3, 4)),
+    "vdqctl_band": ("gower_nle_finetune_band_nla_m_vdqctl_k6_r{r}_ens9_e150",     "sc8a1", (0, 1, 2, 3, 4)),
 }
 
 # Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run
@@ -96,7 +104,9 @@ EXPERIMENT_OVERRIDES = {
 # band_nla_z went live 2026-10-21 once its Gower Stage B r0-2 existed and were evaluated (task eval-and-viz/band-nla-z-2pt-nle;
 # all three repeats under the user-rule guard-c 150 -- ep0 gaps 50.55 / 95.59 / 54.08 nats -- rev 3b04364/e21c28a; per-member test
 # -log p(z|theta) -4.9..-8.1 on the 100-id lock; TARP 0.041-0.050; member frames must be recovered per repeat before external scoring).
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd"})
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd",
+                          # 2026-10-27: registered ahead of their Stage B (sims not yet generated); drop each once live.
+                          "vd2pr", "vd2pr_band", "vdqctl", "vdqctl_band"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
@@ -199,6 +209,10 @@ MATCH_TEMPLATES = {
     "band_nla_z": "ncosmoNone_{r}",    # max_trainval_cosmos=None (the 200-id gower_vdq_nla_z store)
     "hos": "ncosmo300_{r}",            # the band M16 split (max_trainval_cosmos=[300]); verified vs match_string_for
     "hos_gmrg": "ncosmo300_{r}",       # same Stage-B split as hos
+    "vd2pr": "ncosmoNone_{r}",         # max_trainval_cosmos=None (the 200-id gower_vd2pr_nla_m store, 100-id lock)
+    "vd2pr_band": "ncosmoNone_{r}",
+    "vdqctl": "ncosmoNone_{r}",        # same split recipe on the 200-id subset of the main Gower VDQ bake
+    "vdqctl_band": "ncosmoNone_{r}",
 }
 assert set(MATCH_TEMPLATES) == set(ARMS), "MATCH_TEMPLATES and ARMS must cover the same arms"
 assert all(a in ARMS and r in ARMS[a][2] for a, r in EXPERIMENT_OVERRIDES), "override for an unknown (arm, repeat)"

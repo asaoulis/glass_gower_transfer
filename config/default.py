@@ -64,6 +64,7 @@ def get_default_config():
     config.precision = None            # Lightning precision override (None = fit_model default: bf16-mixed / 32 w/ scoped amp)
     config.preload_data = False        # cache every item in RAM at dataset build (small vector stores, e.g. HOS sidecars)
     config.exclude_files = None         # JSON list of basenames (or a list) dropped from train/val/test AFTER the cosmology split
+    config.include_files_regex = None   # basename regex (re.search): keep ONLY matching files, BEFORE the cosmology split (store subset)
 
     # Data loading (new dataset interface)
     config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5"

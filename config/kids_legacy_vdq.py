@@ -1165,3 +1165,117 @@ kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_z_vdq_rr4_k6_r3_ens9_e1
 for _n in ("glass_nle_pretrain_band_nla_z_vdq_rr4_k6_r3", "gower_nle_finetune_band_nla_z_vdq_rr4_k6_r3_ens9_e150"):
     VDQ_NLE_SOURCES[_n] = "kids_legacy_band_nla_z_vdq_rr4"
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === VD v2 (PR #3, --vd-table v2pr) NLA-M kappa=1 variate — "VDQ2" (user 2026-10-27) ==============================
+# Task training-runs/vdq2-production-training-runs. ONE change vs the VDQ NLA-M variates: the simulator's VD table
+# (quadcap -> v2pr: coverage-corrected 5' tracer, per-patch count/sigma_eps polynomials, per-galaxy W weights; mocks
+# stamp cosmo_dict/vd_code = 4). Token `vd2pr` (not `vdq2`: run_remote's store-name lint reads 'vdq' as quadcap).
+# Stores (SIMS, variate sizes): GLASS 4000 sims x outer-reps 1 (~15 936), Gower the 200-id fixed set x outer-reps 4.
+# Field chain = the kappa=2 NLA-M K2M recipe (theta + scaler identical to the VDQ foundation, so its 9-param flow is
+# preloaded too): `_encoder_finetune_vdq(load_flow=True)` -> Stage A whiten k6 -> Stage B ens9 e150, 100-id lock.
+# 2-pt chain (user U1b): the FROZEN original band `kids_legacy_band_nla_m_vdq` (per repeat), Stage A k6 on the VD2PR
+# GLASS store, Stage B = the same variate Stage B (`_variate_nle_b_vdq`, 100-id lock, ncosmoNone_{r}).
+# Launch:
+#   train --exp glass_encoder_finetune_nla_m_vd2pr_z8 --gpu a100 --repeat-indices <r> --wall_h 6 --skip-smoke --mem-gb 48
+#   embed --cpu --partition CORES40 --ncpu 32 --mem-gb 96 --wall_h 12 --skip-smoke
+#         --target glass_nle_pretrain_{nla_m_vd2pr_z8|band_nla_m_vd2pr}_k6_r<r> --sources <encoder | kids_legacy_band_nla_m_vdq>
+#   embed --cpu --partition CORES64 --ncpu 64 --mem-gb 128 --wall_h 48 --skip-smoke
+#         --target gower_nle_finetune_{nla_m_vd2pr_z8|band_nla_m_vd2pr}_k6_r<r>_ens9_e150 --sources <same>
+_VD2PR_GLASS = f"{_GPU5}/glass_vd2pr_nla_m_f16_sc8a1_{_EB}/output_*.h5"
+_VD2PR_GOWER = f"{_GPU5}/gower_vd2pr_nla_m_f16_sc8a1_{_EB}/output_*.h5"
+_VD2PR_ENC = "glass_encoder_finetune_nla_m_vd2pr_z8"
+_VD2PR_BAND = "kids_legacy_band_nla_m_vdq"
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vd2pr_z8"] = _assert_final_summary_dim(
+    _encoder_finetune_vdq(_VD2PR_GLASS, _COSMO_9_NLAM, load_flow=True), 8, "glass_encoder_finetune_nla_m_vd2pr_z8")
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vd2pr_z8_k6_r0"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 0, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vd2pr_z8_k6_r1"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 1, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vd2pr_z8_k6_r2"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 2, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vd2pr_z8_k6_r3"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 3, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vd2pr_z8_k6_r4"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 4, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vd2pr_z8_k6_r0_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_m_vd2pr_z8_k6_r0", _VD2PR_GOWER, 0, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vd2pr_z8_k6_r1_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_m_vd2pr_z8_k6_r1", _VD2PR_GOWER, 1, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vd2pr_z8_k6_r2_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_m_vd2pr_z8_k6_r2", _VD2PR_GOWER, 2, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vd2pr_z8_k6_r3_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_m_vd2pr_z8_k6_r3", _VD2PR_GOWER, 3, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vd2pr_z8_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_m_vd2pr_z8_k6_r4", _VD2PR_GOWER, 4, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vd2pr_k6_r0"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 0, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vd2pr_k6_r1"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 1, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vd2pr_k6_r2"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 2, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vd2pr_k6_r3"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 3, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vd2pr_k6_r4"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 4, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vd2pr_k6_r0_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vd2pr_k6_r0", _VD2PR_GOWER, 0, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vd2pr_k6_r1_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vd2pr_k6_r1", _VD2PR_GOWER, 1, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vd2pr_k6_r2_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vd2pr_k6_r2", _VD2PR_GOWER, 2, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vd2pr_k6_r3_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vd2pr_k6_r3", _VD2PR_GOWER, 3, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vd2pr_k6_r4_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vd2pr_k6_r4", _VD2PR_GOWER, 4, _COSMO_9_NLAM, None)
+for _r in _NLE_REPEATS:
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vd2pr_z8_k6_r{_r}"] = _VD2PR_ENC
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_m_vd2pr_z8_k6_r{_r}_ens9_e150"] = _VD2PR_ENC
+    VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_m_vd2pr_k6_r{_r}"] = _VD2PR_BAND
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_m_vd2pr_k6_r{_r}_ens9_e150"] = _VD2PR_BAND
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
+
+# === VDQCTL — the matched quadcap CONTROL of the VD2PR rows (user 2026-10-27, U1d) ==================================
+# Training-only twin of every VD2PR row (field + 2-pt), byte-identical recipe, on FILE SUBSETS of the EXISTING main
+# quadcap bakes sized like the VD2PR stores, so "VD v2 vs quadcap" is a single-variable comparison (the main nla_m /
+# band arms differ in k, Gower test lock and trainval). No new sims, no copied store: data_patterns = the main bake + `include_files_regex` (subset BEFORE the split).
+#   GLASS: sim_id < 4000, outer rep 0 only (4 mocks/cosmology = the outer-reps-1 variate shape). GLASS cosmologies are
+#          deterministic per sim_id, so these are the SAME cosmologies the VD2PR GLASS store simulates.
+#   Gower: the 200 ids of gower_test_ids.json (= what `--gower-sim-set fixed_test --num-sims 200` simulates), all 80
+#          augmentations; Stage B keeps the variate 100-id lock.
+# Gate: .claude/runs/training-runs/vdq2-production-training-runs/artifacts/check_vd2pr_configs.py (VDQCTL == VD2PR
+# except data paths / Stage-A ckpt). Launch commands = the VD2PR ones with the token swapped.
+def _vdqctl_gower_regex():
+    import json as _json
+    import os as _os
+    _lock = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "fixed_test_sets", "gower_test_ids.json")
+    with open(_lock) as _f:
+        _ids = sorted(int(_i) for _i in _json.load(_f)["sim_ids"])
+    assert len(_ids) == 200, len(_ids)
+    return r"^output_(" + "|".join(str(_i) for _i in _ids) + r")_"
+
+
+# `include_files_regex` (config/default.py) keeps only matching BASENAMES before the cosmology split.
+_VDQCTL_GLASS_RX = r"^output_([0-9]|[1-9][0-9]|[1-9][0-9][0-9]|[1-3][0-9][0-9][0-9])_out0_"   # sim_id < 4000, outer 0
+_VDQCTL_GOWER_RX = _vdqctl_gower_regex()                                                     # the 200 fixed ids
+
+
+def _vdqctl(row, rx):
+    row["include_files_regex"] = rx
+    return row
+
+
+_VDQCTL_ENC = "glass_encoder_finetune_nla_m_vdqctl_z8"
+kids_legacy_vdq_experiments["glass_encoder_finetune_nla_m_vdqctl_z8"] = _assert_final_summary_dim(
+    _vdqctl(_encoder_finetune_vdq(_VDQ_GLASS, _COSMO_9_NLAM, load_flow=True), _VDQCTL_GLASS_RX), 8, "glass_encoder_finetune_nla_m_vdqctl_z8")
+# Literal keys (run_remote.py:known_experiment scans for them).
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqctl_z8_k6_r0"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 0, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqctl_z8_k6_r1"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 1, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqctl_z8_k6_r2"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 2, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqctl_z8_k6_r3"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 3, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_nla_m_vdqctl_z8_k6_r4"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 4, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vdqctl_z8_k6_r0_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_nla_m_vdqctl_z8_k6_r0", _VDQ_GOWER, 0, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vdqctl_z8_k6_r1_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_nla_m_vdqctl_z8_k6_r1", _VDQ_GOWER, 1, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vdqctl_z8_k6_r2_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_nla_m_vdqctl_z8_k6_r2", _VDQ_GOWER, 2, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vdqctl_z8_k6_r3_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_nla_m_vdqctl_z8_k6_r3", _VDQ_GOWER, 3, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vdqctl_z8_k6_r4_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_nla_m_vdqctl_z8_k6_r4", _VDQ_GOWER, 4, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdqctl_k6_r0"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 0, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdqctl_k6_r1"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 1, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdqctl_k6_r2"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 2, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdqctl_k6_r3"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 3, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vdqctl_k6_r4"] = _vdqctl(_variate_nle_a_vdq_k6(_VDQ_GLASS, 4, _COSMO_9_NLAM), _VDQCTL_GLASS_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdqctl_k6_r0_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vdqctl_k6_r0", _VDQ_GOWER, 0, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdqctl_k6_r1_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vdqctl_k6_r1", _VDQ_GOWER, 1, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdqctl_k6_r2_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vdqctl_k6_r2", _VDQ_GOWER, 2, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdqctl_k6_r3_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vdqctl_k6_r3", _VDQ_GOWER, 3, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vdqctl_k6_r4_ens9_e150"] = _vdqctl(_variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vdqctl_k6_r4", _VDQ_GOWER, 4, _COSMO_9_NLAM, None), _VDQCTL_GOWER_RX)
+for _r in _NLE_REPEATS:
+    VDQ_VARIATE_NLE_SOURCES[f"glass_nle_pretrain_nla_m_vdqctl_z8_k6_r{_r}"] = _VDQCTL_ENC
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_m_vdqctl_z8_k6_r{_r}_ens9_e150"] = _VDQCTL_ENC
+    VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_m_vdqctl_k6_r{_r}"] = _VD2PR_BAND
+    VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_m_vdqctl_k6_r{_r}_ens9_e150"] = _VD2PR_BAND
+assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)

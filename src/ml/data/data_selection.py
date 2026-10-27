@@ -373,8 +373,13 @@ def split_by_cosmology(
     N_extra_test_cosmologies: Optional[int] = None,
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
     N_test_cosmologies: Optional[int] = None,
+    include_files_regex: Optional[str] = None,
 ) -> Tuple[List[str], List[str], List[str]]:
-    """Glob files, group by cosmology index, shuffle cosmologies, and split without leakage."""
+    """Glob files, group by cosmology index, shuffle cosmologies, and split without leakage.
+
+    `include_files_regex` (opt-in): keep only files whose BASENAME matches (re.search) before anything else, so the
+    split sees exactly that subset of the store (e.g. a size-matched control on a bigger bake).
+    """
     print(
         f"[split_by_cosmology] seed={seed} ensemble_seed={ensemble_seed} "
         f"max_trainval_cosmos={max_trainval_cosmos} selection_strategy={selection_strategy} stratified_bins={stratified_bins}",
@@ -384,6 +389,13 @@ def split_by_cosmology(
         raise ValueError("train_frac + val_frac + test_frac must sum to 1.0")
 
     all_paths = collect_paths(patterns)
+    if include_files_regex:
+        _rx = re.compile(include_files_regex)
+        n0 = len(all_paths)
+        all_paths = [p for p in all_paths if _rx.search(os.path.basename(p))]
+        print(f"[split_by_cosmology] include_files_regex kept {len(all_paths)}/{n0} files", flush=True)
+        if not all_paths:
+            raise FileNotFoundError(f"include_files_regex {include_files_regex!r} matched none of {n0} files: {patterns}")
     by_cosmo: Dict[int, List[str]] = {}
     for p in all_paths:
         cidx = extract_cosmo_index(p)
