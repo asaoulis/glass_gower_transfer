@@ -260,28 +260,61 @@ FILTER_SPEC = ("Gaussian: anisotropic plate-carree, extra FWHM sqrt(t^2-16) (t=4
                "kbar = mean of 6 bins; pooled N+S footprint, mean-subtracted per channel")
 
 
+def _bins(name):
+    return [b for _, b in _legs(name)]
+
+
+def _scales(name):
+    return [t for t, _ in _legs(name)]
+
+
+# Leg predicates for '<group>+<pred>[+<pred>...]' keys (task eval-and-viz/hos-robust-shoreup). 'K' (kbar = mean of all
+# six bins) contains bin 1.
+LEG_PREDICATES = {
+    "nob1": lambda n: not any(b in ("b1", "M1", "K") for b in _bins(n)),         # no leg in tomographic bin 1 / M1
+    "nosame": lambda n: len(set(_bins(n))) > 1,                                    # not all three legs in one bin
+    "sameonly": lambda n: len(set(_bins(n))) == 1,
+    "no8": lambda n: not any(t in ("s8", "t8") for t in _scales(n)),             # no 8' leg
+    "noall8": lambda n: not all(t in ("s8", "t8") for t in _scales(n)),          # not every leg at 8'
+}
+
+
 def group_index(groups, names=None):
     """Sorted union of feature indices (into `names`, default HOSX_BAKE_NAMES) of the group keys in `groups`:
     a block ('R1', 'Geq', 'Gpool', 'Gmrg', 'Ceq', 'Cmrg'[, 'G6u']), a block subset '<block>/no4' | '/distinct' |
-    '/no4distinct', or a per-scale key 'R1/s8', 'Geq/s24', 'Ceq/t16'."""
+    '/no4distinct', or a per-scale key 'R1/s8', 'Geq/s24', 'Ceq/t16'. Any key may be narrowed by '+'-joined leg
+    predicates (LEG_PREDICATES, intersection), e.g. 'R1/s16+nob1+nosame', 'Gmrg+nob1+sameonly+no8'."""
     names = list(HOSX_BAKE_NAMES if names is None else names)
-    blk_of = [n.split("/")[0] if not ("/m3x3/" in n and n.split("/")[0].startswith("s")) else "R1" for n in names]
-    S = index_sets(names)
     out = set()
     for g in groups:
-        base, _, sub = g.partition("/")
-        if not sub:
-            idx = [k for k, b in enumerate(blk_of) if b == base]
-        elif sub in ("no4", "distinct", "no4distinct"):
-            want = {"no4": set(S["no4"]), "distinct": set(S["distinct"]),
-                    "no4distinct": set(S["no4"]) & set(S["distinct"])}[sub]
-            idx = [k for k, b in enumerate(blk_of) if b == base and k in want]
-        else:
-            idx = S.get(g, [])
+        head, *preds = g.split("+")
+        idx = _group_index_one(head, names)
+        for p in preds:
+            if p not in LEG_PREDICATES:
+                raise KeyError(f"hos_x group {g!r}: unknown predicate {p!r} (have {sorted(LEG_PREDICATES)})")
+            idx = [k for k in idx if LEG_PREDICATES[p](names[k])]
         if not idx:
             raise KeyError(f"hos_x group {g!r} matches no feature")
         out.update(idx)
     return sorted(out)
+
+
+def _group_index_one(g, names):
+    """Indices of ONE plain group key (no '+' predicates), the pre-2026-10-26 group_index semantics."""
+    blk_of = [n.split("/")[0] if not ("/m3x3/" in n and n.split("/")[0].startswith("s")) else "R1" for n in names]
+    S = index_sets(names)
+    base, _, sub = g.partition("/")
+    if not sub:
+        idx = [k for k, b in enumerate(blk_of) if b == base]
+    elif sub in ("no4", "distinct", "no4distinct"):
+        want = {"no4": set(S["no4"]), "distinct": set(S["distinct"]),
+                "no4distinct": set(S["no4"]) & set(S["distinct"])}[sub]
+        idx = [k for k, b in enumerate(blk_of) if b == base and k in want]
+    else:
+        idx = S.get(g, [])
+    if not idx:
+        raise KeyError(f"hos_x group {g!r} matches no feature")
+    return sorted(idx)
 
 
 def hosx_bake_vector(maps, foot):
@@ -303,4 +336,4 @@ __all__ = ["HOSX_VERSION", "HOSX_SCALES_G", "HOSX_THETA_C", "MERGE", "BLOCKS_DEF
            "HOSX_NAMES", "HOSX_BLOCKS", "HOSX_NAMES_ALL", "HOSX_BLOCKS_ALL", "aperture", "hosx_channels",
            "hosx_vector", "hosx_names", "hosx_blocks", "index_sets", "has_leg4", "is_distinct", "all_triples",
            "load_footprint", "HOSX_BAKE_BLOCKS", "HOSX_BAKE_NAMES", "HOSX_BAKE_BLOCK_INDEX", "hosx_bake_vector",
-           "bake_attrs", "group_index"]
+           "bake_attrs", "group_index", "LEG_PREDICATES"]

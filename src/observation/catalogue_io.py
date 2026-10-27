@@ -393,6 +393,36 @@ def _patch_of(dec: np.ndarray) -> np.ndarray:
     return np.where(dec > -15.0, "N", "S")
 
 
+# EXPERIMENTAL (field-misspec WP-F, 2026-10-19; NOT the production default): put back the per-patch x bin additive c the
+# KiDS-Legacy release subtracted, so the observation matches the forward model, which injects exactly these c-terms
+# (src/KiDS/systematics.py prior means) and removes only a global per-bin mean. The release e1/e2 are "c-corrected"
+# (catalogue README): weighted <e> per hemisphere x bin is ~1e-18, while every training mock keeps a +-(3-10)e-4
+# per-patch offset. Values: src.KiDS.systematics c_{1,2}_bias_{north,south} (Wright+25 Table 2: c_k = <eps_k>_w per bin
+# and hemisphere; recorded here as the FALLBACK source -- the release carries no uncorrected ellipticity column).
+#   'restore_release_c_sim'       adds (c1, c2) in the ESTIMATOR / simulator frame (what the mocks inject: mock parity)
+#   'restore_release_c_catalogue' adds them in the KiDS catalogue frame, i.e. c2 sign-flipped when the column map flips e2
+RESTORE_C_MODES = {"restore_release_c_sim": "sim", "restore_release_c_catalogue": "catalogue"}
+
+
+def _restore_release_c(cat: Catalogue, frame: str = "sim", scale: float = 1.0) -> dict:
+    from src.KiDS import systematics as S
+    nb = int(cat.provenance.get("nbins", 6))
+    flip2 = bool(cat.provenance.get("column_map", {}).get("flip_e2", False))
+    s2 = -1.0 if (frame == "catalogue" and flip2) else 1.0
+    north = np.abs(cat.data["DEC"]) < 15.0          # the simulator's hemisphere split (apply_shear_bias)
+    added = {"frame": frame, "scale": scale, "c2_sign_applied": s2, "source": "src.KiDS.systematics prior means (fallback)",
+             "north": [], "south": []}
+    for i in range(nb):
+        sel = cat.data["ZBIN"] == i
+        for name, m, c1, c2 in (("north", north, S.c_1_bias_north, S.c_2_bias_north),
+                                ("south", ~north, S.c_1_bias_south, S.c_2_bias_south)):
+            a1, a2 = scale * float(c1[i]), scale * s2 * float(c2[i])
+            cat.data["E1"][sel & m] += a1
+            cat.data["E2"][sel & m] += a2
+            added[name].append([a1, a2])
+    return added
+
+
 def apply_c_terms(cat: Catalogue, mode: str = "global_mean_only", **kw) -> Catalogue:
     """Additive c-term treatment.
 
@@ -404,7 +434,10 @@ def apply_c_terms(cat: Catalogue, mode: str = "global_mean_only", **kw) -> Catal
     residual means that stay in the data after the global subtraction. Do not pre-clean per patch:
     the mocks keep a ~3-10e-4 per-patch offset, and a cleaner data vector is a one-sided bias.
     """
-    if mode != "global_mean_only":
+    restored = None
+    if mode in RESTORE_C_MODES:
+        restored = _restore_release_c(cat, frame=RESTORE_C_MODES[mode], scale=float(kw.get("scale", 1.0)))
+    elif mode != "global_mean_only":
         raise NotImplementedError(f"apply_c_terms mode {mode!r} is not implemented yet (deferred)")
     nb = int(cat.provenance.get("nbins", 6))
     w = cat.estimator_weights
@@ -431,7 +464,7 @@ def apply_c_terms(cat: Catalogue, mode: str = "global_mean_only", **kw) -> Catal
                             "residual_mean_e2": _mean(e2, m) - g[1]}
         per_patch.append(pp)
     cat.provenance["treatment"]["c_terms"] = {
-        "mode": mode, "weighted": w is not None,
+        "mode": mode, "weighted": w is not None, "restored_release_c": restored,
         "per_bin_mean_e1_e2_removed_by_estimator": means,
         "per_patch_residual_after_global_subtraction": per_patch,
     }

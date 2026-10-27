@@ -56,7 +56,10 @@ def main(argv=None):
     ap.add_argument("--normalization", default="counts", choices=["counts", "mean"],
                     help="bandpower-branch normalisation; 'mean' (paper Eq. 11) is a cross-check and loads the KiDS mask")
     ap.add_argument("--mask-data-dir", default=None, help="data dir for load_kids_mask (required with --normalization mean)")
-    ap.add_argument("--c-terms-mode", default="global_mean_only")
+    ap.add_argument("--c-terms-mode", default="global_mean_only",
+                    choices=["global_mean_only", "restore_release_c_sim", "restore_release_c_catalogue"],
+                    help="EXPERIMENTAL restore_* modes add back the release-subtracted per-patch x bin c (WP-F); default unchanged")
+    ap.add_argument("--c-terms-scale", type=float, default=1.0, help="multiplier on the restored c (restore_* modes only)")
     ap.add_argument("--rng-seed", type=int, default=20260908)
     ap.add_argument("--fidelity-mock", default=None, help="stored output_*.h5 to compare against (P0 gate)")
     ap.add_argument("--exact-rng", action="store_true",
@@ -72,7 +75,7 @@ def main(argv=None):
     cat = apply_weights(cat, mode=args.weights_mode, nbins=args.nbins, rescale=args.weights_rescale)
     m_given = None if args.m_bias is None else [float(x) for x in args.m_bias.split(",")]
     m_bias = apply_m_bias(cat, m_bias=m_given, source=args.m_bias_source)
-    cat = apply_c_terms(cat, mode=args.c_terms_mode)
+    cat = apply_c_terms(cat, mode=args.c_terms_mode, scale=args.c_terms_scale)
 
     attrs = cat.provenance.get("sim_attrs", {})
     if args.geometry == "auto":

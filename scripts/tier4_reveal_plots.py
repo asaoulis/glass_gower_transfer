@@ -114,28 +114,32 @@ PAL = S.palette()
 # with the 2x broader b_g prior marginalised; k2_nla = the same with NLA IA).
 # 2-pt NLA: Tol-vibrant magenta (the style's sand fallback is the KiDS-Legacy COSEBIs colour in the 09 whiskers).
 ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311", "k2": "#997700", "k2_nla": "#5D3A9B",
-               "band_nla": "#EE3377", "hos": "#0077BB"}   # hos: Tol-vibrant blue (the style's magenta ~ the 2-pt wine;
+               "band_nla": "#EE3377", "hos": "#0077BB", "hos_gmrg": "#33BBEE"}   # hos: Tol-vibrant blue (the style's magenta ~ the 2-pt wine;
                                                            # shared with NLA-z, so plot hos and nla_z in separate runs)
 VARIATE_ARMS = ("nla_z", "nla")
 # stage-3 legend labels (stage 1/2 keep "field level" for NLA-M: a rerun of those must not relabel them)
 STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
                  "band": "2-pt", "k2": r"field level, NLA-M, $\kappa=2$", "k2_nla": r"field level, NLA, $\kappa=2$",
-                 "band_nla": "2-pt, NLA", "band_nla_z": r"2-pt, NLA-$z$", "hos": "2-pt + third moments (HOS)"}
+                 "band_nla": "2-pt, NLA", "band_nla_z": r"2-pt, NLA-$z$", "hos": "2-pt + third moments (HOS)",
+                 "hos_gmrg": "2-pt + third moments + Gmrg (HOS)"}
 STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level NLE, NLA-z IA, VD",
                 "nla": "field-level NLE, NLA IA, VD", "band": "2-pt (bandpowers) NLE, NLA-M IA, VD",
                 "k2": "field-level NLE, NLA-M IA, VD, kappa=2 b_g prior (b_g marginalised)",
                 "k2_nla": "field-level NLE, NLA IA, VD, kappa=2 b_g prior (b_g marginalised)",
                 "band_nla": "2-pt (bandpowers) NLE, NLA IA (free A_IA), VD",
                 "band_nla_z": "2-pt (bandpowers) NLE, NLA-z IA (a_ia + b_z), VD",
-                "hos": "EE bandpowers + R1 third moments hybrid NLE (HOS), NLA-M IA, VD"}
-VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":", "band_nla_z": ":", "hos": "-"}  # 08 overlay outlines
+                "hos": "EE bandpowers + R1 third moments hybrid NLE (HOS), NLA-M IA, VD",
+                "hos_gmrg": "EE bandpowers + R1 + Gmrg third moments hybrid NLE (HOS), NLA-M IA, VD"}
+VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":", "band_nla_z": ":", "hos": "-", "hos_gmrg": "-"}  # 08 overlay outlines
 # per-variate figure group: (number, file stem)
 # 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14, the 2-pt NLA arm (T3b) 15, the 2-pt NLA-z arm 16,
 # the HOS hybrid (EE + third moments, NLA-M) 17 (+ 17g: field / 2-pt / HOS on one corner).
 # Opt-in: pass `--variates nla_z nla k2 [k2_nla] [band_nla] [band_nla_z] [hos]` (hos: usually with --arm-label hos=A2).
 VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA"), "k2": ("13", "field_k2"),
                   "k2_nla": ("14", "field_k2NLA"), "band_nla": ("15", "2pt_NLA"), "band_nla_z": ("16", "2pt_NLAz"),
-                  "hos": ("17", "HOS")}
+                  "hos": ("17", "HOS"), "hos_gmrg": ("18", "HOS_Gmrg")}
+# 18 = the R1 + Gmrg HOS hybrid (+ 18g: 2-pt / HOS / HOS+Gmrg / field on one corner, HOS+Gmrg filled; --gmrg-headline).
+# Usually `--variates hos hos_gmrg --gmrg-headline` (both HOS heads are needed for 18g).
 MODEL_PRIOR = {"LCDM": "LCDM_fixed_w0", "wCDM": "kids_s8_analytic"}
 
 
@@ -803,6 +807,19 @@ def _hos_trio(head, pr):
                     linestyle="--", legend_rank=2)]
 
 
+def _gmrg_quartet(head, pr):
+    """--gmrg-headline styling: 2-pt solid outline, HOS dash-dot outline, HOS+Gmrg FILLED (the only filled
+    contour), field level dashed outline; legend in that order."""
+    out = [_s3copy(head(("band", pr)), "band", kind="variate", role="outline", linewidth=LW["variate"],
+                   linestyle="-", legend_rank=0),
+           _s3copy(head(("hos", pr)), "hos", kind="variate", role="outline", linewidth=LW["variate"],
+                   linestyle="-.", legend_rank=1),
+           _s3copy(head(("hos_gmrg", pr)), "hos_gmrg", kind="ours", role="flagship", linestyle="-", legend_rank=2),
+           _s3copy(head(("nla_m", pr)), "nla_m", kind="variate", role="outline", linewidth=LW["variate"],
+                   linestyle="--", legend_rank=3)]
+    return out
+
+
 def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_planck_and_surveys, as_lcdm,
                     kids, comp, planck, sv_L, sv_W, s3, tdir, pre, ttl_kw) -> dict:
     """Write the stage-3 figures; return the manifest `stage3_variates` block. Every figure uses only
@@ -834,6 +851,8 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
                     linestyle=VARIATE_LINESTYLE.get(v, "-")) for v in present[pr]]
         if getattr(args, "hos_headline", False) and present[pr] == ["hos"]:
             posts = [p for p in _hos_trio(head, pr) if p.label != STAGE3_LABELS["band"]]
+        if getattr(args, "gmrg_headline", False) and sorted(present[pr]) == ["hos", "hos_gmrg"]:
+            posts = [p for p in _gmrg_quartet(head, pr) if p.label != STAGE3_LABELS["band"]]
         arms_pr = [("nla_m", pr)] + [(v, pr) for v in present[pr]]
         ttl = "%s: field level, IA variates vs NLA-M" % PRIOR_NAMES[pr]
         f = corner(posts, PRIOR_PARAMS[pr], os.path.join(s3, "%s08a_IA_overlay_%s_corner.png" % (pre, model)), ttl,
@@ -869,6 +888,24 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
                     note="%s. Inputs: %s." % (ttl, "; ".join("%s = %s" % (a, COVERAGE.get((a, p_), {}).get("headline", "?"))
                                                            for a, p_ in arms_pr)))
 
+    # 18g: the 4-way NLA-M comparison -- HOS+Gmrg filled; 2-pt, HOS and field level as outlines
+    for pr, model in models:
+        quad = ("band", "hos", "hos_gmrg", "nla_m")
+        if not getattr(args, "gmrg_headline", False) or any(head((a, pr)) is None for a in quad):
+            if getattr(args, "gmrg_headline", False):
+                print("[skip] 18g %s: missing %s" % (model, [a for a in quad if head((a, pr)) is None]))
+            continue
+        posts = _gmrg_quartet(head, pr)
+        arms_pr = [(a, pr) for a in quad]
+        ttl = "%s: 2-pt vs HOS vs HOS + Gmrg vs field level, NLA-M" % PRIOR_NAMES[pr]
+        f = corner(posts, PRIOR_PARAMS[pr], os.path.join(s3, "%s18g_HOSGmrg_vs_HOS_2pt_field_%s_corner.png" % (pre, model)),
+                   ttl, truth, rng, args.max_samples, **ttl_kw)
+        written.append(f); note_inputs(f, arms_pr)
+        shared = [n for n in posts[0].names if n != "S8" and all(n in q.names for q in posts)] + ["S8"]
+        write_table(posts, shared, os.path.join(tdir, "%s18g_HOSGmrg_vs_HOS_2pt_field_%s" % (pre, model)),
+                    note="%s. Inputs: %s." % (ttl, "; ".join("%s = %s" % (a, COVERAGE.get((a, p_), {}).get("headline", "?"))
+                                                           for a, p_ in arms_pr)))
+
     # 09 S8 whiskers: 06 / 06b with the variate rows between the NLA-M field level and the 2-pt rows
     for pr, model, stem in ((L, "LCDM", "09_S8_summary_variates"), (W, "wCDM", "09b_S8_summary_variates_wCDM")):
         if model not in args.models:
@@ -877,6 +914,8 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
             print("[skip] %s: no variate posterior yet" % stem); continue
         order = (["band", "hos", "nla_m"] if getattr(args, "hos_headline", False) and present[pr] == ["hos"]
                  else ["nla_m"] + present[pr] + ["band"])
+        if getattr(args, "gmrg_headline", False) and sorted(present[pr]) == ["hos", "hos_gmrg"]:
+            order = ["band", "hos", "hos_gmrg", "nla_m"]
         arms_rows = [a for a in order if head((a, pr)) is not None]
         rows = [_s3copy(head((a, pr)), a) for a in arms_rows]
         if pr == L:
@@ -1221,6 +1260,9 @@ def main(argv=None):
     ap.add_argument("--hos-headline", action="store_true",
                     help="stage 3 with --variates hos: HOS filled as the headline, 2-pt solid outline first, field "
                          "level dashed outline (08 overlay, 17g trio, 09 row order 2-pt / HOS / field)")
+    ap.add_argument("--gmrg-headline", action="store_true",
+                    help="with --variates hos hos_gmrg: 18g 4-way corner (2-pt solid / HOS dash-dot outlines, HOS + Gmrg "
+                         "filled, field level dashed), 08 overlay and 09 rows 2-pt / HOS / HOS+Gmrg / field")
     ap.add_argument("--titles", action="store_true",
                     help="draw figure titles (off by default: file names + captions carry them)")
     ap.add_argument("--layout", choices=LAYOUTS, default="paper",
@@ -1256,7 +1298,8 @@ def main(argv=None):
     surveys = load_surveys(args.beyond2pt) if not args.no_surveys else []
     L, W = "LCDM_fixed_w0", "kids_s8_analytic"
     tt = {"band": "2-pt", "nla_m": "field", "nla_z": "field NLA-z", "nla": "field NLA", "k2": "field kappa=2",
-          "k2_nla": "field kappa=2 NLA", "band_nla": "2-pt NLA", "band_nla_z": "2-pt NLA-z", "hos": "HOS"}
+          "k2_nla": "field kappa=2 NLA", "band_nla": "2-pt NLA", "band_nla_z": "2-pt NLA-z", "hos": "HOS",
+          "hos_gmrg": "HOS+Gmrg"}
     ttl_kw = dict(titles=args.titles, mock=mock)
     written = []
 
