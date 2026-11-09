@@ -1,16 +1,10 @@
 #!/usr/bin/env python
 """Tier-1 data-check report for one or more observation labels against the nla_m reference cloud.
 
-    PYTHONPATH=. python scripts/tier1_report.py --ref-baked reference_baked.npz --ref-raw reference_raw.npz \
-        --obs A=/path/obsA_store/output_9001_out0_rot0_0.h5 [B=...] --out-dir <dir> \
-        [--obs-eb-variant sc8_fwhm4_lmin56_lcut1400 --obs-noise-norm rand]   # if the obs file is RAW (not baked)
-        [--exclude-truthkey <_truthkey/observation_A_truthkey.json> ...]    # mock-as-real: drop its own sim_id
-        [--alpha 0.01] [--seed 0]
+    PYTHONPATH=. python scripts/tier1_report.py --ref-baked <npz> --ref-raw <npz> --obs A=<h5> --out-dir <dir>
 
-Writes tier1_results.json (all statistics), tier1_verdict.json (pre-registered pass/fail at alpha),
-and figures: bandpower robust-z residuals (21 panels), BB bandpowers vs the mock cloud, and the
-kNN score histograms with the observation marked. Blind-safe: nothing here reads a cosmology, and
-the truth-key sidecar is read ONLY for its sim_id, which is never printed.
+It writes tier1_results.json, tier1_verdict.json and the residual and kNN figures. It reads no
+cosmology, and a truth-key sidecar only for its sim_id, which is never printed.
 """
 from __future__ import annotations
 
@@ -81,12 +75,6 @@ def _figures(res, out_dir: Path, labels):
         for ax, (title, blk) in zip(axes, panels):
             null = np.asarray(blk["null_scores"])
             obs_v = np.asarray(blk["obs"], dtype=float)
-            # Robust x-range. The E-map kNN null has a long tail (a handful of mocks sit at
-            # 10-20x the bulk), and binning over the full range squeezed the entire
-            # distribution AND the observation markers into one or two pixels -- the panel was
-            # unreadable and the observation could not be placed by eye. Clip to a robust
-            # percentile window, always widened to contain every observation marker, and say
-            # how many null points fall outside so nothing is hidden silently.
             lo, hi = np.percentile(null, [0.2, 99.5])
             lo = min(lo, obs_v.min())
             hi = max(hi, obs_v.max())
@@ -122,8 +110,8 @@ def main(argv=None):
                     help="known-OOD reference clouds: AUROC of every Tier-1 statistic vs the ID null is added to "
                          "tier1_results.json['power'] (the GATE-1 power measurement)")
     ap.add_argument("--power-only", action="store_true",
-                    help="recompute ONLY the power block (needs --ref-baked and --power) and splice it into an "
-                         "existing <out-dir>/tier1_results.json; the observation tests are left untouched")
+                    help="Recompute only the power block (needs --ref-baked and --power) and splice it into "
+                         "the existing <out-dir>/tier1_results.json.")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--alpha", type=float, default=0.01)
     ap.add_argument("--seed", type=int, default=0)
