@@ -1,20 +1,9 @@
 #!/usr/bin/env python
-"""Generate MOCK posterior-sample npz files mirroring the eval save schema, for local
-validation of scripts/plot_posteriors.py without touching the cluster.
+"""Generate mock posterior-sample npz files in the eval save schema, to test scripts/plot_posteriors.py locally.
 
-Schema (= src/ml/eval/utils.py:_save_posterior_samples, commit 8748b2c):
-  samples    float32 [S, N, D]   posterior samples, scaled [0,1] space
-  theta0s    float32 [N, D]      true params, scaled [0,1] space
-  test_files str     [N]         basenames output_<sim>_out<o>_rot<r>_<n>.h5
-  sim_ids    int64   [N]
-  aug_ids    int64   [N]         trailing _<n>.h5 index (NOT unique across out<o> variants)
-
-The generated model files share identical theta0s/test_files (same test split, as repeats
-of one experiment do) but have slightly different posterior clouds so overlays are
-visually distinct.
-
-Usage:
-  python scripts/make_mock_posterior_samples.py --out-dir /tmp/mock_samples
+The schema is that of src/ml/eval/utils.py:_save_posterior_samples, with samples [S, N, D] in
+scaled [0, 1] space. The model files share theta0s and test_files, as repeats of one experiment do.
+Usage: python scripts/make_mock_posterior_samples.py --out-dir <dir>
 """
 import argparse
 import os
