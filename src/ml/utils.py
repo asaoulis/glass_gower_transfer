@@ -11,7 +11,13 @@ import torch
 import os
 
 from .models.deprecated.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, EnsembleLikelihoodNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
+from .models.lightning.npe import NDELightningModule
+from .models.lightning.kl import KLDRegularisedNDELightningModule
+from .models.lightning.ensemble_npe import EnsembleNDELightningModule
+from .models.lightning.ensemble_nle import EnsembleLikelihoodNDELightningModule
+from .models.lightning.base import RegressionLightningModule
+from .models.lightning.nle import LikelihoodNDELightningModule
+from .models.lightning.joint import JointVMIMNLELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 

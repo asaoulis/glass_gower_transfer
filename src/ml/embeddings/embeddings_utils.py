@@ -17,11 +17,9 @@ import wandb
 from config.default import get_default_config
 from config.experiments import experiments
 
-from ..models.lightning_modules import (
-    NDELightningModule,
-    LikelihoodNDELightningModule,
-    EnsembleLikelihoodNDELightningModule,
-)
+from ..models.lightning.npe import NDELightningModule
+from ..models.lightning.nle import LikelihoodNDELightningModule
+from ..models.lightning.ensemble_nle import EnsembleLikelihoodNDELightningModule
 from ..eval.utils import load_best_model_and_build_posterior
 from ..eval.loading_model import get_best_checkpoint
 from ..tmpdir import redirect_tempdir
@@ -261,20 +259,6 @@ def compute_embeddings(models: List[torch.nn.Module], loader: torch.utils.data.D
     theta_cat = torch.cat(all_theta, dim=0)
     print(f"Computed embeddings for {z_cat.shape[0]} samples with dimension {z_cat.shape[1]}.")
     return z_cat, theta_cat
-
-
-def format_run_match(match_string: str, ensemble_idx: int = 0, ensemble_repeats: int = 1) -> str:
-    """Return the run-name match tag used for logging/checkpoints.
-
-    Baseline behaviour: returns match_string.
-    Ensemble behaviour: appends '_ens{ensemble_idx}' when ensemble_repeats>1.
-
-    Note: this must NOT change match_string semantics (repeat-bound).
-    """
-    ensemble_repeats = int(ensemble_repeats or 1)
-    if ensemble_repeats > 1:
-        return f"{match_string}_ens{int(ensemble_idx)}"
-    return match_string
 
 
 def _get_embedding_cache_paths(base_cfg, wandb_run_name: str) -> Tuple[str, str, str]:
