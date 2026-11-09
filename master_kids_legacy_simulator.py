@@ -921,7 +921,7 @@ if __name__ == "__main__":
                             cache=glass_cache,
                         )
                     elif SIMULATOR_TYPE == "external":
-                        from src.external_mocks import FLAMINGO_BIG, prepare_external_backend
+                        from src.external_mocks.gowerst2 import FLAMINGO_BIG, prepare_external_backend
                         _ext_spec = dict(FLAMINGO_BIG)
                         if args.ext_data_dir:
                             _ext_spec["data_dir"] = args.ext_data_dir
@@ -1092,7 +1092,7 @@ if __name__ == "__main__":
                     if SIMULATOR_TYPE == "external":
                         # Shells stream off the external cube. The subclass builds its own windows
                         # from control.par, so no `matter` is passed.
-                        from src.external_mocks import ShellCubeSimulator
+                        from src.external_mocks.gowerst2 import ShellCubeSimulator
                         simulator = ShellCubeSimulator(
                             backend["data_dir"], backend["cube_name"], **kwargs)
                     else:
