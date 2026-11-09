@@ -1,1 +1,1 @@
-# Mark ml as a package for relative imports
+"""Compression, density estimation, training and evaluation of the inference models."""
