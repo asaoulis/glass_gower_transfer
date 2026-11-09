@@ -1,3 +1,4 @@
+"""Helpers for the LightningModules: partial weight loading by prefix, ConditionDict, nested device moves, batchable transforms."""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -26,13 +27,7 @@ def load_partial_weights(
 
     target_state = target_module.state_dict()
 
-    # torch.compile inserts an `._orig_mod.` segment into a wrapped submodule's state_dict keys
-    # (e.g. ...shared_cnn.backbone._orig_mod.patch_embed.weight). The compile decision can differ
-    # between the SAVED source (e.g. a compile-trained hybrid encoder) and the as-yet-UNcompiled
-    # target at load time, so a literal key comparison silently drops the compiled submodule's
-    # weights. Match each source key to the target's ACTUAL key on the `._orig_mod.`-stripped
-    # ("canonical") name — per-key and works whichever side is compiled (mirrors the alignment in
-    # npe.py:load_from_checkpoint).
+    # torch.compile inserts `._orig_mod.` into state-dict keys, so keys are matched with it stripped.
     def _canonical(key: str) -> str:
         return key.replace("._orig_mod.", ".")
 
@@ -112,11 +107,7 @@ def load_partial_weights(
     if hasattr(target_module, "only_return_mu"):
         target_module.only_return_mu = True
 
-    # Return diagnostics so callers can convert a *silent* partial load into a hard failure when
-    # correctness demands it (e.g. whitened-embedding warm starts, where a shape mismatch would
-    # otherwise leave flow layers randomly initialised with a finite loss). `unused_source` is
-    # intentionally excluded from the "hard" fields below because the source is usually a whole-model
-    # state_dict and only a prefixed submodule is targeted.
+    # Diagnostics let a caller turn a silent partial load into a hard failure.
     return {
         "loaded": len(loaded_weights),
         "missing": list(missing),
