@@ -1,15 +1,8 @@
 """Candidate estimators: sparse pixel cache -> normalised full-sky complex shear map.
 
-Every candidate is a config dict: {"id", "nside_bin", "norm", <norm params>, "map_post"}.
-``accumulate`` turns the cache's NESTED sparse sums into dense RING maps at ``nside_bin``
-(exact for any nside <= native: coarser pixels are bit-shifted parents, sums are additive).
-``normalise`` implements the candidate normalisation modes — the production ``counts`` branch
-reproduces `_apply_normalization('counts')` in src/cosmology/map_shears.py:194 exactly.
-
-The "mean" mode here uses n̄ = ΣN / N_occupied (occupied-pixel mean) rather than the production
-Σ(fractional mask)/npix denominator (the mask is not stored with the catalogues). This is a
-per-mock CONSTANT rescale — irrelevant for any b_g differential (the mask is identical across
-arms), only the absolute amplitude differs from the legacy store. Documented deviation.
+Every candidate is a config dict {"id", "nside_bin", "norm", <norm params>, "map_post"}. The counts
+branch reproduces _apply_normalization('counts') in src/cosmology/map_shears.py exactly. The mean
+mode uses the occupied-pixel mean, a per-mock constant rescale of the production denominator.
 """
 from __future__ import annotations
 
@@ -153,12 +146,7 @@ CANDIDATES = {
     # combinations
     "A3s8_A1":          {"norm": "smoothed_counts", "fwhm_arcmin": 8.0, "map_post": "div_rand_std"},
     "A8_B2":            {"norm": "global_rescale", "map_post": "div_B_std"},
-    # --- DEPLOYED forms -----------------------------------------------------------------------
-    # The simulator's stored noise_std scalar is the std over ALL pixels of the extracted patch
-    # grids (both patches pooled), because that is the only footprint reproducible from the
-    # stored patches alone. `div_rand_std` above restricts to the full-sky galaxy-occupied
-    # footprint. These two candidates are the AS-SHIPPED estimators; they exist so the paired
-    # b_g sweep verifies the geometric difference is inert before the 100k generation.
+    # --- DEPLOYED forms ---
     "A1_patch":         {"norm": "counts", "map_post": "div_rand_std_patch"},
     "A3s8_A1_patch":    {"norm": "smoothed_counts", "fwhm_arcmin": 8.0,
                          "map_post": "div_rand_std_patch"},
