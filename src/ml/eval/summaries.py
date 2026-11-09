@@ -1,24 +1,8 @@
-"""Summary-space extraction for the OOD / misspecification diagnostic (``eval.py --mode summaries``).
+"""Summary-space extraction for the OOD and misspecification diagnostic (eval.py --mode summaries).
 
-For ONE base experiment and each requested training repeat, this dumps the compressor's summary
-vector ``z`` (the flow context — ``embedding_net`` output with ``only_return_mu=True``, exactly what
-``compute_embeddings`` in the embeddings pipeline caches) for
-
-* ``_train``   — a random subset of the model's own TRAIN split (the reference cloud),
-* ``_idtest``  — the model's strictly held-out in-distribution TEST split (the null),
-* each variate — its test set, built with the ORIGINAL training scalers injected
-  (``misspec.build_variate_test_loader``; never refit on a variate),
-
-then scores every variate against the train cloud + ID null with ``src/ml/eval/ood.py`` and writes
-per-event scores/p-values next to the summaries. Everything is PER MODEL: for an eval-time
-ensemble each member is extracted and scored separately (own encoder = own summary space); only the
-calibrated outputs (p-values, AUROC, permutation p) may be aggregated across members/repeats.
-
-Outputs under ``{base_path}/checkpoints/<exp>/summaries[_shared]/``:
-    <variate>/summaries_<match>[_m<j>].npz   z, theta (scaled), test_files, sim_ids, aug_ids, params,
-                                              + per-event OOD scores/p-values (``ood_*`` keys)
-    <variate>/ood_<match>[_m<j>].json        dataset-level OOD statistics
-    ood_summary_<match>.json                  all variates x members for the repeat
+For one base experiment and each repeat it dumps the compressor summary z for a train subset, the
+held-out in-distribution test split and each variate test set (built with the original training
+scalers), then scores the variates with ood.py.
 """
 import json
 import os
@@ -66,7 +50,7 @@ def _member_encoders(model) -> List[torch.nn.Module]:
 
 @torch.no_grad()
 def encode_loader(encoders: Sequence[torch.nn.Module], loader, max_items: Optional[int] = None):
-    """Run every encoder over the loader ONCE (one read of the maps), returning per-encoder z + theta."""
+    """Run every encoder over one read of the loader. Returns per-encoder z and theta."""
     dev = _device()
     encs = [e.to(dev) for e in encoders]
     zs = [[] for _ in encs]
@@ -141,12 +125,13 @@ def run_summary_extraction(
     fixed_test_ids_override: Optional[str] = None,
     max_trainval_cosmos_override: Optional[int] = None,
 ):
-    """``test_id_source``: 'heldout' (lock file or the model's own held-out split), 'shared' (ids
-    common to the OOD variates), or 'all' (every on-disk cosmology of each variate — valid when the
-    base model never trained on that suite, e.g. a GLASS foundation scored on Gower stores, and the
-    natural mode for a real-data file). ``fixed_test_ids_override`` / ``max_trainval_cosmos_override``
-    re-split the base experiment's store (e.g. give a GLASS-trained encoder the Gower chain's lock +
-    300-cosmology train set so its train cloud / null are the NLE Stage-B's)."""
+    """Extract and score summaries for each repeat. Returns the dataset-level OOD results by key.
+
+    test_id_source is 'heldout' (lock file or the model's own held-out split), 'shared' (ids common
+    to the OOD variates) or 'all' (every on-disk cosmology, valid only when the base model never
+    trained on that suite). fixed_test_ids_override and max_trainval_cosmos_override re-split the
+    base experiment's store.
+    """
     from ..models.utils import apply_repeat_config
     from .utils import load_best_model_and_build_posterior
 
@@ -195,7 +180,7 @@ def run_summary_extraction(
             cfg.fixed_test_sim_ids = spec
         if max_trainval_cosmos_override is not None:
             cfg.max_trainval_cosmos = int(max_trainval_cosmos_override)
-            cfg.match_num_cosmo = False   # the checkpoint dirs are named by the ORIGINAL config
+            cfg.match_num_cosmo = False   # the checkpoint dirs are named by the original config
         repeat_match, _ = apply_repeat_config(cfg, r)
         cfg.match_string = repeat_match
         print(f"[summaries] repeat={r} match_string={repeat_match} data_patterns={cfg.data_patterns}", flush=True)
@@ -219,7 +204,7 @@ def run_summary_extraction(
         tags = [f"{repeat_match}_m{j}" for j in range(len(encoders))] if len(encoders) > 1 else [repeat_match]
         print(f"[summaries] repeat {r}: {len(encoders)} encoder(s)", flush=True)
 
-        # --- TRAIN cloud (no augmentation: plain read through the training scalers) -------------
+        # Train cloud, read without augmentation through the training scalers.
         train_paths = list(_resolve_test_paths(train_loader) or [])
         rng = np.random.default_rng(seed + r)
         if max_train_files and len(train_paths) > max_train_files:
@@ -234,7 +219,7 @@ def run_summary_extraction(
         for j, tag in enumerate(tags):
             _save_summaries(os.path.join(out_root, "_train", f"summaries_{tag}.npz"), z_train[j], th_train, train_paths, param_names)
 
-        # --- ID held-out test split (the null) -----------------------------------------------
+        # The in-distribution held-out test split is the null.
         id_paths = list(_resolve_test_paths(id_test_loader) or [])
         print(f"[summaries] repeat {r}: encoding ID held-out test split ({len(id_paths)} files)", flush=True)
         z_id, th_id = encode_loader(encoders, id_test_loader)
@@ -245,7 +230,6 @@ def run_summary_extraction(
         if run_ood:
             refs = [OODReference.fit(z_train[j], z_id[j], theta_train=th_train, theta_id=th_id,
                                      k=ood_k, k_theta=ood_k_theta, seed=seed) for j in range(len(encoders))]
-            # self-check: the ID split against itself must read as null (AUROC 0.5 by construction)
 
         if test_id_source == "all":
             test_id_pool = None   # build_variate_test_loader falls back to ALL on-disk cosmologies
