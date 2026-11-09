@@ -155,14 +155,10 @@ def build_arm(cache, cand, eb_variant, rng=None, n_rand=1, bp_baseline=None,
     counts_out = base["counts_out"]
     foot = base["foot"]
 
-    # --- map post-processing (Track B stages), applied to the E channel -----------------------
     post = cand.get("map_post")
     post_factors = np.ones(nbins)
     if post == "div_rand_std_patch" and "rand_patch_std" not in base:
-        # Parity with the DEPLOYED simulator scalar (master_kids_legacy_simulator.patch_noise_std):
-        # the std over ALL pixels of the extracted patch grids, both patches pooled -- not the
-        # full-sky galaxy-occupied footprint that `div_rand_std` uses. The two differ by a fixed
-        # geometric factor; this candidate is what verifies that the difference does not matter.
+        # Parity with master_kids_legacy_simulator.patch_noise_std: the std over all patch pixels, pooled.
         _rp = get_patch_values(randE_maps, list(geom["patches"].values()), geom["nside_out"], 0)
         _flat = np.concatenate([np.asarray(p, dtype=np.float64).reshape(nbins, -1) for p in _rp],
                                axis=1)
