@@ -1,22 +1,9 @@
-"""The SOLE reader of raw observation posteriors. Returns standardised samples only.
+"""The sole reader of raw observation posteriors. Returns standardised samples only.
 
-Frames (all per parameter, independent rescaling; S_8 derived per sample before anything else):
-
-  self      z = (x - mean_self)/std_self             every posterior to N(0,1): shapes/degeneracies
-                                                    only (Plot A, maximally blind)
-  real      z = (x - mean_REAL)/std_REAL             the frame of ONE reference posterior (the real
-                                                    data's, per arm), applied to that posterior
-                                                    (-> N(0,1)) and to OTHER posteriors:
-                                                      - a matched MOCK: its OWN mean subtracted,
-                                                        divided by the REAL std (Plot B: widths and
-                                                        degeneracies comparable, location hidden)
-                                                      - another ARM/label of the real data: mean of
-                                                        the flagship subtracted (Plot B-prime: inter-arm
-                                                        offsets visible in sigma units, absolute
-                                                        location hidden -- user-approved 2026-09-08)
-
-No function here prints, logs, returns or persists a frame (mean/std). The standardised outputs are
-written as npz with ``z``, ``names``, ``frame``, ``source`` only.
+Per-parameter frames, with S_8 derived per sample first: 'self' z = (x - mean_self)/std_self, and
+'real' divides by the real posterior's std, subtracting the target's own mean (mocks) or the real
+mean (other arms). No function prints, logs, returns or persists a frame. Outputs are npz with z,
+names, frame and source only.
 """
 from __future__ import annotations
 
@@ -40,17 +27,12 @@ class Standardised:
     n_samples: int
 
 
-# --------------------------------------------------------------------------------------------
-# raw access (private)
-# --------------------------------------------------------------------------------------------
+# --- raw access (private) ---
 def prior_of_dump(path: str) -> str:
-    """The prior tag encoded in a sample-dump FILENAME, '' when it carries none.
+    """The prior tag encoded in a sample-dump filename, '' when it carries none.
 
-    Both dump families put the prior in the name because an NLE posterior is only defined together
-    with its prior — and, more sharply, because the prior decides the dump's COLUMN SET (see
-    `_scaler_box`). The two shapes are
-    ``external_posterior_samples_<prior>_ncosmo<...>_<repeat>.npz`` (per repeat, also the matched
-    mock dumps) and ``pooled_posterior_samples_<prior>.npz`` (pooled).
+    The shapes are external_posterior_samples_<prior>_ncosmo<...>_<repeat>.npz (per repeat) and
+    pooled_posterior_samples_<prior>.npz (pooled). The prior decides the dump's column set.
     """
     base = os.path.basename(path)
     if not base.endswith(".npz"):
@@ -66,13 +48,8 @@ def prior_of_dump(path: str) -> str:
 def _scaler_box(experiment: str, prior_mode: Optional[str] = None):
     """-> (names, min, max) of the columns a dump of `experiment` under `prior_mode` actually has.
 
-    ⚠️ `prior_mode` is load-bearing, not decoration. A mode that PINS a parameter (`LCDM_fixed_w0`
-    pins w0) is sampled through sbi's `conditional_potential`, which returns only the free
-    dimensions — so the dump has one column FEWER than `cfg.cosmo_param_names` and unscaling it
-    with the full box is a broadcast error (or, for an unlucky arm, a silent column shift). The
-    pinned name is DROPPED rather than re-inserted as a constant: a zero-variance column makes
-    every standardised frame NaN. Everything downstream aligns by name, so this composes.
-    ``theta0s`` keeps the full vector — use ``prior_mode=None`` for truth.
+    prior_mode is load-bearing: a pinning mode's dump lacks the pinned column, which is dropped here.
+    theta0s keeps the full vector, so use prior_mode=None for truth.
     """
     import eval as _eval
     cfg, _ = _eval.load_config(experiment)
@@ -88,7 +65,7 @@ def _scaler_box(experiment: str, prior_mode: Optional[str] = None):
 
 
 def _load_physical(path: str, experiment: str, event: int = 0) -> Tuple[np.ndarray, List[str]]:
-    """[S, D+1] physical samples (S8 appended) of ONE event of a sample dump. PRIVATE."""
+    """[S, D+1] physical samples (S8 appended) of one event of a sample dump. Private."""
     names, lo, hi = _scaler_box(experiment, prior_of_dump(path))
     with np.load(path, allow_pickle=False) as d:
         S = np.asarray(d["samples"])            # [S, N, D] scaled
@@ -107,12 +84,10 @@ def _load_physical(path: str, experiment: str, event: int = 0) -> Tuple[np.ndarr
 
 
 def pooled_members(path: str) -> Optional[List[str]]:
-    """The member EXPERIMENT names a pooled dump was built from (metadata only, no samples).
+    """The member experiment names a pooled dump was built from (metadata only), or None.
 
-    Read from the dump's own ``pooled_provenance`` key (one per prior); the sibling
-    ``pooled_provenance.json`` is the fallback, used only when its ``prior_mode`` matches this
-    dump's (that file is shared by the arm's priors and is overwritten by the last pool job).
-    ``None`` when neither records the members."""
+    Read from the dump's pooled_provenance key, else from the sibling pooled_provenance.json when
+    its prior_mode matches this dump's."""
     try:
         with np.load(path, allow_pickle=False) as d:
             if "pooled_provenance" in d.files:
@@ -136,9 +111,7 @@ def _frame(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     return x.mean(axis=0), x.std(axis=0, ddof=1)
 
 
-# --------------------------------------------------------------------------------------------
-# public API: standardised outputs only
-# --------------------------------------------------------------------------------------------
+# --- public API: standardised outputs only ---
 def standardise_self(path: str, experiment: str, event: int = 0) -> Standardised:
     x, names = _load_physical(path, experiment, event)
     mu, sd = _frame(x)
@@ -148,13 +121,13 @@ def standardise_self(path: str, experiment: str, event: int = 0) -> Standardised
 
 def standardise_in_real_frame(target_path: str, target_experiment: str, real_path: str, real_experiment: str,
                               *, subtract: str = "own", event: int = 0, real_event: int = 0) -> Standardised:
-    """Standardise ``target`` with the REAL posterior's per-parameter std.
-    subtract='own'  : target's own mean subtracted (Plot B; matched mocks) -> location hidden
-    subtract='real' : the real posterior's mean subtracted (Plot B-prime; other arms/labels of the
-                      real data) -> inter-arm offsets in sigma units, absolute location hidden"""
+    """Standardise `target` with the real posterior's per-parameter std.
+
+    subtract='own' subtracts the target's own mean (matched mocks), subtract='real' the real
+    posterior's mean (other arms), so offsets show in sigma units with the location hidden."""
     x, names = _load_physical(target_path, target_experiment, event)
     xr, names_r = _load_physical(real_path, real_experiment, real_event)
-    # align by NAME on the shared parameter set (arms differ in their IA nuisance, e.g. b_ia vs b_z)
+    # Align by name on the shared parameters, since arms differ in their IA nuisance.
     shared = [n for n in names_r if n in names]
     it = [names.index(n) for n in shared]
     ir = [names_r.index(n) for n in shared]
@@ -182,9 +155,7 @@ def load_standardised(path: str) -> Standardised:
                             source=str(d["source"]), n_samples=int(d["n_samples"]))
 
 
-# --------------------------------------------------------------------------------------------
-# registry of raw runs (FILENAMES only)
-# --------------------------------------------------------------------------------------------
+# --- registry of raw runs, from filenames only ---
 def _arm_of(experiment: str) -> str:
     """Arm name of a per-repeat experiment (from the production arm table; '' if unknown)."""
     try:
@@ -199,13 +170,11 @@ def _arm_of(experiment: str) -> str:
 
 def list_raw_runs(root: str = BLIND_ROOT) -> List[Dict[str, str]]:
     """Walk the blind store and return {label, arm, experiment, prior, match, pooled, path} from
-    FILENAMES only.
+    filenames only.
 
-    Two families live under the store (`scripts/sample_observation.py fetch`):
-      <root>/<label>/<experiment>/.../external_posterior_samples_<prior>_<match>.npz   per-repeat
-      <root>/<label>/pooled_<arm>/.../pooled_posterior_samples_<prior>.npz            POOLED (final)
-    A pooled entry carries ``match='pooled'`` and ``experiment`` = the arm's repeat-0 member, whose
-    scaler box is the shared frame of every member (`eval.py --mode pool` refuses mixed frames).
+      <root>/<label>/<experiment>/.../external_posterior_samples_<prior>_<match>.npz   per repeat
+      <root>/<label>/pooled_<arm>/.../pooled_posterior_samples_<prior>.npz            pooled
+    A pooled entry has match='pooled' and experiment = the arm's repeat-0 member.
     """
     out = []
     for dirpath, _, files in os.walk(root):
@@ -242,11 +211,7 @@ def _selftest():
     assert np.allclose(z.mean(0), 0, atol=1e-12) and np.allclose(z.std(0, ddof=1), 1, atol=1e-12)
     assert set(Standardised.__dataclass_fields__) == {"z", "names", "frame", "source", "n_samples"}
 
-    # --- the fixed-parameter contract (regression: LCDM_fixed_w0 dumps are D-1 wide) ------------
-    # sbi samples only the free dimensions under a pinning prior, so a reader that unscales with
-    # the full parameter box either crashes or shifts every column. These two asserts are the only
-    # gate on that; `_load_physical` is exercised end-to-end by the plot battery, which until
-    # 2026-09-08 had only ever been run on the `gower` prior, where the bug is invisible.
+    # The fixed-parameter contract: LCDM_fixed_w0 dumps are D-1 wide.
     assert prior_of_dump("external_" + "posterior_samples_LCDM_fixed_w0_ncosmoNone_0.npz") == "LCDM_fixed_w0"
     assert prior_of_dump("external_" + "posterior_samples_kids_s8_analytic_ncosmo300_2.npz") == "kids_s8_analytic"
     assert prior_of_dump("pooled_" + "posterior_samples_gower.npz") == "gower"
