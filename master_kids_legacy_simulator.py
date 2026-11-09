@@ -128,16 +128,11 @@ def parse_args():
                         help="--simulator-type external: override the box directory "
                              "(default: src/external_mocks FLAMINGO_BIG['data_dir'])")
     parser.add_argument("--outer-indices", type=str, default=None,
-                        help="Comma-separated GLOBAL outer (shape-noise) indices to run in this "
-                             "process. Companion to --rot-indices: together they shard ONE "
-                             "cosmology's (outer, rot) blocks across concurrent processes, which "
-                             "is the only parallelism available when there is a single cosmology "
-                             "(the MPI Scatterv is over cosmologies). outer_idx stays global.")
+                        help="Comma-separated global outer (shape-noise) indices to run in this "
+                             "process. Shards one cosmology's blocks.")
     parser.add_argument("--rot-indices", type=str, default=None,
-                        help="Comma-separated GLOBAL rotation indices to run in this process "
-                             "(e.g. '0,1'). Shards the per-rotation blocks of ONE cosmology "
-                             "across concurrent processes; rot_idx stays global so filenames "
-                             "and the fixed-RNG streams are unchanged.")
+                        help="Comma-separated global rotation indices to run in this process "
+                             "(for example '0,1').")
 
     parser.add_argument("--kids-systematics", action="store_true",
                         help="Enable KiDS systematics")
@@ -152,24 +147,14 @@ def parse_args():
 
     parser.add_argument(
         "--variable-depth", action=argparse.BooleanOptionalAction, default=None,
-        help="KiDS-Legacy variable-depth (VD) effect (implies full NLA + shear-bias systematics; "
-             "resolves the systematics model to 'nla_vd'). DEFAULT (flag absent) = AUTO: ON iff the "
-             "systematics model is 'nla' (i.e. --kids-systematics) AND (--simulator-type smoke, or "
-             "glass/gower_street with --use-kids-mask); OFF otherwise (--systematics-model none, no "
-             "KiDS mask, --simulator-type external). --variable-depth forces it on (an error with "
-             "external: VD was never validated on its shell windows); --no-variable-depth forces it "
-             "off. Since 2026-09-29 (VD-final-train) the production default is VD ON with the "
-             "'quadcap' table; the resolved state is printed on rank 0 and stamped per mock as "
-             "cosmo_dict/vd_code (0 off, 1 pooled, 2 patch, 3 quadcap).",
+        help="Variable-depth (VD) effect, implies full NLA and shear-bias systematics. "
+             "Default: on with --kids-systematics and the KiDS mask.",
     )
 
     parser.add_argument(
         "--vd-table", type=str, default=None, choices=["pooled", "patch", "quadcap", "v2pr"],
-        help="Variable-depth count-contrast table (default quadcap when VD resolves ON): 'quadcap' = "
-             "per-patch quadratic fit, constant beyond the outermost calibration bins; 'pooled' = one "
-             "survey-wide table (the A' table); 'patch' = one table per KiDS patch on tail-resolved "
-             "galaxy quantiles (src/KiDS/variable_depth_config.py). Passing --vd-table while VD "
-             "resolves OFF is an error.",
+        help="Variable-depth count-contrast table: pooled, patch, quadcap (default when VD is on) "
+             "or v2pr.",
     )
 
     parser.add_argument(
@@ -177,38 +162,26 @@ def parse_args():
         type=str,
         default="nla_m",
         choices=["nla_m", "nla", "nla_z", "tatt"],
-        help="Intrinsic-alignment model (default: nla_m). 'nla' = single-amplitude NLA; "
-             "'nla_z' = NLA with linear redshift-dependent amplitude; 'tatt' = restricted "
-             "TATT / NLA-k (NLA + density weighting). Orthogonal to --systematics-model.",
+        help="Intrinsic-alignment model: nla_m (default), nla, nla_z or tatt.",
     )
 
     parser.add_argument("--no-rotations", action="store_true",
                         help="Disable rotations")
 
     parser.add_argument("--overwrite", action="store_true",
-                        help="Force a clean regen: recompute every sim even if complete outputs "
-                             "already exist. Default OFF = resume (skip already-complete sims and "
-                             "(outer,rot) blocks, recompute only what is missing/incomplete).")
+                        help="Recompute every sim even if complete outputs exist. Default: resume.")
 
     parser.add_argument("--num-sims", type=int, default=None,
                         help="Cap the number of cosmologies/simulations to the first N "
                              "(default: all). Used for bounded validation/theory-test runs.")
 
     parser.add_argument("--no-augmentation", action="store_true",
-                        help="Produce ONE mock per cosmology: collapse rotations AND the "
-                             "outer/inner shape-noise realisations to a single one. For fast "
-                             "per-cosmology theory tests (implies no rotations).")
+                        help="One mock per cosmology: collapse rotations and shape-noise "
+                             "realisations to one.")
 
     parser.add_argument("--shear-normalization", type=str, default="counts",
                         choices=["counts", "mean", "expected"],
-                        help="Shear-map normalisation in make_alm_shear_convergence "
-                             "(default 'counts' = per-pixel observed counts, DES-Y3-style: cancels "
-                             "the source-clustering (1+b_g*delta) leakage into the maps at first "
-                             "order — see .claude/runs/eval-and-viz/investigate-galaxy-bias-issue. "
-                             "'mean' = global mean counts/pixel (Hall & Tessore; former default): "
-                             "matches the KiDS MCM/theory to ~few %% for bandpowers but is "
-                             "first-order sensitive to source clustering; the 'counts' pseudo-Cl "
-                             "offset vs the fractional-mask MCM (~1.5x) needs re-validation.)")
+                        help="Shear-map normalisation: counts (default), mean or expected.")
 
     parser.add_argument("--use-kids-mask", action="store_true",
                         help="Use KiDS mask")
@@ -235,100 +208,52 @@ def parse_args():
 
     parser.add_argument(
         "--galaxy-bias", type=float, default=None,
-        help="Override the linear source-galaxy clustering bias b_g fed to "
-             "positions_from_delta (default: the simulation_config `bias` constant when "
-             "systematics are ON). Only takes effect on the systematics-ON path; the clean "
-             "theory-test path (systematics OFF) always uses galaxy_bias=0. Use to generate "
-             "clustering variates, e.g. --galaxy-bias 1.5 (strong) / 0.7 (weak).")
+        help="Fixed source-galaxy clustering bias b_g, overriding the config constant "
+             "(systematics-on path only).")
 
     parser.add_argument(
         "--galaxy-bias-prior", default=None, choices=sorted(GALAXY_BIAS_PRIORS),
-        help="Draw a per-tomo-bin galaxy-bias 6-vector per (sim, outer, rot) block from the "
-             "named Flamingo-calibrated prior preset (O3-diag: independent truncated Gaussians, "
-             "src/KiDS/simulation_config.GALAXY_BIAS_PRIORS) instead of a fixed scalar. Realised "
-             "values are stored per mock as cosmo_dict/b_g_bin1..6 + galaxy_bias_eff. Only "
-             "affects the systematics-ON path; mutually exclusive with --galaxy-bias (the fixed "
-             "override, which bypasses the prior).")
+        help="Per-block draw of the six per-tomo-bin galaxy biases from a named prior preset. "
+             "Excludes --galaxy-bias.")
 
     parser.add_argument(
         "--eb-variants", default=EB_VARIANTS_DEFAULT, choices=sorted(EB_VARIANT_PRESETS),
-        help="Which COUNTS-normalised E/B map products the store carries (EB_VARIANT_PRESETS). "
-             "'sc8only' (default) = today's behaviour: counts branch off, sc8/sc8a1 arms only. "
-             "'full' = the pre-2026-08-16 superset: counts E and B at 3 smoothings plus every "
-             "noise_std_<tag> scalar, i.e. the A0/A1/B1 arms and the B-mode null-test channel "
-             "(~28.5 MB/mock vs ~4 MB). Sets BOTH EB_SMOOTHING_VARIANTS and NOISE_STD_VARIANTS — "
-             "they must move together or the counts maps land without their A1 scalars. "
-             "⚠️ State this EXPLICITLY on any row that may be resumed: the simulator is read at "
-             "RUN time, so a default change between a row's first submit and its wall-resume "
-             "otherwise splits one store across two products. Does not affect the sc8 arms.")
+        help="Which counts-normalised E/B map products the store carries: sc8only (default) "
+             "or full.")
 
     parser.add_argument(
         "--rng-seed", type=int, default=None,
-        help="FIXED-RNG (paired-catalogue) mode. Default None = today's behaviour: one fresh, "
-             "UNSEEDED generator per (sim, outer, rot) block. When set, every random stream is "
-             "derived deterministically from (this seed, sim_id, outer_idx, rot_idx) AND the "
-             "matter-field stream is split from the galaxy-sampling stream (see build_block_rngs). "
-             "Two runs sharing --rng-seed then produce the SAME matter fields and the SAME "
-             "nuisance draws, so a variate that only changes the galaxy sampling (e.g. "
-             "--galaxy-bias 0.5 vs 1.5) is PAIRED with its reference: cosmic variance and "
-             "nuisance scatter cancel exactly. Note the galaxy catalogues themselves cannot be "
-             "identical when b_g differs (positions_from_delta draws a different number of "
-             "galaxies) — only the fields and the nuisance realisation are shared.")
+        help="Seed for paired-catalogue mode: derives every random stream from (seed, sim_id, "
+             "outer, rot). Default: unseeded.")
 
     parser.add_argument(
         "--save-catalogues", action="store_true",
-        help="ALSO dump each mock's raw galaxy catalogue (RA, DEC, Z_TRUE, ZBIN, E1, E2) to "
-             "<output-dir>/catalogues/catalogue_<sim>_out<o>_rot<r>_<i>.h5, so alternative shear "
-             "estimators can be replayed offline (e.g. testing which normalisation is hardened "
-             "against source clustering). Columns are downcast to float32/int8 (~21 B/galaxy). "
-             "EXPENSIVE: a production KiDS-Legacy footprint has ~4e7 galaxies => ~0.9 GB PER MOCK, "
-             "so pair this with a small --num-sims and --no-augmentation 1.")
+        help="Also dump each mock's raw galaxy catalogue next to its output file (about 0.9 GB "
+             "per mock).")
 
     parser.add_argument(
         "--smoke-n-eff-scale", type=float, default=None,
-        help="SMOKE ONLY: override SMOKE_CONFIG['n_eff_scale'] (default None = keep the config "
-             "value, 1e-3). The default smoke is pure-shape-noise (~30k galaxies, lambda<<1), so "
-             "counts-normalisation physics (1/N convexity, b_g clustering modulation) is absent; "
-             "~0.0625 matches nside-256 pixel occupancy to production's ~13-21 gal/pixel "
-             "(~1.9M galaxies, ~2 min/mock). No effect on non-smoke runs.")
+        help="Smoke only: override the n_eff scale of the smoke config.")
 
     parser.add_argument(
         "--smoke-geometry", choices=["smoke", "production"], default="smoke",
-        help="SMOKE ONLY: 'production' runs the smoke backend at the PRODUCTION map/ell geometry "
-             "(nside 1024, lmax 2048, nside_out 512, bands 56-1500/8) -- the physics stays "
-             "smoke-scale (few shells), so the output is for pipeline-identity validation only "
-             "(src/observation fidelity gate), never for science. Default keeps the cheap smoke.")
+        help="Smoke only: run the smoke backend at the production map and ell geometry.")
     parser.add_argument(
         "--catalogue-dtype", choices=["float32", "float64"], default="float32",
-        help="--save-catalogues column dtype for RA/DEC/Z_TRUE/E1/E2 (default float32, the "
-             "compact on-disk contract). float64 doubles the file but makes the dump a BIT-EXACT "
-             "copy of the in-memory catalogue, so an offline re-processing can be checked for "
-             "identity with this run's own maps/bandpowers.")
+        help="Column dtype of the --save-catalogues dump (default float32).")
 
     parser.add_argument("--outer-reps", type=int, default=None,
-                        help="Override the per-sim OUTER shape-noise realisation count (default: the "
-                             "OUTER_NUM_SHAPE_NOISE_REALISATIONS[simulator] config value; glass=4, "
-                             "gower=4). Used to produce smaller datasets, e.g. --outer-reps 1 on GLASS "
-                             "gives 1 outer x rotations x inner x mask files/sim. Ignored under --smoke "
-                             "and --no-augmentation, which already force outer_reps=1.")
+                        help="Override the number of outer shape-noise realisations per sim. "
+                             "Default: the simulator's config value.")
 
     parser.add_argument("--gower-sim-set", type=str, default="full",
-                        help="gower_street sim_id SELECTION. Either 'full' (= np.arange(193,782), "
-                             "589 ids) or the BASENAME of a lock-file under "
-                             "config/fixed_test_sets/ (e.g. 'gower_test_ids', "
-                             "'gower_test_ids_100', 'gower_near_fiducial_10'). The lock's own "
-                             "'selection' / 'selection_params' fields document how its ids were "
-                             "chosen, so the criterion lives with the ids rather than in this "
-                             "file. 'fixed_test' is a legacy alias for 'gower_test_ids'. "
-                             "`--num-sims` beyond the lock size tops up from the complement "
-                             "(seeded, stable across resumes). Ignored for glass/smoke.")
+                        help="Gower sim_id selection: 'full' or the basename of a lock-file under "
+                             "config/fixed_test_sets/.")
 
     parser.add_argument("--ia-prior-set", type=str, default="default",
                         choices=sorted(IA_PRIOR_OVERRIDES),
-                        help="Named override set applied on top of IA_PRIOR_SPECS (and the matching "
-                             "NUISANCE_PINS). 'default' reproduces the historical priors exactly; "
-                             "'matched' pins the IA parameters so the effective alignment amplitude "
-                             "is identical across IA models — see IA_PRIOR_OVERRIDES.")
+                        help="Named IA-prior override set applied on top of IA_PRIOR_SPECS "
+                             "(default, matched, ppc).")
 
     return parser.parse_args()
 
