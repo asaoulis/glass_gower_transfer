@@ -1,17 +1,8 @@
-"""Optional extra conditioning vectors for an encoder's density head (config key ``side_input``).
+"""Optional extra conditioning vectors for the density head (config key `side_input`): [encoder(x), side].
 
-The summary the flow conditions on becomes ``[encoder(x), side]``. Two sources:
-
-* ``{"type": "true_theta", "params": [...], "preset_overrides": {...}}`` -- the TRUE values of
-  ``params`` read from each file's ``cosmo_dict``, min/max-scaled with the same preset boxes as the
-  cosmo scaler. An ORACLE: it needs the truth, so such a model only exists to measure a ceiling
-  (e.g. "how well can b_g be read off the maps if cosmology were known exactly?").
-* ``{"type": "frozen_encoder", "ckpt_path": <experiment folder>}`` -- the summary of a separately
-  trained, FROZEN encoder of the same architecture, run on the same (augmented) batch. Built on the
-  model side (``src/ml/models/side_input.py``); the dataset is untouched.
-
-⚠️ A model with a side input emits ``[z, side]`` from its embedding net, so ``compute_embeddings``
-would cache the side vector too. Never use such a row as an NLE / embeddings SOURCE.
+Types: `true_theta` (oracle truth read from cosmo_dict, min/max scaled) and `frozen_encoder`
+(summary of a separately trained frozen encoder, built in src/ml/models/side_input.py). A model
+with a side input emits [z, side], so it is not a valid embeddings source.
 """
 from __future__ import annotations
 
