@@ -1,17 +1,10 @@
 #!/usr/bin/env python
-"""Build an OBSERVATION HDF5 (the mock schema, no cosmology) from a galaxy catalogue.
+"""Build an observation HDF5 (the mock schema, no cosmology) from a galaxy catalogue.
 
-    PYTHONPATH=. python scripts/build_observation.py --catalogue <cat.h5|cat.fits> \
-        --out-dir <dir> --label A [--geometry auto|production|smoke] [--variants production|full|a1only] \
-        [--column-map spec.json] [--m-bias-source auto|given|zero --m-bias m1,...,m6] \
-        [--rng-seed N] [--fidelity-mock output_*.h5 [--exact-rng] [--jitter-floor]]
+    PYTHONPATH=. python scripts/build_observation.py --catalogue <cat.h5|cat.fits> --out-dir <dir> --label A
 
-Outputs <out-dir>/observation_<label>.h5, observation_<label>_provenance.json and (with
---fidelity-mock) observation_<label>_fidelity.json. Never reads or writes a cosmology.
-
-The three deferred real-data corrections are exposed as flags that currently accept only their
-identity value (weights 'ignore', c-terms 'global_mean_only', m-bias auto/given/zero) so the
-provenance records the choice explicitly.
+It writes observation_<label>.h5 and observation_<label>_provenance.json, plus
+observation_<label>_fidelity.json with --fidelity-mock. It never reads or writes a cosmology.
 """
 from __future__ import annotations
 
@@ -39,7 +32,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--catalogue", required=True)
     ap.add_argument("--out-dir", required=True)
-    ap.add_argument("--label", required=True, help="opaque label (e.g. A/B/C); appears in the filename only")
+    ap.add_argument("--label", required=True, help="opaque label such as A, B or C, used in the filename only")
     ap.add_argument("--kind", default="auto", choices=["auto", "sim", "h5", "fits"])
     ap.add_argument("--column-map", default=None, help="JSON file mapping ra/dec/e1/e2/zbin/... for external catalogues")
     ap.add_argument("--nbins", type=int, default=6)
@@ -51,10 +44,8 @@ def main(argv=None):
     ap.add_argument("--weights-mode", default="ignore", choices=["ignore", "lensfit"],
                     help="lensfit = pass the catalogue weights to the estimator (needs the protected weights patch)")
     ap.add_argument("--weights-rescale", default="none", choices=["none", "neff"],
-                    help="neff = per tomo bin, w~ = w*sum(w)/sum(w^2) so sum(w~) = N_eff, putting the "
-                         "weight field on the mocks' COUNT scale (W_i = N_eff/N_pix). The maps are "
-                         "invariant (gate 3b); it fixes every quoted/exported scale. Divisor recorded "
-                         "in the provenance.")
+                    help="neff rescales each tomographic bin to w~ = w*sum(w)/sum(w^2), so sum(w~) = N_eff "
+                         "and the weights sit on the mocks' count scale. The maps do not change.")
     ap.add_argument("--normalization", default="counts", choices=["counts", "mean"],
                     help="bandpower-branch normalisation; 'mean' (paper Eq. 11) is a cross-check and loads the KiDS mask")
     ap.add_argument("--mask-data-dir", default=None, help="data dir for load_kids_mask (required with --normalization mean)")
