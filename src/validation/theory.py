@@ -1,41 +1,9 @@
-"""Per-cosmology *theory* pseudo-Cl bandpowers for the validation.
+"""Per-cosmology theory pseudo-Cl bandpowers for the validation.
 
-Two theory recipes are supported (``theory_mode``); both share the identical downstream
-(KiDS-Legacy MCM -> pol pixel window pw**2 -> ℓ-cut -> bandpower binning):
-
-* ``"splined"`` — the legacy *continuous* recipe (Theory_A) from
-  ``theory_tests_systematics.py``::
-
-      build_cosmology(params)  -> CAMB SplinedSourceWindow per bin (source_type='lensing')
-        -> get_source_cls_dict(lmax, raw_cl=True)   # C_l^{kk} per W_i x W_j
-
-* ``"shell_projection"`` — the *discrete multi-plane* recipe (Theory_B) that matches what
-  the simulator actually does (this is the DEFAULT)::
-
-      get_camb_matter_cls(pars, ...)                # the sim's exact shell C_l^{d_i d_j}
-        -> glass.lensing.multi_plane_weights(ngal_t)   # per-bin lensing efficiency
-        -> C_l^{kk}_{tt'} = sum_{jk} g_{tj} g_{t'k} C_l^{d_j d_k}
-
-  The continuous ``SplinedSourceWindow`` theory and the simulated *discrete* shell
-  projection differ by a smooth, rising ℓ-tilt (~+5% over [50,1500]); using the shell
-  projection removes it (validated: emp/theory ℓ-slope +0.017 -> +0.003).  Theory_B is
-  faithful by construction: it calls the **same** ``get_camb_matter_cls`` the simulator
-  uses (so it inherits the sim's exact NonLinear_both / kmax / non-Limber settings, and
-  the ``nonlinear`` knob below does NOT apply to it).
-
-Cost note: ``get_camb_matter_cls`` is a slow non-Limber CAMB call (~20 min/cosmology),
-so shell-projection results are memoised per cosmology on disk (``joblib.Memory``; dir
-overridable via ``$GLASS_MATTER_CACHE_DIR``) and the ensemble driver warms this cache in
-a serial pre-pass to avoid running many heavy CAMB jobs concurrently.
-
-Resolved decision (``nonlinear`` knob, splined mode only):
-    The default is now ``NonLinear_both`` (precision-logbook H9).  ``theory_tests_systematics.py``
-    historically used ``NonLinear_lens``, but for a source-window lensing spectrum that flag governs
-    the *CMB lensing potential* — not the source-window matter power — so it fed ~linear shear C_l
-    (high-ℓ deficit).  ``NonLinear_both`` is correct for the splined path.  (Shell mode ignores this
-    knob entirely; it inherits the sim's ``NonLinear_both`` via ``get_camb_matter_cls``.)
-
-Only read-only imports of the protected physics modules are used here.
+theory_mode "shell_projection" (the default) projects the simulator's own shell matter C_l with
+the multi-plane lensing weights. "splined" uses continuous CAMB SplinedSourceWindow windows.
+Both share the downstream: the KiDS-Legacy MCM, the pol pixel window pw**2, the ell-cut and the
+bandpower binning. The nonlinear knob applies to the splined mode only.
 """
 
 from __future__ import annotations
@@ -88,12 +56,10 @@ def _cached_matter_cls(params_key, lmax, zmin, zmax, dx):
 
 
 def _matter_tensor(matter: List[np.ndarray], nsh: int, lmax: int) -> np.ndarray:
-    """Pack the flat matter_cls list into a dense symmetric (nsh,nsh,lmax+1) tensor.
+    """Pack the flat matter_cls list into a dense symmetric (nsh, nsh, lmax+1) tensor.
 
-    ``glass.ext.camb.matter_cls`` emits ``[W{i}xW{j} for i in 1..n for j in i..1]`` — i.e.
-    for each row ``i`` the inner index runs DESCENDING.  We replay that exact order so the
-    auto-spectrum W{m}xW{m} lands on the diagonal (an earlier bug used a plain
-    lower-triangular offset, mislabelling autos as cross-spectra).
+    glass.ext.camb.matter_cls emits [W{i}xW{j} for i in 1..n for j in i..1], with the inner index
+    descending. That order is replayed here so each auto-spectrum lands on the diagonal.
     """
     C = np.zeros((nsh, nsh, lmax + 1))
     idx = 0
@@ -113,11 +79,8 @@ def _shell_projection_kappa_cls(
 ) -> Dict[Tuple[int, int], np.ndarray]:
     """Project shell matter C_l onto per-bin convergence C_l^{kk} via multi-plane weights.
 
-    Mirrors the simulator's lensing: galaxies in shell ``s`` of tomographic bin ``t`` are
-    weighted by ``ngal_{t,s} = ∫ n_t(z) W_s(z) dz`` (glass.shells.restrict), and the
-    effective lensing weight per shell is ``glass.lensing.multi_plane_weights`` — so the
-    map-level convergence is ``kappa_t = sum_s g_{ts} delta_s`` and hence
-    ``C_l^{kk}_{tt'} = sum_{jk} g_{tj} g_{t'k} C_l^{d_j d_k}``.
+    The shell weights are ngal_{t,s} = ∫ n_t(z) W_s(z) dz, as in the simulator, and g_{ts} comes
+    from glass.lensing.multi_plane_weights. So C_l^{kk}_{tt'} = sum_{jk} g_{tj} g_{t'k} C_l^{d_j d_k}.
     """
     nsh = len(ws)
     C = _matter_tensor(matter, nsh, lmax)
@@ -138,9 +101,8 @@ def _shell_projection_kappa_cls(
 def params_from_cosmo_vec(cosmo_vec: CosmoVec) -> Dict[str, float]:
     """Extract the CAMB cosmology parameters from an ``unpack_data`` cosmo vector.
 
-    ``cosmo_vec`` is ``(values, names)`` as returned by
-    ``unpack_data(..., return_names=True)``.  Only the 7 parameters CAMB needs are
-    pulled; extra saved keys (e.g. ``a_ia``, ``b_ia``) are ignored.
+    cosmo_vec is (values, names) as returned by unpack_data(..., return_names=True). Only the 7
+    parameters CAMB needs are pulled, and other saved keys are ignored.
     """
     values, names = cosmo_vec
     p = dict(zip(names, [float(v) for v in values]))
@@ -199,14 +161,11 @@ _THREAD_ENV_VARS = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"
 def warm_matter_cache(cosmo_vecs: Sequence[CosmoVec], *, lmax: Optional[int] = None,
                       nside: int = cfg.NSIDE, n_jobs: int = 1,
                       omp_threads: int = 8) -> int:
-    """Populate the matter_cls disk cache for the given (unique) cosmologies.
+    """Populate the matter_cls disk cache, once per unique cosmology, and return their count.
 
-    Each entry is a slow non-Limber CAMB call (~minutes); we compute each unique cosmology
-    exactly once, BEFORE the parallel ratio loop, so heavy CAMB jobs don't run concurrently
-    with that loop. With ``n_jobs > 1`` the warm-up itself runs ``n_jobs`` CAMB calls in
-    parallel, each pinned to ``omp_threads`` OpenMP/BLAS threads (set in the parent env so
-    spawned loky workers inherit it at import) — pick ``n_jobs * omp_threads <= cores`` to
-    avoid oversubscription. Returns the number of unique cosmologies warmed.
+    Run it before the parallel ratio loop, so heavy CAMB jobs do not run concurrently with it.
+    With n_jobs > 1 it runs n_jobs CAMB calls, each pinned to omp_threads threads through the
+    parent env. Keep n_jobs * omp_threads <= cores.
     """
     if lmax is None:
         lmax = 2 * nside
@@ -257,11 +216,9 @@ def compute_bandpower_theory_from_cosmo_vec(
 ) -> Dict[str, np.ndarray]:
     """Return ``{ "S{i}-S{j}": bandpowers (nbands,) }`` for one cosmology.
 
-    ``theory_mode`` selects ``"shell_projection"`` (Theory_B, default; matches the sim's
-    discrete multi-plane lensing) or ``"splined"`` (Theory_A; continuous SplinedSourceWindow).
-    Both share the downstream: if ``mixing_matrix`` is given the full (EE, EB=0, BB=0)
-    vector is mode-coupled by it, then the EE block gets the pol pixel window ``pw**2``,
-    is cut to ``[lmin_cut, lmax_cut]`` and binned into ``nbands`` bandpowers.
+    theory_mode is "shell_projection" (the default) or "splined". When mixing_matrix is given, the
+    full (EE, EB=0, BB=0) vector is mode-coupled by it. The EE block then gets pw**2, is cut to
+    [lmin_cut, lmax_cut] and is binned into nbands bandpowers.
     """
     if lmax is None:
         lmax = 2 * nside
@@ -283,9 +240,7 @@ def compute_bandpower_theory_from_cosmo_vec(
     else:
         raise ValueError(f"unknown theory_mode {theory_mode!r}")
 
-    # Shared downstream: MCM -> pol pixel window pw**2 -> ℓ-cut -> bandpower binning.
-    # (kk and shear-EE differ only by fl=(l+2)(l-1)/[l(l+1)] ~ 1 for l>=50; omitted, as
-    # in the legacy splined recipe, so the two modes stay directly comparable.)
+    # kk and shear-EE differ by fl=(l+2)(l-1)/[l(l+1)] ~ 1 for l>=50, omitted in both modes.
     _, pw = hp.pixwin(nside, lmax=lmax, pol=True)
 
     bandpower_theory: Dict[str, np.ndarray] = {}
@@ -301,7 +256,7 @@ def compute_bandpower_theory_from_cosmo_vec(
             pseudo = mixing_matrix @ T if mixing_matrix is not None else T
             pseudo_EE = pw ** 2 * pseudo[0 * (lmax + 1):1 * (lmax + 1)]
             cls_cut = pseudo_EE[lmin_cut:lmax_cut + 1]
-            # reshape to (1,1,1,L) so we can reuse the same binning function.
+            # compute_cl_bandpowers takes shape (1, 1, 1, L).
             _, bp_th = compute_cl_bandpowers(
                 cls_cut[np.newaxis, np.newaxis, np.newaxis, :],
                 1, lmin_cut, lmax_cut, nbands,
