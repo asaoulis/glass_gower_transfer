@@ -1,14 +1,8 @@
 """Bake an observation into the compact per-arm store the trained models read.
 
-The flagship BGP arms train on ``prebake_maps.py --eb-variant sc8_fwhm4_lmin56_lcut1400 --noise-norm
-rand --dtype float16`` (no ``--keep-variant-tag`` => bare ``E`` group). The a1/nobgp arms on
-``--eb-variant fwhm4_lmin56_lcut1400 --noise-norm rand`` (verify per arm: see ``ARM_BAKES``).
-This module calls the SAME ``_bake_one`` worker, so an observation goes through the identical bake.
-
-File naming contract (``src/ml/data/data_selection.py:extract_cosmo_index`` requires
-``output_(\\d+)_``): an observation with opaque label ``L`` is written as
-``<store>/output_<obs_id>_out0_rot0_0.h5`` with ``obs_id`` from ``OBS_IDS`` (9001.. by label
-order) -- the label itself lives in the STORE directory name and the provenance group only.
+Calls prebake_maps._bake_one with the arm's flags from ARM_BAKES. An observation with label L is
+written as <store>/output_<obs_id>_out0_rot0_0.h5 (obs_id from OBS_IDS), since extract_cosmo_index
+requires output_(\\d+)_. The label lives only in the store name and the provenance group.
 """
 from __future__ import annotations
 
