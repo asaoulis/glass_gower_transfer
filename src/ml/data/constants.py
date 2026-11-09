@@ -1,4 +1,8 @@
-# PRESET KiDS Gower Street mins and maxes for cosmology parameterrs
+"""Preset min/max boxes of the inference parameters, matched to the Gower Street prior.
+
+The `preset` cosmo scaler maps each parameter into [0, 1] with these boxes so GLASS and Gower
+share one scaled space.
+"""
 COSMO_PARAM_PRESET_MINMAX = {
     'omega_m': (0.1, 0.5),
     'sigma_8': (0.6, 1.0),
@@ -18,9 +22,8 @@ COSMO_PARAM_PRESET_MINMAX = {
        'Omega_b': (0.03670663082, 0.06051677202),
        'a_ia': (4.48, 7.0),
        'b_ia': (0.28, 0.6),
-       # NLA-family IA params (Wright et al. 2025). NOTE: a_ia's box above is the NLA-M range;
-       # NLA / NLA-z / TATT datasets use a_ia ~ U[-6, 6] and so need an a_ia scaler box of
-       # (-6.0, 6.0) — override per dataset/config (the global preset cannot hold two a_ia boxes).
+       # NLA-family IA params (Wright et al. 2025). The a_ia box above is the NLA-M range, so
+       # NLA / NLA-z / TATT configs (a_ia ~ U[-6, 6]) must override it.
        'b_z': (-25.2, 17.8),    # ~5 sigma around N(-3.7, 4.3) for NLA-z
        'b_src': (-0.5, 1.5),    # TATT / NLA-k density-weighting bias prior range
 }
