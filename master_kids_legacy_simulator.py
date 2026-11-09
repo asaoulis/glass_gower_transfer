@@ -1,15 +1,9 @@
-"""MPI KiDS-Legacy mock generator (GLASS / Gower Street / smoke / external backends).
+"""MPI KiDS-Legacy mock generator: python master_kids_legacy_simulator.py --simulator-type <backend>.
 
-See .claude/background/master_simulator.md for the control flow and launch scripts.
-
-Variable depth (VD) is ON BY DEFAULT since 2026-09-29 (task training-runs/VD-final-train):
-with --kids-systematics and the KiDS geometry (smoke, or glass/gower_street + --use-kids-mask),
-an absent --variable-depth resolves to VD ON with the 'quadcap' count-contrast table. Opt out
-with --no-variable-depth; --systematics-model none and --simulator-type external resolve OFF.
-Consequently the root launchers (mpi_gower_mocks.sh / fast_mpi_gower_mocks.sh: --kids-systematics
---use-kids-mask, no VD flag) now produce VD-quadcap mocks by design. Rank 0 prints the resolved
-state (`variable-depth: ON vd_table=quadcap (source=auto)`) to stdout AND stderr, and every mock
-carries cosmo_dict/vd_code (0 off, 1 pooled, 2 patch, 3 quadcap).
+One shared pipeline (shells -> shear -> galaxy catalogue -> bandpowers and pixelised E/B maps), with
+the gower_street, glass, smoke and external backends differing in how the matter shells are produced.
+Variable depth is on by default with --kids-systematics and the KiDS mask (quadcap table). Every mock
+carries cosmo_dict/vd_code (0 off, 1 pooled, 2 patch, 3 quadcap, 4 v2pr).
 """
 import numpy as np
 import healpy as hp
@@ -198,8 +192,7 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path,
                         default=Path("/share/gpu5/asaoulis/transfer_datasets/gower_full_only_mocks"))
 
-    # Shared, persistent CAMB-Cls cache (separate from --output-dir) so analysis variates reuse
-    # the expensive Cls; and the base seed fixing the per-sim_id cosmology across variates.
+    # A shared CAMB-Cls cache and a base seed for the per-sim_id cosmology let variates reuse the Cls.
     parser.add_argument("--camb-cache-dir", type=Path, default=CAMB_CLS_CACHE_DIR,
                         help="Shared on-disk cache for CAMB-computed matter Cls, keyed by sim_id.")
 
@@ -260,15 +253,14 @@ def parse_args():
 
 # Variable-depth provenance code stamped per mock as cosmo_dict/vd_code (a float, loader-safe).
 VD_TABLE_CODES = {"off": 0, "pooled": 1, "patch": 2, "quadcap": 3, "v2pr": 4}   # 4 = VD v2 (PR #3, opt-in)
-VD_TABLE_DEFAULT = "quadcap"   # VD-final-train (2026-09-29): the production VD table
+VD_TABLE_DEFAULT = "quadcap"   # production VD table
 
 
 def _resolve_variable_depth(args):
-    """Resolve the tri-state --variable-depth (None = auto) to ``(on, table, source)``.
+    """Resolve the tri-state --variable-depth (None = auto) to (on, table, source).
 
-    Must run BEFORE the protected ``resolve_systematics_model(args)`` sees ``args`` (it reads
-    ``args.variable_depth`` as a truthy flag), so the caller writes the result back onto
-    ``args.variable_depth`` / ``args.vd_table``. Raises ``SystemExit`` on a contradictory command line.
+    Must run before resolve_systematics_model(args). Raises SystemExit on a contradictory
+    command line.
     """
     explicit = args.variable_depth
     if explicit is True and args.simulator_type == "external":
@@ -310,127 +302,33 @@ GLASS_N_JOBS = 6500
 # keys the on-disk Cls cache guard compares (see src/cosmology/mpi_camb.COSMO_GUARD_KEYS).
 COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 
-# E/B map smoothing variants saved per mock: a list of (fwhm_arcmin, lmin, lcut) triples. Each
-# triple produces one set of pixelised E/B maps, stored under keys
-# E_fwhm{fwhm}[_lmin{lmin}][_lcut{lcut}] / B_... . `lmin` / `lcut` are hard top-hats (lower /
-# upper ell-cut) applied after the Gaussian beam + cosine taper inside
-# filter_EB_alms_and_make_maps: lmin zeros all ell < lmin, lcut zeros all ell > lcut (a
-# Jeffrey-et-al-2025-style hard scale band). Either may be None to disable that edge (both None
-# -> smoothing-only, keyed E_fwhm{fwhm}). The first entry reproduces the previous production map;
-# append triples to ALSO save lighter smoothings / hard-cut band variants, e.g.
-# [(8.0, None, None), (6.0, None, 1024), (6.0, 56, 1024)].
-#
-# ⭐ DEFAULT CHANGED 2026-08-16 (user): the campaign has settled on **sc8a1** as the single
-# production estimator, so the counts-normalised E/B branch is OFF by default and this list is
-# EMPTY. sc8a1 reads `E_sc8_<tag>` / `noise_std_sc8_<tag>`, which are produced by the A3s8 branch
-# below and do NOT depend on this list. Dropping it removes 3 x (E + B) float64 map sets per mock
-# — by far the largest on-disk item — leaving one float16 E map, the bandpowers and the cosmology.
-# Nothing is deleted from the code: put the triples back to regenerate the A0/A1/B1 arms or the
-# B-mode null-test channel (they are only reachable from these maps).
-#
-# ⭐ 2026-08-17: this pair of constants is now SELECTABLE PER RUN via `--eb-variants`, because a
-# global default silently decided what a named store contains. A sim reads this module at RUN
-# time, so when the default flipped (3bb6a62, 2026-08-16 20:02Z) every *already-queued or
-# wall-resumed* row silently changed product mid-store — a resume of the S1 Gower foundation
-# (ranks started 16:10Z, i.e. 4 h before the flip) would have written ~4 MB sc8a1-only mocks into
-# a 28.5 MB superset store. `EB_VARIANT_PRESETS` below makes the choice an explicit property of
-# the ROW, and the rank-0 banner + `--num-sims`-style post-submit gate makes it auditable.
+# (fwhm_arcmin, lmin, lcut) triples. Each adds pixelised_results keys E_fwhm{f}[_lmin{lo}][_lcut{hi}]
+# and B_..., and None for lmin or lcut omits that suffix.
 EB_SMOOTHING_VARIANTS = []
 
-# --- Shear-estimator hardening: the dual-normalisation SUPERSET store -------------------------
-# Source-galaxy clustering (b_g) modulates the per-pixel galaxy count N_p, and the counts
-# normalisation S_p/N_p therefore leaks it into the map branch as a noise-AMPLITUDE channel
-# (a b_g 1.0 -> 1.5 change moves the stored E amplitude by ~+7 sigma). See the measured
-# leaderboard in .claude/runs/kids-preparation/improved-shear-processing/artifacts/RESULTS.md.
-#
-# One generation run writes a superset from which FIVE estimators can be trained with no
-# re-simulation:
-#   A0_counts   the stored E_<tag> maps, unmodified                      (baseline)
-#   A1_wht_rand E_<tag> / noise_std_<tag>                                (DEPLOYED)
-#   B1_selfstd  E_<tag> standardised per bin at load time                (eb_noise_norm='self')
-#   A3s8        the stored E_sc8_<tag> maps, unmodified
-#   A3s8_A1     E_sc8_<tag> / noise_std_sc8_<tag>
-# What each arm actually costs, so nobody re-derives this the hard way:
-#   B1 is the ONLY arm that is genuinely retrofittable. It is a pure function of the stored E
-#      maps (a per-bin standardisation applied by the loader), so it runs on ANY existing store
-#      with no regeneration at all -- config knob eb_noise_norm='self'.
-#   A1 is NOT retrofittable, despite reading "E / scalar". The scalar is the std of the matched
-#      RANDOM-ROTATION noise map -- an independent realisation that is not recoverable from the
-#      stored E maps. It costs a regeneration; what it does NOT cost is a second map product.
-#   A3s8 is not retrofittable either, and is the expensive one: it replaces the per-pixel
-#      DENOMINATOR before the spin-2 SHT.
-# Measured per-mock map-stage cost at production geometry (2026-08-06, jobs 1342042/1342078):
-#   baseline 120 s | + A1 scalars (1 variant) ~49 s | + the other 2 variants ~98 s
-#   | + the A3s8 branch (1 sc8 variant) ~215 s  =>  480 s at that configuration.
-# Against ~728 s/mock of amortised shell time that is +6 % (A1 alone) vs +42 % (full store).
-# A SECOND sc8 variant (added 2026-08-11) re-filters the same alms, so it costs only a
-# filter + map + pixelise + noise meter (~50-60 s, i.e. like one extra counts variant), NOT
-# another ~215 s: the spin-2 transform with the smoothed-counts denominator is paid once.
-# The A3s8 share buys ONE thing: a hedge against SPATIALLY STRUCTURED misspecification (variable
-# depth), which a single per-mock scalar cannot absorb. Kept deliberately (user, 2026-08-06). It is carried for robustness option value
-# against SPATIALLY STRUCTURED misspecification (variable depth), which a single per-mock
-# scalar cannot absorb -- see artifacts/DUAL_STORE_A3S8.md.
-#
-# The BANDPOWER branch is deliberately untouched: it keeps consuming the primary `counts` alms,
-# so the MCM/mask convention and src/validation/ are unaffected (per-observable normalisation).
+# --- sc8 / counts map products ---
 
-# EB variants the A3s8 branch is built for: (fwhm_arcmin, lmin, lcut) triples that MUST each be one
-# of EB_SMOOTHING_VARIANTS. Every entry re-filters the SAME sc8 alms, so the second and later
-# entries cost only a filter + SHT-to-map + pixelise (+ the noise-meter pass) -- NOT another
-# spin-2 transform of the catalogue, which is the expensive part of this branch. Empty/None
-# disables the whole second branch (byte-identical legacy output).
-#   (4.0, 56, 1400) = the primary scale cut (arms A3s8 / A3s8_A1, "sc8" / "sc8a1")
-#   (8.0, 56, 1024) = the conservative R1024 cut, so the sc8 x lcut1024 combination is available
-#                     without a re-simulation (user, 2026-08-11)
-#
-# ⭐ 2026-08-16 (user): BOTH sc8 variants are KEPT — the campaign is sc8a1-only on the
-# *normalisation* axis, not on the scale-cut axis:
-#   (4.0, 56, 1400) = aggressive  -> sc8a1
-#   (8.0, 56, 1024) = conservative R1024 -> sc8a1 x R1024
-# Each entry writes its own E_sc8_<tag> map AND its own noise_std_sc8_<tag> scalars, so each is a
-# complete sc8a1 arm on its own. The second entry re-filters the SAME sc8 alms, so it costs a
-# filter + map + pixelise + noise meter (~50-60 s/mock), NOT another spin-2 transform.
+# A3S8_VARIANTS: (fwhm_arcmin, lmin, lcut) triples built from the sc8 alms. Each must also appear in
+# EB_SMOOTHING_VARIANTS while the counts branch is on.
 A3S8_VARIANTS = [(4.0, 56, 1400), (8.0, 56, 1024)]
-# Typo guard: while the counts branch is ENABLED, an sc8 variant with no matching counts-normalised
-# variant would leave the arm without its control map (and no prebake source for the comparison),
-# which is silent on disk. When EB_SMOOTHING_VARIANTS is empty the counts branch is deliberately
-# off (sc8a1-only store) and there is nothing to pair against, so the guard does not apply.
+# Guard: while the counts branch is on, every sc8 variant needs a matching counts variant.
 assert not EB_SMOOTHING_VARIANTS or all(
     tuple(v) in [tuple(x) for x in EB_SMOOTHING_VARIANTS] for v in A3S8_VARIANTS), (
     f"A3S8_VARIANTS {A3S8_VARIANTS} must each appear in EB_SMOOTHING_VARIANTS "
     f"{EB_SMOOTHING_VARIANTS}")
-# A store with neither branch would carry no maps at all — always a mistake, never a config.
+# A store with neither branch would carry no maps at all: always a mistake, never a config.
 assert EB_SMOOTHING_VARIANTS or A3S8_VARIANTS, (
     "both EB_SMOOTHING_VARIANTS and A3S8_VARIANTS are empty: the store would contain no E/B maps")
-# FWHM (arcmin) the count map is smoothed at before being used as the denominator. 8' is harness
-# candidate A3_smooth8 / A3s8_A1; do NOT change it without re-running the replay harness.
+# FWHM (arcmin) of the count map used as the denominator.
 A3S8_FWHM_ARCMIN = 8.0
-# The A3s8 maps are an ML-only derived product (never a science archive) and the loader casts on
-# read anyway, so float16 halves the on-disk delta to ~+1.95 MB/mock (+8 %) PER sc8 variant.
+# sc8 maps are stored as float16 (ML-only product).
 A3S8_MAP_DTYPE = np.float16
 
-# Per-(variant, bin, patch) standard deviations of the RANDOM-ROTATION noise map, stored as
-# scalars (~288 B/mock) so the A1 rescale is a loader/prebake-side division and stays ablatable.
-#   None  -> compute for every EB_SMOOTHING_VARIANTS entry (full optionality, ~+12.5 s/variant)
-#   list  -> compute only for these (fwhm, lmin, lcut) triples
-#   ()    -> disable (no noise_std groups written; the A1 arm becomes untrainable)
-# ⭐ DEFAULT CHANGED 2026-08-16 (user): sc8a1-only. This knob governs ONLY the counts branch, which
-# is now off, so it is set to () to make that explicit — leaving it at None would silently mean
-# "every EB_SMOOTHING_VARIANTS entry", i.e. nothing, and read as an oversight later.
-# ⚠️ The sc8a1 scalars are NOT controlled here: `noise_std_sc8_<tag>` is written unconditionally by
-# the A3s8 branch for every A3S8_VARIANTS entry. Setting this to () does not disable sc8a1.
+# noise_std_<tag>: per-(variant, bin, patch) std of the random-rotation noise map, stored as scalars
+# so the A1 rescale happens at load time.
 NOISE_STD_VARIANTS = ()
 
-# --- `--eb-variants`: the counts-branch store contents, as a named per-row mode ----------------
-# EB_SMOOTHING_VARIANTS and NOISE_STD_VARIANTS MUST move together — restoring the smoothing list
-# while leaving NOISE_STD_VARIANTS at () writes the counts E/B maps with NO `noise_std_<tag>`
-# scalars, which silently makes the A1 arm (E / noise_std) untrainable on exactly those mocks.
-# Pairing them in one preset is the whole point: there is no way to set half of it.
-#   sc8only  today's default — counts branch OFF, sc8 arms only (the smallest production store)
-#   full     the pre-2026-08-16 superset: counts E *and* B at 3 smoothings + every noise_std,
-#            i.e. the A0/A1/B1 arms and the B-mode null-test channel. Used by the S1 Gower
-#            foundation (`gower_mocks_nla_m_novd_bgp`) and every resume of it.
-# Neither preset touches A3S8_VARIANTS: the sc8/sc8a1 arms are written identically in both.
+# EB_VARIANT_PRESETS: named store contents. EB_SMOOTHING_VARIANTS and NOISE_STD_VARIANTS must move together.
 EB_VARIANT_PRESETS = {
     "sc8only": {"eb": [], "noise_std": ()},
     "full": {"eb": [(4.0, 56, 1400), (8.0, 56, 1400), (8.0, 56, 1024)], "noise_std": None},
@@ -448,17 +346,9 @@ def eb_variant_tag(fwhm_v, lmin_v, lcut_v):
 
 
 def patch_noise_std(rand_E_maps, patches, nside_out, ang, patch_names):
-    """Per-(patch, bin) std of the filtered random-rotation E map, + the pooled 'all'.
+    """Per-(patch, bin) std of the filtered random-rotation E map, plus the pooled 'all'.
 
-    The random-rotation map is a pure shape-noise realisation of the SAME galaxies with the
-    SAME per-pixel counts, so its std is a per-mock meter of the noise amplitude that the
-    counts normalisation makes b_g-dependent. Dividing the stored E map by it is the deployed
-    A1_wht_rand estimator.
-
-    The std is taken over ALL pixels of each stored patch grid (not the galaxy-occupied
-    footprint the offline harness uses) so that it is reproducible from the stored patches
-    alone. The two differ by a geometric factor that is fixed across mocks because the mask
-    and patch geometry are fixed -- harness candidates A1_patch / A3s8_A1_patch verify this.
+    Returns {patch_name: (nbins,), 'all': (nbins,)}.
     """
     per_patch = get_patch_values(rand_E_maps, patches, nside_out, ang)
     out = {}
@@ -470,8 +360,8 @@ def patch_noise_std(rand_E_maps, patches, nside_out, ang, patch_names):
     out["all"] = np.concatenate(flat, axis=1).std(axis=1)
     return out
 
-# Per-IA-model forward-sampling priors. Each entry maps a parameter to a distribution spec
-# ("uniform", lo, hi) or ("normal", mu, sigma); sampled per mock by sim_utils.sample_ia_params.
+# Per-IA-model forward-sampling priors: parameter -> ("uniform", lo, hi) or ("normal", mu, sigma),
+# drawn by sim_utils.sample_ia_params.
 # nla_m: Fortuna et al. 2025 / Wright et al. 2025 (covers their posterior at 5 sigma).
 # nla / nla_z / tatt: Wright et al. 2025 priors (A_IA ~ U[-6,6]; B_IA ~ N(-3.7,4.3); b_src ~ U[-0.5,1.5]).
 IA_PRIOR_SPECS = {
@@ -481,29 +371,7 @@ IA_PRIOR_SPECS = {
     'tatt':  {'a_ia': ('uniform', -6.0, 6.0), 'b_src': ('uniform', -0.5, 1.5)},
 }
 
-# --- Named IA prior OVERRIDE sets -------------------------------------------------------------
-# Applied per-parameter ON TOP of IA_PRIOR_SPECS by `resolve_ia_prior_spec`, selected with
-# `--ia-prior-set`. An override set is deliberately a partial dict: it states only the parameters it
-# changes, so IA_PRIOR_SPECS stays the single definition of each model's parameter LIST and the two
-# cannot drift apart.
-#
-# A degenerate uniform ('uniform', v, v) is the ONLY pin mechanism used here: `sample_ia_params`
-# (src/cosmology/sim_utils.py — PROTECTED) understands 'uniform' and 'normal' only, and
-# `rng.uniform(v, v)` returns v exactly while STILL CONSUMING one draw, so the backend RNG stream
-# stays byte-aligned with the un-pinned sets and `--rng-seed` pairing across prior sets holds.
-#
-# 'matched' — the matched-nuisance suite (task eval-and-viz/matched-nuisance-variate-corners).
-# Values from `scripts/match_ia_amplitudes.py`, which pins each IA model so the n(z)-weighted
-# EFFECTIVE alignment amplitude is IDENTICAL across nla_m / nla / nla_z. The anchor is the nla_m
-# forward-prior midpoint (a_ia 5.74, b_ia 0.44), giving Abar = +0.435641 (n_arcmin2-weighted; the
-# unweighted reduction gives +0.436899, a 0.3 % difference). Per-bin A_eff at that matched mean:
-#     nla_m  [+0.138 +0.399 +0.462 +0.777 +0.716 +0.129]   (f_red- and mass-weighted)
-#     nla    [+0.436 ...............................]      (flat by construction)
-#     nla_z  [-0.236 +0.138 +0.354 +0.708 +0.909 +1.154]   (redshift tilt at b_z = -3.7)
-# i.e. the MEAN is matched, not the per-bin profile — that residual shape difference IS the model
-# difference under test, and must be described as such.
-# `b_z` is fixed at the Wright et al. prior mean (-3.7) rather than 0: b_z = 0 also satisfies the
-# constraint but collapses NLA-z exactly onto plain NLA, destroying the variate.
+# --- IA prior override sets: applied per parameter on top of IA_PRIOR_SPECS (--ia-prior-set) ---
 IA_PRIOR_OVERRIDES = {
     'default': {},
     'matched': {
@@ -513,24 +381,14 @@ IA_PRIOR_OVERRIDES = {
         'nla_z': {'a_ia': ('uniform', -0.272397, -0.272397),
                   'b_z':  ('uniform', -3.700000, -3.700000)},
     },
-    # 'ppc' — posterior-predictive regeneration (task eval-and-viz/vdq-posterior-predictive, plan §M7/§R):
-    # a_ia drawn from (a mildly inflated Gaussian fit to) the pooled real-data field posterior, instead of
-    # the U[-6, 6] generation box. Inflation x1.25: the regenerated cosmologies are fixed design points and
-    # each block is importance-weighted by p(a_ia | phi_i, x) / q_ppc(a_ia); the conditional posteriors
-    # shift by up to ~1.3 sigma across the top-weight sims and are narrower than the pooled marginal, so a
-    # slightly wider q keeps those ratios bounded (block-ESS ~0.8 N) at almost no cost.
-    # NLA: pooled -0.114 +- 0.232 (4 repeats); NLA-z: -0.077 +- 0.282 (5 repeats, nle-loglik quadrature).
-    # b_z keeps its generation prior. Same draw count as 'default', so RNG streams stay aligned.
+    # 'ppc': a_ia drawn from a mildly inflated Gaussian fit to the pooled real-data field posterior.
     'ppc': {
         'nla':   {'a_ia': ('normal', -0.114, 0.29)},
         'nla_z': {'a_ia': ('normal', -0.077, 0.35)},
     },
 }
 
-# Non-IA-prior nuisances pinned by a prior set. `log10_M_eff` is NOT sampled by
-# `sample_ia_params` — it is drawn per (sim, outer, rot) block from the massdep MVN — so it is
-# pinned draw-then-overwrite at the draw site, which keeps the per-block RNG_STREAM_* contract
-# stable so a future `--rng-seed` pairing against a DEFAULT-set store still holds.
+# Nuisances pinned by a prior set. log10_M_eff is drawn per block and then overwritten (draw-then-pin).
 NUISANCE_PINS = {
     'default': {},
     'matched': {'log10_M_eff': 'prior_mean'},   # multiplies the nla_m IA amplitude
@@ -561,29 +419,25 @@ SIM_TYPE_CONFIGS = {
         "rotation_specs": KiDS_PATCH_GOWER_ROTATIONS,
         "get_sim_samples": lambda: np.arange(193, 781 + 1),
     },
-    # One external cosmology (the ingested box); Gower rotations, because the mock cloud we
-    # compare it against is the Gower suite.
+    # One external cosmology (the ingested box), with Gower rotations to match the Gower suite.
     "external": {
         "rotation_specs": KiDS_PATCH_GOWER_ROTATIONS,
         "get_sim_samples": lambda: np.arange(1),
     },
-    # Reduced-cost local pre-flight: a single sim; rotations/augmentations collapsed below.
+    # Reduced-cost local pre-flight: one sim, rotations and augmentations collapsed below.
     "smoke": {
         "rotation_specs": KiDS_PATCH_GLASS_ROTATIONS,
         "get_sim_samples": lambda: np.arange(1),
     },
 }
 
-# Fixed seed for the `--gower-sim-set fixed_test --num-sims N (>200)` random top-up (below): the
-# 200 fixed-test ids are always kept and the extra (N-200) sim_ids are drawn WITHOUT replacement
-# from the Gower complement using this seed, so a resume / re-submit reproduces the SAME cosmology
-# set (the sim resumes by skipping complete sim_ids, so the id list must be stable across runs).
+# Seed for the random top-up of --gower-sim-set beyond the lock size: the lock ids are kept,
+# extras drawn without replacement.
 GOWER_TOPUP_SEED = 20260710
 
 
-# --- FIXED-RNG (paired-catalogue) mode -------------------------------------------------------
-# Stream tags spawned off the per-block SeedSequence. Order/identity is part of the on-disk
-# contract: changing them changes every mock generated with a given --rng-seed.
+# --- fixed-RNG (paired-catalogue) mode: stream tags spawned off the per-block SeedSequence ---
+# The tag order is part of the on-disk contract.
 RNG_STREAM_SAMPLE = 0   # nuisance draws + galaxy sampling / shape noise (Simulator rng)
 RNG_STREAM_BACKEND = 1  # IA-prior draws + the GLASS log-normal matter fields
 RNG_STREAM_POSTPROC = 2  # random ellipticity rotation for the noise-only alm (map_shears)
@@ -591,36 +445,12 @@ RNG_STREAM_LEGACY = 3   # seeds the GLOBAL numpy RNG (see build_block_rngs)
 
 
 def build_block_rngs(seed, sim_num, outer_idx, rot_idx):
-    """Return ``(sample_rng, backend_rng, postproc_rng)`` for one (sim, outer, rot) block.
+    """Return (sample_rng, backend_rng, postproc_rng) for one (sim, outer, rot) block.
 
-    With ``seed is None`` (the default) all three are INDEPENDENT UNSEEDED generators, which
-    reproduces the historical behaviour bit-for-bit *in distribution* — the old code used one
-    shared unseeded generator, but with no seed there is nothing to preserve, and splitting the
-    streams is what makes the fixed-seed path meaningful.
-
-    With an integer ``seed`` the three streams are spawned from
-    ``SeedSequence([seed, sim_num, outer_idx, rot_idx])``, so they are:
-
-    * **reproducible** — re-running the same block reproduces the same mock byte-for-byte;
-    * **independent** — crucially, the matter-field stream (``backend_rng``, consumed lazily by
-      ``glass.generate`` inside the shell loop) no longer shares a generator with the galaxy
-      sampling (``sample_rng``, consumed by ``positions_from_delta`` / ``redshifts`` /
-      ``sample_ellipticity``). The galaxy draws depend on ``galaxy_bias``, so under the old
-      single-generator scheme the stream de-synchronised after the first shell and every later
-      shell's delta differed between b_g variants. Split, the delta shells are IDENTICAL across
-      variants that only change the galaxy sampling => a paired (cosmic-variance-free) test.
-
-    Note ``prepare_glass_backend`` draws the IA nuisance params from ``backend_rng`` *before*
-    generating the fields, but only on an in-memory cache MISS. The caller therefore hands it a
-    fresh per-block cache in fixed-RNG mode so every block consumes the identical sequence
-    (IA draws -> field draws) regardless of resume state or rank layout.
-
-    SIDE EFFECT (seeded mode only): also seeds the **global** legacy numpy RNG from a fourth
-    spawned stream. Some physics draws are not reachable through any ``rng`` argument — notably
-    the per-mock photo-z shift ``np.random.multivariate_normal`` in ``src/KiDS/tomo.py`` (protected
-    code, so it is seeded rather than re-plumbed). That draw perturbs ``tomo_nz`` and therefore
-    EVERY downstream product, so leaving it unseeded makes two same-seed runs fully uncorrelated.
-    Seeding it here also covers any future global-RNG use on the sim path.
+    seed None: three independent unseeded generators. seed set: three streams spawned from
+    (seed, sim, outer, rot), so runs sharing the seed share matter fields and nuisance draws.
+    In seeded mode the global numpy RNG is also seeded, from a fourth stream, because the
+    photo-z shift in src/KiDS/tomo.py draws from it.
     """
     if seed is None:
         return (np.random.default_rng(), np.random.default_rng(), np.random.default_rng())
@@ -635,16 +465,9 @@ def build_block_rngs(seed, sim_num, outer_idx, rot_idx):
 
 
 def draw_galaxy_bias_prior(preset, parent_rng):
-    """Draw the O3-diag per-tomo-bin galaxy-bias 6-vector for one (sim, outer, rot) block.
+    """Draw the per-tomo-bin galaxy-bias 6-vector for one block from the named preset.
 
-    Independent truncated Gaussians ``b_i ~ N(mean_i, kappa*sigma_i)`` (Flamingo
-    calibration, ``GALAXY_BIAS_PRIOR_MEANS/SIGMAS``), truncated at +-3 kappa sigma and
-    clipped to ``GALAXY_BIAS_CLIP`` (lambda-clip safety at high-variance shells).
-
-    Draws from a SPAWNED child of ``parent_rng`` (= the block's sample stream): spawning
-    leaves the parent stream bit-identical, so a run without the prior — and the
-    ``--rng-seed`` pairing against existing stores — is unchanged, while a fixed seed makes
-    the draw deterministic per (seed, sim, outer, rot).
+    b_i ~ N(mean_i, kappa * sigma_i), truncated at +-3 kappa sigma and clipped to GALAXY_BIAS_CLIP.
     """
     spec = GALAXY_BIAS_PRIORS[preset]
     kappa = float(spec["kappa"])
@@ -657,11 +480,7 @@ def draw_galaxy_bias_prior(preset, parent_rng):
 
 
 # --- Raw galaxy-catalogue dumps --------------------------------------------------------------
-# Column dtypes for --save-catalogues. The catalogue is the LARGEST object in the pipeline
-# (~4e7 galaxies for a KiDS-Legacy footprint at the production n_eff), so the float64 working
-# array is downcast on write: 48 B/galaxy -> 21 B/galaxy, i.e. ~0.9 GB per mock instead of ~2 GB.
-# float32 keeps ~7 significant digits, far beyond the precision of any of these quantities
-# (positions are degrees, ellipticities are O(0.3) with O(1e-3) shear on top).
+# Column dtypes for --save-catalogues (the catalogue is the largest object in the pipeline).
 CATALOGUE_DTYPES = {
     "RA": np.float32, "DEC": np.float32, "Z_TRUE": np.float32,
     "ZBIN": np.int8, "E1": np.float32, "E2": np.float32,
@@ -669,20 +488,7 @@ CATALOGUE_DTYPES = {
 
 
 def save_catalogue_h5(path, catalogue, cosmo_dict, extra_attrs=None):
-    """Write ONE mock's raw galaxy catalogue next to (not inside) its output_*.h5.
-
-    Rationale: the per-mock shear maps are already the *output* of a particular estimator
-    (counts-normalised pseudo-Cl / pixelised E-B). To ask whether a DIFFERENT estimator is
-    hardened against source clustering, you need the galaxies themselves — position, tomographic
-    bin and observed ellipticity — so the map-making can be replayed offline at will.
-
-    Written to a ``catalogues/`` SUBDIR of the output dir so the ``output_*.h5`` globs that drive
-    every dataset config are untouched, and so a catalogue run can be deleted independently.
-
-    ``extra_attrs`` records what the catalogue cannot: the realised multiplicative shear bias
-    (``make_alm_shear_convergence`` applies the 1/(1+m) de-bias, so replaying the maps needs it),
-    the galaxy bias in force, the shear normalisation, and the fixed-RNG seed if any.
-    """
+    """Write one mock's raw galaxy catalogue (RA, DEC, Z_TRUE, ZBIN, E1, E2, optional W) next to its output h5."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
@@ -707,23 +513,10 @@ def save_catalogue_h5(path, catalogue, cosmo_dict, extra_attrs=None):
 
 
 def gower_fixed_test_with_topup(fixed_ids, num_sims, full_gower_ids, seed=GOWER_TOPUP_SEED):
-    """Ordered Gower sim_id array for ``--gower-sim-set fixed_test`` (+ optional random top-up).
+    """Ordered Gower sim_id array for --gower-sim-set.
 
-    The 200 fixed-test ids come FIRST (so the generic ``--num-sims`` prefix cap applied by the
-    caller never drops them). When ``num_sims`` exceeds the fixed count, ``num_sims - len(fixed)``
-    extra ids are drawn WITHOUT replacement from ``full_gower_ids`` minus the fixed set, using a
-    deterministic ``seed`` so a resume / re-submit reproduces the same set. This gives a
-    "200 fixed-test + M random" training suite in one output dir (the fixed ids stay forced into
-    the eval test split via ``config.fixed_test_sim_ids``; the extras become train/val cosmologies).
-
-    Args:
-        fixed_ids: ordered list of the fixed-test sim_ids (farthest-point order preserved).
-        num_sims: the ``--num-sims`` value, or ``None`` (=> just the fixed ids, no top-up).
-        full_gower_ids: the full Gower sim_id array (``np.arange(193, 782)``).
-        seed: RNG seed for the top-up draw.
-
-    Returns:
-        1-D ``float64`` ``np.ndarray`` of sim_ids (fixed first, then the random extras).
+    The 200 fixed-test ids come first, then an optional seeded random top-up from the complement.
+    Returns a 1-D float64 array.
     """
     base = np.array(fixed_ids, dtype=np.float64).reshape(-1)
     if num_sims is None or num_sims <= len(fixed_ids):
@@ -746,17 +539,13 @@ if __name__ == "__main__":
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    s = time.time() # Start timer 
-    
-    seed_num = None # Seed for reproducibility
-    # SET AND PROCESS ARGS
+    s = time.time()
 
-    # ------------------ distribute sim_samples using Scatterv (robust) ------------------
+    seed_num = None
+
     if rank == 0:
         args = parse_args()
-        # Resolve the tri-state VD flag HERE (before the bcast and before any heavy rank-0 work),
-        # so every rank sees a plain bool and the protected resolve_systematics_model() below
-        # picks 'nla_vd' exactly when VD resolved ON. Error paths exit before anything runs.
+        # Resolve --variable-depth here so every rank sees a plain bool before resolve_systematics_model().
         try:
             _vd_on, _vd_table, _vd_source = _resolve_variable_depth(args)
         except SystemExit as exc:
@@ -773,10 +562,8 @@ if __name__ == "__main__":
         sim_samples = SIM_TYPE_CONFIGS[args.simulator_type]["get_sim_samples"]()
 
         if args.simulator_type == "gower_street" and args.gower_sim_set != "full":
-            # Reduced Gower suite: use exactly the ids in a committed lock-file instead of the full
-            # np.arange(193,782). The flag carries the lock BASENAME, so adding a new selection
-            # criterion means adding a lock file (whose own `selection`/`selection_params` document
-            # it) — not another enum branch here. Lazy import so glass/smoke don't need the ml stack.
+            # --gower-sim-set carries the lock basename. A new selection criterion means a new
+            # lock-file, not a new flag.
             from src.ml.data.fixed_test_set import load_fixed_test_ids_ordered
             lock_name = ("gower_test_ids" if args.gower_sim_set == "fixed_test"  # legacy alias
                          else args.gower_sim_set)
@@ -788,10 +575,8 @@ if __name__ == "__main__":
             if not json_path.exists():
                 raise FileNotFoundError(f"--gower-sim-set {args.gower_sim_set!r}: no lock file at "
                                         f"{json_path}")
-            # Order-preserving load: the lock-file stores the 200 ids in a maximally-separated
-            # (farthest-point) order so a --num-sims N prefix stays well-spread across the param
-            # space (sorting would cluster the prefix at the low sim_ids). The full-set gower runs
-            # (num_sims=None) use all 200 regardless of order; only the prefix cares.
+            # Keep the lock-file order: it is farthest-point order, so a --num-sims prefix stays
+            # spread over parameter space.
             fixed_ids = load_fixed_test_ids_ordered(str(json_path))
             full_gower_ids = SIM_TYPE_CONFIGS["gower_street"]["get_sim_samples"]()
             sim_samples = gower_fixed_test_with_topup(fixed_ids, args.num_sims, full_gower_ids)
@@ -820,8 +605,6 @@ if __name__ == "__main__":
     SYSTEMATICS_MODEL = resolve_systematics_model(args)
     IA_MODEL = args.ia_model
     VD_TABLE = args.vd_table
-    # Provenance: which VD table (if any) generated this store. Consistent with SYSTEMATICS_MODEL
-    # by construction (nla_vd <=> variable_depth resolved ON on rank 0).
     VD_CODE = VD_TABLE_CODES[VD_TABLE] if SYSTEMATICS_MODEL == "nla_vd" else VD_TABLE_CODES["off"]
     IA_PRIOR_SET = args.ia_prior_set
     ia_prior_spec = resolve_ia_prior_spec(IA_MODEL, IA_PRIOR_SET)
@@ -842,23 +625,18 @@ if __name__ == "__main__":
         for _col in ("RA", "DEC", "Z_TRUE", "E1", "E2"):
             CATALOGUE_DTYPES[_col] = np.float64
     if SMOKE:
-        # Reduced-cost local pre-flight: fixed cosmo + tiny in-process CAMB->GLASS backend,
-        # so no Gower prior CSV is needed. Fall back to the in-repo fixtures when the
-        # (cluster) default --data-dir does not exist locally.
+        # Smoke runs fall back to the in-repo fixtures when the cluster --data-dir is absent.
         from src.smoke_sim import SMOKE_CONFIG, prepare_smoke_backend
         if not data_dir.exists():
             data_dir = Path(__file__).resolve().parent / "kids-legacy-sbi" / "data"
         gower_prior = None
     elif SIMULATOR_TYPE == "external":
-        # The external box has ONE fixed cosmology read from its own control.par / CLASS file,
-        # so the Gower empirical prior (and its cluster-pathed CSV) is not needed.
+        # The external box has one fixed cosmology from its own control files, so no Gower prior is needed.
         gower_prior = None
     else:
         gower_prior = GowerStPrior.from_csv(csv_path, drop_first=192)
-    # Deterministic per-sim_id cosmology sampler (Gower Street flow prior), glass path only.
-    # Seeded by (cosmo_base_seed, sim_id) so the same sim_id yields the same cosmology across runs /
-    # analysis variates (see prepare_glass_backend). Imported lazily so the heavy ML/eval stack is
-    # only required for the glass path.
+    # Per-sim_id cosmology sampler (glass path): seeded by (cosmo_base_seed, sim_id), so a sim_id
+    # has the same cosmology across runs.
     if SIMULATOR_TYPE == "glass":
         from src.ml.eval.utils import build_cosmo_param_sampler
         cosmo_sampler = build_cosmo_param_sampler(COSMO_PARAM_NAMES, csv_path=str(csv_path))
@@ -870,9 +648,7 @@ if __name__ == "__main__":
     else:
         rotation_specs = SIM_TYPE_CONFIGS[SIMULATOR_TYPE]["rotation_specs"]
 
-    # Shard one cosmology's rotation blocks across concurrent processes. The sim's MPI
-    # parallelism is over COSMOLOGIES (Scatterv), so a single-cosmology run cannot use extra
-    # ranks; this is how a one-cosmology external run uses more than one core-group.
+    # --rot-indices / --outer-indices shard one cosmology's blocks over processes (MPI is over cosmologies).
     ROT_INDICES = None
     if args.rot_indices:
         ROT_INDICES = {int(v) for v in args.rot_indices.split(",") if v.strip() != ""}
@@ -885,22 +661,15 @@ if __name__ == "__main__":
                   f"{len(rotation_specs)} rotation blocks", flush=True)
 
     if SMOKE:
-        # Collapse all augmentation loops to a single realisation and rebind the cost-driving
-        # constants (these names are module globals imported from simulation_config; rebinding
-        # them here at __main__ scope feeds them to every downstream call). Production path
-        # (else) is byte-identical to before.
+        # Collapse the augmentation loops and rebind the cost-driving module globals (smoke only).
         rotation_specs = rotation_specs[:1]
         mask_rotation_angles = [0]
         USE_KIDS_MASK = True
         if args.smoke_n_eff_scale is not None:
-            # Mutating the module-level dict propagates to every SMOKE_CONFIG consumer
-            # (tomo_nz scaling, VD dndz_scale, prepare_smoke_backend). Default None keeps
-            # the config value — the sim smoke gate stays byte-identical.
+            # Mutating the module dict reaches every SMOKE_CONFIG consumer. None keeps the config value.
             SMOKE_CONFIG["n_eff_scale"] = float(args.smoke_n_eff_scale)
         if args.smoke_geometry == "production":
-            # Production map/ell geometry on the smoke physics (validation of the OFFLINE
-            # observation builder against this script's own processing). Mutating the module
-            # dict propagates to prepare_smoke_backend (nside/lmax) and every consumer below.
+            # Production map/ell geometry on smoke physics, for pipeline-identity checks only.
             SMOKE_CONFIG.update({"nside": 1024, "lmax": 2048, "nside_out": 512,
                                  "lower_lscale": 56, "upper_lscale": 1500, "nbands": 8})
             if rank == 0:
@@ -919,14 +688,13 @@ if __name__ == "__main__":
         inner_reps = 1
     else:
         nside_out = 512
-        # --outer-reps overrides the config default (used to shrink datasets, e.g. GLASS outer=1).
+        # --outer-reps overrides the config default.
         outer_reps = (args.outer_reps if args.outer_reps is not None
                       else OUTER_NUM_SHAPE_NOISE_REALISATIONS[SIMULATOR_TYPE])
         inner_reps = INNER_NUM_SHAPE_NOISE_REALISATIONS[SIMULATOR_TYPE]
 
     if NO_AUGMENTATION and not SMOKE:
-        # One mock per cosmology: a single rotation/footprint and a single shape-noise
-        # realisation (outer & inner). For fast per-cosmology theory checks.
+        # One mock per cosmology: one rotation and one shape-noise realisation.
         rotation_specs = rotation_specs[:1]
         outer_reps = 1
         inner_reps = 1
@@ -934,10 +702,8 @@ if __name__ == "__main__":
             print("[rank 0] --no-augmentation: 1 mock/cosmology "
                   "(1 rotation, outer_reps=inner_reps=1).")
 
-    # Full augmentation set per (outer,rot) block and per sim, derived from the now-finalised
-    # constants (so smoke / --no-augmentation collapse correctly). These define what "complete"
-    # means on disk for the resume logic below: a block produces inner_reps * len(mask_rotation_angles)
-    # files (simulator.run), and a sim is outer_reps * len(rotation_specs) such blocks.
+    # Full augmentation set per (outer, rot) block, derived from the finalised constants. This defines
+    # 'complete' for resume.
     files_per_block = inner_reps * len(mask_rotation_angles)
     # Parsed HERE, not next to --rot-indices: `outer_reps` is assigned in the SMOKE / production
     # branches above, so validating the indices any earlier is a NameError.
@@ -964,16 +730,13 @@ if __name__ == "__main__":
     # None => unseeded (production default). An int switches on paired/reproducible generation.
     RNG_SEED = args.rng_seed
     SAVE_CATALOGUES = args.save_catalogues
-    # Resolve --eb-variants BEFORE any mock is written: rebind the two module globals the counts
-    # branch reads (see EB_VARIANT_PRESETS). Rebinding at module scope is what the write sites at
-    # `for fwhm_v, lmin_v, lcut_v in EB_SMOOTHING_VARIANTS` / `if NOISE_STD_VARIANTS is None`
-    # pick up. The default preset reproduces the module-level values, so this is a no-op unless
-    # the flag is passed.
+    # Resolve --eb-variants before any mock is written: rebinds the two module globals the counts
+    # branch reads.
     EB_VARIANTS_MODE = args.eb_variants
     _eb_preset = EB_VARIANT_PRESETS[EB_VARIANTS_MODE]
     EB_SMOOTHING_VARIANTS = list(_eb_preset["eb"])
     NOISE_STD_VARIANTS = _eb_preset["noise_std"]
-    # Re-run the pairing guard against the RESOLVED list: the import-time assert only ever saw the
+    # Re-run the pairing guard against the resolved list: the import-time assert only saw the
     # default, so a preset whose counts branch is on must still cover every A3S8 variant.
     assert not EB_SMOOTHING_VARIANTS or all(
         tuple(v) in [tuple(x) for x in EB_SMOOTHING_VARIANTS] for v in A3S8_VARIANTS), (
@@ -987,10 +750,8 @@ if __name__ == "__main__":
         raise SystemExit("--galaxy-bias-prior and --galaxy-bias are mutually exclusive "
                          "(the fixed override bypasses the prior; pick one).")
     if GALAXY_BIAS_PRIOR is not None:
-        # TRIPWIRE: the per-tomo vector needs the bias_tomo hook at the protected
-        # positions_from_delta call site. Without it GLASS broadcasts a (nbins,) bias as
-        # nbins extra POPULATIONS over the same delta (~6x galaxies, mixed biases) — a
-        # silent corruption, not a crash. Fail fast instead.
+        # Tripwire: a per-tomo bias vector needs the bias_tomo hook at positions_from_delta, else
+        # GLASS broadcasts it as extra populations.
         import inspect as _inspect
         from src.cosmology.simulators import BaseSimulator as _BS
         if "bias_tomo" not in _inspect.getsource(_BS.run):
@@ -1005,9 +766,7 @@ if __name__ == "__main__":
               f"per-(sim,outer,rot) per-tomo-bin draws around {GALAXY_BIAS_PRIOR_MEANS}; "
               f"realised values stored as cosmo_dict/b_g_bin1..6 + galaxy_bias_eff.", flush=True)
     if rank == 0:
-        # ALWAYS printed (not only when non-default): this banner is the post-submit gate for
-        # what the store actually contains, and a gate that is silent in the default case cannot
-        # distinguish "sc8only was chosen" from "the flag was dropped by a stale gatekeeper".
+        # Always print the store-content banner: it is the post-submit check of what the store contains.
         _ns = ("every EB variant" if NOISE_STD_VARIANTS is None
                else "none" if not NOISE_STD_VARIANTS
                else str([eb_variant_tag(*v) for v in NOISE_STD_VARIANTS]))
@@ -1024,12 +783,8 @@ if __name__ == "__main__":
               f"differing only in --galaxy-bias are PAIRED on the matter fields and nuisance "
               f"draws. The per-sim backend cache is bypassed to keep the stream position "
               f"resume-independent.", flush=True)
-    # Create the output / CAMB-cache dirs on rank 0 ONLY, then barrier. Running
-    # Path.mkdir(parents=True) concurrently from every rank races on the shared
-    # /share filesystem: the losers get a transient FileNotFoundError (ENOENT)
-    # which exist_ok=True does NOT suppress (it only catches FileExistsError),
-    # crashing those ranks and failing the whole job (afterok validators then
-    # never fire). Single-writer + Barrier makes the directory exist for all.
+    # Create output and cache dirs on rank 0 only, then barrier: concurrent mkdir races on the
+    # shared filesystem.
     if rank == 0:
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
         if SIMULATOR_TYPE == "glass":
@@ -1045,16 +800,14 @@ if __name__ == "__main__":
         },
     }
     if not SMOKE and SIMULATOR_TYPE != "external":
-        # GowerStCosmologies reads cluster data on construction; skip for the local smoke and
-        # for the external box (fixed cosmology from its own control.par / CLASS file).
+        # GowerStCosmologies reads cluster data on construction, so skip it for the smoke and the
+        # external box.
         backend_states["gower_street"] = {
             "loader": GowerStCosmologies(gower_data_dir, csv_path),
         }
-    # share cols & N with all ranks
     cols = comm.bcast(cols, root=0)
     N = comm.bcast(N, root=0)
 
-    # compute counts in rows (how many rows each rank gets)
     if rank == 0:
         counts_rows = [N // size] * size
         rem = N % size
@@ -1063,31 +816,24 @@ if __name__ == "__main__":
     else:
         counts_rows = None
 
-    # broadcast row counts to everyone
     counts_rows = comm.bcast(counts_rows, root=0)
 
-    # compute row displacements (in rows)
     displs_rows = [0] * size
     for i in range(1, size):
         displs_rows[i] = displs_rows[i-1] + counts_rows[i-1]
 
-    # convert row-based counts/displs -> element-based (MPI.DOUBLE units)
     counts = [r * cols for r in counts_rows]
     displs = [d * cols for d in displs_rows]
 
-    # allocate flat recv buffer of length = elements assigned to this rank
     recv_elems = counts_rows[rank] * cols
     recvbuf_flat = np.empty(recv_elems, dtype=np.float64)
 
-    # prepare flattened sendbuf on rank 0
     sendbuf_flat = sim_samples.flatten() if rank == 0 else None
 
-    # Scatterv: send flattened arrays, counts/displs in element units
     comm.Scatterv([sendbuf_flat, counts, displs, MPI.DOUBLE],
                 recvbuf_flat,
                 root=0)
 
-    # reshape recv buffer to (rows, cols) so code below can index by columns
     if cols > 0:
         recvbuf = recvbuf_flat.reshape(-1, cols)
     else:
@@ -1095,8 +841,7 @@ if __name__ == "__main__":
 
     print(f"[rank {rank}] received chunk (shape {recvbuf.shape}):\n{recvbuf}")
 
-    # sims: last column interpreted as integers (works even if recvbuf is empty)
-    sims = recvbuf[:, -1].astype(int) if recvbuf.size else np.array([], dtype=int)
+    sims =recvbuf[:, -1].astype(int) if recvbuf.size else np.array([], dtype=int)
     for num_sim_this_batch in range(len(recvbuf)):
         sim_num = sims[num_sim_this_batch]
         # Per-sim crash isolation: a failure on one sim (e.g. a CAMB error) is logged and the rank
@@ -1112,8 +857,8 @@ if __name__ == "__main__":
                 for rot_idx, rotation_spec in enumerate(rotation_specs):
                     if ROT_INDICES is not None and rot_idx not in ROT_INDICES:
                         continue
-                    # Block-level resume: skip a complete (outer,rot) block; otherwise clear any
-                    # partial files left by an earlier kill so the block recomputes cleanly.
+                    # Block-level resume: skip a complete (outer, rot) block, else clear its partial
+                    # files and recompute it.
                     if not OVERWRITE:
                         if count_block_files(OUTPUT_DIR, sim_num, outer_idx, rot_idx) >= files_per_block:
                             print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx} complete — skipping.")
@@ -1122,10 +867,8 @@ if __name__ == "__main__":
                         if removed:
                             print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx}: "
                                   f"removed {removed} partial files; recomputing.")
-                    # Per-block random streams. In fixed-RNG mode (--rng-seed) these are
-                    # deterministic in (seed, sim, outer, rot) AND mutually independent, so the
-                    # matter fields + nuisance draws are shared across galaxy-bias variates while
-                    # the galaxy sampling is free to diverge. See build_block_rngs.
+                    # Per-block streams. With --rng-seed they are deterministic in (seed, sim,
+                    # outer, rot) and mutually independent.
                     rng, backend_rng, postproc_rng = build_block_rngs(
                         RNG_SEED, sim_num, outer_idx, rot_idx
                     )
@@ -1135,9 +878,8 @@ if __name__ == "__main__":
                               flush=True)
                     log10_M_eff = rng.multivariate_normal(log10_M_eff_means, log10_M_eff_cov, size=1)[0]
                     if nuisance_pins.get('log10_M_eff') == 'prior_mean':
-                        # DRAW-then-overwrite, deliberately: the draw above is kept so this
-                        # block's RNG_STREAM_SAMPLE stays byte-aligned with an un-pinned run,
-                        # which is what makes --rng-seed pairing across prior sets valid.
+                        # Draw then overwrite: keeps the sample stream aligned with an un-pinned run,
+                        # so --rng-seed pairing works across prior sets.
                         log10_M_eff = np.asarray(log10_M_eff_means, dtype=float).copy()
                     if USE_KIDS_MASK:
                         mask = load_kids_mask(data_dir).copy()
@@ -1159,10 +901,8 @@ if __name__ == "__main__":
                     s_catalogue = time.time()
                     print("Setting up simulator...")
 
-                    # Fixed-RNG: hand the backend a FRESH cache so the in-memory sim-level cache
-                    # cannot make the backend stream depend on which block happened to miss first.
-                    # The cache only guards the IA draw + the (disk-cached) CAMB Cls load, so the
-                    # extra cost is one cheap re-load per block — CAMB itself is never re-run.
+                    # Fixed-RNG: give the backend a fresh cache so its stream cannot depend on which
+                    # block missed first.
                     glass_cache = ({} if RNG_SEED is not None
                                    else backend_states["glass"]["cache"])
                     if SMOKE:
@@ -1202,9 +942,7 @@ if __name__ == "__main__":
                             sim_grid=SIM_GRID,
                         )
 
-                    # Block-local COPY: the backend caches param_dict per sim, and this block
-                    # adds per-(outer,rot) keys (realised galaxy bias) that must not leak
-                    # across blocks or back into the cache.
+                    # Block-local copy: per-(outer, rot) keys must not leak into the per-sim cached param_dict.
                     param_dict = dict(backend["param_dict"])
                     shells = backend["shells"]
                     matter = backend["matter"]
@@ -1213,14 +951,11 @@ if __name__ == "__main__":
                     # Tag the saved param group with the IA model so the read side can disambiguate
                     # which (per-model) IA parameters are present.
                     param_dict["ia_model"] = IA_MODEL
-                    # VD provenance (0 off, 1 pooled, 2 patch, 3 quadcap) -- a FLOAT, so the loader's
-                    # float() read of cosmo_dict stays safe; survives the prebake (cosmo_dict copied).
+                    # VD provenance code, stored as a float so the loader's float() read of cosmo_dict
+                    # stays safe.
                     param_dict["vd_code"] = float(VD_CODE)
 
-                    # IA params: the model tag + only this model's sampled parameters (a_ia plus
-                    # b_ia / b_z / b_src as appropriate). f_red / log10_M_eff are used only by
-                    # nla_m; the other models ignore them. nla_z's avg_a is added below once
-                    # tomo_nz is available.
+                    # IA params: the model tag plus only this model's sampled parameters.
                     ia_params = {
                         "model": IA_MODEL,
                         "f_red": f_red,
@@ -1229,9 +964,7 @@ if __name__ == "__main__":
                     for _ia_key in ia_prior_spec:
                         ia_params[_ia_key] = param_dict[_ia_key]
 
-                    # n(z) shift depends only on the systematics model; compute it (and tomo_nz)
-                    # BEFORE build_systematics so the variable-depth objects can be built from
-                    # tomo_nz / los_z_integration / the shell edges.
+                    # Compute the n(z) shift and tomo_nz before build_systematics: the VD objects are built from them.
                     shift_nz = model_shift_nz(SYSTEMATICS_MODEL)
                     zb = glass.shells.distance_grid(cosmo, zmin, zmax, dx=dx)
                     los_z_integration = np.linspace(zb[0], zb[-1], n_los_chi)
@@ -1250,15 +983,14 @@ if __name__ == "__main__":
 
                     vd = None
                     if SYSTEMATICS_MODEL == "nla_vd":
-                        # Shell z-edges for the LOS variable-depth fraction. GLASS uses linear
-                        # (overlapping) windows -> replicate the reference (zb[k], zb[k+1]) spacing;
-                        # Gower uses top-hat windows -> each shell's own (z_near, z_far).
+                        # Shell z-edges for the LOS variable-depth fraction: GLASS windows overlap
+                        # linearly, Gower windows are top-hats.
                         if SIMULATOR_TYPE == "gower_street":
                             zb_tuple = [(float(w.za[0]), float(w.za[-1])) for w in shells]
                         else:
                             zb_tuple = [(zb[k], zb[k + 1]) for k in range(len(zb) - 1)]
-                        # tomo_nz is scaled down by n_eff_scale in the smoke; the per-VD-bin n(z)
-                        # must share that scale (the LOS fraction is dndz_vd/tomo_nz). 1.0 otherwise.
+                        # The per-VD-bin n(z) must share the smoke's n_eff_scale on tomo_nz: the LOS
+                        # fraction is dndz_vd / tomo_nz.
                         dndz_scale = SMOKE_CONFIG["n_eff_scale"] if SMOKE else 1.0
                         var_depth_mask, vd_shapes, vd_map = build_variable_depth(
                             data_dir,
@@ -1316,40 +1048,24 @@ if __name__ == "__main__":
                     )
                     if SYSTEMATICS_MODEL == "none":
                         m_bias_realised *= 0.0
-                        # Theory-test mode applies NO forward shear bias (NoSystematics), so the
-                        # 1/(1+m) de-bias inside make_alm_shear_convergence must ALSO be off — else
-                        # clean mocks are spuriously rescaled by 1/(1+m)^2 per tomo bin, producing a
-                        # z-tilt vs theory. See artifacts/compare/REPORT.md §2.
+                        # Theory-test mode applies no forward shear bias, so the 1/(1+m) de-bias in
+                        # make_alm_shear_convergence must be off too.
                         m_bias_for_shear = np.zeros_like(m_bias)
-                        # Source clustering is a systematics-controlled effect: galaxies trace
-                        # delta via positions_from_delta(..., galaxy_bias, ...). With systematics
-                        # OFF this is a CLEAN theory test against a smooth-n(z) analytic theory, so
-                        # disable clustering (galaxy_bias=0 -> uniform Poisson sampling). Otherwise
-                        # source-lens clustering injects a low-z/high-l excess the theory does not
-                        # model (precision-logbook H11/H12; the trusted kids_sbi samples uniformly).
-                        # Production (systematics ON) keeps the realistic config bias.
+                        # With systematics off, galaxy_bias is 0 (a clean theory test against a smooth field).
                         galaxy_bias_sim = 0.0
                     else:
                         m_bias_for_shear = m_bias
-                        # Default to the config `bias` constant; a CLI override (--galaxy-bias)
-                        # lets us generate clustering variates (e.g. b_g=1.5 strong / 0.7 weak)
-                        # without touching the protected physics. Only the systematics-ON path
-                        # honours it; the clean theory-test path above keeps galaxy_bias=0.
+                        # --galaxy-bias overrides the config `bias` constant to make clustering variates.
                         galaxy_bias_sim = bias if args.galaxy_bias is None else args.galaxy_bias
                         if GALAXY_BIAS_PRIOR is not None:
-                            # O3-diag prior: per-block per-tomo-bin 6-vector. The spawned child
-                            # inside leaves this block's sample stream untouched, so the
-                            # default path and --rng-seed pairing stay byte-identical.
+                            # O3-diag prior: per-block 6-vector. The spawned child leaves the block's
+                            # sample stream untouched.
                             galaxy_bias_sim = draw_galaxy_bias_prior(GALAXY_BIAS_PRIOR, rng)
                             print(f"[rank {rank}] sim {sim_num} block out{outer_idx}_rot{rot_idx}: "
                                   f"b_g draw {np.array2string(galaxy_bias_sim, precision=3)}",
                                   flush=True)
 
-                    # Record the realised galaxy bias per mock. SCALAR keys only — the ML read
-                    # side (src/ml/data/data_loading.py:load_cosmo_params) does
-                    # float(np.asarray(...)) per key, so the 6-vector is stored as six scalars
-                    # plus the n(z)-weighted effective scalar (for cross-option comparison /
-                    # optional 1-D inference). Old stores lack the keys (allow_missing -> NaN).
+                    # Store scalar keys only: the ML reader does float(np.asarray(...)) per cosmo_dict key.
                     if np.ndim(galaxy_bias_sim) > 0:
                         for _bi, _bval in enumerate(np.asarray(galaxy_bias_sim, dtype=float)):
                             param_dict[f"b_g_bin{_bi + 1}"] = float(_bval)
@@ -1374,8 +1090,8 @@ if __name__ == "__main__":
                     print('Simulating the galaxy catalogue...')
 
                     if SIMULATOR_TYPE == "external":
-                        # Shells stream straight off the external cube (10 GB f64); the subclass
-                        # builds its own window list from control.par, so no `matter` is passed.
+                        # Shells stream off the external cube. The subclass builds its own windows
+                        # from control.par, so no `matter` is passed.
                         from src.external_mocks import ShellCubeSimulator
                         simulator = ShellCubeSimulator(
                             backend["data_dir"], backend["cube_name"], **kwargs)
@@ -1415,12 +1131,9 @@ if __name__ == "__main__":
                         alm, alm_rand = make_alm_shear_convergence(
                             catalogue, m_bias_for_shear, nbins, nside, lmax, nosh=False, mask=mask,
                             normalization=SHEAR_NORMALIZATION, **_gal_w,
-                            # Noise-only (random-rotation) alm: pass the block's dedicated stream
-                            # instead of letting it fall back to the GLOBAL numpy RNG, which no
-                            # seed can control. Unseeded mode is statistically unchanged.
+                            # Noise-only alm uses the block's postproc stream, not the global numpy RNG.
                             rng=postproc_rng,
                         )
-                        # mask_cls = unmixing_mask_cls(catalogue, nbins, nside, lmax, lmin, mask=mask)
 
                         mixed_cls = denoise_shear_cls(nbins, alm, alm_rand, lmax)
                         mixed_cut = mixed_cls[:, :, :, lower_lscale:upper_lscale+1]
@@ -1428,18 +1141,8 @@ if __name__ == "__main__":
                             mixed_cut, nbins, lower_lscale, upper_lscale, nbands
                         )
 
-                        # --- second (A3s8) map product ----------------------------------------
-                        # Built AFTER the bandpowers so the 2-pt branch is provably untouched,
-                        # and BEFORE `del catalogue` because it re-reads the galaxies. Its alms
-                        # feed ONLY the map branch.
-                        #
-                        # RNG: a SPAWNED child stream, never `postproc_rng` itself. Drawing the
-                        # random rotations from the parent would advance it and change every
-                        # subsequent catalogue in this block, breaking byte-identity with the
-                        # legacy output. Spawning leaves the parent's stream bit-identical
-                        # (verified on numpy 2.2.6) at the cost of the two branches' noise
-                        # references being independent realisations -- statistically fine, the
-                        # random map is only a noise meter.
+                        # --- sc8 map product ---
+                        # Built after the bandpowers so the 2-pt branch is untouched, and before `del catalogue`.
                         alm_sc8 = alm_rand_sc8 = None
                         if A3S8_VARIANTS:
                             sc8_rng = postproc_rng.spawn(1)[0]
@@ -1450,10 +1153,7 @@ if __name__ == "__main__":
                                 rng=sc8_rng,
                             )
 
-                        # Optional raw-catalogue dump. MUST happen before the `del` below: the
-                        # catalogue is the largest object in the pipeline and is freed here so the
-                        # map-building peak stays bounded. Written alongside (not inside) the mock,
-                        # so the output_*.h5 globs used by every dataset config are unaffected.
+                        # Catalogue dump must precede `del catalogue` below.
                         if SAVE_CATALOGUES:
                             cat_path = save_catalogue_h5(
                                 OUTPUT_DIR / "catalogues"
@@ -1462,14 +1162,12 @@ if __name__ == "__main__":
                                 extra_attrs={
                                     "sim_id": int(sim_num), "outer_idx": int(outer_idx),
                                     "rot_idx": int(rot_idx), "cat_idx": int(cat_idx),
-                                    # scalar for fixed-b_g runs, (nbins,) vector under
-                                    # --galaxy-bias-prior (O3-diag)
+                                    # Scalar for fixed b_g, (nbins,) under --galaxy-bias-prior.
                                     "galaxy_bias": np.asarray(galaxy_bias_sim, dtype=float),
                                     "shear_normalization": SHEAR_NORMALIZATION,
                                     "systematics_model": SYSTEMATICS_MODEL,
                                     "nside": int(nside), "nside_out": int(nside_out),
-                                    # make_alm_shear_convergence de-biases by 1/(1+m); replaying
-                                    # the maps offline needs the m actually used.
+                                    # Offline map replay needs the m used for the 1/(1+m) de-bias.
                                     "m_bias_for_shear": np.asarray(m_bias_for_shear, dtype=float),
                                     "rng_seed": (-1 if RNG_SEED is None else int(RNG_SEED)),
                                 },
@@ -1480,25 +1178,19 @@ if __name__ == "__main__":
                         del catalogue
                         gc.collect()
 
-                        # Build E/B maps for each (fwhm, lmin, lcut) smoothing variant. Each
-                        # triple adds its own pixelised_results keys
-                        # (E_fwhm{f}[_lmin{lo}][_lcut{hi}] / B_...; both lmin & lcut None ->
-                        # smoothing-only, keyed E_fwhm{f}).
+                        # E/B maps for each (fwhm, lmin, lcut) variant, keys as in EB_SMOOTHING_VARIANTS.
                         map_types = {}
-                        # tag -> {patch_name: (nbins,) f64, 'all': (nbins,)}; see patch_noise_std
+                        # tag -> {patch_name: (nbins,) f64, 'all': (nbins,)}, as in patch_noise_std.
                         noise_std = {}
                         want_noise_std = (list(EB_SMOOTHING_VARIANTS)
                                           if NOISE_STD_VARIANTS is None
                                           else [tuple(v) for v in NOISE_STD_VARIANTS])
                         patch_names = list(named_patches.keys())
 
-                        # --- A3s8 branch: E only, one variant, float16 -------------------------
-                        # Done FIRST so its alms (~0.8 GB) are released before the three counts
-                        # variants allocate their nside_out maps -- this bounds the peak RSS.
+                        # sc8 branch first so its alms (~0.8 GB) are freed before the counts variants allocate.
                         sc8_tags = []
                         if alm_sc8 is not None:
-                            # All A3S8_VARIANTS re-filter the SAME sc8 alms — the expensive
-                            # spin-2 transform above is paid once regardless of how many.
+                            # Every A3S8 variant re-filters the same sc8 alms.
                             for fwhm_v, lmin_v, lcut_v in A3S8_VARIANTS:
                                 sc8_tag = f"sc8_{eb_variant_tag(fwhm_v, lmin_v, lcut_v)}"
                                 sc8_tags.append(sc8_tag)
@@ -1544,16 +1236,10 @@ if __name__ == "__main__":
                         pixelised_results = {name:{} for name in map_types.keys()}
                         for name, cat_data in map_types.items():
                             pixelised_tomobin_patches = get_patch_values(cat_data, patches, nside_out, ang)
-                            # The A3s8 branch is an ML-only derived product, so it is stored at
-                            # A3S8_MAP_DTYPE (float16) -- half the delta on disk, and the prebake
-                            # becomes a pass-through. The primary maps stay float32.
                             out_dtype = (A3S8_MAP_DTYPE if name.startswith("E_sc8_")
                                          else np.float32)
                             for patch_idx, patch_name in enumerate(patch_names):
-                                # Store the pixelised E/B maps as float32: halves on-disk size, and
-                                # the ML loader casts them to float32 on read anyway
-                                # (src/ml/data/data_loading.py), so no analysis precision is lost.
-                                # Only the maps are downcast; cls/bandpowers/cosmo stay float64.
+                                # Primary maps stored as float32. The loader casts on read.
                                 arr = pixelised_tomobin_patches[patch_idx].astype(
                                     out_dtype, copy=False)
                                 if out_dtype is not np.float32 and not np.isfinite(arr).all():
@@ -1564,8 +1250,7 @@ if __name__ == "__main__":
                                           flush=True)
                                 pixelised_results[name][patch_name] = arr
 
-                        # Noise-meter scalars (~288 B total) + provenance. Both are additive:
-                        # every existing key is byte-identical to the legacy output.
+                        # Noise-meter scalars and provenance, additive to the legacy keys.
                         for tag, per_patch in noise_std.items():
                             pixelised_results[f"noise_std_{tag}"] = per_patch
                         if noise_std:
@@ -1579,9 +1264,8 @@ if __name__ == "__main__":
                                 ),
                             }
                         if GALAXY_BIAS_PRIOR is not None:
-                            # String provenance lives OUTSIDE cosmo_dict on purpose: a string
-                            # dataset in cosmo_dict breaks load_cosmo_params(cosmo_params=None)
-                            # (cf. the ia_model precedent).
+                            # String provenance lives outside cosmo_dict: a string dataset there breaks
+                            # load_cosmo_params(cosmo_params=None).
                             _gbspec = GALAXY_BIAS_PRIORS[GALAXY_BIAS_PRIOR]
                             pixelised_results.setdefault("_provenance", {})["galaxy_bias_prior"] = (
                                 f"preset={GALAXY_BIAS_PRIOR}; kappa={_gbspec['kappa']:g}; O3-diag "
@@ -1602,7 +1286,6 @@ if __name__ == "__main__":
                                 )
                                 pixelised_results["_provenance"]["a3s8_variant"] = ",".join(sc8_tags)
 
-                        # cls_results['full'] = {"cls": mixed_cls, "mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands}
                         cls_results['full'] = {"mixed_bandpowers":mixed_bandpowers, "bandpower_ls":cll_bands, "cls": mixed_cls[:, :, :2, :]}  # only save EE and BB
 
                         save_string = f"{sim_num}_out{outer_idx}_rot{rot_idx}"
@@ -1624,10 +1307,7 @@ if __name__ == "__main__":
             
             print(f'Entire simulation took {time.time() - s:.2f} seconds')
         except Exception as e:
-            # Per-sim failure: log (with traceback) and continue to the next sim_id so one bad sim
-            # never kills the rank. Any partial block this sim wrote is reclaimed on a later visit
-            # by the block-level "incomplete -> clean -> recompute" gate above; a permanently
-            # failing sim simply never reaches its full file count, so it is never marked complete.
+            # A failed sim is logged and skipped. Its partial block is reclaimed on a later visit.
             print(f"[rank {rank}] sim {sim_num} FAILED: {e!r}; continuing to next sim.")
             traceback.print_exc()
             continue
