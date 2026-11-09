@@ -1,17 +1,8 @@
-"""CLI driver: theory-vs-empirical bandpower validation over a folder of mocks.
+"""CLI driver: theory-vs-empirical bandpower validation over a folder of output_*.h5 mocks.
 
-Run from the repo root (so ``src`` is importable), e.g. on the cluster:
-
-    python -u -m src.validation.run_validation \
-        --data-dir /share/gpu5/asaoulis/transfer_datasets/glass_theory_test_clean \
-        --sim-type glass --out-dir <MODELS_ROOT>/validation/glass_theory_test_clean \
-        --n-jobs 64 --mixing-matrix /share/gpu5/asaoulis/KiDS_Legacy_mixing_matrix_mask.npy
-
-It loads ``mixed_bandpowers`` from every matching ``output_*.h5``, computes the matching
-per-cosmology theory bandpowers, forms the empirical/theory ratios, writes the plot set
-and ``report.{json,md}``, prints a concise summary, and exits with:
-    0 = PASS (all bins <= ok)   3 = WARNINGS only   4 = at least one ERROR
-    2 = could-not-run (no files / load failure).
+Run from the repo root as python -m src.validation.run_validation. It writes the plot set and
+report.{json,md}.
+Exit codes: 0 PASS, 3 warnings only, 4 at least one ERROR, 2 could not run.
 """
 
 from __future__ import annotations
@@ -56,8 +47,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    choices=["mixed_bandpowers", "bandpowers"],
                    help="which saved bandpower field to use as the empirical vector")
     p.add_argument("--nonlinear", default=cfg.NONLINEAR,
-                   help="CAMB NonLinear mode for the splined theory (e.g. NonLinear_lens; "
-                        "'none' to disable). Ignored by shell_projection mode.")
+                   help="CAMB NonLinear mode for the splined theory, or 'none' to disable it. "
+                        "Ignored by shell_projection mode.")
     p.add_argument("--theory-mode", default=cfg.THEORY_MODE,
                    choices=["shell_projection", "splined"],
                    help="theory recipe: shell_projection (Theory_B, matches the sim's "
@@ -103,14 +94,12 @@ def main(argv=None) -> int:
 
     os.makedirs(args.out_dir, exist_ok=True)
 
-    # one example overlay (theory + empirical for the first loaded file)
     example_theory = example_empirical = None
     try:
         from src.ml.data.data_loading import unpack_data
         from .theory import compute_bandpower_theory_from_cosmo_vec
         from .ratios import load_numeric_cosmo_vec
-        # cosmo_params=[] so unpack_data skips cosmo_dict (the NLA-era string ia_model would
-        # otherwise raise); read the numeric cosmo vector robustly instead.
+        # cosmo_params=[]: NLA-era mocks store a string ia_model in cosmo_dict.
         data, _ = unpack_data(ensemble["files"][0], DEFAULT_NESTED_KEYS, [],
                               as_torch=False, return_names=True)
         cosmo_vec = load_numeric_cosmo_vec(ensemble["files"][0])
@@ -133,10 +122,6 @@ def main(argv=None) -> int:
         caveat = ("NO MIXING MATRIX APPLIED (--no-mixing): empirical mixed_bandpowers are "
                   "mask-suppressed (~f_sky), so ratios collapse toward f_sky and the "
                   "verdict is NOT a physical theory test. Use --mixing-matrix for the real run.")
-    # Record the EFFECTIVE non-linear model actually used by the active theory_mode.
-    # shell_projection inherits NonLinear_both from the sim's get_camb_matter_cls and IGNORES the
-    # --nonlinear knob (which only applies to the splined path); reporting the raw knob alone was
-    # misleading (precision-logbook H9).
     effective_nonlinear = (
         "NonLinear_both (via get_camb_matter_cls; shell mode ignores --nonlinear)"
         if args.theory_mode == "shell_projection" else (nonlinear or "OFF")
