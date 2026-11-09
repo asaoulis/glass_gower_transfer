@@ -1,3 +1,8 @@
+"""Default values for every field of an experiment config.
+
+Experiment rows are override dicts layered onto get_default_config(), one setattr per key.
+The trailing comment on a field says what it controls and what None means.
+"""
 import os
 
 import ml_collections
@@ -8,9 +13,7 @@ def get_default_config():
     config.training_mode = "nde"
     config.lr = 0.0004
     config.epochs = 80
-    # Validation cadence: None => once per epoch (historical); float in (0, 1] => that fraction of an
-    # epoch; int => every N training batches. More val points => more checkpoint candidates on short runs.
-    config.val_check_interval = None
+    config.val_check_interval = None  # None = once per epoch, float in (0, 1] = fraction of an epoch, int = every N batches
     config.batch_size = 32
     config.val_batch_size = None  # defaults to batch_size if None
     config.test_batch_size = None # defaults to val_batch_size if None
@@ -34,54 +37,39 @@ def get_default_config():
     }
     config.freeze_cnn = False
     config.flow_kwargs = {}
-    # Map-only auxiliary VMIM head (counts-extended task): weight of the aux NLL on the
-    # hybrid's patch_mu; 0 = off. Kwargs: {hidden_features, num_transforms, ...} for the aux NSF.
-    config.patch_aux_weight = 0.0
+    config.patch_aux_weight = 0.0  # weight of the map-only auxiliary VMIM head, 0 = off
     config.patch_aux_flow_kwargs = {}
-    # Frozen-trunk head-retrain runs (Phase 2b): mirror utils.py getattr fallbacks.
     config.freeze_backbone = False
     config.backbone_prefix = 'shared_cnn.backbone.'
-    # Phase 2b cached-embedding head training (src/ml/embeddings): all default-off.
-    config.embedding_cut = None            # e.g. 'hybrid_pre_head'
-    config.reuse_embedding_cache = False   # reuse the emb cache during TRAINING runs too
+    # Cached-embedding head training (src/ml/embeddings), all off by default
+    config.embedding_cut = None            # for example 'hybrid_pre_head'
+    config.reuse_embedding_cache = False   # reuse the embedding cache during training runs too
     config.embedding_cache_name = None     # share one cache dir across head-variant targets
-    config.embedding_head_type = None      # e.g. 'hybrid_features'
+    config.embedding_head_type = None      # for example 'hybrid_features'
     config.embedding_head_kwargs = {}
 
-    # Training-speed options (all default-OFF => byte-identical to before when unset).
-    # Applied by src/ml/utils.py:_apply_ml_perf + fit_model. Measured on A6000 for
-    # kids_hybrid_bandpowers_maps (B=100): amp 1.40x, amp+compile(backbone) 1.83x, peak mem
-    # 50->19 GB. amp = bf16 autocast scoped to the map encoder (flow stays fp32; whole-forward
-    # bf16 crashes the nflows spline). compile = torch.compile the CNN backbone.
+    # Training-speed options, all off by default
     config.ml_perf = {
-        "amp": False,            # bf16 autocast around the map encoder
+        "amp": False,            # bf16 autocast on the map encoder only, the flow stays fp32
         "compile": "none",       # "none" | "backbone" | "reduce-overhead" | "default"
         "tf32": False,           # TF32 matmul/cudnn (free when amp off; no-op with amp)
         "fused_adam": False,     # AdamW(fused=True)
     }
     config.prefetch_factor = None      # DataLoader prefetch_factor (workers>0)
     config.persistent_workers = None   # keep workers alive across epochs (None=auto)
-    config.precision = None            # Lightning precision override (None = fit_model default: bf16-mixed / 32 w/ scoped amp)
-    config.preload_data = False        # cache every item in RAM at dataset build (small vector stores, e.g. HOS sidecars)
-    config.exclude_files = None         # JSON list of basenames (or a list) dropped from train/val/test AFTER the cosmology split
-    config.include_files_regex = None   # basename regex (re.search): keep ONLY matching files, BEFORE the cosmology split (store subset)
+    config.precision = None            # None = fit_model default
+    config.preload_data = False        # cache every item in RAM at dataset build (small vector stores such as the HOS sidecars)
+    config.exclude_files = None         # basenames dropped from train/val/test after the cosmology split (JSON list or list)
+    config.include_files_regex = None   # keep only files whose basename matches (re.search), applied before the cosmology split
 
-    # Data loading (new dataset interface)
+    # Data loading
     config.data_patterns = "/share/gpu5/asaoulis/transfer_datasets/gower_mocks/output_*.h5"
     config.dataset_nested_keys = None
-    # Alternatively, specify simple quantity names and we will build dataset_nested_keys
-    # Valid options (defaults): E_north, E_south, B_north, B_south, bandpowers, bandpower_ls, cls
+    # Alternative to dataset_nested_keys: E_north, E_south, B_north, B_south, bandpowers, bandpower_ls, cls
     config.dataset_quantities = ["mixed_bandpowers", "E_north", "E_south", "B_north", "B_south",]
-    # Which smoothing variant the logical E/B map names resolve to in the HDF5
-    # ('pixelised_results/{E|B}_{eb_map_variant}/{north,south}'). None => legacy bare
-    # 'pixelised_results/{E|B}/...' groups (old datasets). For datasets written by the
-    # multi-variant simulator set e.g. "fwhm8", "fwhm6_lcut1024" or "fwhm6_lmin76_lcut1024".
-    # Explicit variant-tagged quantity names (e.g. "E_fwhm8_north") bypass this and resolve directly.
+    # Smoothing tag of the E/B groups, 'pixelised_results/{E,B}_<tag>/...'. None = bare 'E'/'B' groups.
     config.eb_map_variant = None
-    # The models/checkpoints root. Defaults to the cluster path (unchanged for every
-    # existing caller); GLASS_MODELS_ROOT redirects it for LOCAL runs -- e.g. evaluating
-    # a fetched checkpoint tree against local stores, where `{base_path}/checkpoints`
-    # is the local ml-checkpoints dir. Listed in CLAUDE.md under "Hardcoded paths".
+    # Checkpoint root. GLASS_MODELS_ROOT overrides it for local runs.
     config.base_path = os.environ.get("GLASS_MODELS_ROOT",
                                       "/share/gpu5/asaoulis/transfer_models")
     config.cosmo_param_names = [
@@ -95,69 +83,29 @@ def get_default_config():
     config.test_frac = 0.1
     config.split_seed = 42
     config.N_extra_test_cosmologies = None  # int or None
-    # Opt-in fixed test set (EXTRA functionality; None => off, normal split unchanged).
-    # Path to a JSON lock-file of Gower sim_ids (e.g.
-    # "config/fixed_test_sets/gower_test_ids.json") OR an explicit list of ints. When set,
-    # exactly those sim_ids present on disk are FORCED into the test split (shared across
-    # all experiments) and removed from the train/val pool. Ids absent on disk are ignored;
-    # if forcing would empty train/val it falls back to the normal split (with a warning).
+    # JSON lock-file path or list of Gower sim_ids forced into the test split. None = normal split.
     config.fixed_test_sim_ids = None
-    # Eval-time trim of the resolved TEST set to the first N cosmologies by sorted sim_id,
-    # applied AFTER train/val selection so the trainval pool and fitted scalers are
-    # byte-identical to training. None => keep the full test set.
+    # Keep only the first N test cosmologies by sorted sim_id, after train/val selection. None = all.
     config.N_test_cosmologies = None
-    # Batch size of the embeddings TEST loader (build_embedding_dataloaders); the joblib
-    # MCMC sampler parallelises one job per test batch, so smaller batches => more parallel
-    # jobs. None/unset => the historical default of 32.
-    config.emb_test_batch_size = None
+    config.emb_test_batch_size = None  # embeddings test-loader batch size, None = 32
     config.shuffle_train = True
     config.num_workers = None
     config.pin_memory = False
     config.stack_groups = False
     config.augment_eb_patches = True
-    # Opt-in cyclic translation of the E/B patches along the RA (last) axis, drawn once per
-    # sample and shared by north/south. ONLY valid for a full-RA footprint (Euclid DR3's Dec
-    # band), where it is an exact symmetry; leave False for the partial-RA KiDS patches.
+    # Cyclic RA roll of the patches. Exact only for a full-RA footprint (Euclid), keep False for KiDS.
     config.augment_eb_ra_roll = False
-    # Tomographic bin count used to infer the map encoder's input channel width from
-    # dataset_quantities (E-only -> n_tomo_bins, E+B -> 2*n_tomo_bins). 6 for KiDS, 13 for Euclid.
-    config.n_tomo_bins = 6
-    # How many files the data scalers are fit on. Whole files are concatenated per key, so this
-    # is a memory knob as much as a statistical one: raise/lower it with the per-mock size.
-    config.scaler_fit_max_obs = 1000
-    # Optional per-key override of the cap above, e.g. {'mixed_bandpowers': 1000}. The cap is a
-    # memory knob driven by the LARGEST key, so a config whose maps force it down would otherwise
-    # also starve a tiny key like the bandpowers -- which matters when a later stage FREEZES an
-    # encoder that was trained against the un-starved scaler. None => the single cap applies to all.
-    config.scaler_fit_max_obs_by_key = None
-    # Print a per-epoch [throughput] line (steps, samples/s, peak GPU memory, peak host RSS) to
-    # stdout so a sizing benchmark can read them straight out of the SLURM .out. Off by default.
-    config.log_throughput = False
-    # Per-sample E/B map noise normalisation (shear-estimator hardening, Track B).
-    # None => off (legacy). 'self' => per-bin footprint standardisation of every E/B map
-    # quantity at load time (EBNoiseNormTransform), removing the source-clustering-modulated
-    # noise-amplitude channel from the map branch. Configs using it should scale only the
-    # bandpower keys in scaler_options['data']['keys'].
+    config.n_tomo_bins = 6  # input channels = n_tomo_bins (E only) or 2 * n_tomo_bins (E+B), 6 for KiDS, 13 for Euclid
+    config.scaler_fit_max_obs = 1000  # number of files the data scalers are fit on
+    config.scaler_fit_max_obs_by_key = None  # per-key override of scaler_fit_max_obs, for example {'mixed_bandpowers': 1000}
+    config.log_throughput = False  # print a per-epoch throughput line
+    # 'self' = per-bin footprint standardisation of every E/B map at load time. None = off.
     config.eb_noise_norm = None
 
-    # Optional: limit training dataset size (None => no trimming)
     config.dataset_size = None
 
-    # Seed for the scaler fit's 1000-file subsample (src/ml/utils.py:_fit_data_key_scalers_from_paths).
-    # Historically that subsample came from the process-wide UNSEEDED RNG, which made every fitted
-    # scaler irreproducible: refitting the same split twice moves the resulting embeddings by ~1.1%
-    # of their sd (median), measured on the KiDS Gower Stage-B test set. Seeding it makes a fit
-    # reproducible run-to-run. Runs trained BEFORE this existed cannot have their scalers recovered
-    # at all -- that irreducible floor is what the reproduction gate measures and compares against.
-    config.scaler_fit_seed = 0
+    config.scaler_fit_seed = 0  # seed of the scaler-fit file subsample
 
-    # Scaling options
-    # - data: per-key standard scaling (keys=None => scale all keys in dataset_nested_keys)
-    # - cosmo: min/max scaling for cosmological parameter vectors
-    # config.scaler_options = {
-    #     'data': {'type': 'standard', 'keys': None},
-    #     'cosmo': {'type': 'minmax'},
-    # }
     config.scaler_options = {
             'data': {'type': 'standard', 'keys': None},
             'cosmo': {'type': 'preset'},
@@ -167,14 +115,11 @@ def get_default_config():
     config.train_val_selection_cosmo_params = None
     config.train_val_stratified_bins = "auto"
 
-    # Misc/legacy fields kept for compatibility with older code paths
     config.dataset_name = "illustris"
     config.dataset_suite = "LH"
     config.scaling_dataset = None
-    # Number of train repeats (int). Use `repeat_indices` to run a subset.
     config.repeats = 1
-    # Optional explicit repeat indices (tuple/list of ints). If set, overrides `repeats`.
-    config.repeat_indices = None
+    config.repeat_indices = None  # explicit repeat indices, overrides repeats
     config.experiment_name = None
     config.data_seed = None
     config.log_normal_dataset_path = None
@@ -185,29 +130,13 @@ def get_default_config():
     config.load_pretrained_flow = False
     config.run_training = True # for embedding eval pattern
     config.run_evaluation = True # embeddings: set False to skip post-training (MCMC) evaluation
-    # Worker count for the ensemble-NLE MCMC sampling pool. None => leave
-    # `generate_samples`' own default (36) untouched, i.e. no behaviour change.
-    # The sampler runs `len(test_dataloader)` batches through a joblib pool, so the wall time is
-    # ceil(n_batches / num_jobs) * batch_time. With the usual 63 test batches, 36 workers means TWO
-    # waves; setting this to >= n_batches on a node with that many cores collapses it to one wave
-    # and roughly halves the sampling time. Only raise it if the SLURM allocation really has the
-    # cores (and the RAM for that many worker processes).
-    config.sampling_num_jobs = None
+    config.sampling_num_jobs = None  # MCMC pool size for ensemble-NLE sampling, None = generate_samples default
 
     # Embeddings pipeline options
-    # If False, do not normalise/standardise the precomputed embedding vectors
-    # before training the NDE on embeddings.
-    config.scale_embeddings = True
-    # Per-source whitening + optional PCA truncation of the embedding vectors, applied INSTEAD of
-    # `scale_embeddings` when set. None = disabled (fully backward-compatible no-op). When a dict
-    # {"k": int} is given, a WhitenPCAScaler is fit ONCE on the pretrain (GLASS) train split,
-    # persisted next to that run's emb cache (datasets/whitener.pt), and REUSED unchanged by the
-    # finetune + eval (never refit downstream) — the fix for research Finding C3.
+    config.scale_embeddings = True  # standardise embedding vectors before training the NDE on them
+    # {'k': int}: WhitenPCAScaler fit once on the pretrain split and reused downstream, replaces scale_embeddings
     config.whiten_embeddings = None
-    # Warm-start regression guard (embeddings finetune with whitening on): abort if the finetune ep0
-    # validation NLL sits more than this many nats above the pretrain checkpoint's recorded best val
-    # (the from-scratch / mis-framed-input signature is >=15 nats; genuine warm starts land ~2-5).
-    # Set to None (or <=0) to disable the guard.
+    # Abort if finetune epoch-0 val NLL exceeds the pretrain best by this many nats. None or <=0 disables.
     config.whiten_warmstart_max_gap_nats = 12.0
     config.accumulate_grad_batches = 1
     config.inference_mode = "npe"
