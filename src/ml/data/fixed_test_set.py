@@ -1,20 +1,8 @@
-"""Fixed Gower test-set support (opt-in).
+"""Fixed Gower test set (opt-in, config.fixed_test_sim_ids).
 
-Lets all experiments share ONE fixed test set keyed on the Gower simulation suite id
-(the ``sim_num`` written into ``output_<sim_num>_...h5`` filenames, == the Gower Serial
-Number). The list of test sim_ids is locked to a small JSON file checked into the repo
-(``config/fixed_test_sets/gower_test_ids.json``); the data pipeline reads it and forces
-exactly those cosmologies into the test split (see ``data_selection.split_by_cosmology``).
-
-This is EXTRA, opt-in behaviour: it is only active when ``config.fixed_test_sim_ids`` is
-set (a path to a lock-file JSON or an explicit list of ints). When unset (``None``, the
-default) the normal cosmology-based split is used unchanged.
-
-The lock-file can be (re)generated against an on-disk dataset via the CLI:
-
-    python -m src.ml.data.fixed_test_set \
-        --out config/fixed_test_sets/gower_test_ids.json \
-        --patterns "/share/.../gower_mocks/output_*.h5" --min-id 193
+A JSON lock-file of Gower sim_ids forces exactly those cosmologies into the test split, so all
+experiments share it. Regenerate the lock-file from an on-disk dataset with
+`python -m src.ml.data.fixed_test_set`.
 """
 import argparse
 import json
@@ -39,14 +27,10 @@ def load_fixed_test_ids(path: str) -> Set[int]:
 
 
 def load_fixed_test_ids_ordered(path: str) -> List[int]:
-    """Read a lock-file of Gower test sim_ids **preserving the on-file order**.
+    """Read a lock-file of Gower test sim_ids preserving the on-file order.
 
-    Same file format as :func:`load_fixed_test_ids`, but returns a list in the order the
-    ids appear in the JSON (de-duplicated, first occurrence kept) instead of an unordered
-    ``set``. Use this where a *prefix* of the test set is taken (e.g. the master simulator's
-    ``--num-sims N`` cap grabs the first ``N``): the lock-file stores the ids in a
-    maximally-separated (farthest-point) order so any prefix is well-spread across the
-    cosmological parameter space, which sorting would destroy.
+    Returns a de-duplicated list. The file holds the ids in farthest-point order, so any prefix
+    (as --num-sims takes) is well spread over the parameter space.
     """
     with open(path, "r") as f:
         payload = json.load(f)
@@ -85,10 +69,8 @@ def write_fixed_test_ids(
 ) -> List[int]:
     """Lock the fixed test sim_ids derived from an on-disk dataset to a JSON file.
 
-    Globs ``patterns``, extracts each file's Gower sim_id via the SAME
-    ``extract_cosmo_index`` the split uses, keeps the unique ids with
-    ``min_id <= id`` (and ``id <= max_id`` when given), and writes a sorted JSON
-    ``{"min_id", "max_id", "sim_ids"}`` to ``out_path``. Returns the sorted id list.
+    Keeps the unique sim_ids (from extract_cosmo_index) in [min_id, max_id] and writes
+    {"min_id", "max_id", "sim_ids"} to out_path. Returns the sorted id list.
     """
     all_paths = collect_paths(patterns)
     ids: Set[int] = set()
