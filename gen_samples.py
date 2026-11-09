@@ -1,3 +1,8 @@
+"""Draw posterior samples from trained NLE ensembles: python gen_samples.py [--output-suffix SUFFIX].
+
+The experiment list, prior mode and sample counts are module constants. Each row writes
+checkpoints/<exp>/samples_<prior>_<match>_<suffix>.npz with the eval npz schema.
+"""
 import argparse
 import os
 
@@ -12,12 +17,9 @@ def _build_fixed_parameters_list(
     space: str = "physical",
     preset_overrides=None,
 ):
-    """-> [(index, scaled_value)] for the parameters a pinning prior mode fixes.
+    """Returns [(index, scaled_value)] for the parameters a pinning prior mode fixes.
 
-    `preset_overrides` must be threaded through whenever `param_names` can carry a parameter the
-    GLOBAL preset has no box for — the per-tomo-bin galaxy biases of the 15-param arms. This only
-    converts physical -> scaled, but it needs the same box the model was scaled with, and
-    `_build_cosmo_preset_scaler` raises on any parameter without one.
+    preset_overrides supplies scaler boxes for parameters with no global preset (b_g_bin1..6).
     """
     from src.ml.embeddings.embeddings_utils import COSMO_PARAM_PRESET_MINMAX, _build_cosmo_preset_scaler
 
@@ -67,9 +69,8 @@ def _build_prior():
     elif PRIOR_MODE == "kids_s8_analytic":
         print("Using flat analytic prior on S8")
         scaler = _build_cosmo_preset_scaler(COSMO_PARAM_PRESET_MINMAX, param_names)
-        # return_restricted defaults to True when (a_ia, b_ia) are present: the NLA-M IA block
-        # is an unbounded Gaussian in scaled space, and NLE MCMC must stay inside the [0,1]^D
-        # box the flow was trained on.
+        # return_restricted keeps NLE MCMC inside the [0,1]^D box the flow was trained on
+        # (the IA block is unbounded in scaled space).
         prior = build_s8_analytic_prior(param_names, scaler)
         fixed_parameters = None
         print("prior", prior, type(prior))
@@ -89,14 +90,10 @@ def _build_prior():
 
 def _build_output_path(base_path, experiment_name, match_string, output_suffix,
                        prior_tag=None):
-    """Sample dump path: under checkpoints/<exp>/ on MODELS_ROOT so `fetch --exp` pulls it.
-    Encodes the prior in the name so different-prior runs coexist (eval npz schema).
+    """Returns the sample dump path under checkpoints/<exp>/.
 
-    prior_tag overrides PRIOR_MODE in the filename. It exists because NOT every model class
-    honours `prior`: NLE samples by MCMC against the explicit prior, but
-    NPELightningModule.generate_samples builds its posterior with no prior and draws straight from
-    q(theta|x) — i.e. NPE dumps are under the SIMULATION prior whatever PRIOR_MODE says. Tagging
-    those `trainprior` keeps the filename from asserting a prior that was never applied."""
+    The prior mode is part of the file name (prior_tag overrides it) so dumps from different
+    priors coexist."""
     suffix = f"_{output_suffix or SAMPLE_SUFFIX}" if (output_suffix or SAMPLE_SUFFIX) else ""
     tag = prior_tag or PRIOR_MODE
     return os.path.join(
@@ -104,22 +101,8 @@ def _build_output_path(base_path, experiment_name, match_string, output_suffix,
         f"samples_{tag}_{match_string}{suffix}.npz",
     )
 
-# Eval-time loader overrides for the 3-tuple (embeddings) path. These are applied AFTER
-# load_embedding_model_with_dataloader's own hardcoded `cfg.test_shape_noise_idx = [0]`
-# (src/ml/embeddings/train.py:198), so they DO take effect here — unlike in the training path,
-# where the hardcode wins.
-#
-# ⭐ BGP CAMPAIGN SIZING 2026-08-22 (user: "100 cosmos from the test set, KiDS S8 analytic prior
-#    wCDM, report the constraint forecasts on S8, Omega_m, w, sigma_8").
-#  - test_shape_noise_idx [0, 0, 0]  -> the STRICT 3-element form (out, rot, cat): exactly ONE mock
-#    per test cosmology (out0_rot0_0). The Gower store is 4 outer x 5 rot x 4 mask = 80 mocks per
-#    cosmology, so anything looser multiplies the point count by 4-20x for no extra cosmologies.
-#  - N_test_cosmologies 100          -> the first 100 of the 200 fixed-test cosmologies by sim_id.
-#    Applied AFTER train/val are resolved, so the trainval pool and the fitted scalers stay
-#    byte-identical to training (src/ml/data/data_selection.py).
-#    => 100 cosmologies x 1 mock = 100 inference points.
-#  - emb_test_batch_size 4           -> ceil(100/4) = 25 joblib tasks: ONE wave on the sample job's
-#    NUM_JOBS=30 workers, so the wall is a single chain length rather than a multiple of it.
+# Test-set overrides for the embeddings path: one mock per test cosmology, the first 100 test
+# cosmologies, test batch 4 (25 tasks = one MCMC wave).
 CONFIG_OVERRIDES = {
     "test_shape_noise_idx": [0, 0, 0],
     "N_test_cosmologies": 100,
@@ -127,15 +110,7 @@ CONFIG_OVERRIDES = {
 }
 NUM_JOBS = 30
 
-# ⏱️ SIZING. The wall of an NLE sampling job is set by the MCMC CHAIN LENGTH, not the number of
-# test points: `_gen_samples` calls `posterior.sample_batched`, which runs (batch x num_chains)
-# slice chains VECTORISED, so a task costs ~(num_samples + warmup) steps regardless of its batch.
-# Waves = ceil(points / batch / NUM_JOBS).
-#   measured: 20k samples, 160 pts, batch 6 -> 27 tasks = 1 wave => ~3.2 h (job of 2026-07-08)
-#   measured:  4k samples,  56 pts, batch 2 -> 28 tasks = 1 wave => ~35 min
-# Here: 100 pts / batch 4 = 25 tasks = 1 wave at 20k samples => ~3.2 h PER ROW, and one sample job
-# runs the listed rows SERIALLY => 5 repeats ~ 16 h against the gatekeeper's 48 h cap.
-# 20 000 is the production chain length; marginal 68 % widths are well converged there.
+# Wall time is set by the MCMC chain length, not the point count: waves = ceil(points / batch / NUM_JOBS).
 NUM_SAMPLES = 20000
 SAMPLE_SUFFIX = "p100n20k"
 
@@ -153,34 +128,23 @@ def _run_generation(output_suffix: str):
     from src.ml.eval.utils import load_best_model_and_build_posterior
     from src.ml.utils import build_ensemble_model_from_checkpoints, is_ensemble_eval_active, prepare_data_parameters
 
-    # Same merge as train_embeddings.py / eval.py: the registry modules share one dict object,
-    # so updating here also makes the KiDS-Legacy names resolvable inside
-    # load_embedding_model_with_dataloader (which imports the same `experiments`).
     experiments.update(paper_2026_experiments)
     experiments.update(kids_legacy_experiments)
-    experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
-    experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
-    experiments.update(kids_legacy_bgp_experiments)   # BGP campaign (galaxy-bias prior marginalised)
-    experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
-    experiments.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
+    experiments.update(kids_legacy_novd_experiments)
+    experiments.update(euclid_experiments)
+    experiments.update(kids_legacy_bgp_experiments)
+    experiments.update(kids_legacy_vdq_experiments)
+    experiments.update(kids_legacy_hos_experiments)
 
     prior, fixed_parameters = _build_prior()
 
     experiment_names = [
-        # ⭐ BGP campaign, M4b — the Gower NLE Stage-B ensembles (9 members each), 5 repeats.
-        # 3-tuple = the embeddings path; the third element is the SOURCE ENCODER whose frozen 8-D
-        # summary the cached embeddings come from (the same one M4a's Stage-A flow was fit on).
-        # match_string is `ncosmo300_{r}` because these rows set max_trainval_cosmos=[300]
-        # (run_string = f"ncosmo{max_trainval_cosmos}_{repeat}"); the run dirs are
-        # `ncosmo300_{r}_ens{0..8}`.
-        # NLE samples by MCMC against the explicit prior, so these dumps ARE under
-        # PRIOR_MODE = "kids_s8_analytic" (the wCDM analytic-S8 prior; w0 stays free — the
-        # w0 = -1 variant is the separate "LCDM_fixed_w0" mode).
+        # 3-tuple = (experiment, match_string, source encoders): the embeddings path. NLE samples
+        # by MCMC against PRIOR_MODE.
         *[(f"gower_nle_finetune_nla_m_bgp_z8_r{r}_ens9", f"ncosmo300_{r}",
            ["kids_legacy_hybrid_nla_m_bgp_z8_resnet_sc8a1"]) for r in range(5)],
     ]
-    # Model classes that do NOT honour an explicit prior -> tag their dumps `trainprior`.
-    # (Empty here: every row above is NLE, which samples by MCMC against `prior`.)
+    # Model classes that ignore an explicit prior. Their dumps are tagged trainprior.
     NO_PRIOR_SUPPORT = set()
 
     from src.ml.eval.utils import _resolve_test_paths, _save_posterior_samples
