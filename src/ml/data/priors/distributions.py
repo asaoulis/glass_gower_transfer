@@ -1,3 +1,8 @@
+"""Distribution classes of the prior stack.
+
+Truncated normal, KDE, scaled and permuted wrappers, the flow-based prior, and the joint
+(S8, omega_c h^2, omega_b h^2, h) box prior mapped to model parameters.
+"""
 import math
 
 import numpy as np
@@ -467,17 +472,8 @@ class NFlowDistribution(Distribution):
         return self._batch_shape
 
     def sample(self, sample_shape=torch.Size()):
-        # REJECTION-RESAMPLE to the flow's own declared support. The empirical Gower flow is a
-        # normalising flow over the SCALED ([0,1]^d) parameter box, so it is unbounded and leaks
-        # ~1 % of draws outside the box -- while `log_prob` below hard-masks those to -inf. Without
-        # this loop `sample()` and `log_prob()` disagree, and the joint prior assigns ZERO density
-        # to ~1 % of the samples it drew itself (measured 0.9901 finite on 20k draws, identical at
-        # kappa=1/kappa=2 and with no b_g params at all -- i.e. this is a property of the flow, not
-        # of any analytic marginal). Mirrors TruncatedNormal1D.sample.
-        # NOTE: `log_prob` is deliberately left untouched, so it remains unnormalised by
-        # log Z ~ -0.01 nats (a constant: it cancels in MCMC and is negligible for dMI).
         n = int(torch.tensor(sample_shape).prod()) if len(sample_shape) else 1
-        if n == 0:  # e.g. sample_shape=(0,); the pre-fix code returned an empty tensor here
+        if n == 0:  # sample_shape=(0,)
             return torch.empty(sample_shape + self.event_shape)
 
         chunks = []
@@ -509,14 +505,7 @@ class NFlowDistribution(Distribution):
         batch_flat = x.reshape(-1, self.dims)
         valid_mask = ((batch_flat >= 0.0) & (batch_flat <= 1.0)).all(dim=1)
         logp_flat = torch.full((batch_flat.shape[0],), float("-inf"), device=x.device)
-        # GUARD: nflows cannot evaluate an EMPTY batch -- a coupling transform does
-        # `transform_params.reshape(b, d, -1)` and with b=0 that raises
-        # "cannot reshape tensor of 0 elements into shape [0, 1, -1]". The vectorised slice
-        # sampler proposes in unconstrained space, so a call in which EVERY chain sits outside
-        # the scaled [0,1]^d box is rare but inevitable -- it killed the VD `_hf` r0 Stage-B job
-        # (1351808) in its MCMC eval after all 150 training epochs had completed.
-        # Those rows are already -inf by construction, so skipping the flow call changes no
-        # finite value on any existing path.
+        # nflows cannot evaluate an empty batch.
         if valid_mask.any():
             logp_flat[valid_mask] = self.flow.log_prob(batch_flat[valid_mask])
         logp = logp_flat.reshape(original_shape[:-1])
