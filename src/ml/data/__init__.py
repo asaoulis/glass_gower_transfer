@@ -1,1 +1,1 @@
-# Mark data as a package for relative imports
+"""Datasets, loaders, scalers and priors of the ML pipeline."""
