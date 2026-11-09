@@ -1,3 +1,9 @@
+"""Scalers for data, cosmology vectors and embeddings.
+
+StandardScaler, PerDimStandardScaler, MinMaxScaler and LogNormalScaler share one
+fit/transform/inverse_transform interface. WhitenPCAScaler whitens and truncates embeddings.
+scaler_to_state and save_scalers persist a fitted input frame.
+"""
 class DataScaler:
     def __init__(self):
         self.min = None
@@ -24,9 +30,6 @@ class DataScaler:
     
     def inverse_transform_standard(self, X):
         return X * self.std + self.mean
-
-# New, abstracted scaler classes with transform()/inverse_transform()
-# These are backend-agnostic (NumPy or PyTorch) and convert parameters on the fly
 
 import numpy as np
 import torch
@@ -87,10 +90,7 @@ class MinMaxScaler(BaseScaler):
 
 
 class StandardScaler(BaseScaler):
-    """Scalar standard scaler: stores a single mean/std for the whole array.
-
-    This preserves the original behaviour used for data scalers.
-    """
+    """Scalar standard scaler: stores a single mean/std for the whole array."""
 
     def __init__(self):
         self.mean: Optional[float] = None
@@ -160,22 +160,9 @@ class PerDimStandardScaler(BaseScaler):
 class WhitenPCAScaler(BaseScaler):
     """Standardise per-dim (fit-split mean/std), rotate into the PCA basis, keep top-k.
 
-    Direct port of the validated ``Whitener`` prototype in
-    ``.claude/runs/training-runs/nle-overconfidence-research/artifacts/diagnostics/fix_prototype_pipeline.py``
-    (lines 68-85), extended with a versioned ``save``/``load`` persistence format (with
-    fit-source metadata so cross-run mismatches are detectable) and an ``inverse_transform``
-    for BaseScaler-contract completeness / debugging.
-
-    Recipe (must match the prototype byte-for-byte on the same data, up to per-PC sign):
-      1. mean/std over axis 0 (torch unbiased std, matching ``z.std(0)``).
-      2. covariance of the standardised data via ``np.cov`` (ddof=1).
-      3. ``torch.linalg.eigh`` of that covariance, eigenvalues sorted descending.
-      4. keep the top-``k`` eigenvectors (``components``); whiten each PC by ``sqrt(eigenvalue)``.
-
-    ``k == input_dim`` is the pure-whiten mode (no truncation); ``k < input_dim`` also truncates.
-    The transform is a fixed affine map, so once fit on the pretrain (GLASS) train split and
-    persisted, it is REUSED unchanged on the finetune (Gower) fidelity and at eval — this is the
-    non-negotiable fix for the per-run-refit failure mode (research Finding C3).
+    Uses the unbiased std over axis 0, np.cov (ddof=1) and torch.linalg.eigh with eigenvalues
+    sorted descending, whitening each kept PC by sqrt(eigenvalue). k == input_dim only whitens.
+    The map is fit once on the pretrain split and reused unchanged downstream and at eval.
     """
 
     VERSION = "whiten_pca_v1"
@@ -188,7 +175,7 @@ class WhitenPCAScaler(BaseScaler):
         self.scale: Optional[np.ndarray] = None       # (k,)
         self.input_dim: Optional[int] = None
         self.explained_variance_ratio: Optional[np.ndarray] = None
-        # Fit-source metadata (informational; enables mismatch detection across runs).
+        # Fit-source metadata, for mismatch detection across runs.
         self.fit_source_experiment: Optional[str] = None
         self.fit_repeat_match: Optional[str] = None
         self.fit_n_train_samples: Optional[int] = None
@@ -340,18 +327,8 @@ class LogNormalScaler(BaseScaler):
         Z = X * float(self.std) + float(self.mean)
         return self._pow10(Z)
 
-# --------------------------------------------------------------------------- #
-# Persistence
-# --------------------------------------------------------------------------- #
-# Fitted scalers were never saved anywhere: `_fit_data_key_scalers_from_paths` re-derived them on
-# every run from a 1000-file subsample. That made a trained model's INPUT FRAME unrecoverable --
-# measured at ~1.1e-2 median |dz|/sd on the KiDS Gower Stage-B embeddings, and confirmed
-# independently by the spread ACROSS the nine ensemble-member caches. For scoring a model on data
-# it was not trained on (a variate store, or the real KiDS observation) the frame has to be the
-# training one, so it has to be written down.
-#
-# State is captured as plain floats/lists, never a pickled instance, so a file stays readable if a
-# scaler class is refactored.
+# --- persistence ---
+# State is stored as plain floats and lists, never a pickled instance.
 
 _SCALER_REGISTRY = {
     "MinMaxScaler": MinMaxScaler,
@@ -412,9 +389,8 @@ def scaler_from_state(state) -> Optional["BaseScaler"]:
 def save_scalers(path, key_scalers, cosmo_scaler=None, provenance=None):
     """Write the fitted input frame next to the run's embedding cache.
 
-    `provenance` should identify what these scalers belong to (experiment, match string, source
-    encoders, cosmo_param_names, and how they were obtained) so a later load can refuse a
-    mismatched frame rather than silently scoring in the wrong one.
+    `provenance` identifies the run (experiment, match string, source encoders, cosmo_param_names)
+    so a later load can refuse a mismatched frame.
     """
     import os
     payload = {
