@@ -1,22 +1,9 @@
 #!/usr/bin/env python
-"""Tier-4 diagnostic: is the field-level vs 2-pt shift along the Omega_m -- sigma_8 degeneracy seen on
-the observation normal for the matched Gower mocks?
+"""Tier-4 diagnostic: is the observed field-level vs 2-pt shift along the Omega_m-sigma_8 degeneracy normal for matched mocks?
 
-For every LCDM matched-mock event (the same mock is scored by both arms of a repeat), take the
-posterior medians of the two arms and form the shift field - 2-pt in (Omega_m, sigma_8, S8), raw and
-in units of the 2-pt posterior std. Compare the observation's shift (read from the Tier-4 table, the
-pooled rows) with that cloud, report its percentile, and draw the mock events whose shift is closest
-to the observed one as 2-pt + field corners (same style as the reveal set, MOCK-tagged).
-
-Outputs (in --out-dir):
-  shift_cloud.png/.pdf          arrows 2-pt -> field in the Omega_m--sigma_8 plane (mocks grey, observation
-                                in the arm colours) + histograms of the standardised shifts
-  analogue_<k>_sim<id>_aug<id>_corner.png/.pdf   the k closest mock analogues (field + 2-pt + truth)
-  shifts.csv, summary.md        per-event table and the percentiles
-
-Usage:
-  python scripts/tier4_shift_diagnostics.py --out-dir /data/alex/unblinding/real/work/tier4_diagnostics \
-      --real-table /data/alex/unblinding/real/work/tier4_reveal/tables/02_2pt_field_LCDM.md
+Per LCDM matched-mock event it forms the field minus 2-pt shift of the posterior medians, and it
+reports the observation's percentile in that cloud with the closest mock analogues as corners.
+Usage: python scripts/tier4_shift_diagnostics.py --out-dir <dir> --real-table <tier4 LCDM table.md>
 """
 from __future__ import annotations
 
