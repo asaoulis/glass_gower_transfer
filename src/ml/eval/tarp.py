@@ -66,29 +66,12 @@ def _get_tarp_coverage_single(
     seed: Union[int, None] = None,
     return_bin_membership: bool = False,
 ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, dict]]:
-    """
-    Estimates coverage with the TARP method a single time.
+    """Estimates coverage with the TARP method a single time (Lemos, Coogan et al. 2023).
 
-    Reference: `Lemos, Coogan et al 2023 <https://arxiv.org/abs/2302.03026>`_
-
-    Args:
-        samples: the samples to compute the coverage of, with shape ``(n_samples, n_sims, n_dims)``.
-        theta: the true parameter values for each samples, with shape ``(n_sims, n_dims)``.
-        references: the reference points to use for the DRP regions, with shape
-            ``(n_references, n_sims)``, or the string ``"random"``. If the later, then
-            the reference points are chosen randomly from the unit hypercube over
-            the parameter space.
-        metric: the metric to use when computing the distance. Can be ``"euclidean"`` or
-            ``"manhattan"``.
-        norm : whether to apply or not the normalization (Default = True)
-        num_alpha_bins: number of bins to use for the credibility values. If ``None``, then
-            ``n_sims // 10`` bins are used.
-        seed: the seed to use for the random number generator. If ``None``, then no seed
-
-    Returns:
-        Expected coverage probability (``ecp``) and credibility values (``alpha``).
-        If ``return_bin_membership`` is True, also returns a dict with per-simulation
-        credibility values and bin assignments.
+    samples (n_samples, n_sims, n_dims), theta (n_sims, n_dims). references are
+    (n_references, n_sims) or "random" (the unit hypercube). metric is "euclidean" or
+    "manhattan". num_alpha_bins=None uses n_sims // 10. Returns (ecp, alpha), plus a dict of
+    per-simulation credibility values and bins with return_bin_membership.
     """
     np.random.seed(seed)
 
@@ -175,27 +158,10 @@ def _get_tarp_coverage_bootstrap(samples: np.ndarray,
     norm: bool = True,
     seed: Union[int, None] = None
 ) -> Tuple[np.ndarray, np.ndarray]:
-    """
-    Estimates uncertainties on the expected probability and credibility values calculated with the
-    _get_tarp_coverage_single function using the bootstrapping method
+    """Bootstrap the TARP expected coverage over simulations (Lemos, Coogan et al. 2023).
 
-    Args:
-        samples: the samples to compute the coverage of, with shape ``(n_samples, n_sims, n_dims)``.
-        theta: the true parameter values for each samples, with shape ``(n_sims, n_dims)``.
-        references: the reference points to use for the DRP regions, with shape
-            ``(n_references, n_sims)``, or the string ``"random"``. If the later, then
-            the reference points are chosen randomly from the unit hypercube over
-            the parameter space.
-        metric: the metric to use when computing the distance. Can be ``"euclidean"`` or
-            ``"manhattan"``.
-        num_alpha_bins: number of bins to use for the credibility values. If ``None``, then
-            ``n_sims // 10`` bins are used.
-        num_bootstrap: number of bootstrap iterations to perform (Default = 100)
-        norm : whether to apply or not the normalization (Default = True)
-        seed: the seed to use for the random number generator. If ``None``, then no seed
-
-    Returns:
-        Expected coverage probability, and credibility
+    Arguments as _get_tarp_coverage_single, plus num_bootstrap resamples. Returns
+    (ecp of shape (num_bootstrap, num_alpha_bins + 1), alpha).
     """
     num_sims = samples.shape[1]
 
@@ -217,11 +183,7 @@ def _get_tarp_coverage_bootstrap(samples: np.ndarray,
                                                           num_alpha_bins=num_alpha_bins,
                                                           norm=norm,
                                                           seed=seed)
-    
-    # ecp_mean = boot_ecp.mean(axis=0)
-    # ecp_std = boot_ecp.std(axis=0)
-    # alpha_mean = boot_alpha.mean(axis=0)
-    # return ecp_mean, ecp_std, alpha_mean
+
     return boot_ecp, alpha
 
 
@@ -237,35 +199,11 @@ def get_tarp_coverage(
     seed: Union[int, None] = None,
     return_bin_membership: bool = False,
 ) -> Union[Tuple[np.ndarray, np.ndarray], Tuple[np.ndarray, np.ndarray, dict]]:
-    """
-    Estimates coverage with the TARP method.
+    """Estimates coverage with the TARP method (Lemos, Coogan et al. 2023).
 
-    Reference: `Lemos, Coogan et al 2023 <https://arxiv.org/abs/2302.03026>`_
-
-    Args:
-        samples: the samples to compute the coverage of, with shape ``(n_samples, n_sims, n_dims)``.
-        theta: the true parameter values for each samples, with shape ``(n_sims, n_dims)``.
-        references: the reference points to use for the DRP regions, with shape
-            ``(n_references, n_sims)``, or the string ``"random"``. If the later, then
-            the reference points are chosen randomly from the unit hypercube over
-            the parameter space.
-        metric: the metric to use when computing the distance. Can be ``"euclidean"`` or
-            ``"manhattan"``.
-        num_alpha_bins: number of bins to use for the credibility values. If ``None``, then
-            ``n_sims // 10`` bins are used.
-        num_bootstrap: number of bootstrap iterations to perform (Default = 100)
-        norm : whether to apply or not the normalization (Default = False)
-        bootstrap : whether to use bootstrap to estimate uncertainties (Default = False)
-        seed: the seed to use for the random number generator. If ``None``, then no seed
-
-    Returns:
-        Expected coverage probability (``ecp``) and credibility values (``alpha``).
-        If bootstrap is True, the ecp array has an extra dimension corresponding
-        to the number of bootstrap iterations.
-        If ``return_bin_membership`` is True, also returns a dict containing
-        per-simulation bin assignments from a non-bootstrap pass over the full
-        input set. This is intended for selecting simulations in specific
-        credibility bins for posterior inspection.
+    samples (n_samples, n_sims, n_dims), theta (n_sims, n_dims). Returns (ecp, alpha). With
+    bootstrap, ecp gains a leading bootstrap axis. With return_bin_membership, also returns a dict
+    of per-simulation bin assignments from one non-bootstrap pass.
     """
     if bootstrap:
         ecp, alpha = _get_tarp_coverage_bootstrap(samples, theta, references, metric, num_alpha_bins, num_bootstrap,
