@@ -1,25 +1,10 @@
 #!/usr/bin/env python
-"""Does restricting the Tier-2 ensemble-disagreement KL to a PARAMETER SUBSET improve its OOD
-discriminating power?
+"""Test whether restricting the Tier-2 ensemble-disagreement KL to a parameter subset improves its OOD power.
 
-    PYTHONPATH=. python scripts/kl_subset_study.py \
-        --base-dir ml-checkpoints/gower_npe_finetune_nla_m_bgp_z8_ens1 \
-        --experiment gower_npe_finetune_nla_m_bgp_z8_ens1 \
-        --out-dir .claude/runs/eval-and-viz/unblinding-prep/artifacts/kl_subsets
+    PYTHONPATH=. python scripts/kl_subset_study.py --base-dir <misspec pack> --experiment <exp> --out-dir <dir>
 
-Points at ANY misspec pack directory, so the same code answers the question for the field-level
-encoder pack and for the 2-pt (M17 band) pack -- only ``--base-dir``/``--match-template`` change.
-Nothing here re-evaluates a model: the KL is a sum over the parameter axis, so every subset is an
-exact slice of the saved ``mu``/``var`` (see ``src/ml/eval/kl_subsets``). ``S8`` is the exception
-and is built from the per-repeat sample dumps.
-
-Outputs
-    kl_subset_rows.npz     per-variate per-event scores for every subset + the per-dim matrix
-    kl_subset_auroc.json   AUROC (cosmology-block CI) for the per-dim and subset tables
-    KL_SUBSETS_<tag>.md    the two tables plus the controls
-
-Discriminating power is AUROC against the pack's OWN in-distribution variate. Never compare a raw
-KL value between packs: an ens9 pack's mixture posteriors are broader, so its KL scale differs.
+Every subset is an exact slice of the saved mu/var, and S8 comes from the per-repeat sample dumps.
+Power is AUROC against the pack's own in-distribution variate, so never compare raw KL between packs.
 """
 from __future__ import annotations
 
