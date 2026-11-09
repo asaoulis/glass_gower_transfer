@@ -36,7 +36,7 @@ def retrieve_first_list_from_experiments(experiments):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python camels_regress.py <experiment_name>")
+        print("Usage: python train.py <experiment_name>")
         sys.exit(1)
 
     experiment_name = sys.argv[1]
