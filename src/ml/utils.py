@@ -1,3 +1,9 @@
+"""Data, model and checkpoint plumbing shared by training and evaluation.
+
+prepare_data_parameters builds the dataloaders and fitted scalers from a config. build_model builds
+the encoder, the flow head and the LightningModule and loads the pretrained submodules.
+build_ensemble_model_from_checkpoints rebuilds a trained ensemble for evaluation.
+"""
 import numpy as np
 from typing import Dict, List, Sequence, Tuple, Union, Optional
 
@@ -9,19 +15,15 @@ from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELight
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
-# Centralized dataloader builder
 from .data.data_loaders import build_dataloaders, build_nested_keys_from_quantities
 from .data.side_inputs import build_side_input_fn, side_input_config
 from .data.data_loading import unpack_data, load_cosmo_params
-# Use new abstracted scalers
 from .data.scaling import BaseScaler, MinMaxScaler, StandardScaler, LogNormalScaler, PerDimStandardScaler
 
-# Merge model registries (compressors + kids-specific architectures)
 MODEL_BUILDERS = {**_MODEL_BUILDERS, **KIDS_MODEL_BUILDERS}
 
 N_BINS = 6
-# E/B map quantity names with an optional smoothing tag: 'E_north', 'B_south',
-# 'E_fwhm8_north', 'B_fwhm6_lmin76_lcut1024_south', ... (mirrors data_augmentations._EB_QUANTITY_RE).
+# E/B map quantity names, as in data_augmentations._EB_QUANTITY_RE.
 import re as _re
 _E_MAP_RE = _re.compile(r"^E(?:_.+)?_(north|south)$")
 _B_MAP_RE = _re.compile(r"^B(?:_.+)?_(north|south)$")
@@ -31,19 +33,9 @@ def _infer_channels_per_map_from_quantities(
     dataset_quantities: Optional[Sequence[str]],
     n_bins: int = N_BINS,
 ) -> Optional[int]:
-    """Infer channels_per_map from dataset_quantities.
+    """Infer channels_per_map from dataset_quantities: n_bins for E only, 2 * n_bins for E+B.
 
-    - If only E maps are present (any E_*_{north,south}), use `n_bins`.
-    - If B maps are also present, use 2*`n_bins`.
-    - If no map quantities are present, return None.
-
-    Matches both the logical names (E_north) and explicit smoothing-variant names
-    (E_fwhm8_north). NOTE: this counts E-vs-(E+B) for a SINGLE smoothing variant; loading
-    several variants as separate stacked inputs would need an explicit channels_per_map.
-
-    `n_bins` defaults to the KiDS tomography (6) and is threaded from `config.n_tomo_bins`, so a
-    survey with a different tomographic binning (Euclid DR3 has 13) builds the right stem width
-    instead of silently producing a 6-channel encoder against 13-channel data.
+    Returns None without map quantities. n_bins comes from config.n_tomo_bins.
     """
     if not dataset_quantities:
         return None
@@ -59,10 +51,7 @@ def _infer_channels_per_map_from_quantities(
 
 
 class DataDictScalerTransform:
-    """
-    Applies per-key scaling to entries in the data dict using provided scaler objects
-    that implement transform() / inverse_transform().
-    """
+    """Apply per-key scalers (transform / inverse_transform) to entries of the data dict."""
     def __init__(self, key_scalers: Dict[str, BaseScaler]):
         self.key_scalers = key_scalers or {}
 
@@ -78,9 +67,7 @@ class DataDictScalerTransform:
 
 
 class TransformingDataset(torch.utils.data.Dataset):
-    """
-    Wraps a base dataset and applies transforms to (data_dict, cosmo_vector).
-    """
+    """Wrap a base dataset and apply transforms to (data_dict, cosmo_vector)."""
     def __init__(
         self,
         base_ds: torch.utils.data.Dataset,
@@ -96,8 +83,7 @@ class TransformingDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx: int):
         item = self.base_ds[idx]
-        # Base ds returns either (data, cosmo) or, when return_cosmo_id is on (VICReg train loader),
-        # (data, cosmo, cosmo_id). Scalers never touch the integer cosmo_id — pass it through.
+        # Items are (data, cosmo) or (data, cosmo, cosmo_id). The cosmo_id passes through unscaled.
         if len(item) == 3:
             data, cosmo, cid = item
         else:
@@ -115,8 +101,8 @@ class TransformingDataset(torch.utils.data.Dataset):
 def _resolve_scaler_fit_max_obs(config):
     """Scaler-fit file cap: an int, or a per-key dict built from the optional by-key override.
 
-    `scaler_fit_max_obs` is the cap for every key; `scaler_fit_max_obs_by_key` overrides it for
-    named keys (see `_cap_for` for why that distinction matters across a two-stage frozen run).
+    scaler_fit_max_obs is the cap for every key, and scaler_fit_max_obs_by_key overrides it for
+    named keys.
     """
     default = int(getattr(config, 'scaler_fit_max_obs', 1000) or 1000)
     by_key = getattr(config, 'scaler_fit_max_obs_by_key', None)
@@ -135,24 +121,18 @@ def _fit_data_key_scalers_from_paths(
     seed: int = 0,
     per_dim_keys: Optional[Sequence[str]] = None,
 ) -> Dict[str, BaseScaler]:
-    """Fit one scaler per data key on a subsample of `train_paths`. Default: each file is flattened and a SCALAR
-    scaler is fitted (LogNormalScaler for band powers, StandardScaler otherwise). Keys in `per_dim_keys` (opt-in,
-    e.g. the HOS feature vector, whose entries differ by orders of magnitude) are instead stacked as (N, D) rows and
-    get a PerDimStandardScaler. The per-key subsample RNG sequence is unchanged by this option."""
+    """Fit one scaler per data key on a subsample of `train_paths`.
+
+    Each file is flattened and a scalar scaler is fitted (LogNormalScaler for band powers,
+    StandardScaler otherwise). Keys in `per_dim_keys` are stacked as (N, D) rows and get a
+    PerDimStandardScaler."""
     key_scalers: Dict[str, BaseScaler] = {}
     per_dim_keys = set(per_dim_keys or ())
     if keys_to_scale is None:
         keys_to_scale = list(nested_keys.keys())
 
-    # `max_obs` may be a plain int (one cap for every key, the historical behaviour) or a dict
-    # {key: cap, 'default': cap} for a PER-KEY cap. The per-key form exists because the cap is a
-    # memory knob driven by the biggest key: Euclid's E maps are ~28 MB/file, so they need a cap
-    # of ~100, but `mixed_bandpowers` is ~3 kB/file and 1000 of them cost ~3 MB. Forcing the
-    # bandpowers down to the maps' cap makes a two-stage run inconsistent with ITSELF -- a Stage-I
-    # band encoder fits its scaler on 1000 files, and a Stage-II run that FREEZES that encoder
-    # then feeds it inputs standardised from only 100, i.e. shifted by ~sd*sqrt(1/100-1/1000)
-    # ~= 0.095 sd per feature. A frozen module cannot adapt to that; it must see the distribution
-    # it was trained on.
+    # max_obs: an int, or {key: cap, 'default': cap}. A frozen encoder must see the scaler it was
+    # trained with, so the bandpower cap is kept apart from the map cap.
     def _cap_for(key: str) -> int:
         if isinstance(max_obs, dict):
             v = max_obs.get(key, max_obs.get("default", 1_000))
@@ -160,16 +140,6 @@ def _fit_data_key_scalers_from_paths(
             v = max_obs
         return int(v or 1_000)
 
-    # Subsampling RNG. This was `np.random.shuffle(train_paths)`, which did two bad things:
-    #   (1) it drew from the process-wide UNSEEDED stream, so every fitted scaler was
-    #       irreproducible -- measured on the KiDS Gower Stage-B test set at ~1.1% of sd (median)
-    #       on the resulting embeddings, i.e. a real effect, not a rounding artifact; and it was
-    #       the ONLY global-RNG consumer in the ML data path, so it also perturbed anything else
-    #       sharing that stream.
-    #   (2) it permuted the CALLER's list in place as a side effect.
-    # A local Generator fixes both. `seed` is threaded from `config.scaler_fit_seed` so a fit is
-    # reproducible by default, while a caller that needs to MEASURE the subsample sensitivity
-    # (the reproduction gate) can still vary it explicitly.
     rng = np.random.default_rng(seed)
 
     for key in keys_to_scale:
@@ -177,15 +147,9 @@ def _fit_data_key_scalers_from_paths(
             continue
         vals: List[np.ndarray] = []
         single_key = {key: nested_keys[key]}
-        # Per-key permutation (each key historically saw a different subsample; keep that), but
-        # taken from the local generator and WITHOUT mutating `train_paths`.
-        # NB the permutation is drawn in full and sliced afterwards, so the generator advances
-        # identically whatever the cap is -- changing one key's cap cannot perturb another key's
-        # subsample, and a cap of 1000 here selects a strict SUPERSET of the same cap-100 draw.
         order = rng.permutation(len(train_paths))[:_cap_for(key)]
         for p in [train_paths[i] for i in order]:
-            # Skip corrupt/truncated files or ones missing the requested group (robust to a
-            # large, partially-generated out-of-core dataset) — same policy as H5CosmoDataset.
+            # Skip corrupt files or ones missing the group, as H5CosmoDataset does.
             try:
                 data, _ = unpack_data(p, single_key, [], as_torch=False, dtype=np.float32, stack_groups=False)
                 arr = data[key]
@@ -198,7 +162,6 @@ def _fit_data_key_scalers_from_paths(
             continue
         stacked = np.concatenate(vals, axis=0)
 
-        # Choose scaler: ensure 'bandpowers' uses LogNormalScaler
         if key in per_dim_keys:
             scaler = PerDimStandardScaler()
         elif "bandpowers" in key.lower():
@@ -254,11 +217,7 @@ def _wrap_loader_with_transforms(loader: torch.utils.data.DataLoader, data_trans
         collate_fn=getattr(loader, 'collate_fn', None),
     )
 
-    # VICReg train loader carries an MPerCosmoBatchSampler. Reuse it (the wrapped dataset has the
-    # same indices/order as the base dataset, so positions still map to the same samples).
-    # batch_sampler is mutually exclusive with batch_size/shuffle/drop_last. NOTE: PyTorch sets
-    # loader.batch_sampler to an auto-created BatchSampler even for plain loaders, so the type check
-    # (not a None check) is what distinguishes the VICReg path.
+    # Reuse an MPerCosmoBatchSampler. The type check matters: PyTorch gives every loader a batch_sampler.
     bs = getattr(loader, 'batch_sampler', None)
     if isinstance(bs, MPerCosmoBatchSampler):
         return torch.utils.data.DataLoader(wrapped_ds, batch_sampler=bs, **common)
@@ -273,13 +232,10 @@ def _wrap_loader_with_transforms(loader: torch.utils.data.DataLoader, data_trans
 
 
 def prepare_data_parameters(config):
+    """Build the train/val/test DataLoaders and apply the scalers of config.scaler_options.
+
+    Returns (scalers, train_loader, val_loader, test_loader).
     """
-    Build train/val/test DataLoaders using data.build_dataloaders, then apply
-    optional scaling transforms configured by config.scaler_options.
-    """
-    # Resolve nested_keys from either dataset_quantities helper or explicit mapping.
-    # eb_map_variant controls which HDF5 group the logical E/B names resolve to
-    # (None => legacy bare 'E'/'B' groups; e.g. 'fwhm8' => 'E_fwhm8'/'B_fwhm8').
     if getattr(config, 'dataset_quantities', None):
         nested_keys = build_nested_keys_from_quantities(
             list(config.dataset_quantities),
@@ -328,34 +284,26 @@ def prepare_data_parameters(config):
         N_extra_test_cosmologies=getattr(config, 'N_extra_test_cosmologies', None),
         fixed_test_sim_ids=getattr(config, 'fixed_test_sim_ids', None),
         N_test_cosmologies=getattr(config, 'N_test_cosmologies', None),
-        # VICReg: m-per-cosmology train batches + per-sample cosmo id (gated entirely by
-        # use_vicreg_loss; every other mode keeps the plain random loader and 2-tuple batches).
         use_cosmo_batch_sampler=getattr(config, 'use_vicreg_loss', False),
         m_per_cosmo=int(getattr(config, 'vicreg_m_per_cosmo', 2)),
-        # Optional oracle conditioning (config.side_input type 'true_theta'); None for every
-        # config without a side_input, i.e. unchanged items.
+        # Oracle conditioning (config.side_input type 'true_theta'), else None.
         side_input_fn=build_side_input_fn(config),
         preload=bool(getattr(config, 'preload_data', False)),
         exclude_files=getattr(config, 'exclude_files', None),
         include_files_regex=getattr(config, 'include_files_regex', None),
     )
 
-    # Print dataset lengths for visibility
     print(f"Train dataset length: {len(train_loader.dataset)}")
     print(f"Val dataset length:   {len(val_loader.dataset)}")
     print(f"Test dataset length:  {len(test_loader.dataset)}")
-    # Fit scalers from the training split
     scaler_options = getattr(config, 'scaler_options', None) or {}
     train_ds = train_loader.dataset
     val_ds = val_loader.dataset
     train_paths = list(getattr(train_ds, 'paths', []))
     val_paths = list(getattr(val_ds, 'paths', []))
-    # Use explicit nested_keys resolved above (safer than introspection)
     cosmo_params = cosmo_param_names
 
-    # Backward compatibility: single-model runs keep train-only scaler fitting.
-    # Ensemble runs fit on train+val so all members sharing a trainval split
-    # use identical input scaling, regardless of train/val partitioning.
+    # Single-model runs fit scalers on train only, ensemble runs on train+val.
     is_ensemble_run = int(getattr(config, 'ensemble_repeats', 1) or 1) > 1
     scaler_fit_paths = train_paths if not is_ensemble_run else (train_paths + val_paths)
 
@@ -366,11 +314,10 @@ def prepare_data_parameters(config):
         scaler_fit_paths,
         nested_keys,
         keys_to_scale=data_keys_to_scale,
-        # Whole files are concatenated per key before the fit, so this cap is a MEMORY knob, not
-        # just a statistics one: at Euclid's 28 MB/mock, the 1000 default would need ~28 GB/key.
+        # Whole files are concatenated per key, so the cap bounds memory.
         max_obs=_resolve_scaler_fit_max_obs(config),
         seed=int(getattr(config, 'scaler_fit_seed', 0) or 0),
-        # scaler_options may be an ml_collections ConfigDict (not a dict subclass): duck-type the lookup.
+        # scaler_options may be a ConfigDict, not a dict subclass.
         per_dim_keys=(getattr(scaler_options, 'get', lambda *_: None)('data') or {}).get('per_dim_keys'),
     )
 
@@ -381,8 +328,7 @@ def prepare_data_parameters(config):
             cosmo_scaler = _fit_cosmo_minmax_scaler_from_paths(scaler_fit_paths, cosmo_params)
         elif scaling_type == "preset":
             from .data.constants import COSMO_PARAM_PRESET_MINMAX
-            # Optional per-config box overrides (e.g. NLA-family datasets use a_ia in [-6,6],
-            # vs the NLA-M default [4.48,7]). Non-breaking: empty/absent => global preset.
+            # Optional per-config box overrides of the global preset.
             preset = dict(COSMO_PARAM_PRESET_MINMAX)
             overrides = scaler_options['cosmo'].get('preset_overrides') or {}
             preset.update({k: tuple(v) for k, v in overrides.items()})
@@ -390,11 +336,8 @@ def prepare_data_parameters(config):
         else:
             raise ValueError(f"Unsupported cosmo scaler type '{scaling_type}' specified in config.scaler_options['cosmo']['type']")
 
-    # Build transforms and wrap loaders
     data_transform = DataDictScalerTransform(key_scalers)
-    # Optional per-sample E/B noise normalisation (shear-estimator hardening, Track B):
-    # applied BEFORE the key scalers. Configs using it should normally exclude the map keys
-    # from scaler_options['data']['keys'] — the transform already standardises them.
+    # Optional per-sample E/B noise normalisation, applied before the data scalers.
     eb_noise_norm = getattr(config, 'eb_noise_norm', None)
     if eb_noise_norm:
         from .data.data_augmentations import EBNoiseNormTransform, ChainedDataTransform
@@ -413,13 +356,11 @@ def prepare_data_parameters(config):
 
 
 def prepare_data_and_model(config, data_parameters=None):
-    # Build data (and scalers) if not provided
     if data_parameters is None:
         scalers, train_loader, val_loader, test_loader = prepare_data_parameters(config)
     else:
         scalers, train_loader, val_loader, test_loader = data_parameters
 
-    # Build model
     model = build_model(config, test_dataloader=test_loader)
 
     return (train_loader, val_loader, test_loader), model, scalers
@@ -433,9 +374,7 @@ def _attach_side_input(embedding_model, side_cfg, config, model_kwargs):
     if side_cfg["type"] == "true_theta":
         module = DataKeySideInput(len(side_cfg["params"]))
     else:
-        # Same architecture as the trained encoder (no KL: the summary is the deterministic mu).
-        # config.latent_dim, NOT the hybrid_output_dim-overridden width: the trained encoder was
-        # built from the config value (hybrid_output_dim then sets its final summary width).
+        # The trained encoder's architecture without KL, built from config.latent_dim.
         side_latent = int(side_cfg.get("latent_dim", config.latent_dim))
         side_kwargs = {**model_kwargs, 'use_kl': False} if config.model_type in KIDS_MODEL_BUILDERS else model_kwargs
         side_encoder = MODEL_BUILDERS[config.model_type](side_latent, **side_kwargs)
@@ -451,24 +390,18 @@ def build_model(config, test_dataloader=None):
 
     redundancy_dim = getattr(config, 'redundancy_dim', 0)
     use_KL_loss = getattr(config, 'use_KL_loss', False)
-    # VICReg regulariser on the summary (mutually exclusive with use_KL_loss; VICReg operates on
-    # the deterministic summary so it leaves use_kl=False / the single-width head).
     use_vicreg_loss = getattr(config, 'use_vicreg_loss', False)
-    # Flag indicating distributed training (set in train_model/fit_model)
     is_distributed = getattr(config, 'is_distributed', False)
 
-    # Training mode: 'nde' (default) or 'regression'
     training_mode = getattr(config, 'training_mode', 'nde')
 
-    # latent_dim is always the dimension of mu; encoder may output 2*latent_dim when use_kl
+    # latent_dim is the dimension of mu. The encoder emits 2 * latent_dim with use_kl.
     latent_dim = getattr(config, 'latent_dim', None)
     if latent_dim is None:
         raise ValueError("config.latent_dim must be set")
 
-    # Build encoder / embedding model with KL behaviour controlled by use_KL_loss
     model_kwargs = {**config.model_kwargs.to_dict(), 'redundancy_dim': redundancy_dim}
 
-    # If channels_per_map not explicitly set, infer it from dataset_quantities
     if 'channels_per_map' not in model_kwargs:
         ch = _infer_channels_per_map_from_quantities(
             getattr(config, 'dataset_quantities', None),
@@ -478,7 +411,6 @@ def build_model(config, test_dataloader=None):
             model_kwargs['input_channels'] = ch
             print("Inferred channels_per_map from dataset_quantities: setting input_channels to", ch)
     print(model_kwargs)
-    # Kids encoders honour use_kl; legacy compressors just ignore it via **model_kwargs
     if config.model_type in KIDS_MODEL_BUILDERS:
         model_kwargs = {**model_kwargs, 'use_kl': use_KL_loss}
 
@@ -498,13 +430,11 @@ def build_model(config, test_dataloader=None):
     inference_dim = len(config.cosmo_param_names)
     inference_mode = getattr(config, 'inference_mode', 'npe')
 
-    # Joint mode trains both NPE and NLE heads simultaneously.
     is_joint = str(inference_mode).lower() in {"joint", "npe+nle", "nle+npe"}
 
     if inference_mode == 'nle':
         conditioning_dim, inference_dim = inference_dim, conditioning_dim
 
-    # Derive a reasonable warmup if not explicitly provided
     base_sched_kwargs = dict(getattr(config, 'scheduler_kwargs', {}) or {})
     if 'warmup' not in base_sched_kwargs:
         est_warmup = 1000
@@ -512,9 +442,8 @@ def build_model(config, test_dataloader=None):
 
     num_flow_heads = getattr(config, 'num_flow_heads', 1)
 
-    # Choose correct LightningModule based on training mode
     lm_extra_kwargs = {}
-    # Map-only auxiliary VMIM head (NPE-family modules only; default 0 = off).
+    # Map-only auxiliary VMIM head, NPE-family modules only.
     patch_aux_weight = float(getattr(config, 'patch_aux_weight', 0.0) or 0.0)
     if patch_aux_weight > 0.0:
         lm_extra_kwargs['patch_aux_weight'] = patch_aux_weight
@@ -546,7 +475,6 @@ def build_model(config, test_dataloader=None):
     else:
         LightningModule = NDELightningModule
 
-    # Construct LightningModule — regression will discard NDE-specific kwargs
     model = LightningModule(
         embedding_model,
         conditioning_dim=conditioning_dim,
@@ -565,30 +493,21 @@ def build_model(config, test_dataloader=None):
         **lm_extra_kwargs,
     )
 
-    # --------------------------------------------------------
-    # Explicitly load optional pretrained components
-    # --------------------------------------------------------
+    # --- optional pretrained components ---
     band_module_name = None
     backbone_module_name = None
 
     checkpoint_path = getattr(config, 'checkpoint_path', None)
     pretrained_band_ckpt_folder = getattr(config, 'pretrained_band_ckpt_path', None)
 
-    # LOAD-ORDER HAZARD. `_load_pretrained_embedding_net` writes the WHOLE hybrid embedding_net
-    # (band branch + map branch + fusion head) and runs LAST in this function. So a config setting
-    # BOTH `pretrained_band_ckpt_path` and `pretrained_embedding_ckpt_path` gets its band weights
-    # SILENTLY OVERWRITTEN by whatever band is inside the embedding checkpoint. That is why
-    # `_encoder_finetune_bgp` pops the band keys rather than combining them.
-    # `band_load_after_embedding=True` is the opt-in for the combination config could not express:
-    # warm-start the MAP branch from one parent, then lay a DIFFERENT (separately trained) band on
-    # top and freeze it. Default False leaves every existing caller's order and behaviour unchanged.
+    # Load order: the embedding_net load runs last and overwrites a separately loaded band unless
+    # band_load_after_embedding is set.
     band_load_after_embedding = getattr(config, 'band_load_after_embedding', False)
 
     def _do_band_load():
-        # Resolve + load the pretrained band encoder; returns the module name (or None).
+        # Returns the band module name, or None.
         pretrained_band_ckpts, _ = get_best_checkpoint(pretrained_band_ckpt_folder, config.pretrained_band_match_string)  # sanity check that folder and checkpoint exist
         freeze_band = getattr(config, 'freeze_band', False)
-        # band_prefix = getattr(config, 'band_prefix', 'model.embedding_net.')
         pretrained_band_ckpt = pretrained_band_ckpts[0]  # TODO: fix this
         return model._load_pretrained_band_encoder(
             pretrained_band_ckpt,
@@ -599,37 +518,18 @@ def build_model(config, test_dataloader=None):
     if checkpoint_path:
         model.load_from_checkpoint(checkpoint_path)
         print("Loaded full model state from checkpoint:", checkpoint_path)
-        # A whole-model load supplies the band weights too, so the band-load branch below is
-        # skipped — but `freeze_band` used to be read ONLY inside that branch, so a config asking
-        # for a frozen band got a TRAINABLE one with no warning. Honour it here as well; without
-        # this a warm-start/continuation silently becomes a band-unfreeze experiment.
-        # No-op for callers that set freeze_band=False (e.g. the M3 NPE finetune, which
-        # deliberately finetunes everything).
+        # A whole-model load supplies the band too, so freeze_band is honoured here (the band-load
+        # branch is skipped).
         if getattr(config, 'freeze_band', False):
             band_module_name = model._freeze_band_encoder()
     else:
         if pretrained_band_ckpt_folder is not None and not band_load_after_embedding:
             band_module_name = _do_band_load()
 
-    # ⚠️ WARM-START LOADS MUST NOT OVERWRITE A FULLY-LOADED CHECKPOINT.
-    # `checkpoint_path` means "restore this trained model" — it is how EVERY evaluation rebuilds a
-    # run (`eval/utils.py:435` and `build_ensemble_model_from_checkpoints` both set it on a config
-    # copy). The flow / backbone / embedding loads below are WARM-START mechanisms for TRAINING a
-    # new model, and they used to run unconditionally, i.e. AFTER the full-model load. The effect
-    # was silent and severe: evaluating any row carrying `pretrained_embedding_ckpt_path` restored
-    # the trained weights and then overwrote the whole embedding_net with the warm-start PARENT's,
-    # so the flow was scored against an encoder it had never been trained against. Measured
-    # 2026-09-01 on `glass_encoder_finetune_nla*_bgp_z8`: every credible interval came back NaN and
-    # FoM(omega_m,sigma_8) scattered 2.41 +/- 1.93 across repeats.
-    # The band branch was already correct — it lives inside the `else` above, and the
-    # `checkpoint_path` branch honours `freeze_band` explicitly. These three now follow that same
-    # contract. Verified against the merged experiment registry: ZERO configs set `checkpoint_path`
-    # together with any of these keys, so no training configuration changes behaviour.
+    # checkpoint_path restores a trained model, so the warm-start loads below (flow, backbone,
+    # embedding) must not run after it.
     if checkpoint_path and getattr(config, 'load_pretrained_flow', False):
-        # Say so out loud. The other two skips below already print; this one was silent, and the
-        # set of warm starts that DID NOT run is exactly what distinguishes the encoder this build
-        # produces from the one an older revision produced for the same checkpoint (see the
-        # kappa=2 source-encoder frame change, BUG_kappa2_prior.md 7.16).
+        # Print which warm starts were skipped.
         print("[build_model] checkpoint_path set -> SKIPPING the pretrained-flow warm start so "
               "the loaded checkpoint's weights survive.")
     if (not checkpoint_path) and getattr(config, 'load_pretrained_flow', False):
@@ -669,10 +569,7 @@ def build_model(config, test_dataloader=None):
 
     pretrained_backbone_ckpt = getattr(config, 'pretrained_backbone_ckpt_path', None)
     if checkpoint_path and pretrained_backbone_ckpt is not None:
-        # No freeze re-application here (unlike the band branch, which has a standalone
-        # `_freeze_band_encoder`): backbone freezing only happens inside
-        # `_load_pretrained_cnn_backbone`, and the only path that sets `checkpoint_path` is
-        # evaluation, where the model runs under `.eval()` with no gradients and freezing is moot.
+        # No freeze re-application: only evaluation sets checkpoint_path, where freezing is moot.
         print("[build_model] checkpoint_path set -> SKIPPING the pretrained-backbone warm start so "
               "the loaded checkpoint's weights survive.")
         pretrained_backbone_ckpt = None
@@ -681,8 +578,7 @@ def build_model(config, test_dataloader=None):
         backbone_prefix = getattr(config, 'backbone_prefix', 'shared_cnn.backbone.')
         target_prefix = getattr(config, 'target_backbone_prefix', '')
         if os.path.isdir(pretrained_backbone_ckpt):
-            # Resolve a checkpoint DIRECTORY like the band loader does (repeat-aware best-val),
-            # so configs can point at the experiment folder instead of a hardcoded filename.
+            # A directory resolves to its best checkpoint for this repeat, as the band loader does.
             backbone_ckpts, _ = get_best_checkpoint(
                 pretrained_backbone_ckpt, config.pretrained_band_match_string)
             pretrained_backbone_ckpt = backbone_ckpts[0]
@@ -707,9 +603,7 @@ def build_model(config, test_dataloader=None):
             freeze=freeze_embedding_net,
         )
 
-    # Frozen side encoder (config.side_input type 'frozen_encoder'): loaded AFTER the embedding_net
-    # warm start, and skipped when checkpoint_path restored the full model (whose state already
-    # carries the side encoder) -- the same contract as the warm starts above.
+    # Frozen side encoder: loaded after the embedding_net warm start, skipped under checkpoint_path.
     if side_cfg is not None and side_cfg["type"] == "frozen_encoder":
         if checkpoint_path:
             print("[build_model] checkpoint_path set -> SKIPPING the side-encoder load so the "
@@ -729,26 +623,19 @@ def build_model(config, test_dataloader=None):
             side_mod = model.model.embedding_net.side_input_module
             diag = load_partial_weights(side_mod.encoder, src_state, prefix="model.embedding_net.",
                                         freeze=True, verbose=True)
-            # The WHOLE side encoder must come from the checkpoint (a partial load would leave
-            # random frozen weights with a perfectly finite loss).
+            # The whole side encoder must come from the checkpoint, never a partial load.
             if not diag["loaded"] or diag["missing"] or diag["skipped_shape"] or diag.get("skipped_missing"):
                 raise RuntimeError(f"side-input encoder load incomplete from {side_ckpt}: loaded "
                                    f"{diag['loaded']}, missing {len(diag['missing'])}, shape "
                                    f"{len(diag['skipped_shape'])}, unmatched {len(diag.get('skipped_missing') or [])}")
             side_mod.freeze()
 
-    # Deferred band load: AFTER the embedding_net load, so the band the config actually asked for
-    # is the one that survives (see the LOAD-ORDER HAZARD note above). Runs whether or not an
-    # embedding checkpoint was supplied, so the flag means the same thing in both cases.
+    # Deferred band load, after the embedding_net load, so the requested band survives.
     if (not checkpoint_path) and pretrained_band_ckpt_folder is not None and band_load_after_embedding:
         print("[build_model] band_load_after_embedding=True -> loading the band encoder AFTER "
               "the embedding_net load so it is not overwritten.")
         band_module_name = _do_band_load()
 
-    # After we know which submodules were actually used for pretrained
-    # loading, configure optional per-module learning rates, if present
-    # in the config. These are scalars; we build the dicts that
-    # BaseLightningModule._build_param_groups expects.
     band_lr = getattr(config, 'pretrained_band_lr', None)
     if band_lr is not None and band_module_name is not None:
         model.pretrained_band_lrs = {band_module_name: float(band_lr)}
@@ -757,8 +644,7 @@ def build_model(config, test_dataloader=None):
     if backbone_lr is not None and backbone_module_name is not None:
         model.pretrained_backbone_lrs = {backbone_module_name: float(backbone_lr)}
 
-    # Opt-in (HOS hybrid Stage B): freeze the hybrid's patch/HOS branch AFTER every load, so a fine-tune can adapt
-    # only the band/fusion/flow. Its dropout is zeroed too: a frozen branch should be deterministic in training.
+    # Optionally freeze the hybrid's patch branch after every load, with its dropout zeroed.
     if getattr(config, 'freeze_patch_encoder', False):
         patch_enc = getattr(model.embedding_net, 'patch_encoder', None)
         if patch_enc is None:
@@ -778,12 +664,7 @@ def build_model(config, test_dataloader=None):
 
 
 def _apply_ml_perf(model, config):
-    """Apply config.ml_perf training-speed options (all default-OFF; byte-identical when unset).
-
-    Measured on the A6000 for kids_hybrid_bandpowers_maps (B=100): AMP-encoder 1.40x, then
-    +compile(backbone) -> 1.83x with peak mem 50->19 GB. See the architectures/model-optimization
-    task. Behaviour-preserving except AMP/compile numerics (gated, val-loss A/B'd).
-    """
+    """Apply the config.ml_perf training-speed options (tf32, amp, compile), all off when unset."""
     ml_perf = getattr(config, 'ml_perf', None)
     if not ml_perf:
         return
@@ -793,7 +674,7 @@ def _apply_ml_perf(model, config):
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    # Encoder-scoped bf16 autocast (the flow stays fp32 — whole-forward bf16 crashes the spline)
+    # Encoder-scoped bf16 autocast. The flow stays fp32: whole-forward bf16 crashes the spline.
     if ml_perf.get('amp'):
         inner = getattr(model, 'model', None)
         if inner is not None and hasattr(inner, 'amp_encoder'):
@@ -802,8 +683,7 @@ def _apply_ml_perf(model, config):
         else:
             print("[ml_perf] WARNING amp requested but model.model has no amp_encoder hook")
 
-    # Compile the CNN backbone (the conv compute). Compiling higher (PoolProj/GeM head) breaks
-    # inductor (max_pool2d lowering), so target the backbone specifically.
+    # Compile the CNN backbone only: compiling the PoolProj head breaks inductor.
     compile_mode = ml_perf.get('compile', 'none')
     if compile_mode and compile_mode != 'none':
         inner = getattr(model, 'model', model)
@@ -823,9 +703,7 @@ def _apply_ml_perf(model, config):
             parts = name.split('.')
             for a in parts[:-1]:
                 parent = getattr(parent, a)
-            # 'default' (not reduce-overhead): reduce-overhead's CUDA graphs need static input
-            # addresses and give NO benefit on the real loop's fresh-per-step batches (measured),
-            # while being fragile — default is robust + ties on e2e throughput.
+            # 'default' mode: reduce-overhead needs static input addresses.
             mode = 'default' if compile_mode in (True, 'backbone', 'default') else compile_mode
             setattr(parent, parts[-1], torch.compile(mod, mode=mode))
             print(f"[ml_perf] torch.compile(mode={mode}) on model.model.{name}")
@@ -834,14 +712,8 @@ def _apply_ml_perf(model, config):
 
 def load_best_checkpoint_model(config, run_folder, test_loader=None):
     """Find the best checkpoint in a run folder and load its model.
-    
-    Args:
-        config: Configuration object containing experiment settings
-        run_folder: Path to the run folder containing checkpoints
-        data_parameters: Optional data parameters for model preparation
-    
-    Returns:
-        tuple: (model, best_checkpoint_path, best_val_loss) or (None, None, None) if no checkpoint found
+
+    Returns (model, best_checkpoint_path, best_val_loss), or (None, None, None) without a checkpoint.
     """
     best_checkpoint, best_val_loss = find_best_checkpoint(run_folder)
     if not best_checkpoint:
@@ -866,22 +738,11 @@ def build_ensemble_model_from_checkpoints(
     member_test_loaders: Optional[Sequence[torch.utils.data.DataLoader]] = None,
     model_builder=None,
 ):
-    """Build an evaluation-time ensemble model from multiple trained members.
+    """Rebuild an evaluation-time ensemble from the member checkpoints under the run folder.
 
-    Each member may have a different train/val split (and thus different scalers)
-    because split_seed changes across ensemble members. Therefore we MUST rebuild
-    the scalers and test loader per member using the same seed logic as training.
-
-    Parameters
-    ----------
-    test_loader:
-        Ignored for ensemble members; kept for backward compatibility.
-    match_string:
-        Repeat-bound match string (e.g. 'ncosmo30_0').
-    member_test_loaders:
-        Optional sequence of per-member test loaders (indexed by ensemble member).
-        If provided, these are used directly to avoid rebuilding data/scalers.
-        Missing entries fall back to ``prepare_data_parameters``.
+    Each member is rebuilt with its own scalers and test loader, using the training seed logic,
+    unless member_test_loaders supplies them. test_loader is ignored. Raises when a member is
+    missing unless allow_partial_ensemble is set.
     """
     from copy import copy
     if model_builder is None:
@@ -922,12 +783,8 @@ def build_ensemble_model_from_checkpoints(
             )
             missing_members.append(member_match)
             continue  # Skip this member but keep going for others
-            # return None
-        # ⚠️ EVAL PROVENANCE. Which member checkpoint a re-eval resolves is NOT stable over time:
-        # `find_best_checkpoint` takes the min val_log_prob among the files PRESENT, so a rotated /
-        # re-rolled / added checkpoint silently changes what gets scored. Measured instance: the
-        # kappa=2 k5 Stage-A parent resolved best val 1.396 on 2026-08-27 and 1.735 on 2026-09-01.
-        # Log the exact file so two runs of "the same" eval can be compared after the fact.
+        # Log the exact checkpoint file resolved for each member: the best-checkpoint choice
+        # changes if files are added or rotated.
         print(f"[build_ensemble_model_from_checkpoints] member {j}: {best_ckpt}", flush=True)
         member_checkpoints.append(str(best_ckpt))
 
@@ -954,10 +811,7 @@ def build_ensemble_model_from_checkpoints(
     if len(members) == 0:
         print("No ensemble members were successfully loaded. Returning None.", flush=True)
         return None
-    # ⚠️ A SHORT ENSEMBLE IS NOT THE ENSEMBLE THAT WAS TRAINED. Skipping unresolvable members used
-    # to be a bare `print`, so an eval could silently score 6 of 9 members and report it as an
-    # ens9 number. Fail loudly instead; `allow_partial_ensemble: True` is the deliberate escape
-    # hatch for a genuinely partial run. Eval-path only — training is unaffected.
+    # A short ensemble must not be scored as the full one: raise unless allow_partial_ensemble is set.
     if missing_members and not bool(getattr(cfg, "allow_partial_ensemble", False)):
         raise RuntimeError(
             f"[build_ensemble_model_from_checkpoints] resolved only {len(members)}/{n_ens} ensemble "
@@ -978,16 +832,9 @@ def build_ensemble_model_from_checkpoints(
 def set_seed_for_repeat_and_ensemble(config, repeat_idx: int, ensemble_idx: int = 0):
     """Set repeat-bound split_seed and optional ensemble_seed on config.
 
-    - split_seed controls the *set* of cosmologies selected and the overall split
-      between train/val/test. This must depend only on repeat_idx.
-
-    - ensemble_seed is used only to reshuffle the order of the already-selected
-      trainval_cosmos subset (after max_trainval_cosmos selection), which can
-      change which cosmologies land in train vs val *without changing membership*.
-
-    Expected downstream usage:
-      - prepare_data_parameters(...) passes config.split_seed as `seed` and
-        config.ensemble_seed as `ensemble_seed` into split_by_cosmology(...).
+    split_seed (base + repeat_idx) sets which cosmologies are selected and the train/val/test
+    split. ensemble_seed only reshuffles the selected trainval cosmologies between train and val.
+    Returns (split_seed, ensemble_seed).
     """
     base_seed = int(getattr(config, "split_seed", 42))
     config.split_seed = base_seed + int(repeat_idx)
