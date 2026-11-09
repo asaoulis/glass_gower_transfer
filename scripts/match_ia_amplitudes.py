@@ -1,55 +1,9 @@
 #!/usr/bin/env python3
-"""Solve for the IA parameters that give the SAME effective alignment amplitude in every IA model.
+"""Solve for the IA parameters that give the same effective alignment amplitude in every IA model.
 
-WHY
----
-The production variate corners compare `nla_m` / `nla` / `nla_z` posteriors on mocks whose IA
-nuisances were independent draws from wide, model-specific priors (`a_ia ~ U[4.48,7]` + `b_ia ~
-U[0.28,0.6]` for nla_m, `a_ia ~ U[-6,6]` for nla, plus `b_z ~ N(-3.7,4.3)` for nla_z). Two arms'
-panels therefore differ because the model differs AND because the realised alignment differs. Only
-the first is the claim. This script picks, per model, the parameter values that put all three at the
-SAME effective amplitude, so the remaining posterior differences are the model.
-
-WHAT "EFFECTIVE AMPLITUDE" MEANS HERE
--------------------------------------
-Every IA model in `src/cosmology/nla.py` multiplies the same physical prefactor
-
-    f_prefactor(z) = -C1 * rho_cr * Omega_m / D(z)          (`nla.nla_amplitude` at a_ia = 1)
-
-by a model-specific, dimensionless factor. Dividing it out leaves exactly that factor:
-
-    A_eff,i(nla_m) = a_ia * f_red_i * (10^{M_i} / 10^{13.5})^{b_ia}
-    A_eff,i(nla)   = a_ia
-    A_eff,i(nla_z) = a_ia + b_z * (<a>_i / 0.769 - 1)
-
-for tomographic bin i. Because the prefactor cancels, **the answer does not depend on cosmology or
-redshift** -- the script asserts this by re-running at two different cosmologies.
-
-The amplitudes are NOT re-derived here: they are read out of
-`src/cosmology/systematics.py:NLASystematics.intrinsic_alignment_amplitude`, the very method the
-simulator calls, evaluated at delta = 1. That file is PROTECTED and is only ever imported.
-
-REDUCING 6 BINS TO 1 NUMBER
----------------------------
-nla_m's factor varies across bins (through `f_red` and the halo mass) and nla_z's tilts with
-redshift, so "the" amplitude of a model is a weighted mean over the 6 bins. Two reductions are
-reported:
-
-  * `n_arcmin2`-weighted -- weights each bin by its galaxy density (`src/KiDS/tomo.py:n_arcmin2`),
-    i.e. "how many galaxies actually carry this alignment";
-  * unweighted           -- the plain mean over bins.
-
-⚠️ This weighting is an OFFLINE arithmetic choice for collapsing 6 numbers into 1. It changes
-NOTHING in the simulator: the fiducial n(z) and `n_arcmin2` are used exactly as they are, and the
-per-bin spread of each model survives into the mocks as a genuine feature of that model. The two
-reductions are printed side by side precisely so the choice is auditable.
-
-USAGE
------
-    python scripts/match_ia_amplitudes.py [--data-dir kids-legacy-sbi/data] [--reduction n_weighted]
-
-Prints a markdown table and the `IA_PRIOR_OVERRIDES['matched']` block to paste into
-`master_kids_legacy_simulator.py`.
+The amplitude is NLASystematics.intrinsic_alignment_amplitude at delta = 1 divided by the shared
+prefactor, so it does not depend on cosmology. It is averaged over the 6 bins, weighted or not.
+Usage: python scripts/match_ia_amplitudes.py [--data-dir kids-legacy-sbi/data] [--reduction n_weighted]
 """
 import argparse
 import os
@@ -69,10 +23,7 @@ from src.KiDS.simulation_config import n_los_chi, zmax, zmin
 # Prior midpoints of the nla_m forward prior = the anchor point (IA_PRIOR_SPECS['nla_m']).
 ANCHOR_A_IA = 0.5 * (4.48 + 7.0)     # 5.74
 ANCHOR_B_IA = 0.5 * (0.28 + 0.6)     # 0.44
-# nla_z is 2 free parameters against 1 constraint. We FIX b_z at the Wright et al. prior mean and
-# solve for a_ia. b_z = 0 would also satisfy the constraint but collapses nla_z exactly onto plain
-# nla (`nla_z_effective_amplitude` reduces to a_ia), destroying the redshift tilt the variate exists
-# to test -- so the tilt is kept and the BIN-AVERAGED amplitude is what is matched.
+# nla_z is 2 free parameters against 1 constraint, so b_z is fixed at the Wright et al. prior mean.
 NLA_Z_B_Z = -3.7
 A_PIV = 0.769                        # nla.nla_z_effective_amplitude default
 
