@@ -1,22 +1,9 @@
 #!/usr/bin/env python
-"""Generate notebooks/kids_unblinding.ipynb -- the manual unblinding notebook (Tier 4).
+"""Generate notebooks/kids_unblinding.ipynb, the manual unblinding notebook (Tier 4).
 
-The notebook ORCHESTRATES; every computation lives in src/observation, src/blind and the scripts.
-It takes a LABEL and a set of directories (parameters cell) and steps through:
-
-  1. provenance & configuration (catalogue fingerprint, treatment knobs, geometry, git rev)
-  2. catalogue-level: per-bin counts, n(z) (if Z_TRUE present), mean e1/e2 removed by the estimator
-  3. 2-pt: publication-style EE bandpowers (21 spectra) with the nla_m mock-cloud band + Tier-1a numbers
-  4. B-modes: BB bandpowers + PTE table (Tier-1b)
-  5. map statistics: E-map summary groups vs the mock cloud (peaks / voids / PDF / power) + kNN p (Tier-1c)
-  6. OOD dashboard: Tier-1 p-values + Tier-2 detector scores read against the bias tables
-  7. STANDARDISED posteriors (Plots A / B / B'; corner battery) -- the last blind section
-  8. UNBLIND_2PT / UNBLIND_FIELD  staged gates: the ONLY cell that loads raw samples
-     (all arms x priors). The agent never sets it True; guard_blind blocks the underlying read anyway.
-
-Regenerate with:  PYTHONPATH=. python scripts/build_unblinding_notebook.py [--out notebooks/kids_unblinding.ipynb]
-Execute (mock only, agent):  jupyter nbconvert --to notebook --execute notebooks/kids_unblinding.ipynb \
-     --output kids_unblinding_executed.ipynb --ExecutePreprocessor.timeout=1800
+The notebook only orchestrates. Every computation lives in src/observation, src/blind and the
+scripts. The UNBLIND_2PT / UNBLIND_FIELD gates are the only cells that load raw samples.
+Regenerate with: PYTHONPATH=. python scripts/build_unblinding_notebook.py [--out <ipynb>]
 """
 from __future__ import annotations
 
