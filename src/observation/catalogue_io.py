@@ -1,19 +1,8 @@
 """External catalogue -> the simulator's structured-array contract, plus the deferred treatment hooks.
 
-The simulator's catalogue contract (``src/cosmology/simulators.py``, ``master_kids_legacy_simulator
-.CATALOGUE_DTYPES``) is a structured array with fields ``RA, DEC, Z_TRUE, ZBIN, E1, E2`` — no weight
-column. ``make_alm_shear_convergence`` (protected) then subtracts the GLOBAL per-tomo-bin mean
-ellipticity and divides by ``1/(1+m_i)``.
-
-Three corrections that real data needs and the forward model handles differently are DEFERRED by
-user decision (2026-09-08) and exposed as ONE explicit call each — identity by default, always
-recorded in the provenance so a later change is a one-line, auditable edit:
-
-    apply_weights(cat, mode=...)   lensfit weights vs the unweighted forward model
-    apply_m_bias(cat, m_bias=...)  the per-bin multiplicative bias vector passed to the map maker
-    apply_c_terms(cat, mode=...)   additive c-terms beyond the global per-bin mean subtraction
-
-NOTHING here reads a ``cosmo_dict`` group, even when the file has one (a saved mock catalogue does).
+The contract is a structured array RA, DEC, Z_TRUE, ZBIN, E1, E2 (CATALOGUE_DTYPES). apply_weights,
+apply_m_bias and apply_c_terms are the three treatments, identity by default and recorded in the
+provenance. Nothing here reads a cosmo_dict group.
 """
 from __future__ import annotations
 
@@ -25,8 +14,7 @@ from typing import Dict, Optional
 
 import numpy as np
 
-# The simulator's on-disk catalogue dtypes (mirror of master's CATALOGUE_DTYPES; parity-checked in
-# geometry.check_master_parity's sibling below).
+# The simulator's on-disk catalogue dtypes, a mirror of master's CATALOGUE_DTYPES.
 CATALOGUE_DTYPES = {
     "RA": np.float32, "DEC": np.float32, "Z_TRUE": np.float32,
     "ZBIN": np.int8, "E1": np.float32, "E2": np.float32,
@@ -63,8 +51,8 @@ class Catalogue:
 
     @property
     def estimator_weights(self) -> Optional[np.ndarray]:
-        """The per-galaxy weights the estimator must use: ``weight`` only when ``apply_weights``
-        recorded mode='lensfit'; None otherwise (the unweighted forward model)."""
+        """The per-galaxy estimator weights: `weight` when apply_weights recorded mode='lensfit',
+        else None (the unweighted forward model)."""
         mode = self.provenance.get("treatment", {}).get("weights", {}).get("mode", "ignore")
         return self.weight if mode == "lensfit" else None
 
@@ -78,12 +66,10 @@ def _file_fingerprint(path: str, nbytes: int = 1 << 20) -> dict:
 
 
 def _validate(data: np.ndarray, nbins: int, weight: Optional[np.ndarray] = None):
-    """Range checks + a NaN/out-of-range drop with counts (never silent).
+    """Range checks and a counted drop of NaN or out-of-range rows.
 
-    Returns ``(stats, data, keep)`` where ``keep`` is the boolean row mask applied, so a weight
-    column is filtered with the IDENTICAL mask (spec §5.1). A non-finite or non-positive weight
-    drops its row too. The drop order and the RA wrap are unchanged from the unweighted path, so a
-    sim catalogue (no weight column) is processed bit-identically."""
+    Returns (stats, data, keep), keep being the row mask, so a weight column is filtered with the
+    same mask. A non-finite or non-positive weight drops its row too."""
     n0 = data.shape[0]
     ok = np.isfinite(data["RA"]) & np.isfinite(data["DEC"]) & np.isfinite(data["E1"]) & np.isfinite(data["E2"])
     ok &= (np.abs(data["DEC"]) <= 90.0)
@@ -212,21 +198,17 @@ def _read_columns(path: str, kind: str, cm: dict) -> dict:
     return out
 
 
-# ----------------------------------------------------------------------------------------------
-# DEFERRED treatment hooks — one call each; identity by default; always logged.
-# ----------------------------------------------------------------------------------------------
-# Survey constants for the REPORTED weight summary only (spec §2.2; never enter an estimator).
-# frac-weighted area of the repo mask (N 495.79 + S 471.59) and np.sum(mask) at nside 1024.
+# --- deferred treatment hooks ---
+# Survey constants for the reported weight summary only: the frac-weighted area of the repo mask
+# (N 495.79 + S 471.59 deg^2) and np.sum(mask) at nside 1024.
 KIDS_AREA_DEG2 = 967.39
 KIDS_NPIX_NORM = 295070.25
 
 
 def weight_summary(cat: "Catalogue", nbins: int, area_deg2: float = KIDS_AREA_DEG2,
                    npix_norm: float = KIDS_NPIX_NORM) -> dict:
-    """Per-bin weight bookkeeping (spec §2.2 / gate 5): N, sum w, sum w^2, N_eff = (sum w)^2/sum w^2,
-    n_eff per arcmin^2 over ``area_deg2`` (compare to ``src/KiDS/tomo.py`` n_arcmin2) and the
-    Eq.-11 scalar W_i under normalisation (b) (sum w~ = N_eff): W_i = N_eff / N_pix, which is what
-    the mocks' mean count per pixel is. Reported only -- the estimators are scale-free (§2.1)."""
+    """Per-bin weight bookkeeping: N, sum w, sum w^2, N_eff = (sum w)^2/sum w^2, n_eff per arcmin^2
+    over area_deg2, and W_i = N_eff / N_pix, the mocks' mean count per pixel. Reported only."""
     w = cat.weight
     out = {"per_bin": [], "area_deg2": float(area_deg2), "npix_norm": float(npix_norm)}
     for i in range(nbins):
@@ -246,34 +228,12 @@ def weight_summary(cat: "Catalogue", nbins: int, area_deg2: float = KIDS_AREA_DE
 
 def apply_weights(cat: Catalogue, mode: str = "ignore", nbins: Optional[int] = None,
                   rescale: str = "none", **kw) -> Catalogue:
-    """Lensfit-weight treatment (spec .claude/plans/shear_normalisation_spec.md §5.1).
+    """Lensfit-weight treatment, recorded with the per-bin weight summary.
 
-    mode='ignore'   (default) identity: the estimator runs unweighted (``gal_wht=None``), the
-                    weight column is kept aside. This is the mock path.
-    mode='lensfit'  carry ``cat.weight`` (= shear_weight_only * gold_weight_only) through to the
-                    estimator as ``weights=`` (spec §5.2). Requires a weight column.
-
-    ``rescale`` (added 2026-09-21, user decision -- normalisation (b) of the spec):
-
-      'none'  (default) the raw lensfit weights, exactly as before. Nothing else changes.
-      'neff'  per TOMOGRAPHIC BIN, w~ = w * (sum w / sum w^2), so **sum w~ = N_eff**. The real
-              catalogue's mean WEIGHT per pixel then equals the mocks' mean COUNT per pixel
-              (W_i = N_eff / N_pix), which is the scale the trained models saw: the simulator
-              never passes weights, so its count field is a plain Poisson N.
-
-    Why this is safe AND why it matters. The estimators are scale-free: every normalisation mode
-    (counts, smoothed_counts incl. its 5 %-of-mean floor, mean, expected) is invariant under
-    w -> alpha*w per bin, so the maps and alms are UNCHANGED by this rescale -- verified by the
-    identity check in ``scripts/verify_weighted_build.py`` (gate 3). What the scale does fix is
-    every QUOTED or EXPORTED quantity: W_i, the count field handed to a compound-Poisson control,
-    and any comparison of the observation's weight field with the mocks' count field.
-
-    ⚠️ Bin-indexing hazard: ``data['ZBIN']`` is 0-based here (``load_catalogue`` has already
-    subtracted ``zbin_offset``; the delivered KiDS ``TOMOBIN`` is 1-based). The per-bin factors
-    below therefore index bins 0..nbins-1, matching ``counts_per_bin`` and ``weight_summary``.
-
-    Either way the per-bin weight summary (N, sum w, N_eff, n_eff/arcmin^2, W_i) is recorded --
-    and, when rescaled, the per-bin divisor ``sum w^2 / sum w`` and the resulting W_i as well.
+    mode='ignore' (default) runs the estimator unweighted, the mock path. mode='lensfit' passes
+    cat.weight to the estimator as weights= and needs a weight column. rescale='neff' sets, per
+    0-based tomographic bin, w~ = w * sum(w)/sum(w^2) so sum(w~) = N_eff. The maps are unchanged
+    by it, but W_i and any exported count field take the mocks' scale.
     """
     if mode not in ("ignore", "lensfit"):
         raise NotImplementedError(f"apply_weights mode {mode!r} is not implemented (ignore | lensfit)")
@@ -291,7 +251,7 @@ def apply_weights(cat: Catalogue, mode: str = "ignore", nbins: Optional[int] = N
         w = np.asarray(cat.weight, dtype=float).copy()
         divisors = []
         for i in range(nb):
-            sel = cat.data["ZBIN"] == i          # 0-based, see the hazard note above
+            sel = cat.data["ZBIN"] == i          # 0-based: load_catalogue removed zbin_offset
             if not sel.any():
                 divisors.append(None)
                 continue
@@ -317,12 +277,11 @@ def apply_weights(cat: Catalogue, mode: str = "ignore", nbins: Optional[int] = N
 
 
 def fold_weights_for_mean_norm(cat: Catalogue, nbins: Optional[int] = None) -> Catalogue:
-    """Spec §4.1: the 'mean'-normalisation ingestion transform, for CROSS-CHECKS only.
+    """The 'mean'-normalisation ingestion transform, for cross-checks only.
 
-    Replaces e by  e~ = (N_i / sum_i w) * w * (e - <e>_w,i)  per bin, so the UNWEIGHTED estimator with
-    normalization='mean' (and the mask passed!) returns exactly S_p / W_i. The weighted per-bin mean is
-    subtracted here, so the estimator's own mean subtraction becomes a true no-op. Does NOT generalise
-    to 'counts' / 'smoothed_counts' (their denominator is per pixel). Production never calls this."""
+    Replaces e by  e~ = (N_i / sum_i w) * w * (e - <e>_w,i)  per bin, so the unweighted estimator with
+    normalization='mean' and the mask returns S_p / W_i. It does not apply to 'counts' or
+    'smoothed_counts', whose denominator is per pixel."""
     if cat.weight is None:
         raise ValueError("fold_weights_for_mean_norm needs a weight column")
     nb = int(nbins or cat.provenance.get("nbins", 6))
@@ -346,21 +305,12 @@ def fold_weights_for_mean_norm(cat: Catalogue, nbins: Optional[int] = None) -> C
 
 
 def apply_m_bias(cat: Catalogue, m_bias=None, source: str = "auto") -> np.ndarray:
-    """Return the per-bin multiplicative-bias vector handed to ``make_alm_shear_convergence``,
-    whose estimator divides the shears by ``(1 + m)`` (``map_shears.py``).
+    """Return the per-bin m vector for make_alm_shear_convergence, which divides shears by (1 + m).
 
-    SETTLED (audit .claude/background/real_catalogue_audit.md finding 1; spec §3, 2026-09-08 evening):
-    the real KiDS-Legacy catalogue is NOT m-corrected -- sigma_e,w/(1+m) reproduces
-    ``systematics.py:sigma_e`` to 0.02 % in all six bins -- so it is de-biased with the FIDUCIAL
-    vector ``src/KiDS/systematics.py:m_bias``, exactly as the simulator de-biases its mocks (it
-    injects ``m_bias_realised`` and divides by the fiducial vector, leaving the m-uncertainty as a
-    residual in the mocks). A SIM catalogue (mock-as-real) uses its realised ``m_bias_for_shear``,
-    which is what the bit-identity gate reproduces. Apply 1/(1+m) ONCE: here (via the estimator),
-    never also at ingestion.
-
-    source='auto'      sim catalogue -> its ``m_bias_for_shear``; real catalogue -> fiducial;
-    source='fiducial'  ``src.KiDS.systematics.m_bias``;
-    source='given'     use ``m_bias`` verbatim;  source='zero' -> zeros (an ALREADY m-corrected input only).
+    The real catalogue is not m-corrected, so it takes the fiducial src.KiDS.systematics.m_bias, as
+    the mocks do. Apply 1/(1 + m) once, here, never also at ingestion. source='auto' uses a sim
+    catalogue's m_bias_for_shear, else the fiducial vector. 'fiducial', 'given' (m_bias verbatim)
+    and 'zero' (an already m-corrected input only) are explicit.
     """
     nbins = int(cat.provenance.get("nbins", 6))
     attrs = cat.provenance.get("sim_attrs", {})
@@ -393,14 +343,6 @@ def _patch_of(dec: np.ndarray) -> np.ndarray:
     return np.where(dec > -15.0, "N", "S")
 
 
-# EXPERIMENTAL (field-misspec WP-F, 2026-10-19; NOT the production default): put back the per-patch x bin additive c the
-# KiDS-Legacy release subtracted, so the observation matches the forward model, which injects exactly these c-terms
-# (src/KiDS/systematics.py prior means) and removes only a global per-bin mean. The release e1/e2 are "c-corrected"
-# (catalogue README): weighted <e> per hemisphere x bin is ~1e-18, while every training mock keeps a +-(3-10)e-4
-# per-patch offset. Values: src.KiDS.systematics c_{1,2}_bias_{north,south} (Wright+25 Table 2: c_k = <eps_k>_w per bin
-# and hemisphere; recorded here as the FALLBACK source -- the release carries no uncorrected ellipticity column).
-#   'restore_release_c_sim'       adds (c1, c2) in the ESTIMATOR / simulator frame (what the mocks inject: mock parity)
-#   'restore_release_c_catalogue' adds them in the KiDS catalogue frame, i.e. c2 sign-flipped when the column map flips e2
 RESTORE_C_MODES = {"restore_release_c_sim": "sim", "restore_release_c_catalogue": "catalogue"}
 
 
@@ -426,13 +368,10 @@ def _restore_release_c(cat: Catalogue, frame: str = "sim", scale: float = 1.0) -
 def apply_c_terms(cat: Catalogue, mode: str = "global_mean_only", **kw) -> Catalogue:
     """Additive c-term treatment.
 
-    SETTLED (spec §3, 2026-09-08 evening): the per-bin mean subtraction stays GLOBAL over N+S and is
-    done by the estimator (weighted when weights are passed, unweighted otherwise), exactly as for
-    the mocks, which inject per-patch c-terms and remove only a global mean. Nothing is subtracted
-    here. mode='global_mean_only' RECORDS: the per-bin means the estimator will remove (weighted
-    when mode='lensfit', else unweighted) and, as a leakage diagnostic, the per-patch (N/S)
-    residual means that stay in the data after the global subtraction. Do not pre-clean per patch:
-    the mocks keep a ~3-10e-4 per-patch offset, and a cleaner data vector is a one-sided bias.
+    The estimator removes the global per-bin mean over N+S, as for the mocks. mode='global_mean_only'
+    (default) subtracts nothing and records those means and the per-patch residuals. The opt-in
+    RESTORE_C_MODES add back the per-patch c-terms the release subtracted (src.KiDS.systematics
+    prior means): 'restore_release_c_sim' in the simulator frame, '_catalogue' in the KiDS frame.
     """
     restored = None
     if mode in RESTORE_C_MODES:
