@@ -1,3 +1,9 @@
+"""Embeddings pipeline helpers.
+
+load_pretrained_models resolves source experiments to frozen encoders, build_embedding_dataloaders
+caches and serves their embeddings (with provenance and the per-source whitener), and
+build_nde_on_embeddings and fit_nde_on_embeddings build and train the flow on them.
+"""
 import hashlib
 import os
 import re
@@ -28,13 +34,7 @@ WHITENER_FILENAME = "whitener.pt"
 
 
 class IdentityEmbedding(torch.nn.Module):
-    """Simple identity embedding that returns its input as-is.
-
-    This is used so that we can reuse the existing NDELightningModule API,
-    which expects an `embedding_net` that maps conditioning data to a
-    fixed-size vector. Here, the conditioning data will already be a
-    concatenated embedding tensor.
-    """
+    """Identity embedding, so NDELightningModule can take precomputed embeddings as its input."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -44,11 +44,7 @@ class IdentityEmbedding(torch.nn.Module):
         return x
 
     def compress(self, x):
-        """For compatibility with encoders that expose `.compress()`.
-
-        Returns (mu, logvar) style tuple, but for plain identity we treat
-        the input as `mu` and return zeros for `logvar`.
-        """
+        """The `.compress()` interface: returns (mu, logvar) = (x, zeros)."""
         mu = x
         logvar = torch.zeros_like(mu)
         return mu, logvar
@@ -75,7 +71,6 @@ class EmbeddingDataset(torch.utils.data.Dataset):
         self.cosmo = cosmo
         self.scale_embeddings = bool(scale_embeddings)
 
-        # Fit or store embedding scaler (per-variable standard scaling)
         if self.scale_embeddings:
             if emb_scaler is None:
                 emb_scaler = PerDimStandardScaler()
@@ -84,7 +79,6 @@ class EmbeddingDataset(torch.utils.data.Dataset):
             emb_scaler = None
         self.emb_scaler = emb_scaler
 
-        # Store cosmology scaler (preset MinMax)
         self.cosmo_scaler = cosmo_scaler
 
     def __len__(self):
@@ -100,12 +94,7 @@ class EmbeddingDataset(torch.utils.data.Dataset):
 
 
 def _build_config_for_experiment(name: str):
-    """Create a config object for a given experiment name.
-
-    Mirrors the logic in train.py: all non-list values are set
-    directly, while max_trainval_cosmos is handled separately so
-    it can be either scalar or list in experiments.py.
-    """
+    """Create a config object for a given experiment name, as train.py does, skipping max_trainval_cosmos."""
     if name not in experiments:
         raise ValueError(f"Experiment '{name}' not found in config.experiments.experiments.")
 
@@ -113,7 +102,6 @@ def _build_config_for_experiment(name: str):
     cfg.experiment_name = name
     exp_cfg = experiments[name]
 
-    # Set all non-list values directly on the config, but skip max_trainval_cosmos
     for k, v in exp_cfg.items():
         if k == "max_trainval_cosmos":
             continue
@@ -127,10 +115,7 @@ def _build_config_for_experiment(name: str):
 
 
 def _as_ncosmo_list(v) -> List[Optional[int]]:
-    """Normalize max_trainval_cosmos-like values to a list.
-
-    Accepts None, scalar, list/tuple.
-    """
+    """Normalise a max_trainval_cosmos value (None, scalar, list or tuple) to a list."""
     if v is None:
         return [None]
     if isinstance(v, (list, tuple)):
@@ -141,15 +126,8 @@ def _as_ncosmo_list(v) -> List[Optional[int]]:
 def get_max_trainval_cosmos_grid(target_exp_name: str, source_exp_names: List[str]) -> List[Optional[int]]:
     """Return the list of max_trainval_cosmos values to iterate over.
 
-    Mode is controlled by target experiment's `split_on_source_experiments` flag.
-
-    - If split_on_source_experiments=False (default): iterate over the target experiment's
-      max_trainval_cosmos (or [None] if unset).
-    - If split_on_source_experiments=True: iterate over the *intersection* of the source
-      experiments' max_trainval_cosmos values (or [None] if none of the sources specify it).
-
-    This keeps behavior consistent and avoids silently training embeddings on sources with
-    different numbers of cosmologies.
+    The target experiment's max_trainval_cosmos by default, or with split_on_source_experiments
+    the intersection of the sources' values. [None] when unset.
     """
     if target_exp_name not in experiments:
         raise ValueError(f"Experiment '{target_exp_name}' not found in config.experiments.experiments.")
@@ -192,27 +170,9 @@ def load_pretrained_models(
 ) -> Tuple[List[torch.nn.Module], List[str], List[str]]:
     """Build models for a list of experiment names using their best checkpoints.
 
-    Uses `load_best_model_and_build_posterior`, which encapsulates the
-    checkpoint directory layout and filename logic.
-
-    Args:
-        exp_names: list of experiment names.
-        cfg_overrides: optional mapping {experiment_name: cfg}. When provided,
-            the cfg is used instead of building one from config.experiments.
-            This is used to support split_on_source_experiments, where we want
-            to set max_trainval_cosmos on the *source* experiments.
-        per_source_match_strings: optional per-source run-match overrides, one per entry of
-            `exp_names`. Without it every source resolves with the SAME match string, which is
-            right when the sources are distinct experiments but makes it impossible to stack
-            several REPEATS of one experiment (they share a checkpoint dir and differ only in the
-            run subdir, e.g. `pretrain_ncosmoNone_0` .. `_4`). Supplying
-            ["None_0", ..., "None_4"] alongside the same name five times stacks those five
-            encoders. Default None preserves the previous behaviour exactly.
-
-    Returns:
-        models: list of trained NDE models
-        dataset_quantities: merged dataset quantities across experiments
-        checkpoint_paths: list of checkpoint paths
+    cfg_overrides maps experiment name to a cfg used instead of config.experiments.
+    per_source_match_strings gives one run match per source, which stacks several repeats of one
+    experiment. Returns (models, ordered merged dataset_quantities, checkpoint_paths).
     """
     if per_source_match_strings is not None and len(per_source_match_strings) != len(exp_names):
         raise ValueError(
@@ -220,17 +180,10 @@ def load_pretrained_models(
             f"{len(exp_names)} source experiments; they must correspond one-to-one."
         )
     models = []
-    # Ordered, de-duplicated (NOT a set): the scaler fit draws each key's subsample in key order
-    # from one seeded generator, so a set's per-process string-hash order made every multi-key
-    # run's input frame a coin flip (see nle_external.run_scaler_recovery).
+    # Ordered, not a set: the scaler subsample is drawn in key order.
     dataset_quantities = {}
     checkpoint_paths = []
 
-    # Prefer explicit repeat-bound match string (e.g. 'ncosmo30_0').
-    # Fallback to legacy suffix matching by repeat index.
-    # if match_string is not None and str(match_string):
-    #     ds_string_match = str(match_string)
-    # else:
     ds_string_match = f"_{repeat_idx}" if repeat_idx is not None else ""
 
     for src_i, name in enumerate(exp_names):
@@ -240,9 +193,7 @@ def load_pretrained_models(
             cfg = _build_config_for_experiment(name)
 
         if per_source_match_strings is not None:
-            # Explicit per-source override wins over both the shared match_string and the
-            # repeat-derived default — this is the only way to bind several REPEATS of one
-            # experiment as separate sources.
+            # An explicit per-source override wins over the shared and repeat-derived matches.
             ds_string_match = str(per_source_match_strings[src_i])
         elif match_string is not None and str(match_string) and match_num_cosmo:
             ds_string_match = str(match_string)
@@ -254,7 +205,7 @@ def load_pretrained_models(
             raise RuntimeError(f"Failed to load best model for experiment '{name}'.")
         model, _, checkpoint_path = result
         model.eval()
-        # set use_KL to false to avoid issues with missing encoder components when loading the full NDELightningModule
+        # use_KL off, since the loaded module may lack the KL encoder components.
         if hasattr(model, "use_KL"):
             model.use_KL = False
         models.append(model)
@@ -274,20 +225,17 @@ def compute_embeddings(models: List[torch.nn.Module], loader: torch.utils.data.D
     all_z = []
     all_theta = []
     for batch_idx, (data_dict, theta) in enumerate(loader):
-        # Move batch to device once
         if isinstance(data_dict, dict):
             data_dict_dev = {k: v.to(device) for k, v in data_dict.items()}
         else:
             data_dict_dev = data_dict.to(device)
         theta_dev = theta.to(device)
 
-        # Run all models on this batch and concatenate embeddings feature-wise
+        # Concatenate every model's embedding feature-wise.
         zs_batch = []
         theta_ref = None
         for m in models:
             encoder = m.embedding_net
-            # Phase 2b: optional alternative cut point (e.g. 'hybrid_pre_head' caches the frozen
-            # band_mu ++ pre-head map features instead of the final z). Default unchanged.
             if getattr(encoder, "embedding_cut", None) == "hybrid_pre_head":
                 z_m = encoder.get_frozen_features(data_dict_dev)
             else:
@@ -295,8 +243,7 @@ def compute_embeddings(models: List[torch.nn.Module], loader: torch.utils.data.D
                 z_m = encoder(data_dict_dev)
             zs_batch.append(z_m.detach())
 
-            # Extract cosmology from this model for sanity check
-            theta_m = theta_dev  # all models see same loader, so theta is shared
+            theta_m = theta_dev
             if theta_ref is None:
                 theta_ref = theta_m
             else:
@@ -331,9 +278,9 @@ def format_run_match(match_string: str, ensemble_idx: int = 0, ensemble_repeats:
 
 
 def _get_embedding_cache_paths(base_cfg, wandb_run_name: str) -> Tuple[str, str, str]:
-    """Return file paths for cached embedding datasets under checkpoint dir.
+    """Return the cached embedding dataset paths under the checkpoint dir.
 
-    wandb_run_name should already include any ensemble suffix if applicable.
+    wandb_run_name already carries any ensemble suffix.
     """
     base_dir = f"{base_cfg.base_path}/checkpoints/{wandb_run_name}/datasets"
     train_path = f"{base_dir}/emb_train.pt"
@@ -343,23 +290,10 @@ def _get_embedding_cache_paths(base_cfg, wandb_run_name: str) -> Tuple[str, str,
 
 
 def _encoder_fingerprint(model) -> Optional[str]:
-    """Stable content hash of a source model's ASSEMBLED `embedding_net` weights.
+    """Content hash of the assembled embedding_net weights.
 
-    ⚠️ THE CHECKPOINT PATH IS NOT ENOUGH. `build_model` ASSEMBLES an encoder: it restores
-    `checkpoint_path` and (pre-`e890aec`) then let warm-start loads overwrite `embedding_net` with
-    the PARENT's weights. The SAME checkpoint path therefore produced DIFFERENT encoder weights
-    before and after that commit, and every cached embedding, persisted whitener and trained flow
-    built under the old assembly lives in a different coordinate frame. Hashing the tensors that
-    actually produce `z` is the only thing that catches that.
-
-    NORMALISED so an honest cache can never false-raise across the environments this pipeline
-    actually spans (Stage-A on a v100 GPU, Stage-B/eval on CPU, `bf16-mixed` autocast):
-      * keys in sorted order, so dict insertion order is irrelevant;
-      * every tensor `.detach().cpu().contiguous()`, so device never enters;
-      * FLOATING tensors up-cast to float32 (fp16/bf16/fp32 -> fp32 is exact and idempotent),
-        so a half-precision store and a single-precision store of the same weights agree;
-      * INTEGER / BOOL buffers (nflows registers `identity_features` / `transform_features` as
-        int64) hashed in their own dtype and tagged, never funnelled through float.
+    Keys are sorted, tensors moved to CPU, floating tensors cast to float32 and integer buffers
+    hashed in their own dtype, so the hash is the same across devices and precisions.
     """
     net = getattr(model, "embedding_net", None)
     if net is None:
@@ -380,19 +314,16 @@ def _encoder_fingerprint(model) -> Optional[str]:
             h.update(f"{k}|{kind}|{tuple(t.shape)}|".encode())
             h.update(t.numpy().tobytes())
         return h.hexdigest()[:16]
-    except Exception as exc:  # a diagnostic must never break a run
+    except Exception as exc:
         print(f"[emb-cache] could not fingerprint an encoder: {exc}", flush=True)
         return None
 
 
 def _build_cache_provenance(base_cfg, source_checkpoints=None, source_models=None) -> dict:
-    """Everything that must match for a cached `emb_*.pt` to still be valid for this run.
+    """Everything that must match for a cached emb_*.pt to still be valid for this run.
 
-    ⚠️ The cache key (`{base}/checkpoints/{wandb_run_name}/datasets/`) encodes the TARGET
-    experiment, the repeat match and the ensemble member, but NOT *which source-encoder
-    checkpoint produced z*, NOT the data patterns and NOT the theta box. Those can all change
-    under a fixed key — and `run_training: False` sets `use_cache_if_exists=True`, so an eval
-    silently consumes whatever is on disk. Recording them makes a stale cache detectable.
+    The cache key holds the target experiment, repeat and member, but not the source encoders,
+    data patterns or theta box, so those are recorded here.
     """
     return {
         "data_patterns": _as_jsonable(getattr(base_cfg, "data_patterns", None)),
@@ -401,8 +332,6 @@ def _build_cache_provenance(base_cfg, source_checkpoints=None, source_models=Non
         "max_trainval_cosmos": _as_jsonable(getattr(base_cfg, "max_trainval_cosmos", None)),
         "test_shape_noise_idx": _as_jsonable(getattr(base_cfg, "test_shape_noise_idx", None)),
         "source_checkpoints": _as_jsonable(source_checkpoints),
-        # Content hash of the ASSEMBLED encoders (see _encoder_fingerprint) — catches a frame
-        # change even when the checkpoint path is byte-identical.
         "source_encoder_fingerprints": (
             [_encoder_fingerprint(m) for m in source_models] if source_models else None
         ),
@@ -418,11 +347,10 @@ def _as_jsonable(v):
 
 
 def _check_cache_provenance(path: str, stored: Optional[dict], expected: dict):
-    """Compare a cache's recorded provenance with this run's. RAISE on a real mismatch.
+    """Compare a cache's recorded provenance with this run's. Raise on a real mismatch.
 
-    A cache written before provenance existed has `stored is None`: that is WARNED about loudly
-    (old caches stay readable) but never passed over in silence. `source_checkpoints` is compared
-    only when BOTH sides recorded it, so a legacy-ish partial record cannot false-fire.
+    A cache with no provenance (stored is None) only warns. The source keys are compared only when
+    both sides recorded them.
     """
     if stored is None:
         print(
@@ -461,22 +389,15 @@ def _save_embedding_cache(
     cosmo_scaler: Optional[BaseScaler],
     provenance: Optional[dict] = None,
 ):
-    """Save raw embeddings, cosmology vectors and scaler parameters.
-
-    We only cache unscaled z/theta plus the scaler statistics so that
-    scaling can still be applied consistently at load time.
-    """
+    """Save unscaled embeddings and cosmology vectors with the scaler statistics and provenance."""
     state = {
         "z": z.cpu(),
         "theta": theta.cpu(),
-        # Embedding PerDimStandardScaler stats
         "emb_mean": getattr(emb_scaler, "mean", None),
         "emb_std": getattr(emb_scaler, "std", None),
-        # Cosmology scaler preset min/max and parameter order (if used)
         "cosmo_min": getattr(cosmo_scaler, "min", None) if cosmo_scaler is not None else None,
         "cosmo_max": getattr(cosmo_scaler, "max", None) if cosmo_scaler is not None else None,
         "cosmo_param_names": getattr(cosmo_scaler, "parameter_names", None) if cosmo_scaler is not None else None,
-        # What this cache was built FROM (see _build_cache_provenance).
         "provenance": provenance,
     }
     torch.save(state, path)
@@ -496,7 +417,6 @@ def _load_embedding_cache(path: str):
 
     cosmo_scaler: Optional[BaseScaler] = None
     if ckpt.get("cosmo_min") is not None and ckpt.get("cosmo_max") is not None:
-        # Rebuild preset scaler using stored min/max and parameter names
         param_names = ckpt.get("cosmo_param_names")
         if param_names is not None:
             from ..data.scaling import MinMaxScaler
@@ -511,15 +431,10 @@ def resolve_whitener_path(
     pretrained_ckpt_path_or_dir: Optional[str],
     repeat_match: Optional[str] = None,
 ) -> Optional[str]:
-    """Resolve the persisted `whitener.pt` for a pretrain run, for reuse at finetune/eval.
+    """Resolve the persisted whitener.pt for a pretrain run, for reuse at finetune and eval.
 
-    - If `pretrained_ckpt_path_or_dir` is a checkpoint FILE (as resolved by `train_embedding_run`),
-      the whitener lives at `<dirname>/datasets/whitener.pt` (same run folder as the flow ckpt).
-    - If it is a DIRECTORY (as passed by the eval-only loader), locate the best matching checkpoint
-      via `get_best_checkpoint(dir, repeat_match)` — the SAME machinery used to resolve the flow —
-      then take that run folder's `datasets/whitener.pt`.
-
-    Returns None if nothing resolves (the caller decides whether that is fatal).
+    For a checkpoint file it is <dirname>/datasets/whitener.pt. For a directory, the best checkpoint
+    for repeat_match is found with get_best_checkpoint first. Returns None if nothing resolves.
     """
     if not pretrained_ckpt_path_or_dir:
         return None
@@ -533,7 +448,7 @@ def resolve_whitener_path(
             return None
         run_dir = os.path.dirname(best[0])
     else:
-        # Non-existent path string: best-effort treat as a file path and use its parent.
+        # A non-existent path is treated as a file path.
         run_dir = os.path.dirname(p)
 
     candidate = os.path.join(run_dir, "datasets", WHITENER_FILENAME)
@@ -548,11 +463,9 @@ def fit_and_persist_whitener(
     fit_source_experiment: Optional[str] = None,
     fit_repeat_match: Optional[str] = None,
 ) -> WhitenPCAScaler:
-    """Fit a WhitenPCAScaler on the pretrain train split and persist it (idempotent: fit ONCE).
+    """Fit a WhitenPCAScaler on the pretrain train split and persist it, once.
 
-    If `save_path` already exists it is loaded, not refit (the pretrain split is deterministic, so a
-    re-run reproduces identical stats; not refitting is the stronger, cheaper guarantee). This is the
-    single place a whitener is ever *fit* — finetune/eval only ever load it (Finding C3).
+    An existing save_path is loaded, not refit. This is the only place a whitener is fit.
     """
     k = int(k)
     if os.path.exists(save_path):
@@ -598,27 +511,16 @@ def build_embedding_dataloaders(
     repeat_match: Optional[str] = None,
     test_only: bool = False,
 ):
-    """Construct *scaled* (or optionally unscaled) embedding dataloaders from existing loaders and models.
+    """Construct scaled (or unscaled) embedding dataloaders from existing loaders and models.
 
-    Embeddings scaling is controlled by config flag `scale_embeddings` (default True).
-
-    When `whiten_cfg` (e.g. {"k": 6}) is provided, per-source whitening + optional PCA truncation
-    REPLACES `scale_embeddings` for the embedding scaler:
-      - pretrain source (`is_pretrain_source=True`): fit the whitener ONCE on this run's train split
-        and persist it next to the emb cache (`datasets/whitener.pt`).
-      - finetune/eval (`is_pretrain_source=False`): RESOLVE and REUSE the pretrain's persisted
-        whitener; never refit (Finding C3). Hard-fails if it cannot be resolved.
-
-    When `test_only` (eval-time sampling: only the TEST loader is consumed downstream), the
-    expensive train/val encoder passes are SKIPPED unless the embedding scaler genuinely has to
-    be fit on train embeddings (scale_embeddings without a resolved whitener, or a
-    pretrain-source whitener fit). For the production whitened-NLE configs this cuts the work
-    per ensemble member from ~10k encoder forwards to just the test points.
+    Returns (train, val, test) embedding loaders. config.scale_embeddings sets the scaling.
+    whiten_cfg ({"k": 6}) replaces it with a whitener: a pretrain source fits and persists one,
+    a finetune or eval run loads the pretrain's and raises if none resolves. test_only skips the
+    train and val encoder passes unless a scaler must be fit on train embeddings.
     """
 
     scale_embeddings = bool(getattr(base_cfg, "scale_embeddings", True))
-    # Train embeddings are only needed to FIT something: a PerDim scaler (scale_embeddings,
-    # no whitener) or a pretrain-source whitener. A resolved (finetune/eval) whitener needs no fit.
+    # Train embeddings are needed only to fit a PerDim scaler or a pretrain-source whitener.
     needs_train_fit = (
         not test_only
         or (whiten_cfg is None and scale_embeddings)
@@ -631,28 +533,17 @@ def build_embedding_dataloaders(
             flush=True,
         )
 
-    # Build cosmology preset scaler from config if available
     cosmo_scaler: Optional[BaseScaler] = None
     cosmo_param_names = []
     if base_cfg is not None and hasattr(base_cfg, "cosmo_param_names"):
         cosmo_param_names = list(base_cfg.cosmo_param_names)
-        # Honour the SAME per-config box overrides as the training path (src/ml/utils.py:305-312).
-        # A config may legitimately supply boxes for parameters absent from the global preset — the
-        # 15-param vector's `b_g_bin1..6` are exactly that (the BGP campaign deliberately keeps them
-        # as overrides rather than mutating the shared constant). Without this merge the lookup below
-        # raises on them, which is a FALSE failure: the boxes were supplied, just not where this
-        # looked. Empty/absent overrides => the global preset, byte-identical to before.
         preset = dict(COSMO_PARAM_PRESET_MINMAX)
         _scaler_opts = getattr(base_cfg, "scaler_options", None) or {}
         _overrides = (_scaler_opts.get("cosmo") or {}).get("preset_overrides") or {}
         preset.update({k: tuple(v) for k, v in _overrides.items()})
-        # Kept for its VALIDATION value only — it fails fast when a cosmo parameter has no box.
-        # The scaler itself is deliberately discarded on the next line: theta reaching this point
-        # has ALREADY been min-max scaled into the prior box by the raw loader's
-        # TransformingDataset, so applying a second cosmo scaler here would double-scale it.
+        # Validation only: theta is already scaled by the raw loader, so the scaler is discarded.
         _build_cosmo_preset_scaler(preset, cosmo_param_names)
     cosmo_scaler = None
-    # Try to load cached embeddings
     train_z = val_z = test_z = None
     train_theta = val_theta = test_theta = None
     emb_scaler: Optional[BaseScaler] = None
@@ -674,10 +565,6 @@ def build_embedding_dataloaders(
                     f"val {tuple(val_z.shape)}, test {tuple(test_z.shape)})",
                     flush=True,
                 )
-                # Prefer scaler from cache if present; otherwise use freshly built preset.
-                # ⚠️ This OVERRIDES the theta scaler the config just built, silently. If the two
-                # disagree, theta is scaled into a different box than the flow was trained on, so
-                # refuse rather than pick one.
                 if cached_cosmo_scaler is not None:
                     if cosmo_scaler is not None:
                         import numpy as _np
@@ -702,21 +589,18 @@ def build_embedding_dataloaders(
                 cache_used = True
 
     if not cache_used:
-        # Compute embeddings from scratch
         if needs_train_fit:
             train_z, train_theta = compute_embeddings(models, train_loader)
         if not test_only:
             val_z, val_theta = compute_embeddings(models, val_loader)
         test_z, test_theta = compute_embeddings(models, test_loader)
 
-        # Global per-variable standard scaler on training embeddings (optional)
         if scale_embeddings:
             emb_scaler = PerDimStandardScaler()
             emb_scaler.fit(train_z)
         else:
             emb_scaler = None
 
-        # Save caches if possible
         if not test_only and base_cfg is not None and wandb_run_name is not None:
             print("Saving embedding caches to disk for future reuse...")
             print("Saving to paths:")
@@ -728,9 +612,7 @@ def build_embedding_dataloaders(
             _save_embedding_cache(val_path, val_z, val_theta, emb_scaler, cosmo_scaler, _prov)
             _save_embedding_cache(test_path, test_z, test_theta, emb_scaler, cosmo_scaler, _prov)
 
-    # --- Per-source whitening / PCA truncation (research Finding C3 fix) ------------------------
-    # Both the cache-hit and fresh-compute paths converge here with raw train_z/val_z/test_z, so a
-    # single insertion point covers pretrain (fit+persist) and finetune/eval (resolve+reuse).
+    # --- per-source whitening and PCA truncation ---
     if whiten_cfg is not None:
         if "k" not in whiten_cfg:
             raise ValueError(f"whiten_embeddings must contain 'k'; got {whiten_cfg!r}.")
@@ -747,13 +629,7 @@ def build_embedding_dataloaders(
                     "[whiten] pretrain-source whitening requires wandb_run_name to derive the "
                     "persist path (datasets/whitener.pt)."
                 )
-            # The whitener must live in the RUN's own folder, not in a shared embedding cache:
-            # finetune/eval resolve it via `resolve_whitener_path(<flow ckpt>)`, i.e.
-            # `<ckpt dir>/datasets/whitener.pt`. With no `embedding_cache_name` the two coincide
-            # (wandb_run_name == source_run_name == "<experiment>/<run>"), so this is a no-op for
-            # every existing row. When a cache IS shared across head variants, pinning the whitener
-            # to the run keeps Stage-B able to find it AND stops two different k's from colliding on
-            # one whitener.pt.
+            # The whitener lives in the run's own folder, never in the shared cache.
             w_name = whitener_run_name or wandb_run_name
             w_train_path, _, _ = _get_embedding_cache_paths(base_cfg, w_name)
             whitener_path = os.path.join(os.path.dirname(w_train_path), WHITENER_FILENAME)
@@ -784,11 +660,9 @@ def build_embedding_dataloaders(
                 f"{emb_scaler.fit_n_train_samples} rows, source={emb_scaler.fit_source_experiment}) "
                 f"from {whitener_path}"
             )
-        # Force the EmbeddingDataset to APPLY the whitener regardless of the scale_embeddings flag
-        # (which the production NLE configs leave False).
+        # The whitener always applies, whatever scale_embeddings says.
         scale_embeddings = True
 
-    # Build datasets using tensors and scalers
     train_ds = val_ds = None
     if train_z is not None:
         train_ds = EmbeddingDataset(
@@ -820,13 +694,7 @@ def build_embedding_dataloaders(
         scale_embeddings=scale_embeddings,
     )
 
-    # Carry the underlying H5 file list onto the embedding datasets so downstream sample
-    # dumps can tag each test point with its sim/aug id (_resolve_test_paths looks for
-    # `.paths`). Embedding row i comes from loader item i (sequential compute, shuffle
-    # irrelevant to the mapping only for the UNSHUFFLED val/test loaders — the train loader
-    # shuffles, so only attach where the loader preserves order). Skip when embeddings came
-    # from the on-disk cache: the cached rows may predate the current split, so positional
-    # alignment cannot be trusted.
+    # Carry the H5 file list onto the unshuffled, freshly computed datasets for the sample dumps' ids.
     if not cache_used:
         from ..eval.utils import _resolve_test_paths as _resolve_loader_paths
 
@@ -834,15 +702,13 @@ def build_embedding_dataloaders(
             if ds is None:
                 continue
             ordered = isinstance(getattr(src_loader, "sampler", None), torch.utils.data.SequentialSampler)
-            # Walks .dataset AND TransformingDataset's .base_ds (the H5 test loader is wrapped).
             src_paths = _resolve_loader_paths(src_loader)
             if ordered and src_paths is not None and len(src_paths) == len(ds):
                 ds.paths = list(src_paths)
 
     batch_size = getattr(train_loader, "batch_size", 128)
     num_workers = getattr(train_loader, "num_workers", 0)
-    # Test batch size doubles as the joblib MCMC work unit (one job per batch downstream);
-    # opt-in override via config, default = the historical 32.
+    # The test batch is the joblib MCMC work unit downstream (config.emb_test_batch_size, default 32).
     test_batch_size = int(getattr(base_cfg, "emb_test_batch_size", None) or 32)
 
     train_emb_loader = (
@@ -859,11 +725,11 @@ def build_embedding_dataloaders(
 
 
 class HybridFeaturesHead(torch.nn.Module):
-    """Trainable head over cached frozen hybrid features (Phase 2b T2).
+    """Trainable head over cached frozen hybrid features.
 
-    Input vector layout = [band_mu(band_dim) ++ N/S pre-head map features] as produced by
-    KidsHybridBandpowersMaps.get_frozen_features (embedding_cut='hybrid_pre_head'). Reproduces
-    the trainable hybrid head stack: map head MLP -> optional patch LayerNorm -> fusion head.
+    Input layout: [band_mu(band_dim) ++ N/S pre-head map features], as from
+    KidsHybridBandpowersMaps.get_frozen_features (embedding_cut='hybrid_pre_head'). The stack is
+    map head MLP -> optional patch LayerNorm -> fusion head.
     """
 
     def __init__(
@@ -921,19 +787,10 @@ def build_nde_on_embeddings(
     test_loader=None,
     device: Optional[torch.device] = None,
 ):
-    """Construct an (untrained) NDE Lightning module that operates on embeddings.
+    """Construct an untrained NDE Lightning module that operates on embeddings.
 
-    This is the shared model-construction logic used by both training code and
-    notebooks that want to load a checkpoint without re-implementing the setup.
-
-    Args:
-        emb_dim: Dimension of the (concatenated) embedding vector.
-        base_cfg: Experiment config (expects the usual NDE/flow fields).
-        test_loader: Optional dataloader assigned to the Lightning module.
-        device: Optional torch.device. Defaults to cuda if available.
-
-    Returns:
-        model: An instance of NDELightningModule or LikelihoodNDELightningModule.
+    emb_dim is the width of the concatenated embedding. base_cfg supplies the flow fields and
+    inference_mode. Returns an NDELightningModule (npe) or LikelihoodNDELightningModule (nle).
     """
 
     if device is None:
@@ -942,8 +799,6 @@ def build_nde_on_embeddings(
     conditioning_dim = emb_dim
     inference_dim = len(base_cfg.cosmo_param_names)
 
-    # Phase 2b: optionally train a small head over the cached features instead of feeding the
-    # raw embedding vector straight into the flow. Default (None) preserves prior behaviour.
     if getattr(base_cfg, "embedding_head_type", None) == "hybrid_features":
         head_kwargs = dict(getattr(base_cfg, "embedding_head_kwargs", {}) or {})
         embedding_net = HybridFeaturesHead(emb_dim=emb_dim, **head_kwargs).to(device)
@@ -981,19 +836,10 @@ def build_nde_on_embeddings(
 
 
 def load_embeddings_checkpoint(model, checkpoint_path, device, *, tag: str = ""):
-    """Restore a trained NDE-on-embeddings checkpoint, REPORTING what actually loaded.
+    """Restore a trained NDE-on-embeddings checkpoint, reporting what actually loaded.
 
-    ⚠️ EVAL-PATH GUARD. The two embeddings model builders used to do a bare
-    ``model.load_state_dict(ckpt["state_dict"], strict=False)`` and report NOTHING, so a
-    shape/key mismatch left the density head **randomly initialised** and the run produced
-    numbers instead of failing. That is invisible on the ``run_training: False`` path, which
-    never calls ``fit_nde_on_embeddings`` and therefore never runs guard (a) or guard (c).
-
-    Kept permissive where it is legitimately permissive (an IdentityEmbedding contributes no
-    parameters, and old checkpoints may carry extra bookkeeping keys), but HARD-FAILS on the two
-    signatures that make a downstream number meaningless:
-      * the checkpoint matched NOTHING, and
-      * any ``model.flow.*`` tensor missing, i.e. a partly/entirely random density head.
+    Loads with strict=False, and raises when the checkpoint matched no key or any model.flow.*
+    tensor is missing, since the density head would then be random.
     """
     ckpt = torch.load(checkpoint_path, map_location=device)
     state = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
@@ -1048,13 +894,7 @@ def _compute_val_nll(model, val_loader) -> float:
         device = next(model.parameters()).device
     except StopIteration:
         device = torch.device("cpu")
-    # NPE and NLE pass their flow arguments in OPPOSITE orders, so this helper must dispatch
-    # on the module type to really match "the module's validation_step loss" as documented:
-    #   NPE  models p(theta | z): forward(theta, cond=z)   -- npe.py:391-393
-    #   NLE  models p(z | theta): forward(z,     cond=theta) -- nle.py:36-38
-    # LikelihoodNDELightningModule SUBCLASSES NDELightningModule, so the NLE test must come
-    # first. The ensemble modules subclass pl.LightningModule directly (they are not in that
-    # hierarchy) and so are named explicitly -- ensemble_nle.py:93-100 vs ensemble_npe.py:63-71.
+    # NPE and NLE take their flow arguments in opposite order: forward(theta, cond=z) vs forward(z, cond=theta).
     nle_style = isinstance(
         model, (LikelihoodNDELightningModule, EnsembleLikelihoodNDELightningModule)
     )
@@ -1074,8 +914,8 @@ def _compute_val_nll(model, val_loader) -> float:
 def _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_ckpt_path: str):
     """Guard (c): abort if the finetune ep0 val NLL is a scratch-level gap above the pretrain best.
 
-    Local calibration (research task): genuine warm starts land ~2-5 nats above the pretrain best;
-    scratch / mis-framed-input runs land >=15 nats above. Threshold defaults to ~12 nats.
+    Genuine warm starts land about 2-5 nats above the pretrain best, scratch runs 15 or more.
+    The threshold is config.whiten_warmstart_max_gap_nats (default 12).
     """
     max_gap = getattr(base_cfg, "whiten_warmstart_max_gap_nats", 12.0)
     if max_gap is None or max_gap <= 0:
@@ -1107,13 +947,8 @@ def _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_ckpt_pat
 def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, base_cfg, run_name):
     """Build and train an NDE Lightning module on precomputed embeddings.
 
-    Uses an IdentityEmbedding as the encoder and otherwise reuses the
-    flow configuration from `base_cfg`.
-
-    A config flag ``inference_mode`` controls whether we run in
-    NPE (posterior) or NLE (likelihood) mode. Allowed values:
-      * 'npe' (default): NDELightningModule, modelling p(theta | z).
-      * 'nle'         : LikelihoodNDELightningModule, modelling p(z | theta).
+    The encoder is an IdentityEmbedding and the flow comes from base_cfg. config.inference_mode
+    picks 'npe' (default, p(theta | z)) or 'nle' (p(z | theta)).
     """
 
     model = build_nde_on_embeddings(emb_dim=emb_dim, base_cfg=base_cfg, test_loader=test_loader)
@@ -1123,14 +958,12 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
         pretrained_band_ckpt = getattr(base_cfg, 'pretrained_band_ckpt_path', None)
         if pretrained_band_ckpt is None:
             raise ValueError("Config flag 'load_pretrained_flow' is True but 'pretrained_band_ckpt_path' is not set.")
-        # Guard (a): when whitening is on, a shape-mismatched (wrong-k) flow must fail HARD rather
-        # than silently leave layers randomly initialised.
+        # Guard (a): with whitening on, a wrong-k flow raises instead of leaving random layers.
         model._load_pretrained_flow(pretrained_band_ckpt, freeze=False, error_on_mismatch=whiten_on)
         # Guard (c): warm-start regression check (whitening runs only).
         if whiten_on:
             _warmstart_regression_guard(model, val_loader, base_cfg, pretrained_band_ckpt)
 
-    # Standard Lightning trainer setup (similar to fit_model)
     num_gpus = torch.cuda.device_count()
     accelerator = "gpu" if num_gpus > 0 else "cpu"
     devices = num_gpus if num_gpus > 0 else 1
@@ -1140,7 +973,6 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
     num_trainval_cosmos = getattr(base_cfg, 'max_trainval_cosmos', None)
     match_string_logger = base_cfg.match_string if base_cfg.match_string else ""
 
-    # Include inference_mode in run name for clarity
     inference_mode = getattr(base_cfg, "inference_mode", "npe").lower()
     wandb_logger = wandb.init(
         project=getattr(base_cfg, "project", "emb-nde"),
@@ -1150,8 +982,7 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
     )
 
     wandb_logger_name = wandb_logger.name if wandb_logger else "no_logger"
-    # This path builds its own ModelCheckpoint/Trainer rather than routing through
-    # fit_model, so it needs the errno-28 temp-dir redirect too (src/ml/tmpdir.py).
+    # This path builds its own Trainer, so it needs fit_model's temp-dir redirect too.
     redirect_tempdir(base_cfg.base_path)
     checkpoint_callback = pl.callbacks.ModelCheckpoint(
         monitor=f"{monitor_string}",
@@ -1172,7 +1003,7 @@ def fit_nde_on_embeddings(emb_dim: int, train_loader, val_loader, test_loader, b
         check_val_every_n_epoch=1,
         logger=pl.loggers.WandbLogger() if wandb_logger else None,
         callbacks=[checkpoint_callback, lr_monitor],
-        gradient_clip_val=0.5, # NEED PRECISION HIGH
+        gradient_clip_val=0.5,
         precision="32",
     )
 
