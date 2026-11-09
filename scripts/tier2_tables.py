@@ -1,15 +1,10 @@
 #!/usr/bin/env python
-"""Tier-2: build the OOD-score -> bias-probability tables (from the local misspec/summaries npz) and,
-optionally, read an observation's scalar scores against them.
+"""Tier-2: build the OOD-score -> bias-probability tables and read an observation's scores against them.
 
-    PYTHONPATH=. python scripts/tier2_tables.py --base-dir ml-checkpoints/gower_npe_finetune_nla_m_bgp_z8_ens1 \
-        --phase6-dir .claude/runs/eval-and-viz/production-model-misspec/artifacts/phase6 --out-dir <dir> \
-        [--rows-cache rows.npz] [--obs-score obs_score_A.json ...]
+    PYTHONPATH=. python scripts/tier2_tables.py --base-dir <misspec pack> --phase6-dir <dir> --out-dir <dir>
 
-Outputs: BIAS_TABLES.md, bias_tables.json, bias_curves.png (P(|z|>t | more-OOD-than s) vs s, with the
-in-distribution baseline), per_variate.json, and -- with --obs-score -- obs_reading_<label>.json/.md
-with the table row each observed detector value falls in. The observation's scalars are NOT
-unblinding information (a detector score carries no location).
+It writes BIAS_TABLES.md, bias_tables.json, bias_curves.png and per_variate.json, plus
+obs_reading_<label>.json/.md with --obs-score. A detector score carries no location.
 """
 from __future__ import annotations
 
@@ -69,14 +64,8 @@ def main(argv=None):
                     help="per-repeat filename tag; ncosmo300_{r} for BOTH the field-level pack and "
                          "the 2-pt M17 pack (confirmed from the misspec job log)")
     ap.add_argument("--kl-params", default=None,
-                    help="which ensemble-disagreement statistic fills the kl column: full (default, "
-                         "the production detector) or a variant from src.ml.eval.kl_subsets "
-                         "(om_s8, S8, om_s8_w0, om_s8_fullcov). See artifacts/KL_SUBSET_STUDY.md. "
-                         "The choice is STAMPED into bias_tables.json and the markdown header: a "
-                         "table must never be read against an observation scored differently.")
-    # Pack / variate plumbing (2026-10-19, vdq-unblinding-rerun P1.2). Defaults = the previous
-    # hardcoded behaviour (old no-VD BGP field pack, its 7 variates, repeats 0-4), so a call
-    # without these flags is byte-identical to before.
+                    help="The ensemble-disagreement statistic in the kl column: full, the production detector, "
+                         "or a src.ml.eval.kl_subsets variant. It is stamped into bias_tables.json.")
     ap.add_argument("--experiment", default="gower_npe_finetune_nla_m_bgp_z8_ens1",
                     help="pack name used for the scaler box (S8 from samples, KL subsets)")
     ap.add_argument("--variates", nargs="+", default=None,
@@ -85,10 +74,8 @@ def main(argv=None):
     ap.add_argument("--repeats", nargs="+", type=int, default=[0, 1, 2, 3, 4],
                     help="encoder repeats of the pack (field VDQ pack: 0 2 3 4 5)")
     ap.add_argument("--meanp-source", choices=("phase6", "obs_knn"), default="phase6",
-                    help="phase6 = the multiencoder_ood combined_p (cond_knn mean-p, needs true theta; "
-                         "mock-side only); obs_knn = the OBS-IDENTICAL encoder-mean of the unconditional "
-                         "kNN p recalibrated against the _idtest null (artifacts/vdq_misspec/meanp_knn.py), "
-                         "the statistic obs-score's meanp_recalibrated actually is")
+                    help="phase6 is the conditional kNN mean-p, which needs the true theta. obs_knn is the "
+                         "unconditional kNN p, the statistic of obs-score's meanp_recalibrated.")
     ap.add_argument("--meanp-npz", default=None, help="meanp_knn.py output (required for --meanp-source obs_knn)")
     args = ap.parse_args(argv)
 
@@ -193,12 +180,6 @@ def main(argv=None):
         with open(f) as fh:
             sc = json.load(fh)
         label = sc.get("label", os.path.basename(f))
-        # The KL column of the TABLE is built with `kl_params`; the observation must be looked up
-        # with the SAME statistic or it lands in the wrong bin. obs_score writes every variant,
-        # so select `kl_<kl_params>` (== `kl_adopted` when obs-score chose the same one) rather
-        # than the bare `kl`, which is always the FULL DIAGONAL value. Fixed 2026-09-18: the
-        # previous code used sc["kl"] unconditionally -- e.g. 0.194 (full) instead of 0.115
-        # (om_s8_fullcov) for the same observation, overstating the predicted bias.
         kl_key = f"kl_{args.kl_params}"
         if kl_key not in sc and sc.get("kl_params") == args.kl_params and "kl_adopted" in sc:
             kl_key = "kl_adopted"
