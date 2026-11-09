@@ -45,12 +45,10 @@ nbands = 8
 EB_FWHM_ARCMIN = 4.0
 EB_LMIN = None
 EB_LCUT = 1400
-MAP_DTYPE = np.float16
 
 # --- Augmentation ----------------------------------------------------------------
 # No rotation augmentation: the full-RA band is exactly invariant under RA rotations.
 IDENTITY_ROTATION = {"rot": [0, 0, 0], "flip": False, "backend": "identity"}
-ROTATION_SPECS = [IDENTITY_ROTATION]
 MASK_ROTATION_ANGLES = [0]
 INNER_NUM_SHAPE_NOISE_REALISATIONS = 1
 OUTER_NUM_SHAPE_NOISE_REALISATIONS = 1

@@ -53,7 +53,6 @@ _SIMID_RE = re.compile(r"output_(\d+)_")
 
 # what a training sample needs
 MAP_SIDES = ("north", "south")
-BANDPOWER_PATH = ("cls_results", "full", "mixed_bandpowers")
 
 
 def _simid(path):
