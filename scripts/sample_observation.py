@@ -114,7 +114,7 @@ def cmd_pool(args):
 
 
 def cmd_fetch(args):
-    from src.blind import BLIND_ROOT
+    from src.blind.paths import BLIND_ROOT
     root = Path(args.blind_root or BLIND_ROOT)
     seen = set()
     if args.what in ("repeats", "both"):

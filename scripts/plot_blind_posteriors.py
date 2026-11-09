@@ -135,7 +135,7 @@ def main(argv=None):
     PALETTE = args.palette
     NO_TITLES = args.no_titles
 
-    from src.blind import BLIND_ROOT, STANDARDISED_ROOT
+    from src.blind.paths import BLIND_ROOT, STANDARDISED_ROOT
     from src.blind.standardise import (list_raw_runs, standardise_in_real_frame, standardise_self,
                                        write_standardised)
     root = args.blind_root or BLIND_ROOT

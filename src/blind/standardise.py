@@ -15,7 +15,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from . import BLIND_ROOT, STANDARDISED_ROOT
+from .paths import BLIND_ROOT, STANDARDISED_ROOT
 
 
 @dataclass(frozen=True)

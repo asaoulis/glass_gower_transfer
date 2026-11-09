@@ -21,7 +21,7 @@ if REPO not in sys.path:
 if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.blind import BLIND_ROOT                                   # noqa: E402
+from src.blind.paths import BLIND_ROOT                             # noqa: E402
 from src.blind.standardise import _load_physical, _scaler_box, list_raw_runs, pooled_members, prior_of_dump  # noqa: E402
 from src.ml.eval.arms import ARMS, DELAYED_ARMS, arm_experiment    # noqa: E402
 
