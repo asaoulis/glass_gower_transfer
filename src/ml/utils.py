@@ -11,7 +11,7 @@ import torch
 import os
 
 from .models.deprecated.compressors import _MODEL_BUILDERS
-from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, VICRegRegularisedNDELightningModule, EnsembleNDELightningModule, EnsembleLikelihoodNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
+from .models.lightning_modules import NDELightningModule, KLDRegularisedNDELightningModule, EnsembleNDELightningModule, EnsembleLikelihoodNDELightningModule, RegressionLightningModule, LikelihoodNDELightningModule, JointVMIMNLELightningModule
 from .models.kids_inference_architectures import KIDS_MODEL_BUILDERS
 from .eval.loading_model import find_best_checkpoint, get_best_checkpoint
 
@@ -205,8 +205,6 @@ def _build_cosmo_preset_scaler(preset_minmax: Dict[str, Tuple[float, float]], co
 
 
 def _wrap_loader_with_transforms(loader: torch.utils.data.DataLoader, data_transform, cosmo_scaler, shuffle=True):
-    from .data.cosmo_batch_sampler import MPerCosmoBatchSampler
-
     base_ds = loader.dataset
     wrapped_ds = TransformingDataset(base_ds, data_transform=data_transform, cosmo_scaler=cosmo_scaler)
 
@@ -216,11 +214,6 @@ def _wrap_loader_with_transforms(loader: torch.utils.data.DataLoader, data_trans
         persistent_workers=getattr(loader, 'persistent_workers', False),
         collate_fn=getattr(loader, 'collate_fn', None),
     )
-
-    # Reuse an MPerCosmoBatchSampler. The type check matters: PyTorch gives every loader a batch_sampler.
-    bs = getattr(loader, 'batch_sampler', None)
-    if isinstance(bs, MPerCosmoBatchSampler):
-        return torch.utils.data.DataLoader(wrapped_ds, batch_sampler=bs, **common)
 
     return torch.utils.data.DataLoader(
         wrapped_ds,
@@ -284,8 +277,6 @@ def prepare_data_parameters(config):
         N_extra_test_cosmologies=getattr(config, 'N_extra_test_cosmologies', None),
         fixed_test_sim_ids=getattr(config, 'fixed_test_sim_ids', None),
         N_test_cosmologies=getattr(config, 'N_test_cosmologies', None),
-        use_cosmo_batch_sampler=getattr(config, 'use_vicreg_loss', False),
-        m_per_cosmo=int(getattr(config, 'vicreg_m_per_cosmo', 2)),
         # Oracle conditioning (config.side_input type 'true_theta'), else None.
         side_input_fn=build_side_input_fn(config),
         preload=bool(getattr(config, 'preload_data', False)),
@@ -390,7 +381,6 @@ def build_model(config, test_dataloader=None):
 
     redundancy_dim = getattr(config, 'redundancy_dim', 0)
     use_KL_loss = getattr(config, 'use_KL_loss', False)
-    use_vicreg_loss = getattr(config, 'use_vicreg_loss', False)
     is_distributed = getattr(config, 'is_distributed', False)
 
     training_mode = getattr(config, 'training_mode', 'nde')
@@ -461,15 +451,6 @@ def build_model(config, test_dataloader=None):
         lm_extra_kwargs = {"num_flows": num_flow_heads}
     elif use_KL_loss:
         LightningModule = KLDRegularisedNDELightningModule
-    elif use_vicreg_loss:
-        LightningModule = VICRegRegularisedNDELightningModule
-        lm_extra_kwargs = {
-            "vicreg_sim_coeff": float(getattr(config, "vicreg_sim_coeff", 1.0)),
-            "vicreg_var_coeff": float(getattr(config, "vicreg_var_coeff", 1.0)),
-            "vicreg_cov_coeff": float(getattr(config, "vicreg_cov_coeff", 1.0)),
-            "vicreg_gamma": float(getattr(config, "vicreg_gamma", 1.0)),
-            "vicreg_eps": float(getattr(config, "vicreg_eps", 1e-4)),
-        }
     elif inference_mode == 'nle':
         LightningModule = LikelihoodNDELightningModule  # NLE is just a special case of NDE with swapped conditioning/inference
     else:

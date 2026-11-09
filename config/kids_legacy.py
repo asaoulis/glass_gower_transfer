@@ -245,55 +245,6 @@ kids_legacy_experiments["glass_encoder_finetune_no_vd_z8"] = _encoder_finetune_z
     _NOVD_DATA_FWHM4, _EB_VARIANT_LMIN50_FWHM4, _COSMO_9, repeat_indices=(0, 1, 2, 3, 4))
 
 
-def _hybrid_vicreg(batch_size, data_patterns=_NLA_M_DATA, eb_variant=_EB_VARIANT,
-                   repeat_indices=None, band_ckpt_dir=_BAND_CKPT_DIR):
-    """_hybrid() with the VICReg summary regulariser (VICRegRegularisedNDELightningModule).
-
-    batch_size must be divisible by vicreg_m_per_cosmo."""
-    c = _hybrid(batch_size, data_patterns, eb_variant)
-    c["use_KL_loss"] = False
-    c["use_vicreg_loss"] = True
-    c["vicreg_sim_coeff"] = 1.0
-    c["vicreg_var_coeff"] = 1.0
-    c["vicreg_cov_coeff"] = 1.0
-    c["vicreg_gamma"] = 1.0
-    c["vicreg_eps"] = 1e-4
-    c["vicreg_m_per_cosmo"] = 2
-    c["pretrained_band_ckpt_path"] = band_ckpt_dir
-    if repeat_indices is not None:
-        c["repeat_indices"] = repeat_indices
-        c["repeats"] = 4
-    return c
-
-
-def _hybrid_vicreg_smoke():
-    """VICReg hybrid on the local fwhm8 fixture store with a from-scratch band."""
-    c = _hybrid_vicreg(8)
-    c["pretrained_band_ckpt_path"] = None
-    c["freeze_band"] = False
-    c["epochs"] = 3
-    c["num_workers"] = 2
-    c["prefetch_factor"] = 2
-    c["persistent_workers"] = False
-    return c
-
-
-kids_legacy_experiments["kids_legacy_hybrid_vicreg_smoke"] = _hybrid_vicreg_smoke()
-
-
-def _hybrid_vicreg_lmin50():
-    """VICReg hybrid on the lmin50 fwhm4 store, reusing the frozen lmin50 bands."""
-    c = _hybrid_vicreg(100, _NLA_M_DATA_LMIN50_FWHM4, _EB_VARIANT_LMIN50_FWHM4,
-                       band_ckpt_dir=_BAND_CKPT_DIR_LMIN50)
-    c["repeats"] = 4
-    c["num_workers"] = 8
-    c["prefetch_factor"] = 2
-    return c
-
-
-kids_legacy_experiments["kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"] = _hybrid_vicreg_lmin50()
-
-
 def _gpu5_locality_test():
     """Throughput probe: the b100 hybrid reading the gpu5 store."""
     c = _hybrid(100)
@@ -373,9 +324,7 @@ def _nle_finetune(pretrain_exp, ensemble_repeats=1, whiten_k=None, warmstart_max
 
 
 kids_legacy_experiments["glass_nle_pretrain_nla_m_base"] = _nle_pretrain()
-kids_legacy_experiments["glass_nle_pretrain_nla_m_vicreg"] = _nle_pretrain()
 kids_legacy_experiments["gower_nle_finetune_nla_m_base"] = _nle_finetune("glass_nle_pretrain_nla_m_base", ensemble_repeats=5)
-kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg", ensemble_repeats=5)
 
 
 # --- Whitened NLE chain: PCA-whiten the embedding, fit once on the GLASS train split ---
@@ -456,8 +405,6 @@ def _npe_finetune_lmin50(checkpoint_dir):
 
 kids_legacy_experiments["gower_npe_finetune_nla_m_base"] = _npe_finetune_lmin50(
     _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4"))
-kids_legacy_experiments["gower_npe_finetune_nla_m_vicreg"] = _npe_finetune_lmin50(
-    _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"))
 
 
 def _npe_finetune_z8(checkpoint_dir, data_patterns=_GOWER_NLA_M_DATA_FWHM4,
@@ -491,9 +438,3 @@ def _npe_finetune_z8(checkpoint_dir, data_patterns=_GOWER_NLA_M_DATA_FWHM4,
 
 kids_legacy_experiments["gower_npe_finetune_nla_m_z8"] = _npe_finetune_z8(
     _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_z8"))
-
-kids_legacy_experiments["gower_npe_finetune_nla_m_vicreg_v2"] = _npe_finetune_lmin50(
-    _GLASS_HYBRID_CKPT.format(exp="kids_legacy_hybrid_nla_m_lmin50_fwhm4_vicreg"))
-
-kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg_npesrc"] = _nle_finetune("glass_nle_pretrain_nla_m_vicreg")
-kids_legacy_experiments["gower_nle_finetune_nla_m_vicreg_npesrc"]["match_num_cosmo"] = True

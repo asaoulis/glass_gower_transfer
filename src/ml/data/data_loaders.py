@@ -310,17 +310,12 @@ def build_dataloaders(
     N_extra_test_cosmologies: Optional[int] = None,
     fixed_test_sim_ids: Optional[Union[str, Sequence[int]]] = None,
     N_test_cosmologies: Optional[int] = None,
-    use_cosmo_batch_sampler: bool = False,
-    m_per_cosmo: int = 2,
     side_input_fn=None,
     preload: bool = False,
     exclude_files: Optional[Union[str, Sequence[str]]] = None,
     include_files_regex: Optional[str] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Return the train, val and test DataLoaders, split so no cosmology crosses splits.
-
-    With use_cosmo_batch_sampler the train loader packs m_per_cosmo realisations per cosmology
-    and yields the cosmology id as a third batch element."""
+    """Return the train, val and test DataLoaders, split so no cosmology crosses splits."""
     if num_workers is None:
         try:
             cpu_count = os.cpu_count() or 1
@@ -351,7 +346,6 @@ def build_dataloaders(
         N_extra_test_cosmologies=N_extra_test_cosmologies,
         fixed_test_sim_ids=fixed_test_sim_ids,
         N_test_cosmologies=N_test_cosmologies,
-        return_cosmo_id=use_cosmo_batch_sampler,
         side_input_fn=side_input_fn,
         preload=preload,
         exclude_files=exclude_files,
@@ -366,34 +360,14 @@ def build_dataloaders(
     if persistent_workers is None:
         persistent_workers = num_workers > 0
 
-    if use_cosmo_batch_sampler:
-        # VICReg: m-per-cosmology batches. batch_sampler is mutually exclusive with
-        # batch_size/shuffle/drop_last (they are encoded by the sampler itself).
-        from .cosmo_batch_sampler import MPerCosmoBatchSampler
-
-        train_batch_sampler = MPerCosmoBatchSampler(
-            train_ds.paths,
-            m_per_cosmo,
-            batch_size,
-            shuffle=shuffle_train,
-            seed=seed,
-        )
-        train_loader = DataLoader(
-            train_ds,
-            batch_sampler=train_batch_sampler,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-        )
-    else:
-        train_loader = DataLoader(
-            train_ds,
-            batch_size=batch_size,
-            shuffle=shuffle_train,
-            num_workers=num_workers,
-            pin_memory=pin_memory,
-            persistent_workers=persistent_workers,
-        )
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=shuffle_train,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+    )
     val_loader = DataLoader(
         val_ds,
         batch_size=val_batch_size,

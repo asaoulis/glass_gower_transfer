@@ -22,7 +22,6 @@ from .estimators import PatchedConditionalDensityEstimator, PatchedLikelihoodEst
 from .base import BaseLightningModule, RegressionLightningModule, GaussianLightningModule
 from .npe import NDELightningModule
 from .kl import KLDRegularisedNDELightningModule
-from .vicreg import VICRegRegularisedNDELightningModule
 from .nle import LikelihoodNDELightningModule
 from .ensemble_npe import EnsembleNDELightningModule
 from .ensemble_nle import EnsembleLikelihoodNDELightningModule
@@ -46,7 +45,6 @@ __all__ = [
     "GaussianLightningModule",
     "NDELightningModule",
     "KLDRegularisedNDELightningModule",
-    "VICRegRegularisedNDELightningModule",
     "LikelihoodNDELightningModule",
     "EnsembleNDELightningModule",
     "EnsembleLikelihoodNDELightningModule",
