@@ -1,3 +1,9 @@
+"""Evaluation of the best checkpoint of each run.
+
+TARP calibration, FoM and log-prob diagnostics (TARPDiagnostics, StandardFoMDiagnostics,
+DimNormalizedFoMDiagnostics), and evaluate_best_checkpoint, which writes evaluation_results.json
+and tarp_credible_intervals.json per run.
+"""
 import torch
 
 import numpy as np
@@ -314,9 +320,7 @@ def run_evaluation_on_samples(
     scaled_theta0s = rescale_parameters(theta0s, param_scaler)
     scaled_samples = rescale_parameters(samples, param_scaler)
 
-    # Keep both layouts around. Most point-estimate metrics below assume
-    # (n_samples, n_sims, d), while covariance/FoM metrics require
-    # (n_sims, n_samples, d).
+    # Point metrics use (n_samples, n_sims, d), covariance and FoM metrics (n_sims, n_samples, d).
     scaled_samples_first, scaled_samples_sims_first = _split_samples_first_and_sims_first(
         scaled_samples, n_sims, name="scaled_samples"
     )
@@ -327,10 +331,7 @@ def run_evaluation_on_samples(
     bias = scaled_samples_first.mean(axis=0) - scaled_theta0s
 
     std_devs = scaled_samples_first.std(axis=0)
-    # torch.quantile allocates a large sort buffer; on the big (n_samples, n_sims, d) ensemble tensor
-    # this OOMs a 16 GiB v100 at the ens9 FoM step. Compute the credible-interval widths on CPU
-    # (system RAM) — identical result, no GPU-memory pressure. This is a results-only path (not
-    # perf-critical); std_devs stays on GPU (cheap, no sort buffer).
+    # Quantiles on CPU: torch.quantile's sort buffer runs a 16 GiB GPU out of memory.
     _ssf_cpu = scaled_samples_first.cpu()
     width_68 = torch.quantile(_ssf_cpu, 0.84, dim=0) - torch.quantile(_ssf_cpu, 0.16, dim=0)
     width_95 = torch.quantile(_ssf_cpu, 0.975, dim=0) - torch.quantile(_ssf_cpu, 0.025, dim=0)
