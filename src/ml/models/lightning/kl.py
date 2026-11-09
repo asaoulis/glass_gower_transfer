@@ -1,3 +1,4 @@
+"""KLDRegularisedNDELightningModule: NPE with a KL regulariser on the encoder latent (mu, logvar)."""
 from __future__ import annotations
 
 import torch
