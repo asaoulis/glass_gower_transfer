@@ -1,15 +1,8 @@
-"""Fixed survey / simulation constants for the Euclid DR3 forecast mocks.
+"""Fixed survey and simulation constants for the Euclid DR3 forecast mocks.
 
-Counterpart of `src/KiDS/simulation_config.py`. Consumed by `master_euclid_simulator.py`.
-
-Survey specification (origin/Euclid README "Euclid DR3 details"):
-  * 14 000 deg^2 footprint, a full-RA declination band centred on the equator
-  * 13 tomographic bins from `euclid_nzs_dr3.txt`
-  * n = 6.2 gal/arcmin^2 TOTAL across the 13 bins (user-confirmed 2026-09-09)
-  * sigma_e = 0.26 PER COMPONENT (user-confirmed 2026-09-09; matches the KiDS convention in
-    `src/KiDS/systematics.py`, which passes 0.2619-0.3002 per component to
-    `glass.shapes.ellipticity_intnorm`)
-  * no survey systematics: no IA, no variable depth, no m/c shear bias, no photo-z shifts
+Counterpart of src/KiDS/simulation_config.py, used by master_euclid_simulator.py: 14 000 deg^2
+full-RA declination band, 13 tomographic bins, n = 6.2 per arcmin^2, sigma_e = 0.26, grid and
+bandpower settings, one stored E-map variant.
 """
 
 from pathlib import Path
@@ -48,19 +41,14 @@ upper_lscale = 1500
 nbands = 8
 
 # --- The single stored E-map variant ---------------------------------------------
-# User decision 2026-09-09: bandpowers + ONE E variant only. `fwhm` is a gentle beam taper
-# (4' is SUB-PIXEL at nside_out 512, whose pixels are 6.87'); the effective bandlimit is `lcut`.
+# One stored E-map variant: fwhm is a gentle beam taper (4 arcmin is sub-pixel at this resolution).
 EB_FWHM_ARCMIN = 4.0
 EB_LMIN = None
 EB_LCUT = 1400
 MAP_DTYPE = np.float16
 
 # --- Augmentation ----------------------------------------------------------------
-# The footprint is a full-RA band, so it is EXACTLY invariant under any RA (Z-axis) rotation
-# (verified numerically, task euclid/dataset-generation step A4). Latitude rotations cannot be
-# undone by a Dec crop (step A2), so there is no field-rotation augmentation at all: one
-# identity rotation, one mask angle, one inner shape-noise draw. Independent realisations come
-# from the OUTER loop only.
+# No rotation augmentation: the full-RA band is exactly invariant under RA rotations.
 IDENTITY_ROTATION = {"rot": [0, 0, 0], "flip": False, "backend": "identity"}
 ROTATION_SPECS = [IDENTITY_ROTATION]
 MASK_ROTATION_ANGLES = [0]
@@ -75,9 +63,8 @@ COSMO_PARAM_NAMES = ["omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu"]
 EUCLID_N_JOBS = 50000
 COSMO_BASE_SEED = 0
 
-# MUST be distinct from the KiDS cache: the cached-Cls guard keys on the cosmology AND the
-# (lmax, zmin, zmax, dx) grid, and Euclid's zmax=3.05 differs from KiDS's 2.0, so sharing the
-# KiDS directory would make every lookup a (correct) guard failure.
+# Distinct from the KiDS cache: the guard keys on the cosmology and the (lmax, zmin, zmax, dx)
+# grid, and zmax differs.
 CAMB_CLS_CACHE_DIR = Path("/share/gpu5/asaoulis/camb_cls_cache_euclid")
 
 # --- Footprint -------------------------------------------------------------------
@@ -97,17 +84,8 @@ def dec_half_width_deg(area_deg2=FOOTPRINT_AREA_DEG2):
 DEC_HALF_DEG = dec_half_width_deg()
 PATCH_HALFWIDTH_DEG = DEC_HALF_DEG / 2.0
 
-# Cartesian crop boxes (lon_centre, lat_centre, lon_range, lat_range) in degrees, in the format
-# `src/cosmology/pixelise_maps.py:get_patch_values` expects. The band is split at Dec = 0 into
-# two equal halves so the HDF5 read contract `pixelised_results/E/{north,south}` is unchanged.
-#
-# These are PLAIN plate-carree crops with NO recentring rotation. The origin/Euclid branch's
-# `get_recentred_patch_values` attempted to rotate each half onto the equator first; that is
-# geometrically impossible for a full-RA band (a Y-axis rotation maps a Dec annulus onto an
-# annulus about a TILTED axis) and silently loses ~50 % of the footprint -- see
-# `.claude/runs/euclid/dataset-generation/artifacts/rotation_bug.png`. The plain crop costs at
-# most cos(19.84 deg) = 0.94 of projection distortion at the band edge, which is milder than the
-# distortion already accepted in the KiDS `named_patches`.
+# Cartesian crop boxes (lon_centre, lat_centre, lon_range, lat_range) in degrees, as
+# pixelise_maps.get_patch_values expects. The band is split at Dec = 0 into two patches.
 named_patches = {
     "north": (180.0, +PATCH_HALFWIDTH_DEG, 360.0, 2 * PATCH_HALFWIDTH_DEG),
     "south": (180.0, -PATCH_HALFWIDTH_DEG, 360.0, 2 * PATCH_HALFWIDTH_DEG),
