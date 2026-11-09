@@ -1,3 +1,4 @@
+"""Pooling heads for CNN feature maps: GeM, spatial pyramid, spatial attention, transformer pool, and PoolProj (pool + projection)."""
 from __future__ import annotations
 
 from typing import Optional
@@ -160,8 +161,6 @@ class PoolProj(nn.Module):
             elif t == "gem":
                 parts.append(self.gem(x).view(B, C))
             elif t == "std":
-                # second-moment (spatial std) pooling: captures the spatial variance of learned
-                # local statistics that mean-style pools discard (counts-ext phase 4, R2)
                 parts.append(torch.sqrt(x.float().var(dim=(-2, -1), unbiased=False) + 1e-6).to(x.dtype))
             elif t == "spp":
                 parts.append(self.spp(x))
