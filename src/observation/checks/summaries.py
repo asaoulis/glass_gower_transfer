@@ -1,17 +1,8 @@
-"""Hand-crafted, theta-light summary vector of the E-mode patch maps (the pre-CNN Tier-1 statistic).
+"""Hand-crafted summary vector of the E-mode patch maps (the pre-CNN Tier-1 statistic).
 
-Computed per (patch, tomographic bin) on the SAME product the models read (the baked, noise-normed
-``E`` patches), so the observation and the reference cloud go through identical arithmetic:
-
-  moments   var, skewness, excess kurtosis                                     (3)
-  pdf       quantiles at 5/25/50/75/95 %                                        (5)
-  peaks     local-maximum density above +1/+2/+3 sigma_self, local-minimum density
-            below -1/-2/-3 sigma_self (3x3 neighbourhood; per 1e3 pixels)      (6)
-  power     log10 azimuthally-averaged 2-D power in 6 log-spaced |k| bins       (6)
-  xcorr     Pearson r between adjacent tomographic bins (per patch)             (5 / patch)
-
-i.e. 20 x 6 bins x 2 patches + 10 = 250 numbers. Groups are named so a test can use a subset.
-Everything is invariant to the *labelling* of the observation and never touches a cosmology.
+Per (patch, tomographic bin), on the baked E patches the models read: moments (3), pdf quantiles (5),
+peak and void densities at 1, 2 and 3 sigma_self (6) and log10 2-D power in 6 |k| bins (6). Pearson r
+between adjacent bins adds 5 per patch: 20 x 6 x 2 + 10 = 250 numbers, in named groups.
 """
 from __future__ import annotations
 
