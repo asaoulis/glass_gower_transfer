@@ -15,7 +15,7 @@ import glob
 
 import numpy as np
 
-from .ensemble_discrepancies import diag_gaussian_symmetric_kl, median_heuristic_sigma2
+from .ensemble_discrepancies import diag_gaussian_symmetric_kl
 from .ood import auroc
 
 # Subset name -> parameter names (None == every dimension in the pack).
@@ -62,14 +62,6 @@ def kl_per_dim(mu: np.ndarray, var: np.ndarray, *, eps: float = 1e-8) -> np.ndar
             out += 0.5 * (kl_ij + kl_ji)
             count += 1
     return out / float(count)
-
-
-def subset_kl(mu: np.ndarray, var: np.ndarray, idx: Sequence[int], *, eps: float = 1e-8) -> np.ndarray:
-    """KL restricted to the parameter columns ``idx`` -- an exact slice, ``[N]``."""
-    idx = list(idx)
-    if not idx:
-        raise ValueError("empty parameter subset")
-    return kl_per_dim(mu, var, eps=eps)[:, idx].sum(axis=-1)
 
 
 def sym_kl_fullcov(mu: np.ndarray, cov: np.ndarray, *, jitter: float = 1e-12) -> np.ndarray:
@@ -362,58 +354,3 @@ def energy_distance(x: np.ndarray, y: np.ndarray) -> float:
     x = np.asarray(x, dtype=np.float64)
     y = np.asarray(y, dtype=np.float64)
     return float(2.0 * cdist(x, y).mean() - cdist(x, x).mean() - cdist(y, y).mean())
-
-
-def pairwise_sample_discrepancy(samples: np.ndarray, stat: str = "knn_kl", **kw) -> float:
-    """Mean discrepancy over unordered member pairs for ONE event.
-
-    ``samples`` is ``[K, S, D]`` (members x draws x params). ``knn_kl`` is symmetrised as
-    ``0.5*(KL(i||j) + KL(j||i))`` to match the convention of the Gaussian estimators.
-    """
-    k = samples.shape[0]
-    if k < 2:
-        return 0.0
-    vals = []
-    for i in range(k):
-        for j in range(i + 1, k):
-            a, b = samples[i], samples[j]
-            if stat == "knn_kl":
-                vals.append(0.5 * (knn_kl(a, b, **kw) + knn_kl(b, a, **kw)))
-            elif stat == "energy":
-                vals.append(energy_distance(a, b))
-            elif stat == "mmd":
-                from .ood import _rbf_mmd2
-                s2 = kw.get("sigma2") or median_heuristic_sigma2(
-                    np.concatenate([a, b]), seed=kw.get("seed", 0))
-                vals.append(_rbf_mmd2(a, b, s2))
-            else:
-                raise ValueError("unknown stat %r" % stat)
-    vals = [v for v in vals if np.isfinite(v)]
-    return float(np.mean(vals)) if vals else float("nan")
-
-
-def mmd_discrepancy(samples: np.ndarray, *, sigma2: Optional[float] = None,
-                    max_draws: int = 500, seed: int = 0) -> float:
-    """Mean unbiased RBF-MMD^2 over unordered member pairs for ONE event.
-
-    ``samples`` is ``[K, S, D]``. Non-parametric like :func:`knn_kl` but kernel-based: it needs no
-    density estimate and no nearest-neighbour search, and it degrades gracefully in higher D.
-    ``sigma2`` defaults to the median heuristic on this event's POOLED draws; pass a fixed global
-    bandwidth to keep the statistic comparable across events of very different posterior width
-    (a per-event bandwidth partly normalises width away, and width disagreement IS signal).
-
-    MMD^2 is O(S^2) per pair, so draws are subsampled to ``max_draws``.
-    """
-    from .ood import _rbf_mmd2
-    x = np.asarray(samples, dtype=np.float64)
-    k, s, _d = x.shape
-    if k < 2:
-        return 0.0
-    if s > max_draws:
-        idx = np.random.default_rng(seed).choice(s, max_draws, replace=False)
-        x = x[:, idx, :]
-    if sigma2 is None:
-        sigma2 = median_heuristic_sigma2(x.reshape(-1, x.shape[-1]), seed=seed)
-    vals = [_rbf_mmd2(x[i], x[j], sigma2) for i in range(k) for j in range(i + 1, k)]
-    vals = [v for v in vals if np.isfinite(v)]
-    return float(np.mean(vals)) if vals else float("nan")

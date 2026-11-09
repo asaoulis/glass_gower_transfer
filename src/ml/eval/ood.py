@@ -321,24 +321,3 @@ class OODReference:
                 except Exception as e:
                     dataset["cond_c2st_error"] = repr(e)
         return {"per_event": per_event, "dataset": dataset}
-
-
-def combine_pvalues_across_models(pvals: Sequence[np.ndarray], method: str = "mean") -> np.ndarray:
-    """Aggregate per-event p-values from several models event-wise (mean, median or fisher)."""
-    P = np.stack([np.asarray(p, dtype=np.float64) for p in pvals], axis=0)
-    if method == "mean":
-        return P.mean(axis=0)
-    if method == "median":
-        return np.median(P, axis=0)
-    if method == "fisher":
-        from scipy.stats import chi2
-        stat = -2.0 * np.log(np.clip(P, 1e-300, 1.0)).sum(axis=0)
-        return chi2.sf(stat, df=2 * P.shape[0])
-    raise ValueError(method)
-
-
-def null_uniformity(pvals: np.ndarray) -> Dict[str, float]:
-    """KS distance of p-values from U[0,1]."""
-    from scipy.stats import kstest
-    ks = kstest(np.asarray(pvals, dtype=np.float64), "uniform")
-    return {"ks_stat": float(ks.statistic), "ks_pvalue": float(ks.pvalue)}
