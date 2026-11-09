@@ -28,7 +28,6 @@ PAIRS = [(i, j) for i in range(NB) for j in range(i + 1, NB)]
 R1_NAMES = [f"s{t}/m3x3/b{i+1}b{j+1}b{l+1}" for t in SCALES_R1 for (i, j, l) in TRIPLES]
 EXT_NAMES = ([f"m2/b{i+1}" for i in range(NB)] + [f"x2/b{i+1}b{j+1}" for i, j in PAIRS]
              + [f"m3x3/b{i+1}b{j+1}b{l+1}" for i, j, l in TRIPLES])
-R2_INDEX = [k for k, (i, j, l) in enumerate(TRIPLES) if i < j < l]          # distinct-bin triples within one scale
 MASK_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "config", "hos_assets",
                          "kids_patch_mask_frac_nside512.npz")
 FOOT_COUNTS = {"north": 42904, "south": 47602}

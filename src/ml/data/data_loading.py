@@ -70,11 +70,6 @@ def load_cosmo_params(
 
     return arr, cosmo_params
 
-def list_patches(file_path: str, map_type: str = "E") -> List[str]:
-    with h5py.File(file_path, "r") as f:
-        base = f["pixelised_results"][map_type]
-        return sorted(list(base.keys()))
-
 def unpack_data(
     file_path: str,
     nested_keys: Dict[str, Tuple[str, ...]],

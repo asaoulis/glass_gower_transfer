@@ -4,14 +4,6 @@ The `preset` cosmo scaler maps each parameter into [0, 1] with these boxes so GL
 share one scaled space.
 """
 COSMO_PARAM_PRESET_MINMAX = {
-    'omega_m': (0.1, 0.5),
-    'sigma_8': (0.6, 1.0),
-    'h0': (0.6, 0.8),
-    'n_s': (0.9, 1.0),
-    'omega_b': (0.04, 0.06)
-}
-
-COSMO_PARAM_PRESET_MINMAX = {
      'omega_m': (0.1232301212, 0.4967720335),
       'sigma_8': (0.4197701053, 1.28618999), 
       'w0': (-1.00973808, -0.3391160133), 

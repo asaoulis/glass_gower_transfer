@@ -79,10 +79,6 @@ def _split_item(item: Any) -> tuple[Any, Any]:
 	return item[0], item[1]
 
 
-def _is_data_like(x: Any) -> bool:
-	return isinstance(x, Mapping) or torch.is_tensor(x)
-
-
 def _is_theta_like(x: Any) -> bool:
 	return torch.is_tensor(x) and x.ndim in {1, 2}
 
@@ -450,15 +446,3 @@ def compute_s8(samples: np.ndarray, omega_m_idx: int = 0, sigma8_idx: int = 1) -
 	omega_m = samples[..., omega_m_idx]
 	sigma8 = samples[..., sigma8_idx]
 	return sigma8 * np.sqrt(omega_m / 0.3)
-
-
-def augment_with_s8(samples: np.ndarray, omega_m_idx: int = 0, sigma8_idx: int = 1) -> np.ndarray:
-	"""Insert S8 as a new column after Omega_m.
-
-	Input:  (N, D) or (N, B, D)
-	Output: (N, D+1) or (N, B, D+1)
-	"""
-	s8 = compute_s8(samples, omega_m_idx=omega_m_idx, sigma8_idx=sigma8_idx)
-	# Promote s8 to have a trailing singleton dim for concatenation.
-	s8 = np.expand_dims(s8, axis=-1)
-	return np.concatenate([samples[..., :1], s8, samples[..., 1:]], axis=-1)

@@ -24,16 +24,6 @@ experiments.update(kids_legacy_bgp_experiments)
 experiments.update(kids_legacy_vdq_experiments)
 experiments.update(kids_legacy_hos_experiments)
 
-def retrieve_first_list_from_experiments(experiments):
-    list_key = None
-    list_values = None
-    for key, value in experiments.items():
-        if isinstance(value, list):
-            list_key = key
-            list_values = value
-            break
-    return list_key, list_values
-
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage: python train.py <experiment_name>")
