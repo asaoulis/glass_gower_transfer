@@ -1,3 +1,9 @@
+"""Choose which cosmologies go to train, validation and test.
+
+split_by_cosmology keeps all files of a cosmology in one split and honours the fixed test set.
+_select_trainval_cosmos caps the train pool (random, k-center or stratified). collect_paths
+expands the glob patterns.
+"""
 import glob
 import os
 import random
@@ -264,9 +270,8 @@ def _filter_paths_by_shape_noise_idx(paths: List[str], test_shape_noise_idx: Opt
         return paths
 
     if len(test_shape_noise_idx) == 2:
-        # [rot, shape] with each slot an int OR a list of ints (e.g. [0, [0, 1]] keeps
-        # all out<X> at rot0 with trailing noise index 0 or 1). Int slots behave exactly
-        # as before (singleton match).
+        # [rot, shape], each slot an int or a list of ints: [0, [0, 1]] keeps every out<X> at
+        # rot0 with trailing noise index 0 or 1.
         def _as_set(sel):
             vals = sel if isinstance(sel, (list, tuple, set)) else [sel]
             return {int(v) for v in vals}
@@ -320,10 +325,8 @@ def _resolve_forced_test_cosmos(
 ) -> Optional[List[int]]:
     """Resolve the opt-in fixed test set to the on-disk cosmologies to force into test.
 
-    Returns a sorted list of cosmology ids to force into the test split, or ``None`` to
-    use the normal split. ``None`` is returned when the feature is off, when none of the
-    locked ids are present on disk, or when forcing them would leave train/val empty
-    (graceful fallback — keeps small datasets, e.g. the smoke mini-dataset, working).
+    Returns a sorted list of cosmology ids, or None for the normal split: when the feature is
+    off, when no locked id is on disk, or when forcing them would leave train/val empty.
     """
     if fixed_test_sim_ids is None:
         return None
@@ -474,10 +477,8 @@ def split_by_cosmology(
     train_cosmos = set(trainval_cosmos[:n_train])
     val_cosmos = set(trainval_cosmos[n_train:n_train + n_val])
 
-    # Eval-time sub-selection: trim the TEST set to the first N cosmologies by sorted sim_id,
-    # AFTER train/val are fully resolved. Deliberately applied last so the trainval pool — and
-    # therefore the fitted scalers — stay byte-identical to training regardless of N. (Contrast
-    # with shrinking fixed_test_sim_ids, which would return cosmologies to the trainval pool.)
+    # Trim the test set to the first N cosmologies by sorted sim_id after train/val are resolved,
+    # so the trainval pool and its fitted scalers do not depend on N.
     if N_test_cosmologies:
         n_keep = int(N_test_cosmologies)
         if n_keep <= 0:
