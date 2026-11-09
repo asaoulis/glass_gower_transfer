@@ -1,18 +1,7 @@
-"""Pre-activation ResNet map encoder (counts-extended task, 2026-07-16).
+"""Pre-activation ResNet map encoder (encoder_type 'preact_resnet'), the production map encoder.
 
-A deliberately boring, well-behaved deep CNN for the weak-lensing map patches, replacing the
-diffusion-style UNet encoder whose zero-init residual blocks + scale-shift GroupNorm were measured
-degenerating into a rank-1, amplitude-exploding representation under VMIM gradient starvation
-(task diagnosis.md). Design follows the cosmic-shear CNN literature (Ribli 2019 / Fluri 2019
-depth) with modern residual practice (He 2016 identity mappings):
-
-  - pre-activation residual blocks (GN -> GELU -> 3x3 conv, x2; identity skip),
-  - standard (He) init everywhere — residual branches are ALIVE at init by construction,
-  - GroupNorm (batch-statistics-free: N/S patches in a batch are physically correlated),
-  - symmetric stride-2 downsampling only (flip/rotation augmentation safety — user constraint),
-  - GeM/avg pooling head via the repo's PoolProj.
-
-Interface matches UNetO3StyleEncoder's plain call path: forward(x: [B,C,H,W]) -> [B, num_outputs].
+Plain PreActResNet blocks with an optional anti-aliased BlurPool downsample and a GeM/avg PoolProj
+head. Input (B, channels, H, W), output (B, num_outputs).
 """
 from __future__ import annotations
 
@@ -53,8 +42,6 @@ class PreActBlock(nn.Module):
     def __init__(self, cin: int, cout: int, stride: int = 1, blur: bool = False):
         super().__init__()
         self.norm1 = _gn(cin)
-        # anti-aliased variant (counts-ext phase 4, R10): stride-1 conv + fixed Tri-3 blur
-        # downsample on BOTH the residual and shortcut paths, replacing the stride-2 conv
         self.blur = bool(blur) and stride == 2
         conv_stride = 1 if self.blur else stride
         self.conv1 = nn.Conv2d(cin, cout, 3, stride=conv_stride, padding=1, bias=False)
@@ -99,9 +86,6 @@ class PreActResNetEncoder(nn.Module):
         super().__init__()
         stage_channels = tuple(stage_channels)
         blur_stages = tuple(blur_stages)
-        # input_highpass (counts-ext phase 4, E6/R6): feed [x, x - blur5(x)] — an explicit
-        # small-scale channel per tomo bin handed past the CNN's spectral bias. Fixed symmetric
-        # 5x5 Gaussian (sigma~1px) -> flip/rot augmentation safe; doubles the stem's input.
         self.input_highpass = bool(input_highpass)
         if self.input_highpass:
             g = torch.tensor([1.0, 4.0, 6.0, 4.0, 1.0])
@@ -133,9 +117,6 @@ class PreActResNetEncoder(nn.Module):
             in_channels=cin,
             proj_dim=cin,
         )
-        # penultimate-stage tap (counts-ext phase 4, R2/ECAPA-MFA): pool the last-but-one
-        # stage's (higher-resolution) features with the same pool set and concat before fc.
-        # self.stages stays an nn.Sequential so existing checkpoint keys are unchanged.
         self.tap_penultimate = bool(tap_penultimate) and len(stage_channels) >= 2
         fc_in = self.poolproj.proj_dim
         if self.tap_penultimate:
