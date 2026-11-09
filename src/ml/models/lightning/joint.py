@@ -1,3 +1,4 @@
+"""JointVMIMNLELightningModule: trains the NPE (posterior) and NLE (likelihood) heads together on one encoder."""
 from __future__ import annotations
 
 import numpy as np
