@@ -33,24 +33,6 @@ experiments.update(kids_legacy_hos_experiments)
 # A bare `python eval.py` runs DEFAULT_MODE.
 DEFAULT_MODE = "list"
 
-_ARCHIVED_EXPERIMENTS = [
-    # PRODUCTION eval: main-variate Gower NPE ens9 (all 5 repeats) + the GLASS sub-variate
-    # encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
-    # ensemble_evaluation_results_*.json + the P0 posterior_samples.npz / ensemble_posterior_samples_*.npz.
-    "gower_npe_finetune_nla_m_z8",
-    "glass_encoder_finetune_nla_z_z8",
-    "glass_encoder_finetune_nla_z8",
-    "glass_encoder_finetune_no_vd_z8",
-    # counts-normalisation rerun (M3e): main-variate Gower NPE ens9 (all 5 repeats).
-    "gower_npe_finetune_nla_m_counts_z8",
-    # === NO-VD production suite (the current MAIN analysis variate) =============================
-    # M3e: main-variate Gower NPE ens9. M5a: the two GLASS sub-variate encoder-finetunes.
-    "gower_npe_finetune_nla_m_novd_z8",
-    "glass_encoder_finetune_nla_novd_z8",
-    "glass_encoder_finetune_nla_z_novd_z8",
-]
-
-
 # evaluate_best_checkpoint skips runs with no checkpoint, so rows may be listed before their models exist.
 DEFAULT_EXPERIMENTS = [
     # theta differs across these rows (8 / 9 / 9 parameters): compare FoM(omega_m, sigma_8) and
@@ -149,9 +131,9 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Evaluate trained checkpoints.")
     parser.add_argument("--mode",
-                        choices=["list", "misspec", "ebdiff", "summaries", "nle-external", "recover-scalers",
+                        choices=["list", "misspec", "summaries", "nle-external", "recover-scalers",
                                  "observe-build", "observe-strip", "obs-reference", "obs-score", "pool",
-                                 "catalogue-digest", "nle-loglik", "hos-bake", "hos-train"],
+                                 "nle-loglik", "hos-bake", "hos-train"],
                         default=None,
                         help=f"evaluation mode (default: {DEFAULT_MODE})")
     parser.add_argument("--experiments", nargs="+", default=None,
@@ -173,8 +155,6 @@ def main(argv=None):
                              "(whole cosmologies, sorted by sim_id)")
     parser.add_argument("--test-shape-noise-idx", default=None,
                         help="misspec mode: 'all' disables the per-cosmology augmentation subsample.")
-    parser.add_argument("--eb-variant", default=None,
-                        help="E/B group tag for --mode ebdiff (omit for bare-E pre-baked stores)")
     parser.add_argument("--test-id-source", choices=["heldout", "shared", "all"], default="heldout",
                         help="misspec mode: evaluate each variate on 'heldout' (default) or 'shared' test cosmologies.")
     parser.add_argument("--variate-glob", nargs="+", default=None, metavar="NAME=GLOB",
@@ -201,9 +181,6 @@ def main(argv=None):
     parser.add_argument("--pool-check", action="store_true",
                         help="--mode pool: run the gates (pool-of-one identity + reproduction of "
                              "the production metrics) instead of producing a pooled posterior.")
-    parser.add_argument("--pool-label", default=None,
-                        help="--mode pool: output name under checkpoints/pooled/ (default: the arm "
-                             "name, else the shared prefix of the member experiment names).")
     parser.add_argument("--prior-mode", default="gower",
                         choices=["gower", "kids_s8_analytic", "LCDM_fixed_w0"],
                         help="--mode nle-external: an NLE posterior is only defined WITH its prior, "
@@ -231,16 +208,12 @@ def main(argv=None):
                              "through the external path.")
     parser.add_argument("--max-events", type=int, default=200,
                         help="recover-scalers mode: number of events used to fit the input frame.")
-    parser.add_argument("--recover-steps", type=int, default=40,
-                        help="--mode recover-scalers: LBFGS max_iter.")
     parser.add_argument("--members", type=int, nargs="+", default=None,
                         help="--mode recover-scalers: ensemble member indices (default: all). Each "
                              "member had its OWN stochastic scaler fit, so each needs its own frame.")
     parser.add_argument("--verify-frames", action="store_true",
                         help="--mode recover-scalers: do NOT fit; verify every member's persisted frame on "
                              "held-out test events through the sampler's embedding path, on this node")
-    parser.add_argument("--no-save", action="store_true",
-                        help="--mode recover-scalers: fit and report but do not write scalers.pt")
     parser.add_argument("--require-member-frames", action="store_true",
                         help="nle-external mode: refuse to score unless every ensemble member has a "
                              "persisted input frame.")
@@ -260,8 +233,6 @@ def main(argv=None):
     parser.add_argument("--ppc-summaries-only", action="store_true",
                         help="--mode nle-loglik: no likelihoods; write the arm's summaries t(x) for the observation "
                              "and EVERY theta-store file (summary-space PPC replicates)")
-    parser.add_argument("--ppc-phi-grid-events", type=int, default=301,
-                        help="--mode nle-loglik: events (obs first, then null) scored on the phi grid")
     parser.add_argument("--ppc-threads", type=int, default=None,
                         help="--mode nle-loglik: torch threads (and cosmo_dict reader threads)")
     parser.add_argument("--external-dry-run", action="store_true",
@@ -275,18 +246,12 @@ def main(argv=None):
     parser.add_argument("--max-trainval-cosmos", type=int, default=None,
                         help="summaries mode: override config.max_trainval_cosmos (train-cloud size in "
                              "cosmologies; checkpoint match string is NOT affected)")
-    parser.add_argument("--no-ood", action="store_true",
-                        help="summaries mode: only dump summaries, skip the in-job OOD scoring")
     parser.add_argument("--ood-k", type=int, default=10, help="summaries mode: kNN k for the OOD scores")
-    parser.add_argument("--ood-n-perm", type=int, default=200,
-                        help="summaries mode: permutations for the MMD two-sample p-value")
     # --mode hos-bake: per-mock HOS sidecars of a baked store, written under {base_path}/checkpoints/hos_sidecars/<store>/.
     parser.add_argument("--hos-workers", type=int, default=30, help="--mode hos-bake: worker processes")
     parser.add_argument("--hos-shard", type=int, default=None, help="--mode hos-bake: bake only this shard index")
     parser.add_argument("--hos-nshards", type=int, default=20, help="--mode hos-bake: shard count (sim_id %% n)")
     parser.add_argument("--hos-limit", type=int, default=None, help="--mode hos-bake: first N files only (test)")
-    parser.add_argument("--hos-no-ext", action="store_true",
-                        help="--mode hos-bake: R1 vector only (skip the hos_ext superset)")
     parser.add_argument("--hos-variant", choices=["r1ext", "x"], default="r1ext",
                         help="--mode hos-bake: 'x' also bakes the hos_x superset (src/ml/data/hos_x.py) into "
                              "hos_sidecars/<store>_hosx/ (the default r1ext bake is unchanged)")
@@ -309,9 +274,6 @@ def main(argv=None):
     if mode == "observe-build":
         from src.observation.cluster_modes import run_observe_build
         return run_observe_build(args)
-    if mode == "catalogue-digest":
-        from src.observation.cluster_modes import run_catalogue_digest
-        return run_catalogue_digest(args)
     if mode == "observe-strip":
         from src.observation.cluster_modes import run_obs_strip
         return run_obs_strip(args)
@@ -331,7 +293,7 @@ def main(argv=None):
                                args.data_store + ("_hosx" if args.hos_variant == "x" else ""))
         counts = run_bake(f"{_GPU5}/{args.data_store}/output_*.h5", out_dir, workers=args.hos_workers,
                           shard=args.hos_shard, nshards=args.hos_nshards, limit=args.hos_limit,
-                          ext=not args.hos_no_ext, log=lambda m: print(m, flush=True), variant=args.hos_variant)
+                          log=lambda m: print(m, flush=True), variant=args.hos_variant)
         return 0 if counts["bad"] == 0 else 1
     if mode == "hos-train":
         from config.default import get_default_config as _default_config
@@ -350,20 +312,7 @@ def main(argv=None):
     if mode == "pool":
         from src.ml.eval.pool_mode import run_pool_mode
         return run_pool_mode(args)
-    if mode == "ebdiff":
-        # --mode ebdiff: difference-map forensics on the paired b_g stores (no model).
-        from src.ml.eval.ebdiff import run_ebdiff_analysis
-        from config.default import get_default_config
-
-        out_root = os.path.join(get_default_config().base_path, "checkpoints",
-                                "ebdiff_analysis", args.variates or "unknown")
-        run_ebdiff_analysis(
-            variate_set=args.variates,
-            eb_variant=args.eb_variant,
-            max_files=args.max_test_files or 120,
-            out_root=out_root,
-        )
-    elif mode == "summaries":
+    if mode == "summaries":
         # --mode summaries: dump the compressor's z for train, held-out and each variate, then score
         # them (src/ml/eval/ood.py).
         from src.ml.eval.summaries import run_summary_extraction
@@ -390,9 +339,7 @@ def main(argv=None):
             test_id_source=args.test_id_source,
             max_train_files=args.max_train_files,
             data_patterns_override=data_patterns,
-            run_ood=not args.no_ood,
             ood_k=args.ood_k,
-            ood_n_perm=args.ood_n_perm,
             base_path_override=args.base_path,
             fixed_test_ids_override=args.fixed_test_ids,
             max_trainval_cosmos_override=args.max_trainval_cosmos,
@@ -455,7 +402,6 @@ def main(argv=None):
                     n_threads=args.ppc_threads,
                     n_nodes=args.ppc_nodes,
                     phi_grid=args.ppc_phi_grid,
-                    phi_grid_events=args.ppc_phi_grid_events,
                     dry_run=args.external_dry_run,
                     summaries_only=args.ppc_summaries_only,
                 )
@@ -478,9 +424,7 @@ def main(argv=None):
                     exp, r,
                     members=args.members,
                     max_events=args.max_events,
-                    steps=args.recover_steps,
                     batch_size=args.emb_batch_size,
-                    save=not args.no_save,
                 )
         return 0
     elif mode == "misspec":

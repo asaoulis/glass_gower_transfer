@@ -116,8 +116,6 @@ def _resolve_member_npz(base_path: str, experiment: str, match: str, *,
 
 
 def _label(args, experiments: Sequence[str]) -> str:
-    if getattr(args, "pool_label", None):
-        return args.pool_label
     if getattr(args, "pool_arm", None):
         return args.pool_arm
     # longest common prefix of the member names, trimmed to a clean token
