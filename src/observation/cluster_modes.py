@@ -1,25 +1,8 @@
-"""Cluster-side entry points for the unblinding front end, dispatched from ``eval.py --mode ...``.
+"""Cluster-side entry points for the unblinding front end, dispatched from eval.py --mode.
 
-Why they live behind ``eval.py``: the gatekeeper's ``eval-submit`` / ``eval-cpu-submit`` pass
-``--args`` tokens straight through, so every cluster-side need becomes an ``eval.py`` mode with
-BARE NAMES mapped to paths in code (token charset ``[A-Za-z0-9][A-Za-z0-9_.-]*`` or
-``--[a-z-]*``, no ``/ * =``). No gatekeeper change, no bootstrap re-run.
-
-Roots (overridable by env for LOCAL tests):
-  UNBLIND_DATASETS_ROOT   default /share/gpu5/asaoulis/transfer_datasets   (baked obs stores go here)
-  UNBLIND_DATASETS_ROOT2  default /share/gpu4/asaoulis/transfer_datasets   (saved sim catalogues)
-  UNBLIND_MODELS_ROOT     default config.base_path (/share/gpu5/asaoulis/transfer_models)
-
-Mode ``observe-build``
-    --catalogue-store NAME [--catalogue-root gpu4|gpu5] (--catalogue-index N | --catalogue-file BASENAME)
-    --obs-label L --obs-store NAME [--bake-arms sc8a1 a0_tagged] [--variants production|full]
-    [--fidelity] [--exact-rng] [--jitter-floor] [--rng-seed N] [--column-map BASENAME] [--kind auto|sim|h5|fits]
-  Builds  MODELS_ROOT/checkpoints/unblinding/<obs-store>/observation_<L>.h5 (+ provenance, fidelity JSON;
-          under checkpoints/ so `run_remote.py fetch --exp unblinding --rel <obs-store>` can pull it) and
-  bakes   DATASETS_ROOT/<obs-store>_<L>_<arm>/output_<id>_out0_rot0_0.h5 for each arm, so a sampling job
-  can use ``--data-store <obs-store>_<L>_<arm> --data-tag <L>`` (scripts/sample_observation.py).
-  With --fidelity the sibling ``output_*.h5`` of a SIM catalogue (same store, same block name) is the
-  reference and the report is written next to the observation.
+The launcher passes only bare names, mapped to paths here under UNBLIND_DATASETS_ROOT (gpu5),
+UNBLIND_DATASETS_ROOT2 (gpu4) and UNBLIND_MODELS_ROOT. observe-build writes
+checkpoints/unblinding/<obs-store>/observation_<L>.h5 and bakes <obs-store>_<L>_<arm> for each arm.
 """
 from __future__ import annotations
 
@@ -55,8 +38,7 @@ def models_root() -> str:
 
 
 def unblinding_root() -> Path:
-    """MODELS_ROOT/checkpoints/unblinding -- the fetchable home of every non-blind unblinding
-    artefact (`fetch --exp unblinding --rel <subdir>`)."""
+    """MODELS_ROOT/checkpoints/unblinding, the fetchable home of every non-blind unblinding artefact."""
     return Path(models_root()) / "checkpoints" / "unblinding"
 
 
@@ -93,20 +75,13 @@ def add_observe_args(parser) -> None:
 
 
 
-# ---------------------------------------------------------------------------------------------
-# observe-strip: a CLEAN in-distribution control -- one held-out flagship mock, stripped of its
-# truth, dropped into an observation store. GATE 0b's catalogue (glass_paired_bg1p0_cats, a
-# pre-BGP GLASS mock at fixed b_g) is a legitimate known-OOD control for the Gower nla_m BGP
-# cloud; Tier 1 / GATE 3b / GATE 4 also need a mock-as-real that IS in distribution.
-# ---------------------------------------------------------------------------------------------
 def add_strip_args(parser) -> None:
     g = parser.add_argument_group("observe-strip")
     g.add_argument("--strip-store", default=None, help="bare BAKED store (gpu5) to take the mock from")
     g.add_argument("--strip-root", default="gpu5", choices=["gpu4", "gpu5"])
     g.add_argument("--strip-index", type=int, default=None,
-                   help="index into the SORTED list of candidate files (fixed-lock test cosmologies only); "
-                        "default: a random draw made INSIDE the job and written only to the truthkey (an "
-                        "explicit index is a name anyone can resolve to a Gower CSV row)")
+                   help="Index into the sorted list of candidate files (fixed-lock test cosmologies only). "
+                        "The default is a random draw made inside the job and written only to the truthkey.")
     g.add_argument("--strip-lock", default="gower_test_ids",
                    help="fixed test lock (config/fixed_test_sets/<name>.json) restricting the candidates")
     g.add_argument("--strip-arm", default="sc8a1", help="which arm store the baked mock corresponds to")
@@ -116,10 +91,10 @@ def add_strip_args(parser) -> None:
 
 
 def run_obs_strip(args) -> int:
-    """Copy one held-out mock into ``<obs-store>_<label>_<arm>/output_<obs_id>_out0_rot0_0.h5``
-    with an EMPTY ``cosmo_dict`` and an ``observation/`` provenance group; the source basename,
-    sim id and the stripped cosmo_dict go to the ``_truthkey/`` sidecar only. Stdout never names
-    the chosen file."""
+    """Copy one held-out mock, an in-distribution control, into
+    <obs-store>_<label>_<arm>/output_<obs_id>_out0_rot0_0.h5 with an empty cosmo_dict and an
+    observation/ provenance group. Its identity goes to the _truthkey/ sidecar only, and stdout
+    never names the chosen file."""
     import h5py
     from src.observation.bake import baked_filename, obs_id_for
     from src.observation.build import _git_rev, bb_bandpowers_from_cls
@@ -278,23 +253,11 @@ BLIND_SUBDIR = "unblinding_blind"     # under checkpoints/<exp>/ -- denied to th
 
 
 def _member_summaries(dirpath: str, match: str) -> list:
-    """Every summaries file for one repeat in ``dirpath``, REPRESENTATIVE FIRST (member 0).
+    """Every summaries file for one repeat in `dirpath`, the representative (member 0) first.
 
-    Single-encoder packs write the bare ``summaries_<match>.npz``; ENSEMBLE packs write
-    ``summaries_<match>_m<j>.npz`` (``src/ml/eval/summaries.py:218``) -- in the variate dir AND in
-    ``_train/`` / ``_idtest/``. Resolving that in two places is what produced DECISIONS X-1 twice:
-    once in the observation reading (fixed in 43b4c77) and once, still, in the mean-p null, which
-    raised FileNotFoundError, was caught, and silently dropped the whole meanp axis for the ens9
-    2-pt pack that Stage 1 of the real unblinding uses. ONE function, called by both sides, cannot
-    diverge.
-
-    User decision (2026-09-21): for the kNN MEAN-P axis, member 0 is the repeat's representative --
-    keeping mean-p a 5-encoder statistic, which is how the Tier-2 tables were calibrated -- and the
-    member spread is reported alongside. The KL axis uses ALL members and does not come through
-    here. The null must read the SAME member-0 file as the reading, or the statistic is
-    recalibrated against a different encoder.
-
-    Sorted NUMERICALLY on <j> (plain lexicographic order would put ``_m10`` before ``_m2``).
+    A single-encoder pack writes summaries_<match>.npz, an ensemble pack summaries_<match>_m<j>.npz,
+    sorted numerically on j. The observation reading and the mean-p null both resolve through
+    here, so they use the same member-0 file. The KL axis uses all members and does not.
     """
     bare = os.path.join(dirpath, f"summaries_{match}.npz")
     if os.path.exists(bare):
@@ -316,8 +279,7 @@ def _representative_summaries(dirpath: str, match: str):
 def _idtest_meanp_null(sdir: str, matches, *, k: int = 10) -> np.ndarray:
     """Null distribution of the encoder-averaged kNN p over the common ID held-out files.
 
-    Resolved through ``_representative_summaries`` so the null uses the SAME member-0 file per
-    repeat as the observation reading (DECISIONS X-1; see that helper's docstring).
+    Resolved through _representative_summaries, as the observation reading is.
     """
     from src.ml.eval.ood import TrainWhitener, empirical_pvalues, knn_scores
     per = {}
@@ -338,18 +300,12 @@ def _idtest_meanp_null(sdir: str, matches, *, k: int = 10) -> np.ndarray:
 
 
 def run_obs_score(args) -> int:
-    """Score ONE observation store through both Tier-2 detectors with the 5-encoder NPE pack:
+    """Score one observation store through both Tier-2 detectors with the 5-encoder NPE pack.
 
-      (i)  summary-space kNN: ``summaries.run_summary_extraction`` with the observation as an ad-hoc
-           variate (``test_id_source='all'``) -> per-encoder knn p vs that encoder's ID null;
-      (ii) cross-encoder KL: ``misspec.run_misspecification_eval`` over the 5 repeats (its
-           test-id pool falls back to ALL on-disk ids since obs ids 9001+ are in no lock) ->
-           misspec_repeat_disagreement (kl_score).
-
-    Every per-observation intermediate (summary vectors z, posterior samples/moments) is an
-    UNBLINDING ARTEFACT and is written under ``checkpoints/<base>/unblinding_blind/<label>/``.
-    Only SCALARS (knn score/p per encoder, mean-p raw + recalibrated against the ID null, kl) go
-    to ``MODELS_ROOT/unblinding/<store>/obs_score_<label>.json``.
+    (i) summary-space kNN p per encoder (run_summary_extraction, test_id_source='all'), and
+    (ii) the cross-encoder KL (run_misspecification_eval over the repeats). Per-observation
+    intermediates go under checkpoints/<base>/unblinding_blind/<label>/, and only scalars to
+    unblinding/<store>/obs_score_<label>.json.
     """
     import json
     import numpy as np
@@ -374,19 +330,10 @@ def run_obs_score(args) -> int:
         run_misspecification_eval(base, repeat_indices=reps, variates=variate, num_samples=args.score_num_samples,
                                   out_subdir=os.path.join(blind_root, "misspec"), test_id_source="heldout")
 
-    # ---- scalars only -------------------------------------------------------------------------
-    out = {"label": label, "store": store, "base": base, "repeats": reps, "per_encoder": {}, "notes": []}
+    # Scalars only from here.
+    out ={"label": label, "store": store, "base": base, "repeats": reps, "per_encoder": {}, "notes": []}
     sdir = os.path.join(ckpt_root, blind_root, "summaries")
     pv = []
-    # Member resolution lives in _member_summaries (representative FIRST), shared with the
-    # _idtest_meanp_null recalibration so the reading and its null cannot pick different encoders
-    # (DECISIONS.md X-1 -- the same bug, found twice).
-    #
-    # User decision 2026-09-18, scoped 2026-09-21: ensemble members are so correlated that
-    # combining them does not improve AUROC, so take ONE member as the repeat's representative
-    # (keeping the mean-p combiner a 5-encoder statistic, matching how the Tier-2 tables were
-    # calibrated) and REPORT the member spread so the protocol can flag a big spread or an
-    # outlier. This applies to the kNN MEAN-P axis only; the KL axis uses ALL members.
     MEMBER_SPREAD_FLAG = 0.25          # ptp of ood_knn_p across members worth surfacing
     out["member_spread"] = {}
     for m in matches:
@@ -410,18 +357,13 @@ def run_obs_score(args) -> int:
                         "members; the reading uses member 0 — check for an outlier encoder")
     if pv:
         out["meanp_raw"] = float(np.mean(pv))
-        # Recalibrate the mean-p statistic against the ID-test null of the same encoders. The
-        # _idtest npz carries the held-out summary vectors z (not p-values), so the per-event
-        # kNN p of every ID event is rebuilt here exactly as OODReference.fit did it (whitener on
-        # the train cloud, kNN k=10 vs the train cloud, empirical p vs the ID null itself) and
-        # averaged over encoders per test file (the fixed lock makes the ID split common).
         try:
             null_meanp = _idtest_meanp_null(sdir, matches, k=int(args.score_knn_k))
-        except Exception as ex:  # recalibration is a bonus; the raw mean-p is the record
+        except Exception as ex:
             null_meanp = None
             out["notes"].append(f"mean-p recalibration unavailable: {type(ex).__name__}: {ex}")
         if null_meanp is not None and null_meanp.size:
-            # LOW mean-p = OOD, so the recalibrated p is the LEFT tail
+            # Low mean-p is OOD, so the recalibrated p is the left tail.
             out["meanp_recalibrated"] = float(empirical_pvalues(-null_meanp, np.array([-out["meanp_raw"]]))[0])
             out["n_idtest_null"] = int(len(null_meanp))
     mdir = os.path.join(ckpt_root, blind_root, "misspec", f"obs_{label}")
@@ -429,11 +371,6 @@ def run_obs_score(args) -> int:
         d = np.load(f)
         if d["mu"].shape[0] == len(reps):
             out["kl"] = float(d["kl_score"][0])
-            # Every parameter-subset variant of the SAME cross-encoder disagreement, as scalars.
-            # Each is a disagreement MAGNITUDE, not a posterior location, so it carries the same
-            # blind status the full KL already has (DECISIONS T2-4). Emitting them all here means
-            # a later `--kl-params` switch never requires re-running a real-data observation
-            # (DECISIONS T2-8). Purely additive: a failure never breaks the reading.
             try:
                 from src.ml.eval.kl_subsets import (ALL_SCORES, PARAM_BLOCKS, kl_per_dim,
                                                     load_variate, subset_scores)
@@ -446,17 +383,13 @@ def run_obs_score(args) -> int:
                     v = sc[sub]
                     out[f"kl_{sub}"] = float(v[0]) if np.isfinite(v[0]) else None
                 out["kl_per_dim"] = {p: float(x) for p, x in zip(names, rec["per_dim"][0])}
-                # The statistic the Tier-2 tables are built with. `kl` above stays the FULL
-                # diagonal value so earlier obs_score jsons remain comparable; `kl_adopted` is
-                # the one a bias-table lookup must use, and `kl_params` names it so a reading
-                # can never be matched against a differently-built table (DECISIONS T2-8).
                 from src.observation.checks.tier2 import adopted_kl_for
                 adopted = adopted_kl_for(base)        # pack-specific: 2-pt uses the full KL
                 out["kl_params"] = adopted
                 out["kl_adopted"] = out.get(f"kl_{adopted}")
                 out["kl_param_blocks"] = {b: sum(out["kl_per_dim"][p] for p in ps if p in out["kl_per_dim"])
                                           for b, ps in PARAM_BLOCKS.items()}
-            except Exception as ex:      # a diagnostic must never take the reading down
+            except Exception as ex:
                 out["notes"].append(f"subset KLs unavailable: {type(ex).__name__}: {ex}")
     out["notes"].append("posterior moments/samples and summary vectors live under "
                         f"checkpoints/{base}/{blind_root}/ (BLIND); this file carries scalars only")
