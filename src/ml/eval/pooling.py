@@ -1,52 +1,9 @@
-"""POOLED posteriors: the equal-weight mixture over repeats, as a first-class artifact.
+"""Pooled posteriors: the equal-weight mixture q_pool(theta | x) = (1/R) sum_r q_r(theta | x).
 
-WHAT THIS IS
-------------
-Every posterior this pipeline writes is per repeat: seed r0's draws, then r1's, then r2's. The
-object we actually deploy — and the object the unblinding protocol works with — is the seed
-ensemble
-
-    q_pool(theta | x) = (1/R) sum_r q_r(theta | x)
-
-whose sample set is literally the CONCATENATION of the per-repeat draws along the draw axis. This
-module produces that concatenation as a normal posterior-sample npz (same schema as
-`_save_posterior_samples` writes) and scores it with the normal evaluation code, so every existing
-consumer works against it with a path swap.
-
-Two input families, one primitive:
-
-  production/mock   checkpoints/<exp>/ensemble_posterior_samples_<match>.npz
-  observation       checkpoints/<exp>/external/<label>/external_posterior_samples_<prior>_<match>.npz
-
-⚠️ WHY THIS IS NOT `tarp_ensembled.py`
---------------------------------------
-`.claude/runs/.../variate_diagnostics/tarp_ensembled.py` gets the pooled TARP without pooling
-anything, via `f_i(pooled) = mean_r f_i(repeat r)`. That identity is EXACT but SPECIFIC TO TARP —
-`f` is a plain mean of indicators over draws, so it splits across equal-sized blocks. Nothing else
-does: pooled covariance is within-seed PLUS between-seed scatter (so FoM and the credible widths
-need the real draws), and quantiles never split at all. That script is now an INDEPENDENT
-CROSS-CHECK of this path (gate G2), not a substitute for it.
-
-⚠️ `test_log_prob` CANNOT BE POOLED FROM SAMPLES
-------------------------------------------------
-The mixture's density is `logsumexp_r log q_r(theta|x) - log R`, which needs the member FLOWS, not
-their draws. It is written as `null` with a stated reason rather than omitted, so a reader never
-mistakes its absence for "the metric was zero" or "the metric is comparable to the per-repeat one".
-
-⚠️ READ THE DIRECTION
----------------------
-A mixture is BROADER than its members whenever they disagree. If the members are individually
-overconfident the pooled posterior will look better calibrated *by construction* — that is seed
-disagreement being absorbed, not new information. Always report pooled next to the per-repeat
-numbers. `member_of_draw` is persisted precisely so seed disagreement can be measured after the
-fact without redoing the (14 h/repeat) sampling.
-
-⚠️ BLIND PROTOCOL
------------------
-Observation dumps carry NO truth (`theta0s` is all-NaN). Metric computation is gated on finite
-truth, exactly as `nle_external` gates it, and NOTHING here prints a sample statistic when the
-truth is absent — the pooled observation npz is fetched blind and opened only inside the
-unblinding protocol.
+The pooled sample set is the per-repeat draws concatenated along the draw axis, written in the
+_save_posterior_samples schema and scored by the standard evaluation. test_log_prob is not
+poolable from samples and is written as null. Metrics are gated on finite truth, so observation
+dumps print no sample statistic.
 """
 from __future__ import annotations
 
@@ -59,9 +16,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 
-# --------------------------------------------------------------------------------------------
-# loading + alignment
-# --------------------------------------------------------------------------------------------
+# --- loading and alignment ---
 @dataclass
 class Member:
     """One repeat's posterior dump."""
@@ -93,11 +48,8 @@ def load_member(path):
 def _aligned(a: Member, b: Member):
     """Are two members row-aligned? -> (bool, how, detail).
 
-    ⚠️ `test_files` is the PRIMARY key. `theta0s` is the fallback, compared with `equal_nan=True`
-    because OBSERVATION dumps carry an all-NaN truth vector and a plain `array_equal` returns
-    False for NaN == NaN — which would reject every legitimate observation pool. Older production
-    dumps (e.g. `gower_nle_finetune_nla_m_z8_*`, 2026-07-08) carry no `test_files` at all, which is
-    why the fallback has to exist.
+    test_files is the primary key. theta0s is the fallback for dumps without test_files, compared
+    with equal_nan=True because observation dumps carry an all-NaN truth vector.
     """
     if a.n_rows != b.n_rows:
         return False, "n_rows", "%d vs %d" % (a.n_rows, b.n_rows)
@@ -119,23 +71,16 @@ def _git_rev():
         return None
 
 
-# --------------------------------------------------------------------------------------------
-# the primitive
-# --------------------------------------------------------------------------------------------
+# --- pooling ---
 def pool_sample_dumps(member_npzs: Sequence[str], out_path: str, *,
                       draws_per_member: Optional[int] = None,
                       provenance: Optional[dict] = None,
                       rng_seed: int = 0,
                       compress: bool = True):
-    """Concatenate row-aligned posterior dumps along the DRAW axis -> one pooled dump.
+    """Concatenate row-aligned posterior dumps along the draw axis -> one pooled dump.
 
-    Parameters
-    ----------
-    member_npzs : the per-repeat dumps, in the order they should be recorded.
-    draws_per_member : subsample each member to this many draws first. ⚠️ NOT the default.
-        Use it only to (a) equalise members whose draw counts genuinely differ, or (b) keep the
-        pooled file the same size as a member so downstream cost is unchanged — the mixture
-        distribution is identical either way, only the Monte-Carlo noise grows.
+    member_npzs are the per-repeat dumps in recording order. draws_per_member subsamples each
+    member to that many draws first, which leaves the mixture unchanged and adds Monte-Carlo noise.
     Returns the written payload's metadata dict.
     """
     if len(member_npzs) < 2:
@@ -172,9 +117,7 @@ def pool_sample_dumps(member_npzs: Sequence[str], out_path: str, *,
                 raise ValueError("draws_per_member=%d exceeds member %d's %d draws (%s)"
                                  % (draws_per_member, i, m.n_draws, m.path))
 
-    # ⚠️ PREALLOCATE AND FILL, freeing each member as it is copied. `np.concatenate` of a list of
-    # members holds the inputs AND the output at once -- at 3 x 8000 draws over ~2000 rows that is
-    # ~6 GB twice over, and the cluster job dies on a memory limit that the fill loop never hits.
+    # Preallocate and fill, freeing each member as it is copied: np.concatenate holds inputs and output at once.
     total = int(sum(per))
     pooled = np.empty((total, ref.n_rows, ref.samples.shape[2]), dtype=ref.samples.dtype)
     owner = np.empty(total, dtype=np.int8)
@@ -182,13 +125,12 @@ def pool_sample_dumps(member_npzs: Sequence[str], out_path: str, *,
     for i, m in enumerate(members):
         s = m.samples
         if draws_per_member is not None:
-            # subsample WITHOUT replacement, independently per member: the draws within a member
-            # are exchangeable, so any subset is an unbiased sample of that member's posterior
+            # Draws within a member are exchangeable, so a subset without replacement is unbiased.
             s = s[np.sort(rng.choice(m.n_draws, size=draws_per_member, replace=False))]
         pooled[at:at + per[i]] = s
         owner[at:at + per[i]] = i
         at += per[i]
-        m.samples = None          # release the member's copy before loading the next block
+        m.samples = None
         del s
     assert at == total, "fill loop wrote %d of %d draws" % (at, total)
 
@@ -219,27 +161,18 @@ def pool_sample_dumps(member_npzs: Sequence[str], out_path: str, *,
     payload["pooled_provenance"] = np.array(json.dumps(meta))
 
     os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    # zlib over several GB of high-entropy float32 costs minutes for a few percent -- the same
-    # finding `scripts/prebake_maps.py` records for the shear maps. Compressed stays the DEFAULT
-    # for parity with `_save_posterior_samples`, but the gates turn it off.
+    # zlib over several GB of high-entropy float32 costs minutes for a few percent. The gates turn it off.
     (np.savez_compressed if compress else np.savez)(out_path, **payload)
-    # ⚠️ BLIND: shapes and provenance only. Never a sample statistic when there is no truth.
+    # Shapes and provenance only: never a sample statistic when there is no truth.
     print("[pool] wrote %s  (%d members x %d draws = %d, N=%d, D=%d, aligned on %s, truth=%s)"
           % (out_path, meta["n_members"], meta["draws_per_member"][0], meta["draws_total"],
              meta["n_rows"], meta["n_dims"], align_how, has_truth), flush=True)
     return meta
 
 
-# --------------------------------------------------------------------------------------------
-# scoring
-# --------------------------------------------------------------------------------------------
+# --- scoring ---
 def _frame_for(experiments: Sequence[str]):
-    """-> (cosmo_param_names, preset_minmax) shared by every member, ASSERTED identical.
-
-    Pooling two different parameter frames is silent nonsense: the draws would be concatenated in
-    a common column order that means different things per member, and every metric downstream
-    would be computed in a frame that matches none of them.
-    """
+    """-> (cosmo_param_names, preset_minmax) shared by every member. Raises if the members differ."""
     from src.ml.data.constants import COSMO_PARAM_PRESET_MINMAX
     from config.paper_2026 import paper_2026_experiments
     from config.experiments import experiments as base_experiments
@@ -282,10 +215,9 @@ def _frame_for(experiments: Sequence[str]):
 
 def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
                       prior_mode: Optional[str] = None, num_prior_samples: int = 20_000):
-    """Run the STANDARD evaluation on a pooled dump. Metrics are gated on finite truth.
+    """Run run_evaluation_on_samples, the production eval code, on a pooled dump.
 
-    Uses `run_evaluation_on_samples` verbatim -- the same function the production eval calls -- so
-    a pooled number and a per-repeat number are produced by identical code and are comparable.
+    Metrics are gated on finite truth.
     """
     import torch
     from src.ml.utils import _build_cosmo_preset_scaler
@@ -293,9 +225,7 @@ def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
     from .utils import _pop_credible_intervals, _to_json_compatible
 
     names, preset = _frame_for(experiments)
-    # A PINNING prior mode (LCDM_fixed_w0 pins w0) samples only the free dimensions, so its dumps
-    # are D-1 wide while `theta0s` keeps the full vector (nle_external.free_param_names). Score on
-    # the free columns, as run_external_nle_eval does; before 2026-10-09 every LCDM pool raised here.
+    # A pinning prior mode samples D-1 dimensions while theta0s keeps D, so score the free columns.
     full_names = list(names)
     pinned = False
     if prior_mode:
@@ -314,18 +244,14 @@ def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
                          % (samples.shape[2], len(names)))
 
     if not bool(torch.isfinite(theta0s).all()):
-        # An observation has no truth; every metric here is scored against theta0s. Skip rather
-        # than silently compute against NaN. The pooled SAMPLES are the deliverable.
+        # An observation has no truth, so every metric is skipped.
         print("[pool] no finite truth -> metrics skipped (this is the observation path)", flush=True)
         return {"metrics_json": None, "has_truth": False}
 
-    # The prior box travels with the experiment: `build_gower_prior` is kappa-AWARE via
-    # `preset_overrides` (a hardcoded kappa=1 b_g prior put 58.5 % of the kappa=2 truths outside
-    # the sampler's support -- see eval/utils.py). Never call either builder without it.
+    # Pass the experiment's preset_overrides to either builder: the b_g prior width depends on them.
     overrides = {k: v for k, v in preset.items() if k in names}
     if pinned:
-        # `build_prior_for_mode` returns the FULL-dimensional object; a prior of the wrong
-        # dimension would give plausible, wrong shrinkage numbers -> drop it (as nle_external).
+        # build_prior_for_mode returns the full-dimensional prior, which is wrong here.
         prior = None
     elif prior_mode:
         from .nle_external import build_prior_for_mode
@@ -337,7 +263,6 @@ def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
     metrics = run_evaluation_on_samples(theta0s, samples, scaler, prior=prior,
                                         compute_calibration=True,
                                         prior_num_samples=num_prior_samples)
-    # See the module docstring: the mixture log-prob needs the member flows, not their draws.
     metrics["test_log_prob"] = None
     metrics["test_log_prob_unavailable_reason"] = (
         "the pooled posterior is a mixture; its density is logsumexp_r log q_r(theta|x) - log R, "
@@ -359,37 +284,24 @@ def score_pooled_dump(npz_path, experiments: Sequence[str], out_prefix, *,
     return out
 
 
-# --------------------------------------------------------------------------------------------
-# gates -- construction is not evidence
-# --------------------------------------------------------------------------------------------
-# Every guarantee above is invisible when it fails: a misaligned pool, a wrong frame or a
-# silently-reweighted member all produce perfectly plausible numbers. These run the new path over
-# data whose answer is already known.
+# --- gates: run the pooling path on data whose answer is known ---
 DETERMINISTIC_METRIC_KEYS = ("mse", "bias", "std_dev", "width_68", "width_95")
 
 
 def _ecp_from_f(f, num_alpha_bins=100):
-    """`tarp._get_tarp_coverage_single`'s tail: the ECP curve for a set of credibilities."""
+    """The ECP curve for a set of credibilities, as at the end of tarp._get_tarp_coverage_single."""
     h, alpha = np.histogram(np.asarray(f), density=True, bins=num_alpha_bins, range=(0, 1))
     return np.concatenate([[0.0], np.cumsum(h) * (alpha[1] - alpha[0])])
 
 
 def gate_pool_of_one(member_npz, experiment, workdir, *, production_json=None, atol=1e-6,
                      rows=256):
-    """G1. Pooling ONE member must be the identity, and rescoring it must reproduce production.
+    """G1: pooling one member is the identity and rescoring reproduces the production numbers.
 
-    Two independent failure modes are covered:
-
-      a) the CONCATENATION: a pool of one member against itself must be byte-identical to that
-         member's draws (up to the added `member_of_draw`). Anything that reorders, rescales or
-         drops rows shows up here and nowhere else.
-      b) the SCORING FRAME: rescoring those same draws must reproduce the production
-         `evaluation_results` json. Only the DETERMINISTIC metrics are asserted -- the FoM is
-         referenced to `prior.sample(...)` and TARP runs with `seed=None`, so both carry Monte-Carlo
-         noise and are reported, not asserted.
+    The concatenation check runs on the first `rows` rows. Only DETERMINISTIC_METRIC_KEYS are
+    compared to production_json, within atol. FoM and TARP carry Monte-Carlo noise and are reported.
+    Returns the report dict with its verdict.
     """
-    # ⚠️ On a ROW SLICE. The identity being tested is about the concatenation, not the size, and a
-    # full-size doubled pool is ~12 GB of array plus a multi-GB zlib pass for no extra evidence.
     src_full = np.load(member_npz, allow_pickle=False)
     n_slice = min(int(rows), int(src_full["theta0s"].shape[0]))
     sliced = os.path.join(workdir, "gate_member_slice.npz")
@@ -414,7 +326,7 @@ def gate_pool_of_one(member_npz, experiment, workdir, *, production_json=None, a
         report["verdict"] = "FAIL"
         return report
 
-    # score the SINGLE member (not the doubled pool): that is what production scored
+    # Score the single member, as production did, not the doubled pool.
     scored = score_pooled_dump(member_npz, [experiment],
                                os.path.join(workdir, "gate_pool_of_one"))
     report["scored"] = scored
@@ -443,7 +355,6 @@ def gate_pool_of_one(member_npz, experiment, workdir, *, production_json=None, a
     report["verdict"] = "PASS" if ok else "FAIL"
     print("[gate G1b] %d deterministic metrics vs production, worst |diff| = %.3g -> %s"
           % (len(diffs), worst, report["verdict"]), flush=True)
-    # noisy-by-construction metrics: reported for eyeballing, never asserted
     for k in ("fom", "fom_dim_normalized"):
         if k in prod and k in ours:
             print("    %-20s production %.5f  ours %.5f (Monte-Carlo, not asserted)"
@@ -452,34 +363,22 @@ def gate_pool_of_one(member_npz, experiment, workdir, *, production_json=None, a
 
 
 def gate_tarp_identity(pooled_npz, experiment, fcache_npz, *, set_name="full", n_ref=8, seed=20260908):
-    """G2. The pooled dump's TARP must agree with the f-identity computed a different way.
+    """G2: the pooled dump's TARP agrees with the f-identity.
 
-    `tarp_ensembled.py` never builds a pooled sample set: it uses `f_i(pooled) = mean_r f_i(r)`
-    and caches the per-reference-draw credibilities. This gate recomputes `f` from the REAL pooled
-    draws and compares the ECP curves. Two independent computations of one quantity -- if the
-    concatenation, the row order, or the draw bookkeeping is wrong, they disagree.
-
-    Returns the max absolute ECP difference; agreement is expected at the reference-draw noise
-    level, not exactly (the two use different reference draws).
+    fcache_npz holds the per-reference-draw credibilities, f_i(pooled) = mean_r f_i(r), for
+    set_name. ours averages n_ref TARP passes on the pooled draws. Returns a dict with the max
+    absolute ECP difference, the reference-draw floor and the verdict.
     """
     from src.ml.eval.tarp import get_tarp_coverage
 
     d = np.load(pooled_npz, allow_pickle=False)
     samples = np.asarray(d["samples"], dtype=np.float32)
     theta = np.asarray(d["theta0s"], dtype=np.float32)
-    # ⚠️ NO TRANSPOSE. `get_tarp_coverage` wants (n_samples, n_sims, n_dims) and that is EXACTLY
-    # how the npz stores `samples` -- production permutes only because its in-memory tensor is
-    # sims-first (`evaluate_models._to_tarp_shapes`), which the dump is not. Transposing here made
-    # num_sims = 24000 against a 2000-row theta and raised IndexError; a dump whose S happened to
-    # be <= N would have silently scored garbage instead.
+    # No transpose: get_tarp_coverage wants (n_samples, n_sims, n_dims), the layout used here.
     assert samples.shape[1] == theta.shape[0], (
         "pooled dump is (S=%d, N=%d, D=%d) but theta has %d rows -- axis order is wrong"
         % (samples.shape + (theta.shape[0],)))
-    # ⚠️ COMPARE LIKE WITH LIKE: `bootstrap=False`. The f-identity side below is a PLAIN ECP
-    # (no row resampling), and a row-bootstrap MEAN ECP is a systematically different curve --
-    # measured at 0.0048 max|dECP| on identical f values, which is most of the 0.0072 the first
-    # version of this gate reported and blamed on the pooling. Averaging over `n_ref` independent
-    # reference draws is the only averaging either side does.
+    # bootstrap=False: the f-identity side is a plain ECP, so the pooled side must be too.
     curves = []
     for _k in range(n_ref):
         e, alpha = get_tarp_coverage(samples, theta, num_alpha_bins=100,
@@ -492,15 +391,12 @@ def gate_tarp_identity(pooled_npz, experiment, fcache_npz, *, set_name="full", n
     if not keys:
         raise ValueError("f-cache %s has no '%s' set (keys: %s)"
                          % (fcache_npz, set_name, sorted(cached.files)[:6]))
-    f_pool = np.mean([cached[k] for k in keys], axis=0)          # [n_ref, n_rows], pooled by identity
+    f_pool = np.mean([cached[k] for k in keys], axis=0)          # [n_ref, n_rows]
     theirs = np.mean([_ecp_from_f(f_pool[k]) for k in range(f_pool.shape[0])], axis=0)
 
     delta = float(np.abs(ours - theirs).max())
 
-    # A bare max|dECP| is not a verdict: the two sides average DIFFERENT reference draws and never
-    # converge to each other. The floor is measured from the cache itself -- split its reference
-    # draws in two and see how far two disjoint averages of the SAME f already sit apart. Pure
-    # numpy on cached credibilities; no extra distance pass.
+    # The sides use different reference draws, so the floor is the gap between two halves of the cache.
     per_ref = np.array([_ecp_from_f(f_pool[k]) for k in range(f_pool.shape[0])])
     rng = np.random.default_rng(0)
     n_a = max(1, min(f_pool.shape[0] - 1, n_ref))
