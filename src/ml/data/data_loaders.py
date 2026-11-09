@@ -1,3 +1,9 @@
+"""HDF5 datasets and dataloaders for the mock stores.
+
+H5CosmoDataset reads (data dict, cosmology vector) pairs. build_dataloaders splits files by
+cosmology so no cosmology appears in more than one of train, validation and test, and returns
+the three loaders.
+"""
 import os
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -93,21 +99,11 @@ class H5CosmoDataset(Dataset):
         self.dtype = dtype
         self.stack_groups = stack_groups
         self.transform = transform
-        # Cross-variate eval: NaN-fill cosmo params absent from a dataset instead of treating
-        # the file as corrupt (a missing cosmo_dict key would otherwise KeyError-skip EVERY
-        # file of an NLA/NLA-z variate). Data-group KeyErrors still skip as before.
+        # NaN-fill cosmo params absent from a dataset instead of skipping the file as corrupt.
         self.allow_missing_cosmo_params = allow_missing_cosmo_params
-        # Opt-in: also return the integer cosmology id as a 3rd batch element. Default OFF so every
-        # non-VICReg path keeps the unchanged (data_dict, theta) 2-tuple contract. Used by the VICReg
-        # train loader to group same-cosmology samples for the invariance term.
         self.return_cosmo_id = return_cosmo_id
-        # Opt-in: per-PATH extra conditioning vector stored under data["side_input"] (e.g. the true
-        # cosmology for an oracle-conditioned b_g encoder; see src/ml/data/side_inputs.py). Default
-        # None leaves every existing item byte-identical.
+        # Optional per-path conditioning vector, stored under data["side_input"] (see side_inputs.py).
         self.side_input_fn = side_input_fn
-        # Opt-in in-memory cache of the raw (pre-transform) items, for small per-mock vectors (e.g. HOS sidecars)
-        # where an epoch would otherwise be ~10^5 HDF5 opens for a tiny model. Default OFF: unchanged behaviour.
-        # Filled eagerly with a thread pool; unreadable files are not cached and keep the skip-bad-file policy.
         self._mem: Dict[int, tuple] = {}
         if preload:
             self._preload(int(preload_workers))
@@ -118,10 +114,10 @@ class H5CosmoDataset(Dataset):
                            stack_groups=self.stack_groups, allow_missing_cosmo=self.allow_missing_cosmo_params)
 
     def _preload(self, workers: int):
-        """Fill the RAM cache. When every path lives in ONE directory, go through a directory-level on-disk cache
-        (`<dir>/.preload_cache/<key>.npz`: every output_*.h5 of the dir, read once with the same `_read` in a process
-        pool -- h5py serialises threads on the GIL -- and written atomically), so repeated runs on the same store
-        (sweeps, ensemble members, train/val/test of one run) skip ~10^5 HDF5 opens. Otherwise read directly."""
+        """Fill the RAM cache.
+
+        When every path lives in one directory, read through the on-disk cache
+        <dir>/.preload_cache/<key>.npz (written atomically), else read each file directly."""
         dirs = {os.path.dirname(os.path.abspath(p)) for p in self.paths}
         cache = _dir_cache(dirs.pop(), self, workers) if len(dirs) == 1 else None
         if cache is not None:
@@ -145,10 +141,8 @@ class H5CosmoDataset(Dataset):
     def __getitem__(self, idx: int):
         from .data_loading import unpack_data
 
-        # Resilience for large/partially-generated out-of-core datasets: a corrupt/truncated
-        # h5 file (OSError "file signature not found") or one missing the requested E/B variant
-        # group (KeyError) must NOT crash training. Skip to the next valid sample (bounded), and
-        # warn ONCE per bad path. A handful of bad files in ~10^4 is a negligible sampling change.
+        # A corrupt file (OSError) or one missing the E/B variant (KeyError) is skipped for the next
+        # valid sample, at most 64 tries, with one warning per bad path.
         n = len(self.paths)
         last_err = None
         for attempt in range(min(n, 64)):
@@ -183,12 +177,10 @@ class H5CosmoDataset(Dataset):
                 if self.transform is not None:
                     data = self.transform(data)
                 if self.side_input_fn is not None:
-                    # From the file ACTUALLY returned (post skip-bad-file fallback), never idx.
+                    # From the file actually returned after any skip, never idx.
                     data["side_input"] = self.side_input_fn(path)
                 if self.return_cosmo_id:
-                    # CRITICAL: derive the id from the file ACTUALLY returned (post skip-bad-file
-                    # fallback `path = self.paths[j]`), never the requested idx — so a corrupt-file
-                    # swap groups the sample under its true cosmology, not a mislabelled slot.
+                    # The id comes from the file actually returned after any skip, never idx.
                     cid = extract_cosmo_index(path)
                     return data, cosmo, cid
                 return data, cosmo
@@ -208,8 +200,7 @@ def build_nested_keys_from_quantities(quantities: Sequence[str], eb_variant=None
 
 
 def _load_exclude_basenames(spec):
-    """`exclude_files`: a JSON file (repo-relative or absolute; a list of basenames or {"basenames": [...]}) or a list
-    of basenames."""
+    """Basenames from exclude_files: a list, or a JSON file holding a list or {"basenames": [...]}."""
     if isinstance(spec, str):
         import json
         with open(spec) as fh:
@@ -264,8 +255,7 @@ def build_datasets(
         include_files_regex=include_files_regex,
     )
     if exclude_files:
-        # Drop listed files AFTER the cosmology split, so the split itself (which cosmology lands in train / val /
-        # test) is exactly the unfiltered one; only the listed mocks leave their split.
+        # Drop listed files after the cosmology split, so the split is the unfiltered one.
         drop = _load_exclude_basenames(exclude_files)
         n0 = (len(train_paths), len(val_paths), len(test_paths))
         train_paths, val_paths, test_paths = ([p for p in ps if os.path.basename(p) not in drop]
@@ -327,12 +317,10 @@ def build_dataloaders(
     exclude_files: Optional[Union[str, Sequence[str]]] = None,
     include_files_regex: Optional[str] = None,
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Return DataLoaders for train/val/test ensuring no cosmology leakage.
+    """Return the train, val and test DataLoaders, split so no cosmology crosses splits.
 
-    When ``use_cosmo_batch_sampler`` (VICReg only) the TRAIN loader uses an
-    :class:`MPerCosmoBatchSampler` (k distinct cosmologies × ``m_per_cosmo`` realisations per
-    batch) and the train dataset returns the per-sample cosmology id as a 3rd batch element. The
-    val/test loaders are unchanged (plain random/sequential, 2-tuple batches)."""
+    With use_cosmo_batch_sampler the train loader packs m_per_cosmo realisations per cosmology
+    and yields the cosmology id as a third batch element."""
     if num_workers is None:
         try:
             cpu_count = os.cpu_count() or 1
