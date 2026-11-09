@@ -1,29 +1,10 @@
 #!/usr/bin/env python
 """Bundle the KiDS paper-era (mean-norm) NPE posteriors into portable .npz files, one per model.
 
-Companion to `build_euclid_posterior_bundle.py`, with the same key layout, but the inputs here are
-the paper's own `gen_samples.py` dumps (`.tch` = `(samples, theta0s)`), not an eval
-`posterior_samples.npz`. Two models are packed, each into its own file:
-
-  * transfer  -- `finetune_hybrid_16_9param_ensemble_stratify`, match `ncosmo60_0`: the 9-member
-                 NPE ensemble pretrained on GLASS and finetuned on N=60 Gower Street cosmologies
-                 (the paper's multifidelity result);
-  * gower     -- `hybrid_patches_16_9param`, match `ncosmo400_`: the high-fidelity-only NPE
-                 trained directly on N=400 Gower Street cosmologies.
-
-Both are evaluated on held-out GOWER STREET mocks. The paper-era Gower mocks were deleted from
-the cluster, so neither model can be re-sampled; these dumps are the only posteriors left.
-
-⚠️ The two dumps do NOT share one test set. gen_samples.py drew them over the model's native test
-split PLUS `N_extra_test_cosmologies=130` taken from outside that model's own train/val set, and
-N=400 vs N=60 leave different cosmologies outside. They overlap on a subset of observations (the
-exact 9-D theta match below). Rows are unique in 9-D theta, because the intrinsic-alignment
-parameters are redrawn per augmentation, so an exact theta match identifies the same observation.
-The plotted subsample is drawn ONLY from those shared rows, so the two bundles are paired
-there; the `*_all` summaries cover each model's full dump.
-
-Usage (defaults point at the paper-review mirror):
-    python scripts/build_kids_paper_posterior_bundle.py --out-dir <dir> [--n-show 0] [--n-draws 10000]
+The inputs are the paper's gen_samples.py .tch dumps, with the key layout of
+build_euclid_posterior_bundle.py. The two dumps do not share one test set, so the plotted
+subsample comes only from the rows they share by exact 9-D theta.
+Usage: python scripts/build_kids_paper_posterior_bundle.py --out-dir <dir> [--n-show 0]
 """
 import argparse
 import json
@@ -85,8 +66,7 @@ def _load_tch(path):
 def _gower_sim_ids(theta_phys):
     """Recover the Gower Street serial number of every row by matching the 7 N-body parameters.
 
-    The dumps carry no ids. The match doubles as a units check: if the preset boxes used to
-    unscale were not the ones the paper-era scaler used, nothing would match to float32 precision.
+    The match doubles as a units check on the unscaling boxes.
     """
     import csv
     with open(GOWER_CSV) as f:
@@ -169,7 +149,7 @@ def main():
         print(f"  {key}: N={s.shape[0]} S={s.shape[1]} D={s.shape[2]}  "
               f"{len(np.unique(ids))} Gower sims (id match residual {resid:.1e})")
 
-    # --- rows shared by every model (exact 9-D theta) -> the paired plotted subsample ---------
+    # --- rows shared by every model (exact 9-D theta) ---
     keysets = {k: {t: i for i, t in enumerate(v[5])} for k, v in runs.items()}
     shared = set.intersection(*(set(ks) for ks in keysets.values()))
     first = next(iter(runs))
@@ -180,8 +160,7 @@ def main():
     S8 = th[:, i_s8] * np.sqrt(th[:, i_om] / 0.3)
     dist = np.sqrt(((S8 - 0.80) / 0.05) ** 2 + ((th[:, i_w] + 1.0) / 0.15) ** 2
                    + ((th[:, i_om] - 0.30) / 0.05) ** 2)
-    # one observation per Gower sim first (lowest row), closest-to-fiducial first; the remaining
-    # augmentation siblings only fill in if --n-show asks for more than there are sims
+    # One observation per Gower sim first, closest to the fiducial first. Siblings fill in after.
     order = np.lexsort((shared_rows, dist))
     seen, primary, extra = set(), [], []
     for i in order:
@@ -207,9 +186,7 @@ def main():
         payload[f"{key}__in_shared_all"] = np.array([t in shared for t in tkeys])
 
         sel = np.array([keysets[key][t] for t in show_keys])
-        # float32, NOT the Euclid bundle's float16: in physical units the narrow-prior parameters
-        # sit on a coarse f16 grid (ns ~76 distinct values per posterior, ombh2 ~57 across the
-        # whole box), which shows up as combs in a 9-parameter corner plot
+        # float32, not float16: the narrow priors sit on a coarse f16 grid.
         payload[f"{key}__samples"] = s[sel, :args.n_draws].astype(np.float32)
         payload[f"{key}__theta0s"] = th_all[sel]
         payload[f"{key}__sim_ids"] = ids[sel].astype(np.int64)
