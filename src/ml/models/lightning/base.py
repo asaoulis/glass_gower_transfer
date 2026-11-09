@@ -1,3 +1,4 @@
+"""Base LightningModule (optimiser, param groups, logging) plus the regression and Gaussian heads."""
 from __future__ import annotations
 
 import numpy as np
@@ -245,10 +246,6 @@ class BaseLightningModule(pl.LightningModule):
             milestone = warmup_steps
 
         elif sched_type in ["cyclic_anneal", "anneal_cyclic"]:
-            # counts-ext phase 4 E1: plain cyclic triangle until `anneal_start_epoch`, then
-            # linearly morph the whole factor toward `final_factor` by the end of training —
-            # amplitude AND envelope decay together, parking the run at its oscillation trough
-            # instead of relying on best-checkpoint luck.
             cyclic_period_steps = int(self.scheduler_kwargs.get("cyclic_period_steps", 2000))
             min_factor = float(self.scheduler_kwargs.get("cyclic_min_factor", 0.05))
             final_factor = float(self.scheduler_kwargs.get("final_factor", 0.05))
@@ -276,10 +273,7 @@ class BaseLightningModule(pl.LightningModule):
             milestone = warmup_steps
 
         elif sched_type in ["fixed", "constant", "none"]:
-            # Constant LR after warmup — no decay at all. Made explicit (rather than relying on the
-            # catch-all below) because configs now request it BY NAME: the encoder finetunes overfit
-            # late under `exp` decay, and a flat LR is the intended remedy. An explicit branch means
-            # a future change to the fallback cannot silently alter these runs.
+            # Constant LR after warmup, as an explicit branch so a change to the fallback cannot alter it.
             main_sched = LambdaLR(optimizer, lr_lambda=lambda x: 1.0)
             interval = "step"
             milestone = warmup_steps
@@ -316,14 +310,10 @@ class BaseLightningModule(pl.LightningModule):
         return None, None
 
     def _freeze_band_encoder(self) -> str | None:
-        """Freeze the band encoder IN PLACE, without loading any weights.
+        """Freeze the band encoder in place, without loading any weights.
 
-        Needed by the warm-start path: when ``config.checkpoint_path`` is set the whole model
-        (band included) comes from that checkpoint, so ``_load_pretrained_band_encoder`` is not
-        called — and with it the ``freeze=freeze_band`` that used to be its only caller. Without
-        this, a config asking for ``freeze_band=True`` would silently train the band UNFROZEN,
-        which is a different experiment (band-unfreeze overfits and gains nothing, per the
-        counts-era ablations). Returns the module name, or None if there is no band submodule.
+        The warm-start path (config.checkpoint_path) never calls _load_pretrained_band_encoder,
+        so freeze_band is applied here. Returns the module name, or None without a band submodule.
         """
         band_module, band_module_name = self._find_band_module()
         if band_module is None:
@@ -389,9 +379,7 @@ class BaseLightningModule(pl.LightningModule):
             freeze=freeze,
             verbose=True,
         )
-        # Guard (a): a warm start whose flow shapes don't match the checkpoint would otherwise be
-        # silently skipped (load_partial_weights defaults to lenient), leaving flow layers random.
-        # When the caller demands correctness (whitened embeddings), turn that into a hard failure.
+        # Fail on a warm start whose flow shapes do not match, which would otherwise be skipped silently.
         if error_on_mismatch and diag is not None:
             n_shape = len(diag.get("skipped_shape") or [])
             n_missing = len(diag.get("missing") or [])
