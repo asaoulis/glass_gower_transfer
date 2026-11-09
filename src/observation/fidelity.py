@@ -1,14 +1,7 @@
-"""Rel-RMS comparison of a built observation against a stored mock ``output_*.h5``.
+"""Rel-RMS comparison (||a-b|| / ||b||) of a built observation against a stored mock output_*.h5.
 
-Modelled on ``scripts/shear_replay/replay.py:fidelity_check`` (rel_rms = ||a-b|| / ||b||), extended
-to every shared dataset. Bit-parity is NOT expected everywhere:
-
-  * ``mixed_bandpowers``, ``cls`` (EE/BB) and the E/B/E_sc8 patches derive from the SAME galaxies
-    through the SAME code -> parity to float rounding, except through the shape-noise debias term
-    (``denoise_shear_cls`` subtracts a high-ell average of the RANDOM-rotation spectrum, which is a
-    different realisation here) -> a small relative difference in ``cls``/bandpowers at the noise
-    level. The patches do not involve the random map -> parity (up to the float16 cast).
-  * ``noise_std_*`` are stds of a random-rotation realisation -> agree to ~1/sqrt(N_pix) only.
+The patches agree to float rounding. cls and bandpowers differ slightly at the noise level through
+the random-rotation debias, and noise_std_* agree only to about 1/sqrt(N_pix).
 """
 from __future__ import annotations
 
@@ -17,15 +10,6 @@ from typing import Dict, Optional
 import h5py
 import numpy as np
 
-# Default tolerances (rel_rms) per dataset family; the gate reports every number, these only
-# decide PASS/FAIL. MEASURED 2026-09-08 on the smoke fixture with the mock's exact block RNG:
-# bandpowers 5.5e-3, cls 3.6e-3, E/B patches 2-4e-3 -- and a half-ulp float32 jitter of the
-# catalogue reproduces exactly those numbers (6.6e-3 / 4.5e-3 / 3-6e-3), i.e. the residual is the
-# FIXTURE's float32 storage, not the code. Prefer the self-calibrating ``jitter_floor`` gate
-# (pass if rel_rms <= JITTER_FACTOR x the measured floor); these absolute numbers are the fallback.
-# (A DENSE fixture -- 30M galaxies at nside 256, ~40/pixel -- has a larger floor: bandpowers 3.1e-2,
-# cls 2.2e-2, counts-E/B patches 5-7e-2, E_sc8 5-7e-3, noise_std_sc8 1e-4. The absolute numbers
-# below are therefore loose; the jitter-floor gate is the one that means something.)
 DEFAULT_TOL = {
     "bandpower_ls": 1e-9,
     "mixed_bandpowers": 5e-2, "bb_bandpowers": 1e-1, "cls": 5e-2,
@@ -53,16 +37,14 @@ def compare_observation_to_mock(obs_path: str, mock_path: str, tol: Optional[Dic
                                 floor_factor: float = JITTER_FACTOR) -> Dict:
     """Return {'per_dataset': {name: rel_rms}, 'pass': bool, 'failures': [...], 'missing': [...]}.
 
-    ``floor``: per-dataset rel_rms of a half-ulp-jittered rebuild vs the un-jittered one (see
-    ``jitter_floor``). When given, a dataset passes if rel_rms <= max(floor_factor * floor, 1e-6)
-    (noise_std_* keep the absolute tolerance: they are realisation-level quantities)."""
+    floor is the per-dataset jitter_floor. When given, a dataset passes if
+    rel_rms <= max(floor_factor * floor, 1e-6). noise_std_* keep the absolute tolerance."""
     tol = {**DEFAULT_TOL, **(tol or {})}
     res: Dict[str, float] = {}
     missing = []
     with h5py.File(obs_path, "r") as fo, h5py.File(mock_path, "r") as fm:
         cf_o, cf_m = fo["cls_results"]["full"], fm["cls_results"]["full"]
-        # band edges first: a band-definition mismatch must show up as its own line, not as an
-        # unexplained bandpower residual
+        # Band edges first, so a band-definition mismatch shows as its own line.
         if "bandpower_ls" in cf_o and "bandpower_ls" in cf_m:
             res["bandpower_ls"] = rel_rms(cf_o["bandpower_ls"][()], cf_m["bandpower_ls"][()])
         for k in ("mixed_bandpowers", "cls", "bb_bandpowers"):
@@ -80,7 +62,7 @@ def compare_observation_to_mock(obs_path: str, mock_path: str, tol: Optional[Dic
             for sub in po[name].keys():
                 if sub in pm[name]:
                     res[f"{name}/{sub}"] = rel_rms(po[name][sub][()], pm[name][sub][()])
-    # exact (bit-level) equality per dataset, for the identity gate record
+    # Exact (bit-level) equality per dataset, for the identity gate record.
     exact: Dict[str, bool] = {}
     with h5py.File(obs_path, "r") as fo, h5py.File(mock_path, "r") as fm:
         cf_o, cf_m = fo["cls_results"]["full"], fm["cls_results"]["full"]
@@ -109,7 +91,7 @@ def compare_observation_to_mock(obs_path: str, mock_path: str, tol: Optional[Dic
 def jitter_floor(cat, m_bias, *, geometry, variants, rng_factory, workdir: str, seed: int = 3) -> Dict[str, float]:
     """Measure the float32-storage floor: rebuild the observation from the catalogue jittered by
     +-0.5 ulp(float32) in RA/DEC/E1/E2 and return rel_rms(jittered, unjittered) per dataset.
-    ``rng_factory()`` must return a FRESH copy of the same random-rotation generator each call."""
+    rng_factory() must return a fresh copy of the same random-rotation generator each call."""
     import copy
     import os
     from .build import build_observation
