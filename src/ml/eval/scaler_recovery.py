@@ -1,35 +1,8 @@
-"""Recover the training-time data-key scalers of an ALREADY-TRAINED run.
+"""Recover the training-time data-key scalers of an already-trained run.
 
-Why this exists
----------------
-`_fit_data_key_scalers_from_paths` historically drew its 1000-file subsample from the global,
-unseeded RNG, so no run before `config.scaler_fit_seed` recorded -- or could re-derive -- the input
-frame its encoder was actually trained in. Refitting lands ~1.1e-2 (median |dz|/sd) away from it,
-measured two independent ways: by the reproduction gate, and by the spread across the nine
-ensemble-member embedding caches, which also shows every member used a DIFFERENT frame.
-
-That is fine for mock numbers already published with that uncertainty baked in. It is NOT fine for
-the real-data analysis, where one observation must be embedded in the frame its model was trained
-in. Retraining would fix it; recovering the frame is far cheaper.
-
-How
----
-The cached `emb_test.pt` holds `z`, the exact embeddings the trained flow consumed, for ~2000
-events. The encoder is frozen and differentiable, and the scalers are affine in log-space with just
-TWO scalar parameters per key (`StandardScaler` and `LogNormalScaler` both store a single mean/std
-for the whole array). So recovering the frame is a 6-parameter fit against ~16k residuals --
-hugely overdetermined -- solved by gradient descent through the frozen encoder.
-
-Note what the objective is: we do not need the "true" scalers, we need scalers that REPRODUCE z.
-Those are the same thing wherever the encoder is sensitive, and where it is insensitive the
-difference cannot affect any downstream embedding. So the objective is exactly the goal, which is
-what makes this robust to the fit being only weakly identified in some direction.
-
-Two things this must get right, or it will silently fit noise:
-  * fp32, never the bf16 autocast the encoders are built with -- the target deviation is ~1%, which
-    is at bf16's precision floor;
-  * initialise at a plain refit, which is already within ~1% -- this is a local refinement, not a
-    search.
+Runs trained before config.scaler_fit_seed fitted their scalers on an unseeded file subsample.
+This module recovers each ensemble member's input frame by fitting the affine scalers, from a plain
+refit, so the frozen encoder reproduces its cached embeddings. The fit runs in fp32, not bf16.
 """
 
 from __future__ import annotations
@@ -67,9 +40,8 @@ class RecoveryResult:
 class _LearnableScaler(torch.nn.Module):
     """Differentiable stand-in for one fitted key scaler.
 
-    Mirrors `LogNormalScaler.transform` / `StandardScaler.transform` EXACTLY at the initial
-    parameter values -- `check_parity` asserts that rather than trusting it, because a transform
-    that merely resembles the real one would fit a frame the encoder never saw.
+    Matches the transform of LogNormalScaler, StandardScaler or PerDimStandardScaler at the initial
+    parameter values. recover_key_scalers checks this parity.
     """
 
     def __init__(self, scaler):
@@ -79,8 +51,7 @@ class _LearnableScaler(torch.nn.Module):
             raise TypeError(f"cannot recover a {self.kind}: only mean/std scalers are affine")
         self.eps = float(np.asarray(getattr(scaler, "eps", 1e-8)).ravel()[0])
         if self.kind == "PerDimStandardScaler":
-            # per-feature mean/std vectors (e.g. the HOS vector); the same affine map, one pair per feature.
-            # PerDimStandardScaler.transform clamps std at 1e-12, so the log-std init does too.
+            # One mean/std pair per feature. PerDimStandardScaler.transform clamps std at 1e-12, so the init does too.
             mean0 = torch.as_tensor(np.asarray(scaler.mean, dtype=np.float64))
             std0 = torch.as_tensor(np.clip(np.asarray(scaler.std, dtype=np.float64), 1e-12, None))
             self.mean = torch.nn.Parameter(mean0.clone())
@@ -89,7 +60,7 @@ class _LearnableScaler(torch.nn.Module):
         mean0 = float(np.asarray(scaler.mean).ravel()[0])
         std0 = float(np.asarray(scaler.std).ravel()[0])
         self.mean = torch.nn.Parameter(torch.tensor(mean0, dtype=torch.float64))
-        # log-parameterised so std stays strictly positive under an unconstrained optimiser
+        # Log-parameterised so std stays positive.
         self.log_std = torch.nn.Parameter(torch.tensor(math.log(abs(std0)), dtype=torch.float64))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -129,8 +100,7 @@ def _encoder_forward(encoders, data: Dict[str, torch.Tensor]) -> torch.Tensor:
 
 
 def _load_raw_batches(raw_loader, max_events: Optional[int]) -> List[Dict[str, torch.Tensor]]:
-    """Materialise the UNSCALED batches once so the optimiser can re-evaluate without re-reading
-    HDF5 (LBFGS calls the closure many times per step)."""
+    """Materialise the unscaled batches once, since LBFGS calls the closure many times per step."""
     batches, n = [], 0
     for data, _theta in raw_loader:
         batches.append({k: v.clone() for k, v in data.items()})
@@ -153,9 +123,9 @@ def recover_key_scalers(
 ) -> RecoveryResult:
     """Fit the data-key scalers that reproduce `z_target` through the frozen `encoder`.
 
-    `raw_loader` must yield UNSCALED data (build it with empty `key_scalers`), in the SAME order as
-    `z_target`. `encoders` is the list of frozen source encoders (as `compute_embeddings` takes).
-    Returns fitted scaler objects ready for `save_scalers`.
+    raw_loader must yield unscaled data (built with empty key_scalers) in the order of z_target.
+    encoders is the list of frozen source encoders, as compute_embeddings takes. Returns a
+    RecoveryResult whose key_scalers are ready for save_scalers.
     """
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     if not isinstance(encoders, (list, tuple)):
@@ -175,9 +145,7 @@ def recover_key_scalers(
     learn = torch.nn.ModuleDict({k: _LearnableScaler(s) for k, s in init_key_scalers.items()
                                  if k in batches[0]}).to(dev)
     if len(learn) == 0:
-        # Without this the optimiser gets an empty parameter list, the encoder is fed RAW
-        # unscaled data, and the parity loop below iterates nothing and reports a vacuously
-        # perfect 0.000e+00 -- a check that cannot run looking exactly like one that passed.
+        # With no matched key the parity check below would pass vacuously on unscaled data.
         raise ValueError(
             f"no scaler key matched the data. init_key_scalers has {sorted(init_key_scalers)}, "
             f"the loader yields {sorted(batches[0])}. Pass the KEY scalers "
@@ -186,7 +154,6 @@ def recover_key_scalers(
     params_initial = {k: m.params() for k, m in learn.items()}
 
     # Parity: the differentiable transform must equal the real fitted one at the init values.
-    # Without this the optimiser could be minimising against a subtly different frame.
     parity = 0.0
     with torch.no_grad():
         for k, m in learn.items():
