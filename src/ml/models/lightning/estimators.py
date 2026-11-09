@@ -1,3 +1,4 @@
+"""sbi estimator wrappers (conditional density and likelihood) patched for the batched MCMC potentials."""
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -24,12 +25,7 @@ class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
         super().__init__(model, input_shape=input_shape, condition_shape=condition_shape)
         self.prior = prior
         self.max_sampling_batch_size = 10_000
-        # Bail-out for the prior-support accept/reject loop. sbi's accept_reject_sample gates
-        # progress on the MINIMUM acceptance across the condition batch and accumulates the
-        # other conditions' accepted samples unboundedly — one far-OOD condition with ~zero
-        # acceptance (posterior leaked outside the prior box) stalls the loop forever and OOMs
-        # the GPU (observed on the misspec eval, job 1316341). In-distribution (acceptance
-        # ~O(1)) the loop finishes in a couple of iterations and never hits these caps.
+        # Caps that bail out of the accept/reject loop when one far-OOD condition never accepts.
         self.max_rejection_iters = 100
         self.min_unique_accepted = 50
 
@@ -74,14 +70,10 @@ class PatchedConditionalDensityEstimator(ConditionalDensityEstimator):
     def _bounded_accept_reject(self, sampling_func, num_samples, cond):
         """Prior-support accept/reject with bounded memory and a hard iteration cap.
 
-        Mirrors sbi's accept_reject_sample (same candidate reshape conventions, same
-        [num_samples, num_xos, D] output) with two changes:
-        - per-condition accumulation stops at ``num_samples`` (sbi accumulates without bound
-          while the WORST condition in the batch converges);
-        - after ``max_rejection_iters`` batches, unconverged conditions are filled by
-          resampling their accepted draws with replacement (>= min_unique_accepted uniques)
-          or NaN-filled entirely — callers' non-finite filters then drop and report them.
-        In-distribution behaviour is identical up to RNG (loop exits once all converge).
+        Mirrors sbi's accept_reject_sample, output [num_samples, num_xos, D], except that each
+        condition stops accumulating at num_samples. After max_rejection_iters batches an
+        unconverged condition is resampled with replacement from its accepted draws (with at least
+        min_unique_accepted uniques) or NaN-filled.
         """
         num_xos = cond.shape[0]
         sampling_batch_size = min(num_samples, self.max_sampling_batch_size)
