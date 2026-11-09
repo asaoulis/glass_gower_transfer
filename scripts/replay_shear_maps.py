@@ -1,14 +1,8 @@
 #!/usr/bin/env python
 """CLI for the shear-estimator replay harness (scripts/shear_replay/).
 
-Run with:  PYTHONNOUSERSITE=1 /data/alex/glass/env/bin/python scripts/replay_shear_maps.py ...
-
-Subcommands
------------
-cache     Build sparse pixel caches from catalogue_*.h5 files.
-fidelity  Gate: replay `counts` from a cache and compare with the stored output_*.h5.
-sweep     Candidate x paired-b_g-triplet sweep -> JSONL rows of discriminators + M-probes.
-selftest  Unit checks: degrade equivalence, counts-vs-map_shears equivalence, half-split sum.
+Subcommands: cache builds sparse pixel caches, fidelity replays counts against the stored mock,
+sweep runs the candidate x paired-b_g sweep, and selftest runs the unit checks.
 """
 from __future__ import annotations
 
@@ -183,10 +177,7 @@ def cmd_selftest(args):
     nside = 128
     ngal = 200_000
     nbins = 2
-    # Synthetic catalogue over a strip. float64 ON PURPOSE: production binned f64 in-memory
-    # positions; real saved catalogues are f32, whose boundary-galaxy pixel flips are an inherent
-    # replay-precision limit measured at the FIDELITY gate, not here — this test isolates the
-    # pure cache/estimator algebra.
+    # Synthetic catalogue over a strip, float64 on purpose to isolate the cache and estimator algebra.
     cat = {
         "RA": rng.uniform(0, 90, ngal),
         "DEC": rng.uniform(-30, 10, ngal),
