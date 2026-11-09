@@ -1,3 +1,8 @@
+"""Flow containers.
+
+_CondEmbeddingFlow links an embedding net to a conditional flow. MultipleFlow holds an ensemble
+of flows behind a single-flow API.
+"""
 from __future__ import annotations
 
 import torch
@@ -7,14 +12,9 @@ import torch.nn as nn
 class _CondEmbeddingFlow(nn.Module):
     """Wrapper linking an embedding network and a conditional flow.
 
-    The embedding_net takes the conditioning data and returns a fixed-size
-    representation used as context for the flow.
-
-    ``amp_encoder`` (default False, set by build_model from config.ml_perf.amp) runs the
-    embedding_net (the big map CNN) under bf16 autocast for tensor-core speed + ~½ activation
-    memory, then casts its output back to fp32 so the flow's rational-quadratic spline stays
-    fp32. Whole-forward bf16 (Lightning ``precision='bf16-mixed'``) instead CRASHES the nflows
-    spline at its ``index_put`` (BFloat16 vs Float), so the autocast MUST be scoped here.
+    The embedding_net maps the conditioning data to the flow's fixed-size context. amp_encoder
+    (from config.ml_perf.amp) runs only the embedding_net under bf16 autocast and casts its output
+    back to fp32: the nflows spline crashes under bf16.
     """
 
     amp_encoder: bool = False
