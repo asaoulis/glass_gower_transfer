@@ -1,31 +1,8 @@
 """Publication style for every figure in the KiDS-Legacy multifidelity-SBI project.
 
-ONE source of truth. Everything here is lifted from the options the paper figures were rendered
-with (`.claude/runs/paper-review/last-runs-and-plots/artifacts/{plot_common,chain_common}.py`,
-`fig3_fig4_posteriors.py`, `ml_results_plotting.ipynb` cells 0/6/28,
-`ml_experiments_9param_saved.ipynb` cells 3/5/6/11) so new figures match the published ones:
-
-  * `scienceplots` ``["science", "muted"]`` style context: serif, LaTeX text (``usetex``),
-    ticks in, no grid, frameless legends, Paul Tol *muted* cycle.
-  * A GLOBAL ``font.size = 18`` before drawing (the notebooks did this; the science style does
-    not reset it). Figures are drawn at ~6x4.5 in and scaled to column width by LaTeX, so 18 pt
-    lands at ~9 pt on the page. Keep it, or the new figures come out with smaller text.
-  * Colour identity pinned BY KEY into the cycle (the paper's ``EXPERIMENT_COLORS`` pattern), not
-    consumed from the prop cycle in draw order.
-  * Corner plots through ChainConsumer 1.3 with the notebook's ``PlotConfig`` (flip=False,
-    tick/label 16 pt, contour labels 20 pt, ``max_ticks=2``, serif, usetex, no summaries) and the
-    cell-11 fill (``shade=True, shade_gradient=0.9``), ``ChainConfig(smooth=10)`` for the 4-param
-    cosmology corner, edge ticks pruned; saved as SVG 300 dpi + PNG 200 dpi.
-
-Palette OPTIONS (`PALETTES`) are alternative cycles for the same roles. `tol-muted` is the
-published default; the others are offered so a choice can be made on real figures
-(`scripts/unblinding_figures.py --palette`). Every palette carries the SAME role table
-(`ROLES`) -- real data is always black, the mock ensemble always light grey, the stop rule
-always a low-alpha red -- so swapping the palette never changes what a figure says.
-
-Blind-analysis rule: nothing in this module prints, summarises or annotates chain statistics.
-`plot_chains` forces ``summarise=False``; do not add `Truth` markers to a chain from the blind
-store (there is none to add).
+It reproduces the paper figures: the scienceplots science+muted context at a global 18 pt font,
+colours pinned by key into the palette cycle, and ChainConsumer corners. Every palette carries the
+same role table, so swapping it never changes what a figure says. Nothing here prints chain statistics.
 """
 from __future__ import annotations
 
@@ -41,11 +18,7 @@ import numpy as np
 from cycler import cycler
 from matplotlib.ticker import MaxNLocator
 
-# --------------------------------------------------------------------------------------------
-# scienceplots: importing registers the styles, but on a fresh interpreter the style library is
-# sometimes built before the entry points are read -- the notebook works around that with an
-# importlib.reload. Keep the same trick.
-# --------------------------------------------------------------------------------------------
+# Importing scienceplots registers the styles, so its import looks unused but is needed.
 NOTEBOOK_FONT_SIZE = 18          # the paper's global font size (notebook cell 0)
 PNG_DPI = 200                    # paper: png 200 dpi, svg/pdf 300 dpi
 VECTOR_DPI = 300
@@ -84,9 +57,7 @@ def muted_colors() -> list[str]:
         return plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
 
-# --------------------------------------------------------------------------------------------
-# Palette options. Each is an ordered cycle; roles below index into it BY KEY.
-# --------------------------------------------------------------------------------------------
+# --- Palette options: ordered cycles that the roles below index by key ---
 PALETTES: dict[str, dict] = {
     # The published default (scienceplots `muted` == Paul Tol muted, same order).
     "tol-muted": {
@@ -126,16 +97,6 @@ PALETTES: dict[str, dict] = {
 }
 DEFAULT_PALETTE = "tol-muted"
 
-# Semantic roles -> index into the palette cycle (or a fixed hex). The role table is the same
-# for every palette so a figure keeps its meaning when the palette is swapped.
-#   real       the observation / real-data posterior (ALWAYS black, thick)
-#   flagship   the headline nla_m BGP arm
-#   mock       matched-mock / null ensembles (ALWAYS light grey, thin)
-#   reference  guide lines (analytic nulls, medians): dark grey, dashed/dotted
-#   stop       stop-rule regions: the palette's red at low alpha
-#   pass       "in distribution" tints: the palette's green
-#   T / S      the two mock labels (T = known-OOD control, S = in-distribution control)
-#   arms       the six analysis arms of `src/ml/eval/arms.py`
 ROLES: dict[str, dict] = {
     "tol-muted": {
         "real": "#000000", "flagship": 1, "mock": "#B0B0B0", "reference": "#444444",
@@ -302,9 +263,7 @@ def probe_tex() -> bool:
         return False
 
 
-# --------------------------------------------------------------------------------------------
-# Labels (paper conventions: `$w_0$` -> `$w$`, \mathrm subscripts)
-# --------------------------------------------------------------------------------------------
+# --- Labels (paper conventions: $w_0$ -> $w$, \mathrm subscripts) ---
 LABELS = {
     "omega_m": r"$\Omega_\mathrm{m}$", "sigma_8": r"$\sigma_8$", "S8": r"$S_8$", "s8": r"$S_8$",
     "w0": r"$w$", "mnu": r"$m_\nu$", "h": r"$h$", "ns": r"$n_\mathrm{s}$",
@@ -319,7 +278,6 @@ ARM_NAMES = {
     "band_nla_z": r"2-pt (bandpowers, VD), NLA-$z$",
     "hos": r"2-pt + third moments (HOS, VD)",
     "hos_gmrg": r"2-pt + third moments + Gmrg (HOS, VD)",
-    # VD v2 noise model (PR#3, NLA-M kappa=1) + its matched quadcap control (2026-11-09)
     "vd2pr": r"field level, VD v2", "vd2pr_band": r"2-pt (bandpowers), VD v2",
     "vdqctl": r"field level, quadcap control", "vdqctl_band": r"2-pt (bandpowers), quadcap control",
     "vd2pr_p10k": r"field level, VD v2 (preview)", "vd2pr_p10k_band": r"2-pt (bandpowers), VD v2 (preview)",
@@ -336,9 +294,7 @@ def arm_name(arm: str) -> str:
     return ARM_NAMES.get(arm, tex(arm))
 
 
-# --------------------------------------------------------------------------------------------
-# Saving (paper: svg 300 dpi + png 200 dpi, tight bbox)
-# --------------------------------------------------------------------------------------------
+# --- Saving (paper: svg 300 dpi + png 200 dpi, tight bbox) ---
 def save(fig, path: str | os.PathLike, formats: Sequence[str] = ("png", "pdf"),
          transparent: bool = False, close: bool = True, png_dpi: int | None = None) -> list[str]:
     """Save `fig` as every format in `formats` next to `path` (extension replaced). PNG at
@@ -346,9 +302,7 @@ def save(fig, path: str | os.PathLike, formats: Sequence[str] = ("png", "pdf"),
     base, _ = os.path.splitext(str(path))
     os.makedirs(os.path.dirname(base) or ".", exist_ok=True)
     written = []
-    # Render INSIDE the style context. Text objects remember `usetex` from creation, but the
-    # LaTeX font family (\rmfamily vs \sffamily) is read from rcParams at DRAW time -- a
-    # savefig after the `with context():` block exits silently sets every word in CM Sans.
+    # Render inside the style context: text objects remember usetex from creation.
     with plt.style.context(styles()), plt.rc_context({"font.family": "serif"}):
         for fmt in formats:
             p = f"{base}.{fmt}"
@@ -361,7 +315,7 @@ def save(fig, path: str | os.PathLike, formats: Sequence[str] = ("png", "pdf"),
 
 
 def panel_label(ax, text: str, x: float = 0.02, y: float = 0.96, **kw):
-    """'(a)'-style panel letter, top-left inside the axes (the user's reference layout)."""
+    """'(a)'-style panel letter, top-left inside the axes."""
     kw = {"ha": "left", "va": "top", "fontsize": plt.rcParams["font.size"], **kw}
     return ax.text(x, y, text, transform=ax.transAxes, **kw)
 
@@ -372,9 +326,7 @@ def legend(ax, **kw):
     return ax.legend(**kw)
 
 
-# --------------------------------------------------------------------------------------------
-# Corner plots -- `plot_chains`, from chain_common.py (cells 3/5/6/11), truth made optional
-# --------------------------------------------------------------------------------------------
+# --- Corner plots: plot_chains, truth optional ---
 CORNER_PLOTCONFIG = dict(flip=False, tick_font_size=16, label_font_size=16,
                          contour_label_font_size=20, serif=True, usetex=True, max_ticks=2)
 CORNER_SMOOTH = 10               # cell 11: the 4-param cosmology corner
@@ -418,15 +370,12 @@ def plot_chains(samples_dict: Mapping[str, np.ndarray], columns, truth: Mapping 
                 formats: Sequence[str] = ("png", "pdf"), close: bool = True,
                 weights: Mapping[str, np.ndarray] | None = None, plot_config: Mapping | None = None,
                 font_size: float | None = None, truth_kwargs: Mapping | None = None):
-    """The paper's corner plot. `samples_dict` = {name: (n_draws, n_params) array}; `columns` a
-    list of TeX labels or {name: list}. Chains are drawn in insertion order (later on top).
-    `truth` is optional (None for anything from the blind store). Summaries are never drawn.
-    `weights` = optional {name: (n_draws,) importance weights} for weighted chains (nested-sampling
-    or GetDist output); unweighted chains omit the entry. `plot_config` overrides entries of
-    `CORNER_PLOTCONFIG` (e.g. the 8-9 pt tick/label sizes of a figure drawn at A&A final size);
-    `font_size` sets the style-context font (default the notebook 18 pt). `truth_kwargs` overrides
-    the `Truth` line style (e.g. ``{"color": "#444444", "line_style": "--", "line_width": 1.2}``;
-    default a black dashed 1 pt crosshair)."""
+    """The paper's corner plot. Summaries are never drawn.
+
+    samples_dict is {name: (n_draws, n_params) array} and columns a list of TeX labels or {name: list}.
+    Chains are drawn in insertion order, later on top. truth is None for anything from the blind store.
+    weights is an optional {name: (n_draws,) importance weights}. plot_config overrides entries of
+    CORNER_PLOTCONFIG, and truth_kwargs the Truth line style."""
     import logging
 
     import pandas as pd
@@ -474,8 +423,7 @@ def plot_chains(samples_dict: Mapping[str, np.ndarray], columns, truth: Mapping 
 
 
 def standardised_extents(columns: Iterable[str], half_width: float = 4.0) -> dict:
-    """Fixed +-4 windows for standardised (unit-normal) posteriors so panels align across the
-    whole figure set (Tier 3 plots A/B/B'/D)."""
+    """Fixed +-4 windows for standardised (unit-normal) posteriors, so panels align across the figure set."""
     return {c: [-half_width, half_width] for c in columns}
 
 
