@@ -1,6 +1,6 @@
-"""Side-input modules appended to an encoder's summary (config key ``side_input``; see
-``src/ml/data/side_inputs.py`` for the semantics). Attached via
-``KidsHybridBandpowersMaps.attach_side_input``; the flow then conditions on ``[z, side]``.
+"""Side-input modules appended to the encoder summary (config key `side_input`, see src/ml/data/side_inputs.py).
+
+Attached via KidsHybridBandpowersMaps.attach_side_input, so the flow conditions on [z, side].
 """
 from __future__ import annotations
 
