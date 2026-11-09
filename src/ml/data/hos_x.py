@@ -1,26 +1,15 @@
-"""Candidate superset of noise-texture-robust third-order map statistics beyond R1 (`hos_x/vector`).
+"""Superset of third-order map statistics beyond R1 (`hos_x/vector`).
 
-Task eval-and-viz/hos-3pt-information. Same conventions as R1 (`src/ml/data/hos.py`): the STORED meter-normalised
-sc8a1 E map cast to float64 BEFORE filtering, anisotropic plate-carree filters with reflect boundary, footprint pixels
-(frac > 0.5) pooled N + S, the pooled mean subtracted per channel, moment = mean of the product over the pooled pixels.
-Every statistic is an ODD (cubic) polynomial of the map, so sign-symmetric shape noise of any variance texture has
-zero pure-noise expectation.
-
-A *channel* is (bin or merged bin, filter, scale); a block holds every unordered channel triple a <= b <= c of its
-channel list (lexicographic in channel order) unless stated.
-  R1     m3x3, 6 bins, Gaussian FWHM 8, 16 (112). Computed by `hos.third_moments`, bit-identical to `hos/vector`.
-  Geq    m3x3, 6 bins, Gaussian FWHM 4, 12, 24, 32 (4 x 56).
-  Gpool  kbar = mean of the 6 bins at Gaussian {4, 8, 12, 16, 24, 32}, all scale triples (56).
-  Gmrg   merged bins M1 = (b1 + b2)/2, M2 = (b3 + b4)/2, M3 = (b5 + b6)/2 x Gaussian {8, 16, 24, 32} (12 ch, 364).
-  Ceq    compensated (Crittenden) aperture, theta {4, 8, 16, 32}, 6 bins, equal-theta m3x3 (4 x 56).
-  Cmrg   M1..M3 x Crittenden theta {4, 8, 16, 32} (12 ch, 364).
-  G6u    (optional) 6 bins x Gaussian {8, 16, 32} (18 ch), only triples spanning >= 2 distinct scales (972).
-Scales are NOMINAL total FWHM t: the stored map already carries a 4' FWHM Gaussian (t = 4 is the stored map), extra
-FWHM sqrt(t^2 - 16) (hos.extra_fwhm). Crittenden: U(l) = (l theta)^2 / 2 exp(-l^2 theta^2 / 2), i.e.
-Map_theta = -(theta^2 / 2) Laplacian(G_{sigma=theta} * kappa); the stored 4' FWHM (sigma0 = 4 / 2.3548 arcmin) is
-folded in, so the applied Gaussian has sigma_extra = sqrt(theta^2 - sigma0^2). The filter is applied as its analytic
-symbol in the DCT-II domain (exact reflect-boundary convolution) with the anisotropic spacings dy = PIX,
-dx = PIX cos dec_c (see `aperture`).
+Groups of features are selected by name, and bake_one writes them as per-mock sidecars next to the
+R1 vector. Conventions are those of hos.py. Each block holds the channel triples a <= b <= c:
+  R1     6 bins x Gaussian FWHM 8, 16 (112), bit-identical to `hos/vector`.
+  Geq    6 bins x Gaussian FWHM 4, 12, 24, 32 (4 x 56).
+  Gpool  kbar (mean of the 6 bins) x Gaussian 4, 8, 12, 16, 24, 32, all scale triples (56).
+  Gmrg   merged bins (b1 + b2)/2, (b3 + b4)/2, (b5 + b6)/2 x Gaussian 8, 16, 24, 32 (364).
+  Ceq    6 bins x Crittenden aperture theta 4, 8, 16, 32, equal-theta triples (4 x 56).
+  Cmrg   merged bins x Crittenden theta 4, 8, 16, 32 (364).
+  G6u    optional, 6 bins x Gaussian 8, 16, 32, triples spanning at least two scales (972).
+Scales are nominal total FWHM in arcmin: the stored map is t = 4.
 """
 import itertools
 
@@ -55,10 +44,8 @@ def aperture_symbol(theta, side, shape):
 def aperture(x, theta, side):
     """x (..., H, W) float64 -> Crittenden compensated aperture -(theta^2/2) Lap(G_sigma_extra * x), theta arcmin.
 
-    Applied as the analytic symbol in the DCT-II domain, which is EXACT convolution with the untruncated kernel under
-    the reflect (half-sample symmetric) boundary used by every other filter here. A sampled scipy
-    gaussian_filter(order=2) kernel is not usable: at theta = 4 sigma_extra = 0.53 px and the sampled kernel is not
-    compensated (non-zero DC response; A2 gate (iii) measured 8.6x the analytic response at l = 150)."""
+    Applied as the analytic symbol in the DCT-II domain: exact convolution under the reflect boundary.
+    A sampled gaussian_filter(order=2) kernel is not compensated at theta = 4 and must not be used."""
     from scipy.fft import dctn, idctn
     assert x.dtype == np.float64, f"aperture needs float64 input, got {x.dtype}"
     S = aperture_symbol(theta, side, x.shape[-2:])
@@ -219,7 +206,7 @@ def index_sets(names):
 
 def hosx_vector(maps, foot, optional=False):
     """maps {side: (6, H, W) float64 (meter-normalised)} -> (vec, names). Block order R1 | Geq | Gpool | Gmrg | Ceq |
-    Cmrg [| G6u]. R1 comes from the EXISTING `hos.third_moments` path (bit-identical to `hos/vector`)."""
+    Cmrg [| G6u]. R1 comes from `hos.third_moments`, bit-identical to `hos/vector`."""
     blocks = BLOCKS_ALL if optional else BLOCKS_DEFAULT
     ch = hosx_channels(maps, foot)
     parts = [third_moments(maps, foot).ravel()]
@@ -248,9 +235,8 @@ def hosx_vector(maps, foot, optional=False):
     return vec, names
 
 
-# ---------------------------------------------------------------- sidecar bake (hos.bake_one(variant="x"))
-# Versioned bake list (Phase A, artifacts/PHASE_A.md): the default blocks; G6u NOT baked (redundant, adds nothing over
-# Cmrg at n = 511). Ceq theta = 8' and every 4' / theta = 4 leg ARE baked; analysis / production vectors select by index.
+# --- sidecar bake (hos.bake_one(variant="x")) ---
+# The default blocks are baked, G6u is not. Analysis vectors select features by index.
 HOSX_BAKE_BLOCKS = BLOCKS_DEFAULT
 HOSX_BAKE_NAMES = hosx_names(HOSX_BAKE_BLOCKS)
 HOSX_BAKE_BLOCK_INDEX = hosx_blocks(HOSX_BAKE_BLOCKS)
@@ -268,8 +254,6 @@ def _scales(name):
     return [t for t, _ in _legs(name)]
 
 
-# Leg predicates for '<group>+<pred>[+<pred>...]' keys (task eval-and-viz/hos-robust-shoreup). 'K' (kbar = mean of all
-# six bins) contains bin 1.
 LEG_PREDICATES = {
     "nob1": lambda n: not any(b in ("b1", "M1", "K") for b in _bins(n)),         # no leg in tomographic bin 1 / M1
     "nosame": lambda n: len(set(_bins(n))) > 1,                                    # not all three legs in one bin
@@ -300,7 +284,7 @@ def group_index(groups, names=None):
 
 
 def _group_index_one(g, names):
-    """Indices of ONE plain group key (no '+' predicates), the pre-2026-10-26 group_index semantics."""
+    """Indices of one plain group key (no '+' predicates)."""
     blk_of = [n.split("/")[0] if not ("/m3x3/" in n and n.split("/")[0].startswith("s")) else "R1" for n in names]
     S = index_sets(names)
     base, _, sub = g.partition("/")
