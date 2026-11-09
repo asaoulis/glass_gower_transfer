@@ -1,14 +1,7 @@
+"""Posterior sampling on held-out test data.
 
-"""Convenience utilities for posterior sampling on held-out test data.
-
-This module is intentionally small and pragmatic:
-- Select random dataset indices from a test loader.
-- Optionally align those indices across multiple loaders by underlying file path.
-- Build an sbi-style conditioning object (tensor or dict of tensors).
-- Sample a posterior (or ensemble posterior) via ``posterior.gen_samples``.
-- Convert both truth and samples back to physical units using the provided scaler.
-
-The main entrypoint for multi-model comparisons is ``sample_across_models``.
+sample_posterior draws samples for a conditioning batch and returns them in physical units.
+sample_across_models does so for several models on the same test cases, aligned by file path.
 """
 
 from __future__ import annotations
@@ -29,12 +22,7 @@ def _get_wrapped_base_dataset(ds: Any) -> Any:
 def _resolve_cosmo_scaler(test_loader, param_scaler=None):
 	"""Resolve the scaler that was actually used to scale theta in the loader.
 
-	In this repo, ``TransformingDataset`` stores the cosmo scaler as
-	``dataset.cosmo_scaler`` and applies it inside ``__getitem__``.
-
-	If ``param_scaler`` is provided and differs from the dataset scaler, we
-	prefer the dataset scaler (to keep truths consistent with the conditioning
-	variables returned by the loader).
+	The dataset's cosmo_scaler (TransformingDataset) wins over a different param_scaler.
 	"""
 	ds = getattr(test_loader, "dataset", None)
 	ds_scaler = getattr(ds, "cosmo_scaler", None)
@@ -62,11 +50,7 @@ def _resolve_cosmo_scaler(test_loader, param_scaler=None):
 
 
 def get_dataset_paths(loader) -> list[str] | None:
-	"""Return dataset paths if available (used for alignment).
-
-	Works with both H5CosmoDataset (``.paths``) and TransformingDataset wrappers
-	(``.base_ds.paths``).
-	"""
+	"""Return dataset paths (.paths or .base_ds.paths) if available, for alignment."""
 	ds = getattr(loader, "dataset", None)
 	if ds is None:
 		return None
@@ -169,17 +153,8 @@ def prepare_test_batch(
 ) -> PreparedBatch:
 	"""Build a conditioning batch and truth theta from dataset indices.
 
-	Notes
-	-----
-	The underlying datasets in this repo return ``(data, cosmo)``.
-	``cosmo`` is typically already scaled by the loader wrapper.
-
-	Returns
-	-------
-	PreparedBatch
-		- ``theta_scaled``: tensor shaped [B, D]
-		- ``theta_phys``: numpy array shaped [B, D]
-		- ``x``: conditioning batch (dict or tensor) shaped [B, ...]
+	Returns a PreparedBatch with theta_scaled (tensor [B, D]), theta_phys (array [B, D]) and
+	x (dict or tensor [B, ...]).
 	"""
 	if indices is None:
 		raise ValueError("indices must be provided")
@@ -187,9 +162,7 @@ def prepare_test_batch(
 	if len(indices) == 0:
 		raise ValueError("indices must be non-empty")
 
-	# NOTE: We do not iterate the DataLoader at all here.
-	# Indexing the dataset directly avoids any accidental shuffling or
-	# collation/batch-size quirks.
+	# Index the dataset directly, never the DataLoader, so no shuffling or collation applies.
 	dataset = test_loader.dataset
 	base_ds = getattr(dataset, "base_ds", None)
 	paths = get_dataset_paths(test_loader)
@@ -276,31 +249,11 @@ def sample_posterior(
 	use_latent: bool = False,
 	**mcmc_kwargs,
 ) -> np.ndarray:
-	"""Sample posterior and return samples in physical units.
+	"""Sample posterior and return samples in physical units, shape [n_samples, B, D].
 
-	Parameters
-	----------
-	posterior:
-		Object exposing ``gen_samples(num_samples, x=..., use_latent=..., **kwargs)``.
-	x:
-		Conditioning batch: dict[str, Tensor] or Tensor with leading batch dim.
-	num_points:
-		If given, only use the first ``num_points`` items along the batch axis.
-	param_scaler:
-		Scaler with ``inverse_transform`` mapping scaled theta -> physical.
-	n_samples:
-		Number of posterior samples.
-	device:
-		Device used for sampling.
-	use_latent:
-		Passed through to ``gen_samples``.
-	mcmc_kwargs:
-		Passed through to ``gen_samples`` (e.g. ``num_chains``, ``warmup_steps``).
-
-	Returns
-	-------
-	np.ndarray
-		Samples in physical units with shape [n_samples, B, D].
+	posterior exposes gen_samples(num_samples, x=..., use_latent=..., **kwargs). x is a dict of
+	tensors or a tensor with a leading batch dim, cut to num_points when given. param_scaler maps
+	scaled theta to physical. use_latent and mcmc_kwargs pass through to gen_samples.
 	"""
 	if device is None:
 		device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -394,29 +347,10 @@ def sample_across_models(
 ) -> dict[str, Any]:
 	"""Sample posteriors for multiple models on the same underlying test cases.
 
-	Parameters
-	----------
-	model_configs:
-		Mapping model_name -> dict with keys:
-		  - "model": lightning module
-		  - "test_loader": DataLoader
-		  - "scalers": dict containing "cosmo" scaler
-		  - "inputs": optional list of data keys to use for conditioning
-	indices / n_indices / seed:
-		If ``indices`` is None, sample ``n_indices`` random indices from the
-		first model's test loader.
-	align_by_path:
-		If True and datasets expose ``.paths``, align selected points across
-		models by file path. This prevents mismatches when different splits
-		reorder test sets.
-
-	Returns
-	-------
-	dict with:
-	  - "indices": selected indices in the *base* loader
-	  - "paths": selected file paths (if available)
-	  - "truth": physical truth theta [B, D]
-	  - "samples": dict model_name -> samples_phys [n_samples, B', D]
+	model_configs maps model_name -> {"model", "test_loader", "scalers" (with "cosmo"), optional
+	"inputs"}. Without indices, n_indices random indices come from the first test loader. With
+	align_by_path the points are matched across models by file path. Returns {"indices" (base
+	loader), "paths", "truth" [B, D], "samples": {model_name: [n_samples, B', D]}}.
 	"""
 	if not model_configs:
 		raise ValueError("model_configs must be non-empty")
