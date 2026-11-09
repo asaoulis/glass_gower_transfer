@@ -241,21 +241,18 @@ def _frame_for(experiments: Sequence[str]):
     would be computed in a frame that matches none of them.
     """
     from src.ml.data.constants import COSMO_PARAM_PRESET_MINMAX
-    from config.ablations import ablation_experiments
-    from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
+    from config.paper_2026 import paper_2026_experiments
     from config.experiments import experiments as base_experiments
     from config.kids_legacy import kids_legacy_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
     from config.kids_legacy_vdq import kids_legacy_vdq_experiments
     from config.kids_legacy_hos import kids_legacy_hos_experiments
-    from config.kids_legacy_counts import kids_legacy_counts_experiments
-    from config.kids_legacy_dn import kids_legacy_dn_experiments
     from config.kids_legacy_novd import kids_legacy_novd_experiments
 
     exps = dict(base_experiments)
-    for extra in (ablation_experiments, kids_legacy_experiments, kids_legacy_counts_experiments,
-                  kids_legacy_novd_experiments, kids_legacy_dn_experiments,
-                  kids_legacy_bgp_experiments, kids_legacy_vdq_experiments, bgp_stack5_experiments,
+    for extra in (paper_2026_experiments, kids_legacy_experiments,
+                  kids_legacy_novd_experiments,
+                  kids_legacy_bgp_experiments, kids_legacy_vdq_experiments,
                   kids_legacy_hos_experiments):
         exps.update(extra)
     frames = []

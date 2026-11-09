@@ -23,16 +23,13 @@ import argparse
 
 from config.default import get_default_config
 from config.experiments import experiments
-from config.ablations import ablation_experiments
+from config.paper_2026 import paper_2026_experiments
 from config.kids_legacy import kids_legacy_experiments
-from config.kids_legacy_counts import kids_legacy_counts_experiments
 from config.kids_legacy_novd import kids_legacy_novd_experiments
 from config.euclid import euclid_experiments
-from config.kids_legacy_dn import kids_legacy_dn_experiments
 from config.kids_legacy_bgp import kids_legacy_bgp_experiments
 from config.kids_legacy_vdq import kids_legacy_vdq_experiments
 from config.kids_legacy_hos import kids_legacy_hos_experiments
-from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 from src.ml.eval.utils import evaluate_best_checkpoint
 from src.ml.eval.misspec import VARIATE_SETS
 from copy import copy
@@ -41,16 +38,13 @@ from copy import copy
 # gower / glass_pretrain (VD-on era) and gower_novd / glass_pretrain_novd (the NO-VD suite).
 _VARIATE_SET_NAMES = sorted(VARIATE_SETS)
 
-experiments.update(ablation_experiments)  # Combine experiments and ablations into a single dict
+experiments.update(paper_2026_experiments)
 experiments.update(kids_legacy_experiments)  # KiDS-Legacy NLA-M configs
-experiments.update(kids_legacy_counts_experiments)  # counts-normalisation rerun configs
 experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
 experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
-experiments.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
 experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
 experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
 experiments.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
-experiments.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation (closed; do not extend)
 
 # What a bare `python eval.py` runs. Explicit --mode wins. The gatekeeper passes eval.py CLI
 # args through (redeployed 2026-07-08), so submissions should say --mode explicitly:

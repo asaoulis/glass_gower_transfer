@@ -411,26 +411,20 @@ def _load_experiment_config(experiment_name: str):
     """Rebuild the experiment config exactly like eval.py's load_config + list-branch handling."""
     from config.default import get_default_config
     from config.experiments import experiments as base_experiments
-    from config.ablations import ablation_experiments
+    from config.paper_2026 import paper_2026_experiments
     from config.kids_legacy import kids_legacy_experiments
-    from config.kids_legacy_counts import kids_legacy_counts_experiments
     from config.kids_legacy_novd import kids_legacy_novd_experiments
-    from config.kids_legacy_dn import kids_legacy_dn_experiments
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments
     from config.kids_legacy_vdq import kids_legacy_vdq_experiments
     from config.kids_legacy_hos import kids_legacy_hos_experiments
-    from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 
     exps = dict(base_experiments)
-    exps.update(ablation_experiments)
+    exps.update(paper_2026_experiments)
     exps.update(kids_legacy_experiments)
-    exps.update(kids_legacy_counts_experiments)
     exps.update(kids_legacy_novd_experiments)
-    exps.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
     exps.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
     exps.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
     exps.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
-    exps.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation
     experiment_config = exps[experiment_name]
 
     config = get_default_config()

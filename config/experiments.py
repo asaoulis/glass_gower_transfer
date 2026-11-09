@@ -1,6 +1,5 @@
-"""Shim: the base experiment dict now lives in config/archive/legacy_experiments.py.
+"""Root of the experiment registry.
 
-These are pre-BGP rows (bandpower-MLP era). They are kept importable so existing entry points and
-old runs keep working; do not add to them. New experiments belong in config/kids_legacy_bgp.py.
+The entry points merge every config module's rows into this dict in place.
 """
-from config.archive.legacy_experiments import experiments  # noqa: F401
+experiments = {}

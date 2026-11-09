@@ -2,16 +2,13 @@ import os
 import sys
 
 from config.experiments import experiments
-from config.ablations import ablation_experiments
+from config.paper_2026 import paper_2026_experiments
 from config.kids_legacy import kids_legacy_experiments
-from config.kids_legacy_counts import kids_legacy_counts_experiments
 from config.kids_legacy_novd import kids_legacy_novd_experiments
 from config.euclid import euclid_experiments
-from config.kids_legacy_dn import kids_legacy_dn_experiments
 from config.kids_legacy_bgp import kids_legacy_bgp_experiments
 from config.kids_legacy_vdq import kids_legacy_vdq_experiments
 from config.kids_legacy_hos import kids_legacy_hos_experiments
-from config.archive.legacy_bgp_stack5 import bgp_stack5_experiments
 from src.ml.embeddings.train import EmbeddingTrainArgs, train_embeddings_experiment
 from src.ml.models.custom_sbi import NeuralSplineFlow
 
@@ -20,16 +17,13 @@ from src.ml.models.custom_sbi import NeuralSplineFlow
 # against the SAME `config.experiments.experiments` dict object, so mutating it in place here
 # (mirroring train.py) is what makes the kids_legacy_* hybrid SOURCES resolvable. A reassignment
 # would NOT propagate to the already-imported reference, so use .update().
-experiments.update(ablation_experiments)
+experiments.update(paper_2026_experiments)
 experiments.update(kids_legacy_experiments)
-experiments.update(kids_legacy_counts_experiments)  # counts-normalisation rerun configs
 experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
 experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
-experiments.update(kids_legacy_dn_experiments)  # dual-normalisation arm-comparison suite
 experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
 experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
 experiments.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
-experiments.update(bgp_stack5_experiments)  # ARCHIVED stacked-ensemble ablation (closed; do not extend)
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:

@@ -142,7 +142,7 @@ SAMPLE_SUFFIX = "p100n20k"
 def _run_generation(output_suffix: str):
     from config.default import get_default_config
     from config.experiments import experiments
-    from config.ablations import ablation_experiments
+    from config.paper_2026 import paper_2026_experiments
     from config.kids_legacy import kids_legacy_experiments
     from config.kids_legacy_novd import kids_legacy_novd_experiments
     from config.euclid import euclid_experiments
@@ -156,7 +156,7 @@ def _run_generation(output_suffix: str):
     # Same merge as train_embeddings.py / eval.py: the registry modules share one dict object,
     # so updating here also makes the KiDS-Legacy names resolvable inside
     # load_embedding_model_with_dataloader (which imports the same `experiments`).
-    experiments.update(ablation_experiments)
+    experiments.update(paper_2026_experiments)
     experiments.update(kids_legacy_experiments)
     experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
     experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
