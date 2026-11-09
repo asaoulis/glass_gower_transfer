@@ -1,3 +1,8 @@
+"""Evaluation-time ensemble of NLE LightningModules.
+
+Averages member log-likelihoods inside the MCMC potential and samples with a joblib pool of
+per-batch work items (_sample_shard).
+"""
 from __future__ import annotations
 
 import math
@@ -26,19 +31,11 @@ from .utils import _move_nested_to_device
 
 def _sample_shard(posterior, num_samples, test_data, test_cosmo, mcmc_kwargs,
                   seed=None, threads=None):
-    """One joblib work item: draw ``num_samples`` per event for ONE batch of events.
+    """One joblib work item: draw num_samples per event for one batch of events.
 
-    Module-level (not a closure) so loky can pickle it. Two things have to happen INSIDE the
-    worker process:
-
-    * ``torch.set_num_threads`` — loky OVERRIDES the thread-pool limits inside its children with
-      ``cpu_count // n_jobs``, and does so regardless of what the job script exported (measured:
-      parent ``OMP_NUM_THREADS=1``, worker ``torch.get_num_threads() == 40``). That value is not
-      the one we want for a batch this small (see `generate_samples`).
-    * seeding — ``SliceSamplerVectorized`` draws from the numpy GLOBAL RNG and sbi's chain init
-      from torch's. loky REUSES worker processes, so without an explicit per-item seed two shards
-      that land on the same worker can continue the same RNG stream (harmless) while a re-run is
-      irreproducible (not harmless). Seeding both makes a shard a pure function of its index.
+    Module-level so loky can pickle it. Thread count and seeds are set inside the worker: loky
+    overrides thread limits in its children, and the slice sampler draws from the global numpy
+    and torch RNGs of reused worker processes.
     """
     if threads:
         torch.set_num_threads(int(threads))
@@ -137,11 +134,7 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
                 per_member[i].append(lp.reshape(-1).detach())
             all_log_probs.append(torch.stack(batch_lps, dim=0).mean(dim=0).reshape(-1))
 
-        # ⚠️ REPORT PER-MEMBER, not just the mean. This is a mean OF LOG-densities, so ONE
-        # degenerate member (mis-resolved checkpoint, wrong whitener, random head) drags the
-        # ensemble number arbitrarily far and is completely invisible in the aggregate. Measured
-        # instance: this metric read 1.99 on 2026-08-28 and 729.12 on a 2026-09-02 re-eval of the
-        # "same" row. Printing the spread makes that diagnosable from the log alone.
+        # Report per member: a mean of log-densities hides one degenerate member.
         member_means = [float(-torch.cat(v, dim=0).mean().item()) for v in per_member]
         print(
             "[ensemble-nle] per-member mean -log p(z|theta): "
@@ -177,9 +170,7 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
                 device=device,
             )
 
-        # Fast path: evaluate all members in one vectorised forward (numerically identical to the
-        # serial loop; see ensemble_flow.py). Falls back to the serial _EnsembleLikelihoodModel when
-        # the member flows can't be grouped (non-nsf flows) or fast=False.
+        # Fast path: all members in one vectorised forward (ensemble_flow.py), else the serial loop.
         ensemble_likelihood = None
         if fast:
             ensemble_likelihood = build_grouped_ensemble_likelihood(
@@ -217,38 +208,13 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
         mcmc_seed: int | None = None,
         **mcmc_kwargs,
     ):
-        """Sample the ensemble posterior for every event in ``test_dataloader``.
+        """Sample the ensemble posterior for every event in test_dataloader.
 
-        PARALLELISM. Historically the only axis was the EVENT axis: one joblib work item per
-        dataloader batch. That is the right shape for the hundreds-to-thousands of events this
-        path was built for and the wrong one for **N=1** (the real-data run), where it leaves a
-        single worker on a 40/64-core node and every other core idle. sbi's `sample_batched`
-        makes the per-event work itself serial in ``warmup + num_samples/num_chains`` slice
-        sweeps, so the only way to spend more cores on ONE event is to run more chains.
-
-        ``mcmc_workers=K`` adds the missing axis: the SAMPLE budget of each event is split into
-        K shards of ``ceil(num_samples/K)`` draws, each shard a separate process running its own
-        ``num_chains`` chains, and the shards are concatenated. K independent, independently
-        warmed-up, independently initialised chain groups pooled across processes is exactly one
-        process running K x ``num_chains`` chains — so this changes NOTHING about the target
-        distribution, only how many cores draw from it. Work items become ``n_batches * K``.
-
-        ``mcmc_workers=None`` (the default) reproduces the historical behaviour exactly: one item
-        per batch, no seeding, no thread pinning.
-
-        Sample-axis ORDER is preserved as chain-major blocks (sbi's own convention: its
-        ``reshape(B,-1,D).permute`` lays chain 0's draws first, then chain 1's, ...), with the
-        shards appended in index order. So ``samples[:k]`` means the same "first chains" thing it
-        already meant; only a full-column reduction is meaningful either way.
-
-        Args:
-            mcmc_workers: shards per event batch (extra processes). None/1 = old behaviour.
-            mcmc_threads: ``torch.set_num_threads`` inside each worker AND loky's
-                ``inner_max_num_threads``. At MCMC batch sizes (chains x members rows) intra-op
-                threading costs more in synchronisation than it saves, so 1 is usually right and
-                also keeps ``mcmc_workers`` processes from oversubscribing the node.
-            mcmc_seed: base seed; shard i gets ``mcmc_seed + i`` for numpy AND torch. None =
-                unseeded (historical behaviour).
+        Returns samples (num_samples, n_events, n_params), chain-major along the sample axis.
+        mcmc_workers=K splits each event's sample budget into K shards of ceil(num_samples / K)
+        draws, one process each, which leaves the target distribution unchanged. None keeps one
+        work item per batch. mcmc_threads sets torch threads and loky's inner_max_num_threads per
+        worker. mcmc_seed seeds shard i with mcmc_seed + i for numpy and torch.
         """
         posterior = self.build_posterior_object(
             prior=prior,
@@ -266,20 +232,13 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
         # and the truncation below drops only the tail of the last shard.
         per_shard = int(math.ceil(num_samples / n_shards))
         items = [(bi, si) for bi in range(len(batches)) for si in range(n_shards)]
-        # Only clamp on the NEW path. Clamping unconditionally would silently change the default
-        # N=1 topology: one item + n_jobs=1 is joblib's SEQUENTIAL backend (runs in-process,
-        # inheriting the parent's torch thread count) rather than the loky child the old code
-        # always produced. Leave `num_jobs` exactly as it was when nothing is being sharded.
+        # Clamp n_jobs only when sharding: n_jobs=1 would switch joblib to its sequential backend.
         n_jobs = num_jobs
         if n_shards > 1 and num_jobs and num_jobs > 0:
             n_jobs = min(int(num_jobs), len(items))
 
-        # `inner_max_num_threads` is only honoured through `parallel_config` — joblib IGNORES it
-        # when `Parallel(backend=...)` names the backend explicitly (measured on joblib 1.5.2:
-        # workers kept the default cpu_count//n_jobs). Hence the context manager, and hence
-        # `Parallel` below must NOT take `backend=`. Without it loky hands each of K workers
-        # cpu_count//K OpenMP threads, which on a 64-core node with K=32 is 2 threads fighting
-        # over a batch of a few hundred rows.
+        # joblib honours inner_max_num_threads only through parallel_config, so Parallel below
+        # must not take backend=.
         cfg = {"backend": backend}
         if mcmc_threads:
             cfg["inner_max_num_threads"] = int(mcmc_threads)
@@ -317,8 +276,7 @@ class EnsembleLikelihoodNDELightningModule(pl.LightningModule):
                 )
             )
 
-        # Regroup: shards of the same batch concatenate along the SAMPLE axis, batches along the
-        # EVENT axis (dim 1) — the historical output contract, (num_samples, n_events, n_params).
+        # Shards of one batch concatenate along the sample axis, batches along the event axis (dim 1).
         per_batch_samples: dict[int, list] = {}
         per_batch_theta0: dict[int, object] = {}
         for (bi, _si), (theta0, s) in zip(items, results):
