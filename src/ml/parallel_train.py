@@ -1,14 +1,10 @@
-"""Single-node CPU training waves: many small trainings at once on one CPU node (`eval.py --mode hos-train`).
+"""Single-node CPU training waves (`eval.py --mode hos-train`): many small trainings at once on one node.
 
 A wave is a list of task dicts (config/kids_legacy_hos.py:HOS_TRAIN_WAVES):
   {"kind": "train" | "embed" | "eval", "exp": <experiment>, "repeat": r, "group": <store tag>,
    "after": [<label or exp>...], "env": {...}, "sources": [...] (embed), "args": [...] + "label" (eval)}
-`train` runs `python train.py <exp>` with REPEAT_INDICES=r; `embed` runs `python train_embeddings.py <exp> <sources>`;
-`eval` runs `python eval.py <args>` (e.g. one ensemble member's `--mode recover-scalers`).
-Each task gets its own disjoint slice of the job's CPU affinity (taskset), OMP/MKL threads = slice size, no GPU, and its
-own log file. Scheduling: list order is priority; a task starts when a slot is free, every `after` task has finished
-with rc 0 (a failed dependency skips it), and the first task of its `group` has built the store's preload cache (its
-log shows `[H5CosmoDataset] preloaded`, or it exited) -- so N concurrent jobs do not all build the same cache.
+Each task gets a disjoint CPU slice and its own log. List order is priority. A task starts once every
+`after` task has exited 0 and the first task of its group has built the store's preload cache.
 """
 import json
 import os
