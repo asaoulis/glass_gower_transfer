@@ -1,25 +1,8 @@
 """Catalogue -> observation HDF5, by calling master's observable-building sequence verbatim.
 
-Sequence (master_kids_legacy_simulator.py L1262-1457, production 'sc8only' preset):
-
-  1. alm, alm_rand  = make_alm_shear_convergence(cat, m, nbins, nside, lmax, nosh=False, mask,
-                       normalization="counts", rng=postproc_rng)
-  2. mixed_cls      = denoise_shear_cls(nbins, alm, alm_rand, lmax)             (EE,BB,EB per pair)
-     mixed_bandpowers = compute_cl_bandpowers(mixed_cls[..., lmin:lmax+1], nbins, lmin, lmax, nbands)
-  3. alm_sc8, alm_rand_sc8 = make_alm_shear_convergence(..., normalization="smoothed_counts",
-                       smoothed_counts_fwhm_arcmin=8, rng=postproc_rng.spawn(1)[0])
-     for each A3s8 variant: E_sc8_<tag> = filter_EB_alms_and_make_maps(alm_sc8, ...)[0];
-                            noise_std_sc8_<tag> = patch_noise_std(filter(alm_rand_sc8)[0], ...)
-  4. for each counts variant: E_<tag>, B_<tag> = filter(alm); noise_std_<tag> = patch_noise_std(filter(alm_rand))
-  5. patches via get_patch_values(map, patches, nside_out, ang=0); E_sc8_* cast to float16.
-  6. save: cls_results/full/{mixed_bandpowers, bandpower_ls, cls[:, :, :2]}, pixelised_results/*,
-     cosmo_dict (EMPTY here), + an ``observation/`` provenance group (never cosmological).
-
-Additions over a mock (harmless to every loader, which read only the paths they ask for):
-  * ``cls_results/full/bb_bandpowers`` (21, nbands): the BB spectra through the SAME Brown
-    binning as the EE ``mixed_bandpowers`` -- the Tier-1 B-mode null-test vector.
-  * ``observation/`` group: label, geometry, variants, treatment knobs, catalogue fingerprint,
-    per-bin counts, git revision, build timestamp.
+The sequence is master_kids_legacy_simulator.py's production 'sc8only' preset, steps 1-6 below.
+The file is a mock's layout with an empty cosmo_dict, plus cls_results/full/bb_bandpowers (21, nbands,
+the Tier-1 B-mode null vector) and an observation/ provenance group that is never cosmological.
 """
 from __future__ import annotations
 
@@ -63,8 +46,7 @@ def bb_bandpowers_from_cls(mixed_cut, nbins, lower, upper, nbands):
 
 
 def _save_dict(h5group, dictionary):
-    """Mirror of src/cosmology/sim_utils.save_results_h5._save_dict (kept local so we control the
-    output filename and can add groups)."""
+    """Local mirror of src/cosmology/sim_utils.save_results_h5._save_dict."""
     for key, value in dictionary.items():
         if isinstance(value, dict):
             _save_dict(h5group.create_group(str(key)), value)
@@ -78,7 +60,7 @@ def _save_dict(h5group, dictionary):
 
 
 def estimator_accepts_weights() -> bool:
-    """True once the protected §5.2 patch (``make_alm_shear_convergence(..., weights=)``) is in."""
+    """True when make_alm_shear_convergence accepts weights=."""
     import inspect
     from src.cosmology.map_shears import make_alm_shear_convergence
     return "weights" in inspect.signature(make_alm_shear_convergence).parameters
@@ -96,21 +78,11 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
                       rng_seed: int = 20260908, rng=None, mask=None, verbose: bool = True,
                       extra_provenance: Optional[Dict] = None, weights: Optional[np.ndarray] = None,
                       normalization: str = "counts") -> str:
-    """Build ``out_path`` from a loaded catalogue. Returns the written path.
+    """Build out_path from a loaded catalogue. Returns the written path.
 
-    ``weights``: per-galaxy weights for the estimator (``cat.estimator_weights`` after
-    ``apply_weights(mode='lensfit')``); None = the unweighted forward model (the mock path, which
-    must stay bit-identical). Passing weights requires the protected §5.2 patch; without it this
-    RAISES rather than silently building an unweighted observation.
-    ``normalization``: the bandpower branch's mode ('counts' in production; 'mean' = paper Eq. 11 for
-    cross-checks, which REQUIRES ``mask`` -- with mask=None npix_norm is the full sphere, 42x wrong).
-    ``mask``: passed through to make_alm_shear_convergence, which does NOT apply it to the maps
-    (it only enters the 'mean' normalisation) -- so None is safe for 'counts'/'smoothed_counts'.
-    ``rng_seed``: seeds the random-rotation noise meter (a pure shape-noise realisation); the
-    observable maps themselves are deterministic given the catalogue, and the bandpowers depend on
-    it only through the high-ell shape-noise debias. ``rng``: an explicit Generator that overrides
-    ``rng_seed`` (the fidelity gate passes the mock's own block stream, see
-    ``geometry.master_postproc_rng``).
+    weights are per-galaxy estimator weights (None is the unweighted forward model) and need the
+    weights= patch of make_alm_shear_convergence. normalization is 'counts' in production, and
+    'mean' requires mask. rng_seed seeds the random-rotation noise meter, and rng overrides it.
     """
     from src.cosmology.manip_cls import compute_cl_bandpowers, denoise_shear_cls
     from src.cosmology.map_shears import filter_EB_alms_and_make_maps, make_alm_shear_convergence
@@ -259,8 +231,7 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
     with open(os.path.splitext(out_path)[0] + "_provenance.json", "w") as fh:
         json.dump({k: (v.tolist() if isinstance(v, np.ndarray) else v)
                    for k, v in observation_prov.items()}, fh, indent=2, default=str)
-    # TRUTHKEY sidecar (mock-as-real only): the sim identity, kept OUT of the observation and the
-    # store, under a _truthkey/ dir that the blind guard denies. Real data has no sim attrs.
+    # Truth-key sidecar (mock-as-real only): the sim identity, under a _truthkey/ dir the blind guard denies.
     sim_attrs = cat.provenance.get("sim_attrs", {})
     if sim_attrs:
         tk_dir = Path(out_path).parent / "_truthkey"
@@ -275,24 +246,20 @@ def build_observation(cat: Catalogue, m_bias: np.ndarray, *, out_path: str, labe
 
 _COSMO_LIKE = ("omega_m", "sigma_8", "s8", "s_8", "w0", "h", "ns", "n_s", "ombh2", "a_ia", "b_ia",
                "mnu", "m_nu", "log10_m_eff", "b_g", "cosmo",
-               # a SIM catalogue's identity IS its truth (sim_id -> cosmology table), so it is
-               # scrubbed too; the gate keeps it in a separate TRUTHKEY sidecar (see build_observation)
+               # A sim catalogue's identity is its truth, so it is scrubbed too.
                "sim_id", "galaxy_bias", "systematics_model", "outer_idx", "rot_idx", "cat_idx", "rng_seed")
 TRUTHKEY_KEYS = ("sim_id", "galaxy_bias", "systematics_model", "outer_idx", "rot_idx", "cat_idx", "rng_seed")
 
 
 def scrub_provenance(prov: dict) -> dict:
-    """Defensive: drop any provenance key that looks cosmological before it is persisted.
-    (A sim catalogue's file attrs carry none, but the contract is 'never'.)"""
+    """Drop any provenance key that looks cosmological before it is persisted."""
     def _clean(d):
         if isinstance(d, dict):
             return {k: _clean(v) for k, v in d.items()
                     if not any(str(k).lower().startswith(c) for c in _COSMO_LIKE)}
         return d
     out = _clean(prov)
-    # A SIM catalogue's path names its store (galaxy bias, variate, era): that is truth-key
-    # material for a mock-as-real observation, so it is hidden here and written to the
-    # _truthkey/ sidecar instead (see build_observation). Real catalogues keep their path.
+    # A sim catalogue's path is truth-key material, so it goes to the _truthkey/ sidecar instead.
     if out.get("kind") == "sim" or "sim_attrs" in prov:
         src = dict(out.get("source", {}))
         src["path"] = "<sim catalogue: path in _truthkey/>"
