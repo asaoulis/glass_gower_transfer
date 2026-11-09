@@ -1,27 +1,8 @@
-"""Model-misspecification evaluation: ONE trained NPE ensemble evaluated on the TEST split of
-MANY Gower variate datasets, reusing the ORIGINAL training scalers.
+"""Model-misspecification evaluation: one trained ensemble on the test split of many variate datasets.
 
-Motivation: the production NPE (`gower_npe_finetune_nla_m_z8`, repeat 0) was trained on the
-nla_m Gower suite. Each physics variate (nla, nla_z, galaxy-bias, ...) is a controlled
-misspecification of that forward model; running the SAME model on each variate's held-out test
-cosmologies and measuring the TARP miscalibration quantifies how sensitive the inference is to
-that misspecification.
-
-Key differences from the standard `evaluate_best_checkpoint` path:
-- Data scalers (bandpowers LogNormal + map Standard) are fit ONCE on the original nla_m
-  train+val split via `prepare_data_parameters` and INJECTED into every variate test loader —
-  never refit on a variate (a refit would absorb part of the covariate shift being measured).
-- Variate test sets are built directly from the shared fixed-test lock file (lock ∩ on-disk),
-  NOT via `split_by_cosmology`: variates were largely simulated ON the 200 held-out test ids,
-  so forcing them all into test would trigger split_by_cosmology's no-train/val fallback and
-  silently produce a train-heavy split.
-- Cosmo params absent from a variate (e.g. b_ia in nla/nla_z) are NaN-filled by the loader
-  (`allow_missing_cosmo_params`), keeping theta 9-dim to match the flow; calibration is then
-  computed only over the finite dims. Per-variate `exclude_params` additionally drops params
-  whose MEANING differs between suites (a_ia under NLA vs NLA-M parametrisations).
-- FoM is still computed over all 9 sampled dims against the base Gower prior.
-
-Invoked from eval.py (RUN_MISSPEC flag) so the cluster's `eval-submit` job needs no new verb.
+The original training scalers are injected, never refit. VARIATE_SETS names the selectable sets
+(gower_vdq, gower_vdq_hos, gower_bgp, gower_novd and others). run_misspecification_eval writes TARP
+miscalibration, FoM and log-prob per variate under checkpoints/<exp>/misspec/<variate>/.
 """
 import json
 import os
@@ -66,9 +47,8 @@ from .utils import (
 _GPU5 = "/share/gpu5/asaoulis/transfer_datasets"
 _GPU4 = "/share/gpu4/asaoulis/transfer_datasets"
 
-# a_ia is EXCLUDED from calibration for variates whose IA parametrisation differs from the
-# nla_m training suite (its meaning changes between suites — user directive 2026-07-08).
-# nla_m / gb* share the nla_m IA model, so a_ia keeps its meaning there.
+# exclude_params: parameters whose meaning differs between variate suites (a_ia for nla and nla_z)
+# are dropped from calibration.
 DEFAULT_VARIATES: List[Dict] = [
     {"name": "nla_m", "patterns": f"{_GPU5}/gower_mocks_nla_m_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5",
      "exclude_params": [], "in_distribution": True},
@@ -78,9 +58,8 @@ DEFAULT_VARIATES: List[Dict] = [
     {"name": "gb1p5", "patterns": f"{_GPU4}/gower_mocks_gb1p5_counts/output_*.h5", "exclude_params": []},
 ]
 
-# GLASS pre-train variate suites (gpu5 f16 fwhm4_lmin56_lcut1400 prebakes, matching the GLASS
-# z8 foundation's maps). In-dist = the foundation's own lmin50 training store; its test ids
-# are derived from the training split at runtime (no fixed lock for GLASS).
+# GLASS pre-train variate suites (gpu5 f16 fwhm4_lmin56_lcut1400 prebakes, matching the GLASS z8
+# foundation's maps). Their test ids come from the training split, since GLASS has no fixed lock.
 GLASS_PRETRAIN_VARIATES: List[Dict] = [
     {"name": "glass_nla_m",
      "patterns": f"{_GPU5}/glass_mocks_nla_m_lmin50_f16_fwhm4_lmin56_lcut1400/output_*.h5",
@@ -96,15 +75,7 @@ GLASS_PRETRAIN_VARIATES: List[Dict] = [
      "exclude_params": ["a_ia"]},
 ]
 
-# --- NO-VD suite (2026-07-29 variate switch; the MAIN analysis variate) -------------------------
-# Added ALONGSIDE the VD-on sets above rather than repointing them: the counts-era misspec bases
-# (e.g. gower_npe_finetune_nla_m_counts_z8) still resolve, and repointing in place would have made
-# any such re-run silently evaluate a VD-on model against VD-off data — different forward physics,
-# no error raised. Select these with `--variates gower_novd` / `glass_pretrain_novd`.
-#
-# Store provenance (datasets_checklist.md): S1 nla_m + G1 glass nla_m are consumed from the gpu5 f16
-# fwhm4 PREBAKES; the misspec test sets (S2/S3 nla,nla_z and S4/S5 + G2/G3 gb0p5,gb1p5) are consumed
-# RAW off gpu4 — bake optional, same as the VD-on sets do.
+# --- no-VD suite ---
 NOVD_GOWER_VARIATES: List[Dict] = [
     {"name": "nla_m", "patterns": f"{_GPU5}/gower_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5",
      "exclude_params": [], "in_distribution": True},
@@ -114,18 +85,11 @@ NOVD_GOWER_VARIATES: List[Dict] = [
     {"name": "gb1p5", "patterns": f"{_GPU4}/gower_mocks_gb1p5_novd_counts/output_*.h5", "exclude_params": []},
 ]
 
-# Foundation-level (pre-Gower-finetune) misspec check — user 2026-07-29: run the gb0p5/gb1p5 GLASS
-# sets against the 5 pre-trained foundations, i.e. BEFORE any Gower finetune. This is why G2/G3
-# exist and launched early. NB the VD-on GLASS set above carries no gb variates; this one does.
 NOVD_GLASS_PRETRAIN_VARIATES: List[Dict] = [
     {"name": "glass_nla_m",
      "patterns": f"{_GPU5}/glass_mocks_nla_m_novd_counts_f16_fwhm4_lmin56_lcut1400/output_*.h5",
      "exclude_params": [], "in_distribution": True},
-    # Same in-distribution physics, read from the UNBAKED gpu4 source instead of the gpu5 f16
-    # prebake. A control: the gb variates are read raw off gpu4, so if raw-vs-prebake ever
-    # mattered (f16 downcast, wrong extracted variant) this entry would diverge from
-    # 'glass_nla_m' and the OOD comparison would be confounded. Also the correct reference for
-    # bandpower-only models, which train off the raw store.
+    # Same in-distribution physics, read from the unbaked gpu4 source instead of the gpu5 f16 prebake.
     {"name": "glass_nla_m_raw",
      "patterns": f"{_GPU4}/glass_mocks_nla_m_novd_counts/output_*.h5",
      "exclude_params": []},
@@ -139,16 +103,9 @@ NOVD_GLASS_PRETRAIN_VARIATES: List[Dict] = [
      "exclude_params": ["a_ia"]},
 ]
 
-# --- DUAL-NORMALISATION arm comparison (task training-runs/improved-shear-tests) ----------------
-# One variate set per shear-processing ARM. The arm is baked into the STORE, so the b_g test sets
-# must be read from the SAME arm's bake as the model trained on — evaluating an A1 model on A0
-# maps would measure the estimator mismatch, not the b_g robustness. Naming follows the bake DAG:
+# --- dual-normalisation arm comparison ---
+# One variate set per shear-processing arm, read from the same arm's bake as the model:
 #   glass_dn_{nla_m|gb0p7|gb1p0|gb1p5}_f16_{a0|a1|sc8|sc8a1}_fwhm4_lmin56_lcut1400
-# B1_selfstd reads the A0 store and applies its normalisation in the LOADER (eb_noise_norm='self'),
-# so it shares a0's variate set; the transform is chained in build_variate_test_loader.
-# All four b_g sets are nla_m (a_ia + b_ia present) => no exclude_params, all 9 params available.
-# gb0p7/gb1p0/gb1p5 share --rng-seed 4242, so the headline statistic is the PAIRED per-event
-# Δz = z(b_g) − z(b_g=1.0), matched on (sim_id, aug_id) offline from the sample npz.
 _DN_EB = "fwhm4_lmin56_lcut1400"
 
 
@@ -165,16 +122,9 @@ def _dn_variate_set(arm_tag: str) -> List[Dict]:
 
 
 def _bgp_variate_set(arm_tag: str) -> List[Dict]:
-    """BGP campaign (`b_g` MARGINALISED at generation) — the same b_g ladder as `_dn_variate_set`.
+    """BGP campaign (b_g marginalised at generation): the b_g ladder of _dn_variate_set.
 
-    Identical machinery and identical probe values (0.7 / 1.0 / 1.5, all at `--rng-seed 4242`, so
-    still bit-paired); the ONE thing that differs is the foundation the model was trained on: here
-    `b_g` was drawn per (sim, outer, rot) from the Flamingo O3-diag prior instead of pinned at 1.
-    That makes this set the direct test of the campaign's premise — does marginalising `b_g` shrink
-    the paired Δz that the `_dn` arms showed at +3.9σ…+4.5σ?
-
-    The gb1p0 store is NOT optional: the headline statistic is the PAIRED Δz = z(b_g) − z(b_g=1.0),
-    so without the 1.0 reference only absolute z is available.
+    The probes 0.7, 1.0 and 1.5 share --rng-seed 4242, so they pair per event against gb1p0.
     """
     def store(which):
         return f"{_GPU5}/glass_bgp_{which}_f16_{arm_tag}_{_DN_EB}/output_*.h5"
@@ -187,12 +137,8 @@ def _bgp_variate_set(arm_tag: str) -> List[Dict]:
     ]
 
 
-# --- BGP campaign, GOWER side (the production 9-param sc8a1 chain's variates) --------------------
-# In-dist = the S1 sc8a1 bake the Gower rows train on; the variates are their own sc8a1 bakes
-# (S2/S3 IA sub-variates on the 200 fixed-test ids, S4/S5 fixed-b_g probes on 40 of them, V2 VD).
-# All bakes carry BARE `E` groups (no --keep-variant-tag), matching the chain's eb_map_variant=None.
-# gb1p3's bake is OWED (raw store on gpu4 only) — the entry is kept so it fails soft (probe) and
-# is reported as missing rather than silently dropped.
+# --- BGP campaign, Gower side (the production 9-param sc8a1 chain's variates) ---
+# All bakes carry bare `E` groups, matching the chain's eb_map_variant=None.
 _BGP_EB_TAG = "sc8a1_fwhm4_lmin56_lcut1400"
 GOWER_BGP_VARIATES: List[Dict] = [
     {"name": "gower_bgp_nla_m", "patterns": f"{_GPU5}/gower_bgp_nla_m_f16_{_BGP_EB_TAG}/output_*.h5",
@@ -202,33 +148,12 @@ GOWER_BGP_VARIATES: List[Dict] = [
     {"name": "gower_gb1p0", "patterns": f"{_GPU5}/gower_bgp_gb1p0_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
     {"name": "gower_gb1p3", "patterns": f"{_GPU5}/gower_bgp_gb1p3_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
     {"name": "gower_vd", "patterns": f"{_GPU5}/gower_bgp_nla_m_vd_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
-    # kappa=2 galaxy-bias prior: same Flamingo per-bin MEANS as the kappa=1 training store but
-    # DOUBLE the sigmas (truncated at +-3*kappa*sigma), so a large fraction of its events fall
-    # outside the training support in the outer tomographic bins. Unlike the two fixed-b_g
-    # variates -- which are single points, one of them entirely inside the training prior --
-    # this store spans a CONTINUOUS range of b_g offsets over the full ~199 test cosmologies
-    # (15920 files), giving the b_g axis the same severity-sweep the IA axis already has.
+    # kappa=2 galaxy-bias prior: the kappa=1 per-bin means with double the sigmas (truncated at +-3*kappa*sigma).
     {"name": "gower_gbk2", "patterns": f"{_GPU5}/gower_bgpk2_nla_m_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
 ]
 
 
-# --- EXTERNAL boxes: GowerSt2 / Flamingo_big (DMO + FLAMINGO-baryonified) ---------------------
-# Generated LOCALLY from the ingested delta cubes (src/external_mocks), 20 mocks each at ONE
-# cosmology (5 disjoint rotations x 4 mask angles). Paths are LOCAL, not gpu5: these never went
-# to the cluster. Prebaked to the same f16 sc8a1 bare-E layout the BGP chain reads.
-#
-# Two separable effects, read off the same detectors:
-#   ext_dmo  vs the Gower training cloud  ->  SUITE misspecification (different N-body suite,
-#                                             1250 Mpc/h box, 77 shells, continuous-delta cubes)
-#   ext_bary vs ext_dmo (identical phases) ->  BARYON feedback, sample-variance-free
-# NOTE ext_bary is baryonified only below z = 1.0122, so it is a LOWER BOUND on a fully
-# baryonified lightcone (see the task's artifacts/SHELL_AUDIT.md).
-# Generated LOCALLY but evaluated on the CLUSTER: run_misspecification_eval rebuilds the
-# in-distribution scalers and test split from the gpu5 training store, so misspec cannot run
-# off-cluster. The baked stores are therefore pushed to DATASETS_ROOT (gpu5) with
-# `run_remote.py push-data --rel ext_<variant>_f16_<tag>` and resolved from _GPU5 like every
-# other variate. (An earlier version pointed these at the local /data/alex path, which would
-# have failed on the cluster with "No files matched".)
+# --- external boxes: GowerSt2 and Flamingo_big (DMO and FLAMINGO-baryonified) ---
 GOWER_EXT_VARIATES: List[Dict] = [
     {"name": "gower_ext_dmo", "patterns": f"{_GPU5}/ext_dmo_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": []},
@@ -237,57 +162,36 @@ GOWER_EXT_VARIATES: List[Dict] = [
 ]
 
 
-# --- VDQ campaign (VD-final-train, 2026-09-29): variable depth ON (quadcap table), b_g kappa=1 ---
-# The pack `gower_npe_finetune_nla_m_vdq_z8_ens1` trains on the Gower VDQ sc8a1 bake (bare `E`
-# groups, eb_map_variant=None). Only the in-distribution store is registered at campaign start;
-# the Phase V VDQ variate bakes are appended HERE (path-only, each path `data-ls`-verified first)
-# as they land — planned names, same `_BGP_EB_TAG` layout:
-#   gower_vdq_nla      gower_vdq_nla_f16_<tag>        exclude_params ["a_ia"]
-#   gower_vdq_nla_z    gower_vdq_nla_z_f16_<tag>      exclude_params ["a_ia"]
-#   gower_vdq_gb1p0    gower_vdq_gb1p0_f16_<tag>      exclude_params []
-#   gower_vdq_gb1p3    gower_vdq_gb1p3_f16_<tag>      exclude_params []
-#   gower_vdq_gbk2     gower_vdqk2_nla_m_f16_<tag>    exclude_params []
-# (see .claude/runs/training-runs/VD-final-train/datasets_checklist.md for the bake commands).
+# --- VDQ campaign: variable depth on (quadcap table), b_g kappa=1 ---
 GOWER_VDQ_VARIATES: List[Dict] = [
     {"name": "gower_vdq_nla_m", "patterns": f"{_GPU5}/gower_vdq_nla_m_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": [], "in_distribution": True},
-    # Phase V, landed 2026-10-09T04:30Z (SIMS BAKE LANDED, job 1382786; data-ls 800 files, 40 sims).
     {"name": "gower_vdq_gb1p0", "patterns": f"{_GPU5}/gower_vdq_gb1p0_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": []},
-    # Phase V, all data-ls-verified 2026-10-19 (file counts in brackets).
-    # NLA (A_IA^total) variate, BAKE LANDED 2026-10-13T17:57Z job 1386486 [15840].
     {"name": "gower_vdq_nla", "patterns": f"{_GPU5}/gower_vdq_nla_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": ["a_ia"]},
-    # NLA-z variate, BAKE LANDED 2026-10-13T17:12Z job 1386460 [15880].
     {"name": "gower_vdq_nla_z", "patterns": f"{_GPU5}/gower_vdq_nla_z_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": ["a_ia"]},
-    # b_g fixed at 1.3, rng-seed 4242 (paired with gb1p0) [800].
+    # b_g fixed at 1.3, rng-seed 4242, paired with gb1p0.
     {"name": "gower_vdq_gb1p3", "patterns": f"{_GPU5}/gower_vdq_gb1p3_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": []},
-    # kappa=2 b_g prior, NLA-M, BAKE LANDED 2026-10-16T20:05Z job 1388184 [15912].
     {"name": "gower_vdq_gbk2", "patterns": f"{_GPU5}/gower_vdqk2_nla_m_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": []},
-    # DOUBLE misspecification (kappa=2 b_g prior + NLA): sits on neither single axis.
-    # BAKE LANDED 2026-10-17T10:45Z job 1388423 [15836].
     {"name": "gower_vdqk2_nla", "patterns": f"{_GPU5}/gower_vdqk2_nla_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": ["a_ia"]},
-    # VD v2 (PR #3, --vd-table v2pr, vd_code 4) NLA-M kappa=1 noise-model variate, PREVIEW snapshot of the partial Gower
-    # store (sim 1396018 at its wall: 188/200 sims, ~56/80 augmentations). BAKE LANDED 2026-11-09 job 1405622 [10354],
-    # data-h5 n=50 errors=[] vd_code 4. The full-store `gower_vd2pr_nla_m` entry follows the re-fire (job 1405659).
     {"name": "gower_vd2pr_nla_m_p10k",
      "patterns": f"{_GPU5}/gower_vd2pr_nla_m_p10k_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
 ]
 
 
-# HOS hybrid (eval-and-viz/hos-hybrid-training): the in-distribution VDQ variate read from its HOS sidecars (same
-# basenames, so the fixed test lock and the split are the map store's), resolved under $GLASS_MODELS_ROOT.
+# The in-distribution VDQ variate read from its HOS sidecars, which share the map store's basenames.
 def _hos_variates():
     from config.kids_legacy_hos import _HOS_GOWER
     return [{"name": "gower_vdq_nla_m", "patterns": _HOS_GOWER, "exclude_params": [], "in_distribution": True}]
 
 
 def _hosx_variates():
-    """The same in-distribution variate read from the hos_x sidecars (R1+Gmrg arm, eval-and-viz/hos-gmrg-observation)."""
+    """The same in-distribution variate read from the hos_x sidecars (R1+Gmrg arm)."""
     from config.kids_legacy_hos import _HOSX_GOWER
     return [{"name": "gower_vdq_nla_m", "patterns": _HOSX_GOWER, "exclude_params": [], "in_distribution": True}]
 
@@ -297,8 +201,6 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     "gower_vdq_hos": _hos_variates(),
     "gower_vdq_hosx": _hosx_variates(),
     "gower_bgp": GOWER_BGP_VARIATES,
-    # The BGP variates PLUS the two external boxes, so the external points land on the same
-    # detector axes (Mahalanobis / kNN / cross-repeat KL) as the existing misspec campaign.
     "gower_bgp_ext": GOWER_BGP_VARIATES + GOWER_EXT_VARIATES,
     "gower_ext": GOWER_EXT_VARIATES,
     "gower": DEFAULT_VARIATES,
@@ -310,16 +212,9 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
     "glass_dn_b1": _dn_variate_set("a0"),      # A0 store + the loader knob
     "glass_dn_sc8": _dn_variate_set("sc8"),
     "glass_dn_sc8a1": _dn_variate_set("sc8a1"),
-    # BGP campaign (b_g marginalised at generation) — the payoff test for this campaign.
     "glass_bgp_sc8a1": _bgp_variate_set("sc8a1"),
-    # Co-primary unwhitened arm. Same ladder, same probe values, same rng-seed pairing — the only
-    # difference is which shear product the maps were baked from, so sc8a1-vs-sc8 here isolates the
-    # normalisation's effect on b_g robustness. Probe bakes: jobs 1344427/28/29 (2026-08-16).
     "glass_bgp_sc8": _bgp_variate_set("sc8"),
-    # R1024 — the conservative-scale-cut arm (8' beam, hard ell <= 1024). Same `a0` arm tag (plain
-    # counts, no noise-norm) but the fwhm8_lmin56_lcut1024 bake; those stores carry BARE `E` groups
-    # (baked without --keep-variant-tag), which matches the config's eb_map_variant=None, so no
-    # per-variate `eb_variant` override is needed here.
+    # R1024: the conservative scale cut, 8 arcmin beam, lcut 1024.
     "glass_dn_r1024": [
         {"name": "glass_dn_r1024",
          "patterns": f"{_GPU5}/glass_dn_nla_m_f16_a0_fwhm8_lmin56_lcut1024/output_*.h5",
@@ -348,9 +243,9 @@ def _load_experiment_config(experiment_name: str):
     exps.update(paper_2026_experiments)
     exps.update(kids_legacy_experiments)
     exps.update(kids_legacy_novd_experiments)
-    exps.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
-    exps.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
-    exps.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
+    exps.update(kids_legacy_bgp_experiments)
+    exps.update(kids_legacy_vdq_experiments)
+    exps.update(kids_legacy_hos_experiments)
     experiment_config = exps[experiment_name]
 
     config = get_default_config()
@@ -374,8 +269,7 @@ def _load_experiment_config(experiment_name: str):
 def _probe_variate_file(paths: Sequence[str], nested_keys: Dict, cosmo_param_names: Sequence[str]):
     """Open the first readable file and report (missing_data_keys, present_cosmo_params).
 
-    Fails fast with a useful message (e.g. wrong eb variant tag) instead of letting the
-    loader skip every file one by one.
+    Fails fast, on a wrong eb variant tag for one, instead of letting the loader skip every file.
     """
     last_err = None
     for p in paths[:16]:
@@ -413,18 +307,11 @@ def build_variate_test_loader(
     max_test_files: Optional[int] = None,
     eb_noise_norm: Optional[str] = None,
 ):
-    """Variate TEST loader with the ORIGINAL scalers injected (never refit).
+    """Variate test loader with the original scalers injected (never refit). Returns (loader, meta).
 
-    Test cosmologies = (``test_id_pool`` ∩ on-disk ids); falls back to ALL on-disk
-    cosmologies when there is no overlap (e.g. a small gb subset outside the pool).
-    ``max_test_files`` caps the test set by accumulating whole cosmologies (sorted by
-    sim_id) until the file budget is reached.
-
-    ``eb_noise_norm`` mirrors the TRAIN-time loader (``src/ml/utils.py``): when the experiment
-    sets it, the per-sample E/B normalisation must be chained BEFORE the key scalers here too.
-    Such configs deliberately exclude the map keys from ``scaler_options['data']['keys']``
-    (the transform standardises them), so omitting it would feed the model raw unstandardised
-    maps and make the variate metrics meaningless.
+    Test cosmologies are test_id_pool intersected with the on-disk ids, or every on-disk cosmology
+    when they do not overlap. max_test_files caps the set by whole cosmologies in sim_id order.
+    eb_noise_norm mirrors the training loader and runs before the key scalers.
     """
     all_paths = collect_paths(patterns)
     by_cosmo: Dict[int, List[str]] = {}
@@ -445,11 +332,7 @@ def build_variate_test_loader(
 
     test_paths = [p for c in test_ids for p in by_cosmo[c]]
     if test_shape_noise_idx is None:
-        # Explicit opt-out (added 2026-09-18). The default (0, (0, 1)) subsamples augmentations
-        # per cosmology, which is right for the production stores (~80 augs/cosmology) but
-        # collapses a small purpose-built store to a handful of events -- e.g. a 40-file
-        # single-cosmology external store yields n_test=4, all from one (outer, rot) block and
-        # therefore sharing almost all their cosmic variance. Passing None keeps every file.
+        # Explicit opt-out: None keeps every file, for small purpose-built stores.
         print(f"[misspec] shape-noise filter DISABLED: using all {len(test_paths)} "
               "test-cosmology files.", flush=True)
         filtered = test_paths
@@ -500,9 +383,8 @@ def _wrap_paths_as_loader(
     num_workers: int = 4,
     eb_noise_norm: Optional[str] = None,
 ):
-    """Plain (no augmentation, no shuffle) loader over explicit file paths with the ORIGINAL
-    scalers injected — the shared tail of ``build_variate_test_loader``, also used by the
-    summary extraction to read the model's own train split without training-time augmentation."""
+    """Plain loader (no augmentation, no shuffle) over explicit file paths with the original
+    scalers injected. Shared by build_variate_test_loader and the summary extraction."""
     ds = H5CosmoDataset(
         list(paths),
         nested_keys,
@@ -522,15 +404,14 @@ def _wrap_paths_as_loader(
 
 
 def resolve_shared_pool(variates: List[Dict]):
-    """``test_id_source='shared'``: the sim_ids common to every OUT-of-distribution variate on disk."""
+    """test_id_source='shared': the sim_ids common to every out-of-distribution variate on disk."""
     ood = [v for v in variates if not v.get("in_distribution")] or variates
     per_variate_ids = []
     for v in ood:
         ids = {extract_cosmo_index(p) for p in collect_paths(v["patterns"])}
         print(f"[misspec] shared-pool: {v['name']} has {len(ids)} cosmologies on disk", flush=True)
         if not ids:
-            # An absent store (e.g. a bake that is still owed) must not empty the intersection
-            # for everyone else; that variate fails soft on its own later (probe).
+            # An absent store must not empty the intersection. That variate fails soft later.
             print(f"[misspec] shared-pool: WARNING {v['name']} has NO files on disk — excluded from the pool", flush=True)
             continue
         per_variate_ids.append(ids)
@@ -546,8 +427,7 @@ def resolve_shared_pool(variates: List[Dict]):
 
 def derive_test_id_pool(cfg, in_dist_test_loader, repeat_index):
     """Variate test cosmologies: the lock file when the experiment pins one, else the experiment's
-    own held-out test cosmologies (identical across repeats — the test slice comes from the fixed
-    rng(42) shuffle before the per-repeat trainval reshuffle)."""
+    own held-out test cosmologies, which are the same for every repeat."""
     from .utils import _resolve_test_paths
     lock_spec = getattr(cfg, "fixed_test_sim_ids", None)
     if lock_spec:
@@ -567,10 +447,10 @@ def _compute_misspec_metrics(
     param_scaler,
     prior_samples_scaled: Optional[torch.Tensor],
 ):
-    """Calibration on the available dims + FoM vs the base prior on all sampled dims.
+    """Calibration on the available dims, and FoM against the base prior on all sampled dims.
 
-    theta0s ~ [N, D] and samples ~ [S, N, D], both in SCALED space (loader/flow space) —
-    mirrors run_evaluation_on_samples, which runs TARP in scaled space and FoM in both.
+    theta0s [N, D] and samples [S, N, D] are in scaled (loader and flow) space, as in
+    run_evaluation_on_samples.
     """
     param_names = list(param_names)
     available_idx = list(available_idx)
@@ -586,14 +466,14 @@ def _compute_misspec_metrics(
 
     metrics: Dict = {"available_params": available_names}
 
-    # --- calibration (TARP) on the available dims only ------------------------------------
+    # TARP calibration on the available dims only.
     tarp = TARPDiagnostics(available_names, bootstrap=True, num_bootstrap=25, seed=None)
     metrics.update(tarp.compute_all(
         samples_sims_first[:, :, available_idx].contiguous(),
         theta0s[:, available_idx].contiguous(),
     ))
 
-    # --- FoM vs the base Gower prior over ALL sampled dims --------------------------------
+    # FoM against the base Gower prior over all sampled dims.
     prior_samples_unscaled = (
         rescale_parameters(prior_samples_scaled, param_scaler)
         if prior_samples_scaled is not None else None
@@ -605,14 +485,11 @@ def _compute_misspec_metrics(
         param_names, prior_samples_t=prior_samples_unscaled,
     ).compute_all(scaled_samples_sims_first))
 
-    # --- per-available-param point stats in physical units --------------------------------
+    # Point statistics per available parameter, in physical units.
     sample_means = scaled_samples_first.mean(axis=0)
     bias = sample_means - scaled_theta0s
     std_devs = scaled_samples_first.std(axis=0)
-    # torch.quantile allocates a large sort buffer over the (n_samples, n_sims, d) tensor and OOMs
-    # a 16 GiB v100 here, which is why the misspec eval had to be pinned to a100/l40s. Same fix as
-    # evaluate_models.py:330-336 — do the quantile on CPU. Identical numbers, and it is a sort over
-    # an already-materialised tensor, so the transfer is the only cost.
+    # Quantiles on CPU: torch.quantile's sort buffer runs a 16 GiB GPU out of memory.
     _ssf_cpu = scaled_samples_first.cpu()
     width_68 = (torch.quantile(_ssf_cpu, 0.84, dim=0)
                 - torch.quantile(_ssf_cpu, 0.16, dim=0)).to(scaled_samples_first.device)
@@ -643,19 +520,11 @@ def run_misspecification_eval(
 ):
     """Evaluate the base experiment's model(s) on every variate, per training repeat.
 
-    Works for eval-time ensembles (ensemble_repeats>1: the repeat's N members are loaded as
-    one EnsembleNDELightningModule) AND single-model experiments (the repeat's best checkpoint).
-
-    ``repeat_indices``: one full pass (scalers + model + all variates) per repeat. With >1
-    repeat, per-event CROSS-REPEAT posterior disagreement (mean pairwise symmetric
-    diag-Gaussian KL, as in ensemble_uncertainty.py) is computed per variate and saved next to
-    the calibration results — the OOD statistic to correlate with miscalibration.
-    ``repeat_index`` (int) is a legacy alias for a single-repeat run.
-
-    Variate test cosmologies come from ``config.fixed_test_sim_ids`` when the experiment uses a
-    lock file, else from the experiment's own held-out test split (derived at runtime), so no
-    variate is ever evaluated on cosmologies the model trained on. ``max_test_files`` caps each
-    variate's test set (whole cosmologies, sorted by sim_id).
+    Handles eval-time ensembles and single-model experiments. repeat_indices runs one full pass
+    per repeat. With more than one repeat the per-event cross-repeat posterior disagreement is
+    saved per variate. repeat_index is a single-repeat alias. Test cosmologies come from
+    derive_test_id_pool, or the shared pool when test_id_source='shared'. max_test_files caps
+    each variate's test set.
     """
     from ..models.utils import apply_repeat_config
     from .utils import _resolve_test_paths, load_best_model_and_build_posterior
@@ -678,13 +547,11 @@ def run_misspecification_eval(
         repeat_indices = (int(repeat_index),)
     repeat_indices = [int(r) for r in repeat_indices]
 
-    # Flushed step markers: this setup block runs before any per-repeat print, so without them a
-    # hard crash here (a SIGILL/OOM leaves no traceback and loses block-buffered stdout) is
-    # unlocalisable in the SLURM log.
     # A shared-cosmology run must never overwrite the strict held-out run's results.
     if test_id_source == "shared" and out_subdir == "misspec":
         out_subdir = "misspec_shared"
 
+    # Flushed setup markers locate a crash that leaves no traceback in the SLURM log.
     print(f"[misspec] setup 1/4: loading config for '{base_experiment}'", flush=True)
     cfg0 = _load_experiment_config(base_experiment)
     param_names = list(cfg0.cosmo_param_names)
@@ -694,26 +561,15 @@ def run_misspecification_eval(
     print(f"[misspec] setup 2/4: config OK — params={param_names} eb_variant={eb_variant} "
           f"out_root={out_root}", flush=True)
 
-    # Base Gower prior + one shared set of prior samples (FoM shrinkage reference) — the
-    # prior is repeat-independent.
+    # One repeat-independent Gower prior and prior sample set, the FoM shrinkage reference.
     prior = build_gower_prior(param_names, preset_overrides=_config_preset_overrides(cfg0))
     print("[misspec] setup 3/4: Gower prior built", flush=True)
     prior_samples_scaled = _sample_from_prior(prior, prior_num_samples, target_dim=len(param_names))
     print(f"[misspec] setup 4/4: drew {prior_num_samples} prior samples "
           f"{tuple(prior_samples_scaled.shape)}", flush=True)
 
-    # ``test_id_source='shared'``: evaluate EVERY variate — the in-distribution reference
-    # included — on the cosmologies the OOD variates actually have on disk.
-    #
-    # Why this mode exists: a variate suite is usually simulated over a small sim_id range
-    # (e.g. 0..199), while the in-distribution experiment's held-out test split is a random
-    # ~10% of thousands of cosmologies, so the strict intersection can collapse to a handful
-    # (14 cosmologies / 28 events for the GLASS gb sets). 'shared' trades the held-out
-    # guarantee for ~14x the statistics, and because the SAME cosmologies are used for the
-    # reference curve, "the model trained on this cosmology (at the in-distribution physics)"
-    # applies equally to every variate — so a difference between them is still attributable to
-    # the physics shift, not to memorisation. Report it as a matched-cosmology companion to the
-    # strict held-out run, never as a replacement.
+    # test_id_source='shared': evaluate every variate, the in-distribution reference included, on
+    # the cosmologies the OOD variates have on disk. It complements the held-out run, never replaces it.
     shared_pool = None
     if test_id_source == "shared":
         shared_pool = resolve_shared_pool(variates)
@@ -737,16 +593,13 @@ def run_misspecification_eval(
               f"match_string={cfg.match_string} params={param_names} eb_variant={eb_variant}",
               flush=True)
 
-        # ORIGINAL scalers for THIS repeat: fit on its nla_m train+val split (ensemble path).
+        # This repeat's original scalers, fit on its train+val split.
         scalers, _, _, in_dist_test_loader = prepare_data_parameters(cfg)
         orig_key_scalers = scalers["data"]
         orig_cosmo_scaler = scalers["cosmo"]
         print(f"[misspec] repeat {r}: original scalers rebuilt from {cfg.data_patterns} "
               f"(data keys: {sorted(orig_key_scalers)})", flush=True)
 
-        # Test-id pool for the variates: the lock file when the experiment pins one, else the
-        # experiment's own held-out test cosmologies (identical across repeats — the test slice
-        # comes from the fixed rng(42) shuffle before the per-repeat trainval reshuffle).
         test_id_pool = derive_test_id_pool(cfg, in_dist_test_loader, r)
 
         if test_id_source == "shared":
@@ -755,8 +608,7 @@ def run_misspecification_eval(
                   f"in-distribution reference) uses the SAME {len(test_id_pool)} cosmologies.",
                   flush=True)
 
-        # The repeat's model, built ONCE (loaders are swapped per variate): the N-member
-        # eval-time ensemble when configured, else the repeat's single best checkpoint.
+        # The repeat's model is built once and its loaders are swapped per variate.
         n_ens = int(getattr(cfg, "ensemble_repeats", 1) or 1)
         if n_ens > 1:
             model = build_ensemble_model_from_checkpoints(
@@ -771,7 +623,6 @@ def run_misspecification_eval(
             )
             model = loaded[0] if loaded else None
         if model is None:
-            # e.g. a repeat whose training jobs haven't finished — skip it, keep the others.
             print(f"[misspec] repeat {r}: no '{base_experiment}' {cfg.match_string} checkpoints "
                   "yet — skipping this repeat.", flush=True)
             summary[f"repeat{r}"] = {"error": f"no checkpoints for {cfg.match_string}"}
@@ -805,7 +656,7 @@ def run_misspecification_eval(
         del model
         torch.cuda.empty_cache() if torch.cuda.is_available() else None
 
-    # Cross-repeat posterior disagreement per variate (the ensemble-agreement OOD statistic).
+    # Cross-repeat posterior disagreement per variate.
     if len(repeat_indices) > 1:
         for variate in variates:
             name = variate["name"]
@@ -839,10 +690,9 @@ _EXTRA_COSMO_PREFIXES = ("b_g_bin", "galaxy_bias")
 
 
 def _read_nuisance_extras(test_paths) -> Dict[str, np.ndarray]:
-    """Per-event scalar ``cosmo_dict`` entries that are NOT inference parameters (the per-bin galaxy
-    biases ``b_g_bin1..6`` and ``galaxy_bias*``), as ``extra_<key>`` float64 arrays [N] (NaN where a
-    file lacks the key). These drive the per-event b_g detectability analysis of the kappa=2 variates
-    and otherwise live only in the cluster-side HDF5. Returns {} on any failure (additive dump)."""
+    """Per-event scalar cosmo_dict entries that are not inference parameters (b_g_bin1..6 and
+    galaxy_bias*), as extra_<key> float64 arrays [N], NaN where a file lacks the key. Returns {} on
+    any failure."""
     try:
         vals: Dict[str, List[float]] = {}
         for i, p in enumerate(test_paths):
@@ -869,27 +719,12 @@ def _read_nuisance_extras(test_paths) -> Dict[str, np.ndarray]:
 def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names):
     """Compact per-event companion to the full posterior-sample dump (KB, not hundreds of MB).
 
-    A z-score / bias analysis needs only the first two posterior moments per event, but the raw
-    dump is [n_samples, N, D] — ~280 MB per variate at the default 10 000 samples, which makes a
-    multi-arm comparison expensive to pull off the cluster. This writes the same information the
-    analysis actually consumes:
-
       mean, std, theta0, z  [N, D] float32   with  z = (theta0 - mean) / std
       cov                   [N, D, D] float32  the full per-event sample covariance
-      sim_ids, aug_ids, test_files [N]        (the pairing keys; cf. _save_posterior_samples)
-      params [D]
+      sim_ids, aug_ids, test_files [N], params [D], and extra_<key> nuisance columns
 
-    ``cov`` is what a MULTIVARIATE residual statistic needs — e.g. the combined-figure
-    Mahalanobis distance of the truth under the 3-D {omega_m, sigma_8, w0} posterior, which the
-    diagonal ``std`` cannot give because those parameters are strongly correlated (measured
-    rho(omega_m, sigma_8) ~ -0.79 on this arm). At D=9 it costs ~0.3 MB per variate, so carrying it
-    here means the whole downstream analysis reads KB-scale npz instead of the multi-GB sample dump.
-
-    ``z`` follows the sign convention of the existing misspec z-score tooling
-    (``first-npe-misspecification/artifacts/misspec_zscores.py``): positive z = the truth sits
-    ABOVE the posterior mean. Moments are in SCALED space, but z is affine-invariant, so it is
-    identical in physical space. Purely additive — the full sample dump is still written, and a
-    failure here never breaks the eval.
+    Positive z means the truth sits above the posterior mean. Moments are in scaled space.
+    A failure only warns.
     """
     try:
         samp = samples.detach().cpu().numpy() if hasattr(samples, "detach") else np.asarray(samples)
@@ -898,8 +733,7 @@ def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names)
         std = samp.std(axis=0)
         with np.errstate(divide="ignore", invalid="ignore"):
             z = (theta - mean) / std
-        # Full per-event covariance over the sample axis: samp is [S, N, D], so centring once and
-        # contracting over S gives [N, D, D] with the (S - 1) normalisation np.cov uses.
+        # Per-event covariance from samp [S, N, D]: [N, D, D] with np.cov's (S - 1) normalisation.
         centred = samp - mean[None, :, :]
         cov = np.einsum("sni,snj->nij", centred, centred) / max(samp.shape[0] - 1, 1)
         payload = {
@@ -923,13 +757,11 @@ def _save_posterior_moments(out_path, theta0s, samples, test_paths, param_names)
 
 
 def _compute_repeat_disagreement(name: str, per_repeat: Dict[str, Dict], out_dir: str):
-    """Per-event posterior disagreement ACROSS training repeats for one variate.
+    """Per-event posterior disagreement across training repeats for one variate.
 
-    Aligns events by test-file basename (robust to per-repeat non-finite drops), stacks the
-    per-repeat posterior moments to [K, N, D], and scores each event with the mean pairwise
-    symmetric diag-Gaussian KL (ensemble_uncertainty.py formulation). Saved next to the
-    per-repeat calibration JSONs so miscalibration and repeat-spread can be correlated
-    directly. Moments are in SCALED space (same space as the TARP calibration)."""
+    Events are aligned by test-file basename and the per-repeat moments stacked to [K, N, D].
+    Each event is scored by the mean pairwise symmetric diag-Gaussian KL, in scaled space, and
+    the result saved next to the per-repeat calibration JSONs."""
     from .ensemble_discrepancies import diag_gaussian_symmetric_kl
 
     matches = sorted(per_repeat)
@@ -976,16 +808,9 @@ def _compute_repeat_disagreement(name: str, per_repeat: Dict[str, Dict], out_dir
 def _summarise_variate_inputs(name: str, test_paths: Sequence[str], loader, n_raw_files: int = 32):
     """Data-level provenance check: is this variate on the same footing as the training set?
 
-    Answers two questions that a calibration number alone cannot separate — "did the physics
-    shift?" vs "is this store preprocessed differently (e.g. mean- instead of counts-normalised
-    shear, wrong smoothing variant)?":
-
-    - RAW ``mixed_bandpowers`` mean per band, straight off disk, no scaler. A different shear
-      normalisation moves these by a large factor; a physics variate at the same normalisation
-      moves them by a few percent.
-    - The SAME tensors after the ORIGINAL training scalers. In-distribution inputs land at
-      mean~0 / std~1 (maps) and O(1) (log-scaled bandpowers); a normalisation mismatch shows up
-      as a large offset, i.e. inputs the encoder has never seen.
+    Returns a stats dict: the raw mixed_bandpowers mean per band, per-file map shape statistics,
+    per-file raw bandpower amplitudes, and the scaled input mean and std per key. A preprocessing
+    mismatch shows up as a large offset after the training scalers.
     """
     stats: Dict = {"name": name}
     try:
@@ -1009,18 +834,8 @@ def _summarise_variate_inputs(name: str, test_paths: Sequence[str], loader, n_ra
     except Exception as e:  # diagnostics must never take the run down
         print(f"[misspec-inputs] {name}: raw bandpower summary failed: {e}", flush=True)
 
-    # --- PER-FILE map shape statistics ------------------------------------------------------
-    # The point of these: mean/std alone cannot distinguish "the lensing amplitude moved" from
-    # "the pixel occupancy / noise structure moved". Peak fractions and skew/kurtosis are
-    # computed against EACH MOCK'S OWN std, so they are scale-free — cosmic variance in the
-    # overall amplitude divides out and what is left is the SHAPE of the one-point distribution.
-    # zero_frac tracks empty (unobserved) pixels, the channel a counts normalisation cannot
-    # cancel: pixels with no galaxies are left at zero and their pattern depends on b_g.
-    #
-    # Paired with per-file raw bandpower amplitude (b_g-invariant to 0.3%, measured), the ratio
-    # map_std / sqrt(bandpower) is a per-mock cosmic-variance-free amplitude probe — which is
-    # what lets this run substitute for a fixed-seed paired simulation (the simulator's per-block
-    # rng is UNSEEDED, master_kids_legacy_simulator.py:521, so realisations cannot be paired).
+    # --- per-file map shape statistics ---
+    # Peak fractions, skew and kurtosis use each mock's own std, so they are scale-free.
     try:
         per_file: Dict[str, list] = {}
         for batch in loader:
@@ -1067,7 +882,7 @@ def _summarise_variate_inputs(name: str, test_paths: Sequence[str], loader, n_ra
     except Exception as e:
         print(f"[misspec-inputs] {name}: per-file map stats failed: {e}", flush=True)
 
-    # --- per-file RAW bandpower amplitude (the cosmic-variance reference) ---------------------
+    # --- per-file raw bandpower amplitude ---
     try:
         amps = []
         for p in list(test_paths):
@@ -1114,11 +929,10 @@ def _summarise_variate_inputs(name: str, test_paths: Sequence[str], loader, n_ra
 def _finish_no_truth_variate(name, cfg, variate, repeat_index, theta0s, samples, test_paths,
                              param_names, missing_params, exclude_params, n_bad_events,
                              num_samples, input_stats, meta, out_dir):
-    """The observation branch of `_eval_one_variate`: no truth vector => no TARP/FoM/bias/dMI.
+    """The observation branch of _eval_one_variate: with no truth vector there are no metrics.
 
-    Writes the same JSON/npz family as the truth branch (with ``metrics=None`` and
-    ``has_truth=False``) so downstream readers find the files, and returns the per-event
-    posterior moments for the cross-repeat disagreement (KL). Prints counts only."""
+    Writes the truth branch's JSON and npz files with metrics=None and has_truth=False, and
+    returns the per-event moments for the cross-repeat KL. Prints counts only."""
     payload = {
         "variate": name,
         "experiment": cfg.experiment_name,
@@ -1202,13 +1016,8 @@ def _eval_one_variate(
         orig_cosmo_scaler,
         test_id_pool=test_id_pool,
         test_shape_noise_idx=test_shape_noise_idx,
-        # Cap at 64: eval-mode (no_grad) encodes fit fine on a v100 at 64-128; the OOMs seen on
-        # jobs 1316362/1316364 were a ZOMBIE PROCESS squatting on that GPU (~15GB), not batch
-        # size — mitigate by resubmitting / splitting repeats across GPUs, not by shrinking.
         batch_size=min(64, int(getattr(cfg, "test_batch_size", None) or getattr(cfg, "batch_size", 64))),
         max_test_files=max_test_files,
-        # Mirror the TRAIN-time loader: a config with eb_noise_norm set (B1_selfstd) scales only
-        # the bandpowers, so the map standardisation MUST come from this transform.
         eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
     )
 
@@ -1232,9 +1041,7 @@ def _eval_one_variate(
 
     input_stats = _summarise_variate_inputs(name, meta["test_paths"], loader)
 
-    # Swap the test set under the prebuilt model. Ensembles: the ensemble-level loader feeds
-    # theta0s and compute_avg_log_prob; each member's loader feeds its own encode+sample pass.
-    # Single models have no .members — the one loader drives everything.
+    # Swap the test set under the prebuilt model, and under each ensemble member.
     model.test_dataloader = loader
     for m in getattr(model, "members", []):
         m.test_dataloader = loader
@@ -1242,8 +1049,7 @@ def _eval_one_variate(
     theta0s, samples = model.generate_samples(num_samples=num_samples)
 
     # Drop test points whose posterior samples came out non-finite (far-OOD conditioning can
-    # degenerate the spline inverse even with the clamped discriminant). Keep the analysis on
-    # the finite events and report the count — silent NaNs would poison TARP/FoM wholesale.
+    # degenerate the spline inverse), and report the count.
     test_paths = list(meta["test_paths"])
     event_ok = torch.isfinite(samples).all(dim=2).all(dim=0)  # samples [S, N, D] -> [N]
     n_bad_events = int((~event_ok).sum())
@@ -1261,12 +1067,6 @@ def _eval_one_variate(
                      if finite[i] and p not in exclude_params]
     dropped = [p for i, p in enumerate(param_names) if i not in available_idx]
     if not bool(finite.any()):
-        # An OBSERVATION (empty cosmo_dict -> every truth entry NaN): nothing metric-shaped
-        # exists. Persist the blind intermediates (samples/moments live under the caller's
-        # out_dir, which for obs-score is the unblinding_blind subtree) and hand back the
-        # per-event moments the cross-repeat KL needs. BLIND RULE for stdout: this branch
-        # prints COUNTS ONLY -- no moment, width, FoM or calibration number of the observation
-        # may reach the job log (the log is readable outside the blind store).
         return _finish_no_truth_variate(name, cfg, variate, repeat_index, theta0s, samples,
                                         test_paths, param_names, missing_params, exclude_params,
                                         n_bad_events, num_samples, input_stats, meta, out_dir)
@@ -1276,7 +1076,7 @@ def _eval_one_variate(
     metrics = _compute_misspec_metrics(
         theta0s, samples, param_names, available_idx, orig_cosmo_scaler, prior_samples_scaled,
     )
-    # ΔMI needs log_prob at the TRUE theta — undefined when any dim is NaN.
+    # ΔMI needs log_prob at the true theta, undefined when any dim is NaN.
     if bool(finite.all()):
         metrics["test_log_prob"] = model.compute_avg_log_prob()
     else:
