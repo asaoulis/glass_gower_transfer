@@ -1,3 +1,4 @@
+"""Building blocks for the UNet encoders: ResBlock, Up/Downsample, Fourier projections and attention blocks."""
 from abc import abstractmethod
 
 import math
@@ -172,20 +173,12 @@ class SplitConvDownsample(nn.Module):
         return downsample, self.conv(downsample)
 
 class ResBlock(TimestepBlock):
-    """
-    A residual block that can optionally change the number of channels.
+    """A residual block that can optionally change the number of channels.
 
-    :param channels: the number of input channels.
-    :param emb_channels: the number of timestep embedding channels.
-    :param dropout: the rate of dropout.
-    :param out_channels: if specified, the number of out channels.
-    :param use_conv: if True and out_channels is specified, use a spatial
-        convolution instead of a smaller 1x1 convolution to change the
-        channels in the skip connection.
-    :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param use_checkpoint: if True, use gradient checkpointing on this module.
-    :param up: if True, use this block for upsampling.
-    :param down: if True, use this block for downsampling.
+    channels and emb_channels are the input and timestep-embedding widths, out_channels the
+    output width. use_conv uses a spatial convolution in the skip connection, dims picks 1D, 2D
+    or 3D, use_checkpoint enables gradient checkpointing, and up / down make it an
+    upsampling / downsampling block.
     """
 
     def __init__(
@@ -454,9 +447,7 @@ def count_flops_attn(model, _x, y):
     """
     b, c, *spatial = y[0].shape
     num_spatial = int(np.prod(spatial))
-    # We perform two matmuls with the same number of ops.
-    # The first computes the weight matrix, the second computes
-    # the combination of the value vectors.
+    # Two matmuls of equal cost: the weight matrix, then the combination of the value vectors.
     matmul_ops = 2 * b * (num_spatial**2) * c
     model.total_ops += th.DoubleTensor([matmul_ops])
 
@@ -506,41 +497,6 @@ class QKVAttentionLegacy(nn.Module):
     @staticmethod
     def count_flops(model, _x, y):
         return count_flops_attn(model, _x, y)
-
-
-# class QKVAttention(nn.Module):
-#     """
-#     A module which performs QKV attention and splits in a different order.
-#     """
-
-#     def __init__(self, n_heads):
-#         super().__init__()
-#         self.n_heads = n_heads
-
-#     def forward(self, qkv):
-#         """
-#         Apply QKV attention.
-
-#         :param qkv: an [N x (3 * H * C) x T] tensor of Qs, Ks, and Vs.
-#         :return: an [N x (H * C) x T] tensor after attention.
-#         """
-#         bs, width, length = qkv.shape
-#         assert width % (3 * self.n_heads) == 0
-#         ch = width // (3 * self.n_heads)
-#         q, k, v = qkv.chunk(3, dim=1)
-#         scale = 1 / math.sqrt(math.sqrt(ch))
-#         weight = th.einsum(
-#             "bct,bcs->bts",
-#             (q * scale).view(bs * self.n_heads, ch, length),
-#             (k * scale).view(bs * self.n_heads, ch, length),
-#         )  # More stable with f16 than dividing afterwards
-#         weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
-#         a = th.einsum("bts,bcs->bct", weight, v.reshape(bs * self.n_heads, ch, length))
-#         return a.reshape(bs, -1, length)
-
-#     @staticmethod
-#     def count_flops(model, _x, y):
-#         return count_flops_attn(model, _x, y)
 
 
 class QKVAttention(nn.Module):
