@@ -1,3 +1,7 @@
+"""UNet-style encoders for the map patches.
+
+UNetO3StyleEncoder (optional FiLM patch conditioning) and UNetStyleEncoder, plus the full UNetModel.
+"""
 from abc import abstractmethod
 
 import math
@@ -29,42 +33,16 @@ from .unet_helpers import (
     SplitConvDownsample,
 )
 
-# Import PoolProj so UNetO3StyleEncoder can share the same pooling head design
 from .poolproj import PoolProj
 
 
 class UNetStyleEncoder(nn.Module):
     """Encoder built from the same UNet building blocks.
 
-    This module mirrors the downsampling depth of FlexibleO3 (6 stages with
-    stride-2 operations by default) while reusing the same ResBlock,
-    AttentionBlock, and Downsample components as UNetModel.
-
-    Differences from UNetModel:
-      * No skip connections or decoder path.
-      * Returns a feature map with spatial dimensions preserved at the
-        final downsampled resolution (no flattening or linear heads).
-      * Optional cascade conditioning via SplitConvDownsample at each
-        downsampling stage, matching the UNetModel convention.
-
-    Args:
-        image_size (int): Input spatial size.
-        in_channels (int): Input channels.
-        model_channels (int): Base channel width.
-        num_res_blocks (int): Residual blocks per resolution level.
-        attention_resolutions (sequence[int]): Downsample factors at which
-            attention is applied (same semantics as UNetModel).
-        dropout (float): Dropout rate for ResBlocks.
-        channel_mult (tuple[int]): Per-level channel multipliers.
-        conv_resample (bool): Whether to use learned convs for downsampling.
-        dims (int): Convolution dimensionality (1, 2, or 3).
-        use_checkpoint (bool): Enable gradient checkpointing.
-        use_scale_shift_norm (bool): Use FiLM-style conditioning in ResBlocks.
-        cascade_conditioning (bool): If True, expect a `cond` tensor that is
-            progressively downsampled and concatenated at each downsampling
-            stage, similar to UNetModel.cascade_downscalers.
-        enable_patch_conditioning (bool): If True, enable patch-based conditioning.
-        side_conditioning (bool): If True, enable side/location-based conditioning.
+    The UNetModel downsampling path without skips or decoder. Returns the feature map at the final
+    downsampled resolution. attention_resolutions are downsample factors as in UNetModel.
+    cascade_conditioning expects a `cond` tensor downsampled and concatenated at each stage.
+    enable_patch_conditioning and side_conditioning turn on the patch and side embeddings.
     """
 
     def __init__(
@@ -243,17 +221,8 @@ class UNetStyleEncoder(nn.Module):
 class UNetO3StyleEncoder(nn.Module):
     """UNet-style encoder with an O3-inspired PoolProj head.
 
-    Backbone:
-      - Uses UNet-style ResBlocks, AttentionBlocks, Downsample, optional
-        cascade conditioning, mirroring ``UNetStyleEncoder``.
-
-    Head:
-      - Uses the same PoolProj + MLP structure as FlexibleO3:
-          tail_conv -> PoolProj(pool_types=['avg','max','gem']) -> FC1 -> FC2.
-      - This keeps similar pooling / compression behaviour while reusing
-        the UNet backbone.
-
-    The encoder returns a vector of size ``num_outputs``.
+    The UNetStyleEncoder backbone, then tail_conv -> PoolProj(['avg', 'max', 'gem']) -> FC1 -> FC2.
+    Returns a vector of size num_outputs.
     """
 
     def __init__(
@@ -356,34 +325,12 @@ class UNetO3StyleEncoder(nn.Module):
 
 
 class UNetModel(nn.Module):
-    """
-    The full UNet model with attention and optional patch embedding.
+    """The full UNet model with attention and optional patch embedding.
 
-    :param in_channels: channels in the input Tensor.
-    :param model_channels: base channel count for the model.
-    :param out_channels: channels in the output Tensor.
-    :param num_res_blocks: number of residual blocks per downsample.
-    :param attention_resolutions: a collection of downsample rates at which
-        attention will take place. May be a set, list, or tuple.
-        For example, if this contains 4, then at 4x downsampling, attention
-        will be used.
-    :param dropout: the dropout probability.
-    :param channel_mult: channel multiplier for each level of the UNet.
-    :param conv_resample: if True, use learned convolutions for upsampling and
-        downsampling.
-    :param dims: determines if the signal is 1D, 2D, or 3D.
-    :param num_classes: if specified (as an int), then this model will be
-        class-conditional with `num_classes` classes.
-    :param use_checkpoint: use gradient checkpointing to reduce memory usage.
-    :param num_heads: the number of attention heads in each attention layer.
-    :param num_heads_channels: if specified, ignore num_heads and instead use
-                               a fixed channel width per attention head.
-    :param num_heads_upsample: works with num_heads to set a different number
-                               of heads for upsampling. Deprecated.
-    :param use_scale_shift_norm: use a FiLM-like conditioning mechanism.
-    :param resblock_updown: use residual blocks for up/downsampling.
-    :param use_new_attention_order: use a different attention pattern for potentially
-                                    increased efficiency.
+    attention_resolutions holds the downsample rates at which attention runs (4 means at 4x
+    downsampling). num_classes makes it class-conditional. num_heads_channels, when set,
+    overrides num_heads with a fixed width per head. use_scale_shift_norm is FiLM-like
+    conditioning, and resblock_updown uses residual blocks to resample.
     """
 
     def __init__(
