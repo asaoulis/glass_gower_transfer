@@ -1,41 +1,9 @@
 #!/usr/bin/env python
-"""Blind sampling driver: run every production NLE arm x repeat x prior on one or more observation
-stores on the cluster, and pull the raw posteriors straight into the BLIND store.
+"""Blind sampling driver: run every production NLE arm x repeat x prior on observation stores on the cluster.
 
-    PYTHONPATH=. python scripts/sample_observation.py plan   --labels A B C --store-prefix obs_kids [--priors kids_s8_analytic LCDM_fixed_w0] [--repeats 0 1 2 3 4]
-    PYTHONPATH=. python scripts/sample_observation.py submit --labels A --store-prefix obs_gate0b --arms nla_m --repeats 0 --num-samples 2000 [--dry-run]
-    PYTHONPATH=. python scripts/sample_observation.py fetch  --labels A --store-prefix obs_gate0b [--arms ...] [--repeats ...]
-
-`plan` prints the job matrix and the exact `run_remote.py eval --cpu --args ...` lines (nothing
-submitted). `submit` runs them (one job per (arm, repeat); ALL labels' stores can be scored in one
-job only if they share a store -- here one store per label, so one job per label as well).
-`fetch` pulls checkpoints/<exp>/external/<label>/ into BLIND_ROOT/<label>/<exp>/ (the guard allows
-`run_remote.py fetch`; nothing here opens a sample file).
-
-    PYTHONPATH=. python scripts/sample_observation.py pool   --labels A B C --store-prefix obs_kids [--arms ...] [--repeats ...] [--priors ...]
-    PYTHONPATH=. python scripts/sample_observation.py fetch  --labels A --store-prefix obs_kids --what pooled
-
-`pool` submits ONE cheap CPU job per (label, arm, prior): `eval.py --mode pool --pool-arm <arm>
---repeat-indices <reps> --data-tag <label> --prior-mode <prior>` (HANDOFF_pooling.md §3.2) -- the
-equal-weight seed mixture q_pool = (1/R) sum_r q_r, i.e. the concatenated draws. THE FINAL
-POSTERIORS ARE THE POOLED ONES (user, 2026-09-08); the per-repeat dumps stay as the seed-spread
-diagnostic. `fetch --what pooled` pulls checkpoints/pooled/<arm>/external/<label>/ into
-BLIND_ROOT/<label>/pooled_<arm>/ (`--what both` = repeats + pooled).
-
-Arm table: `src/ml/eval/arms.py` (the ONE copy; this script imports it). Since the VDQ cutover
-(2026-10-09) the two ACTIVE arms are the VD-quadcap main analysis:
-  nla_m        gower_nle_finetune_nla_m_vdq_z8_r{r}_ens9                 (field-level flagship; repeats 0-4)
-  band         gower_nle_finetune_band_nla_m_vdq_k8_r{r}_ens9_e150       (2-pt only; repeats 0-4)
-The variate arms (nla_m_nobgp, nla, nla_z, vd, k2) are DELAYED (`arms.DELAYED_ARMS`): their rows still
-name no-VD chains, so `--arms` defaults to the active arms and naming a delayed arm raises.
-Both active arms read the sc8a1 baked observation store `<store-prefix>_<label>_sc8a1` (the delayed
-nla_m_nobgp row reads `_a0_tagged`).
-
-Cost: ~14 h wall per (arm, repeat, label) at 25k samples on ONE core (the historical path; Stage-B
-burn-in dominates). With the N=1 sharding (--ncpu 64 --mcmc-workers 60 --num-jobs 60 on CORES64,
-or --ncpu 40 --mcmc-workers 36 --num-jobs 36 on CORES40) the same run is ~17 min at warmup 500
-(SAMPLING_PROFILE_N1.md). One label x 10 (arm,repeat) x 2 priors = 20 jobs (VDQ main analysis). Use --num-samples 2000
-and --repeats 0 for a pilot.
+Subcommands: plan prints the job matrix, submit runs it, pool submits the pooled-posterior jobs and
+fetch pulls the raw posteriors straight into the blind store. Nothing here opens a sample file.
+The final posteriors are the pooled ones. The arm table is src/ml/eval/arms.py.
 """
 from __future__ import annotations
 
@@ -49,7 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 RUN_REMOTE = REPO / ".claude" / "cluster" / "run_remote.py"
 
 sys.path.insert(0, str(REPO))
-from src.ml.eval.arms import ACTIVE_ARMS, ARMS, DEFAULT_PRIORS, arm_experiment, assert_active  # noqa: E402  -- the ONE arm table (eval --mode pool reads the same)
+from src.ml.eval.arms import ACTIVE_ARMS, ARMS, DEFAULT_PRIORS, arm_experiment, assert_active  # noqa: E402
 
 
 def jobs(args):
@@ -79,13 +47,8 @@ def eval_args(j, args):
             "--num-samples", str(args.num_samples), "--num-chains", str(args.num_chains)]
     if args.num_jobs:
         toks += ["--num-jobs", str(args.num_jobs)]
-    # N=1 sampling knobs (SAMPLING_PROFILE_N1.md): shard ONE observation's sample budget over
-    # --mcmc-workers processes (each with --num-chains chains; pooled = one process with K*C chains,
-    # identical in distribution), 1 torch thread each, seeded per shard. 4.7x like-for-like on a
-    # 64-core node at 25k draws; keep warmup 500 for the blind run.
     if args.mcmc_workers:
-        # Deterministic but REPEAT- and ARM-dependent shard seed (DECISIONS P-6): a constant seed
-        # would give every pooled member the same MC initialisation noise. --mcmc-seed overrides.
+        # The seed depends on arm and repeat, so pooled members do not share MC initialisation noise.
         seed = args.mcmc_seed if args.mcmc_seed is not None else shard_seed(j["arm"], j["repeat"], j["prior"])
         toks += ["--mcmc-workers", str(args.mcmc_workers), "--mcmc-threads", str(args.mcmc_threads),
                  "--mcmc-seed", str(seed)]
@@ -94,7 +57,7 @@ def eval_args(j, args):
     if args.emb_batch_size is not None:
         toks += ["--emb-batch-size", str(args.emb_batch_size)]
     if args.require_member_frames:
-        toks += ["--require-member-frames"]   # refuse members without their own persisted input frame   # multi-event stores: items = n_batches x mcmc_workers
+        toks += ["--require-member-frames"]   # refuse members without their own persisted input frame
     return " ".join(toks)
 
 
