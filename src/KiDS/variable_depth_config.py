@@ -1,34 +1,9 @@
-"""KiDS-Legacy variable-depth (VD) constants + input-map loaders.
+"""KiDS-Legacy variable-depth (VD) constants and input-map loaders.
 
-All numeric tables are extracted **mechanically** (via ``ast.literal_eval`` on the upstream
-assignment, never retyped) from the reference VD driver
-``Kiyam/kids-legacy-sbi @ 4a22578 : scripts/kids_legacy_sim_vd_cluster.py`` so the VD effect is
-identically parameterised. ``kids_legacy_sim_vd_looped.py`` and ``kids_legacy_sim_vd_test.py`` at
-the same rev carry byte-identical tables (checked), so the choice of source script is immaterial.
-
-This module is deliberately OUTSIDE the protected ``src/cosmology/`` / ``src/KiDS/systematics.py``
-tree: it holds only fixed survey constants and file loaders (no forward-model physics), mirroring
-``src/KiDS/simulation_config.py``.
-
-The VD effect is fixed/tied to the KiDS-Legacy parameters, so these are constants (no inference).
-
-**2026-08-25 recalibration (upstream PR #2 `variable_depth_sim_v2`, merged in `5aef98d`).**
-Re-derived from the new target-galaxy (TG) weights. Relative to the previous tables:
-
-- ``vd_trace_edges`` is now **per-tomographic-bin**, ``(11,) -> (6, 11)``. Consumers must index it
-  as ``vd_trace_edges[tomo]`` before digitising.
-- ``vd_trace_eff_centre``, ``m_bias_vd``, ``m_bias_vd_unc`` — new values, same shapes.
-- The galaxy-count contrast is the **A' table** (2026-09-25): real-catalogue H12 n_eff in 10
-  galaxy-equipopulated bins of the 15'-smoothed tracer (``vd_contrast_xbar``, ``vd_contrast_neff``;
-  scripts/calibrate_vd_neff_table.py). It replaces upstream's quadratic ``a/b/c_ngal``, which was flat and
-  anti-correlated with the real n_eff.
-- The ``sigma_eps`` model dropped from **cubic to quadratic**: ``a_se x^2 + b_se x + c_se``
-  (``d_se`` is gone), clip window ``[0.25, 0.34]`` unchanged.
-- ``load_vd_maps`` now reads per-tomo SOM-derived maps named by the **integer tomo index**, not by
-  the ZB label.
-
-Verified UNCHANGED at the same rev (do not touch): ``alpha_1/2(_unc)``, the N/S additive c-bias
-tables, the PSF map filenames, ``m_bias(_unc)``, ``n_arcmin2``, ``sigma_e``.
+The tables are the upstream KiDS-Legacy calibration values: tracer bins and edges, the A'
+count-contrast table and its per-patch and quadcap variants, sigma_eps(tracer), shear biases and
+PSF alphas. Loaders return the per-tomo tracer maps and PSF residual maps at the run nside. The
+v2pr block at the end is the opt-in VD v2 model.
 """
 from pathlib import Path
 
@@ -41,8 +16,7 @@ from .tomo import nbins
 # Number of variable-depth tracer bins (digitised galaxy-depth levels).
 n_vardepth_bins = 10
 
-# Edges (nbins, 11) used to digitise each tomo bin's VD tracer map into `n_vardepth_bins` bins.
-# NOTE: per-tomographic-bin since the 2026-08 recalibration — index as `vd_trace_edges[tomo]`.
+# Edges (nbins, 11) digitising each tomo bin's tracer map into n_vardepth_bins bins, indexed as vd_trace_edges[tomo].
 vd_trace_edges = np.array([
     [0.0012413758210859523, 4.430003360530595, 5.252902596734906, 5.6069376920719805,
      5.849180679713157, 6.047681462039527, 6.226779225434265, 6.386899380773178,
@@ -80,9 +54,8 @@ vd_trace_eff_centre = np.array([
      6.10448105, 6.66362351, 7.33460146, 8.42028027],
 ])
 
-# A' count contrast: H12 n_eff (arcmin^-2) of the real catalogue in 10 galaxy-equipopulated bins of the tracer
-# smoothed by `vd_contrast_fwhm_arcmin`, tabulated against the mask-weighted mean smoothed tracer per bin.
-# Regenerate with scripts/calibrate_vd_neff_table.py.
+# A' count contrast (pooled): H12 n_eff (arcmin^-2) of the real catalogue in 10 galaxy-equipopulated bins of the
+# tracer smoothed by `vd_contrast_fwhm_arcmin`, tabulated against the mask-weighted mean smoothed tracer per bin.
 vd_contrast_fwhm_arcmin = 15.0
 vd_contrast_xbar = np.array([
     [4.66338443114, 5.03470534646, 5.2148292944, 5.3527680538, 5.47364783744,
@@ -113,9 +86,8 @@ vd_contrast_neff = np.array([
      1.24312710478, 1.3614068189, 1.50152788235, 1.68295265709, 1.9890347961],
 ])
 
-# Per-patch variant of the table (``--vd-table patch``): the same H12 n_eff on the same smoothed tracer, calibrated
-# separately in KiDS-N (Dec > `vd_patch_dec_split`) and KiDS-S, on galaxy-quantile bins that resolve the 1-10 % tails.
-# Shape (2, nbins, len(vd_patch_quantiles) - 1), indexed [patch (0 = N, 1 = S), tomo, bin].
+# Per-patch variant (--vd-table patch): the same H12 n_eff, calibrated separately in KiDS-N (Dec > `vd_patch_dec_split`)
+# and KiDS-S on galaxy-quantile bins. Shape (2, nbins, len(vd_patch_quantiles) - 1), indexed [patch (0 = N), tomo, bin].
 vd_patch_dec_split = -15.0
 vd_patch_quantiles = np.array([0.0, 0.01, 0.025, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.975, 0.99, 1.0])
 vd_patch_xbar = np.array([
@@ -227,10 +199,8 @@ vd_patch_neff = np.array([
     ],
 ])
 
-# Per-patch capped-quadratic variant (``--vd-table quadcap``): the same per-patch H12 contrast, fitted by a quadratic
-# in the smoothed tracer to the galaxy-quantile bins `vd_quadcap_quantiles` (0.5-10 % tails resolved; weights sqrt(bin
-# area)). The tracer is clipped to [lo, hi], the outermost bin means, before evaluation (constant beyond the calibrated
-# support). coef: (2, nbins, 3) in np.polyval order; nbar: patch density (arcmin^-2); lo, hi: (2, nbins).
+# Per-patch capped-quadratic variant (--vd-table quadcap): the per-patch H12 contrast fitted by a quadratic in the
+# smoothed tracer, clipped to [lo, hi]. coef (2, nbins, 3) in np.polyval order, nbar in arcmin^-2, lo and hi (2, nbins).
 vd_quadcap_quantiles = np.array([0.0, 0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5,
                                  0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85, 0.9, 0.925, 0.95, 0.975, 0.99, 0.995, 1.0])
 vd_quadcap_coef = np.array([
@@ -270,8 +240,7 @@ vd_quadcap_hi = np.array([
      8.4428050059],
 ])
 
-# Quadratic sigma_eps(VD tracer) model coefficients per tomo bin (6,). Was cubic before the
-# 2026-08 recalibration (the `d_se` constant term is gone).
+# Quadratic sigma_eps(VD tracer) coefficients per tomo bin, shape (6,).
 a_se = np.array([-0.000439, 0.000224, -0.000224, 0.000194, -8.7e-05, 0.000366])
 b_se = np.array([0.003677, -0.001357, 0.003897, -0.001368, -0.001988, -0.004989])
 c_se = np.array([0.270832, 0.271273, 0.275564, 0.263044, 0.293597, 0.315414])
@@ -309,8 +278,7 @@ m_bias_vd_unc = np.array([
      0.026777, 0.026947, 0.02708, 0.027147],
 ])
 
-# Residual-PSF additive shear bias coefficients (alpha) per tomo bin (6,).
-# Unchanged by the 2026-08 recalibration.
+# Residual-PSF additive shear bias coefficients alpha per tomo bin, shape (6,).
 alpha_1     = np.array([-0.003, -0.007, -0.003, -0.004, -0.005, -0.004])
 alpha_2     = np.array([ 0.013,  0.008,  0.007,  0.008,  0.007,  0.015])
 alpha_1_unc = np.array([ 0.015,  0.013,  0.013,  0.013,  0.013,  0.014])
@@ -318,13 +286,7 @@ alpha_2_unc = np.array([ 0.011,  0.010,  0.011,  0.011,  0.011,  0.011])
 
 
 def zb_label(i: int) -> str:
-    """The ``ZB{z1}t{z2}`` label for tomo bin `i` as the ``nz_tgweights`` files spell it.
-
-    Those filenames strip trailing zeros in the redshift labels (``0.10 -> "0p1"``,
-    ``0.90 -> "0p9"``, ``2.00 -> "2p0"``), unlike the ``nofzs/nz/`` files read by
-    ``src/KiDS/tomo.py``, which keep them (``"0p10"``). Round-tripping through ``float``
-    reproduces the on-disk spelling; verified against all six files on disk.
-    """
+    """The ZB{z1}t{z2} label of tomo bin i as the nz_tgweights files spell it (trailing zeros stripped)."""
     from .tomo import ztomo_label
 
     z1, z2 = (str(float(e)).replace(".", "p") for e in ztomo_label[i])
@@ -332,12 +294,9 @@ def zb_label(i: int) -> str:
 
 
 def load_vd_maps(data_dir: str | Path, nside: int) -> np.ndarray:
-    """Load the 6 per-tomo VD tracer maps, ud_grade-ing to the run ``nside``.
+    """Load the 6 per-tomo VD tracer maps (SOM-derived), ud_grade-d to the run nside.
 
-    Since the 2026-08 recalibration these are per-tomo SOM-derived maps indexed by the integer
-    tomo index (upstream `80591f5` "Fixed vd_map filename logic"), not by the ZB label.
-
-    Returns an array of shape ``(nbins, hp.nside2npix(nside))``.
+    Returns an array of shape (nbins, hp.nside2npix(nside)).
     """
     data_dir = Path(data_dir)
     vd_map = np.empty((nbins, hp.nside2npix(nside)))
@@ -377,19 +336,7 @@ def load_psf_maps(data_dir: str | Path, nside: int) -> tuple[np.ndarray, np.ndar
     return psf_bias_map_1, psf_bias_map_2
 
 
-# =====================================================================================================
-# VD v2 (OPT-IN, vd_table="v2pr"): port of Kiyam/kids-legacy-sbi PR #3 (branch variable-depth-update,
-# 2026-10-23, kids_legacy_sim/vd_contrast.py). Constants copied VERBATIM (prefix vd_ -> vd2_), weights
-# table data/vd_maps/vd_weight_tables.npz (sha256 a80f17755ed8...). Production (quadcap) never reads these.
-#   counts : per-patch polynomial (deg 2-4, zero-padded, np.polyval order) of the COVERAGE-CORRECTED
-#            tracer T/f_pix smoothed by vd2_contrast_fwhm_arcmin (5'), clipped to [lo, hi], x nbar,
-#            mask-normalised; times the count boost rho = <w^2>/<w>^2 of the pixel's depth bin (N = rho n_eff).
-#   shapes : per-patch polynomial sigma_eps of the RAW corrected tracer, clipped to vd2_sigma_clip, NO rescale.
-#   weights: W = w <w>/<w^2> drawn from 201 quantiles per (tomo, patch, depth bin of the raw corrected tracer).
-#   The LOS n(z) interpolation and the m-bias digitise keep the RAW tracer (as the PR).
-#   MAP CONVENTION: our estimator divides by the weighted count (counts / smoothed_counts) -- the
-#   convention of the real A2 observation build -- NOT the PR's sum(W e)/(n_eff A); the W scale cancels.
-# =====================================================================================================
+# --- VD v2 (vd_table='v2pr'), opt-in port of the upstream variable-depth noise model ---
 vd2_contrast_fwhm_arcmin = 5.0
 vd2_patch_dec_split = -15.0
 vd2_sigma_clip = (0.2, 0.4)
