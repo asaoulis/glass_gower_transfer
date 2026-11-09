@@ -1,26 +1,9 @@
-"""Noise-texture-robust higher-order statistics (HOS) of the baked sc8a1 E maps + the per-mock sidecar bake.
+"""Third-moment higher-order statistics (HOS) of the baked sc8a1 E maps, and the per-mock sidecar bake.
 
-Selected by task eval-and-viz/robust-hos-selection (RECOMMENDATIONS.md): the tomographic third moments
-<dk_i dk_j dk_l>, i <= j <= l (56 per scale), are the only map statistics that add information beyond 2-pt AND are
-insensitive to the real catalogue's noise texture (paired real-noise vs mock-noise skies; peaks / MFs / Betti / PH /
-PDF / l1 / scattering all fail). Shape noise is sign-symmetric whatever its variance texture, so odd polynomial
-moments see the texture only through its correlation with the signal; distinct-bin triples have no noise term.
-
-Spec (R1, `hos/vector`, 112 numbers):
-  input   the STORED map of a baked store (`pixelised_results/E/{north,south}`, (6, H, W), f16, already divided by
-          the per-mock random-rotation noise meter: the sc8a1 convention) -> cast to float64 BEFORE smoothing
-          (smoothing f16 destroys the moments).
-  smooth  anisotropic plate-carree Gaussian on the full patch rectangle, extra FWHM sqrt(t^2 - 4^2) arcmin for
-          nominal total t in (8, 16): sigma_pix = (s / PIX, s / (PIX cos dec_c)), PIX = nside-512 resolution,
-          dec_c = the patch centre latitude; scipy gaussian_filter(mode="reflect", truncate=4.0).
-  pool    footprint pixels (KiDS frac > 0.5 on the patch grid, config/hos_assets/, scripts/build_hos_mask.py),
-          N + S concatenated; subtract the pooled mean per bin.
-  moment  mean(D_i * D_j * D_l) over the pooled pixels, triples in lexicographic order i <= j <= l.
-  names   s{t}/m3x3/b{i}b{j}b{l} (1-based bins), scales 8 then 16.
-Superset (`hos_ext/moments`, (4, 77)): per scale t in (4, 8, 12, 16): m2 (6) + x2 (15, i<j) + m3x3 (56), names in
-`hos_ext/names`; t = 4 is the stored map unsmoothed. Enables R2 (distinct triples), scale cuts and a map-level
-2-pt control without a re-bake.
-Identical (to summation order) to robust-hos-selection `hos_extract.battery` on meter-normalised maps.
+R1 (`hos/vector`, 112 numbers) is the tomographic third moments <dk_i dk_j dk_l>, i <= j <= l, over the
+pooled N+S footprint at nominal smoothing 8 and 16 arcmin, named s{t}/m3x3/b{i}b{j}b{l}. The f16 stored
+maps are cast to float64 before smoothing. The superset `hos_ext/moments` (4, 77) holds m2, x2 and m3x3
+at scales 4, 8, 12 and 16. bake_one writes them next to each mock as a sidecar file.
 """
 import hashlib
 import json
@@ -133,10 +116,10 @@ def shard_of(path, nshards=20):
 
 
 def bake_one(src, dst, foot, mask_sha, ext=True, rev="unknown", variant="r1ext"):
-    """Write the sidecar of one baked mock. Never drops a file: on a read error the sidecar carries a NaN vector
-    and `hos/_error` (counted as 'bad'). Returns ('ok'|'skip'|'bad', dst, message).
-    variant 'r1ext' (default) = hos/vector (+ hos_ext); 'x' ALSO writes group hos_x (src/ml/data/hos_x.py superset,
-    task hos-3pt-information) with dataset `vector` + attrs names / blocks / version / provenance."""
+    """Write the sidecar of one baked mock. Returns ('ok'|'skip'|'bad', dst, message).
+
+    On a read error the sidecar carries a NaN vector and `hos/_error`. variant 'r1ext' writes hos/vector
+    (and hos_ext), 'x' also writes group hos_x (the hos_x.py superset) with dataset `vector` and attrs."""
     import h5py
     if os.path.exists(dst):
         return ("skip", dst, "")
@@ -210,11 +193,11 @@ def _job(args):
 
 def run_bake(src_glob, out_dir, workers=16, shard=None, nshards=20, limit=None, ext=True, min_free_gb=20.0,
              archive=True, log=print, variant="r1ext"):
-    """Bake every file of `src_glob` into the FLAT dir `out_dir/<basename>` (resumable: skips existing). The flat
-    layout mirrors the bake, so `collect_paths` (sorted full paths) orders files exactly like the bake and
-    `split_by_cosmology` reproduces the frozen band's split. `shard` restricts to sim_id % nshards == shard.
-    Writes manifest.json + hos_table.npz, and (archive=True) per-shard transfer archives
-    `<out_dir>_tar/s{NN}.tar` (one `fetch` each; the flat dir itself is too large for one foreground fetch)."""
+    """Bake every file of `src_glob` into the flat dir `out_dir/<basename>`, skipping existing sidecars.
+
+    The flat layout keeps the bake's file order, so split_by_cosmology reproduces the frozen band's
+    split. `shard` restricts to sim_id % nshards == shard. Writes manifest.json and hos_table.npz,
+    and with archive=True the per-shard archives `<out_dir>_tar/s{NN}.tar`."""
     import glob
     import shutil
     from concurrent.futures import ProcessPoolExecutor
@@ -278,8 +261,9 @@ def write_shard_archives(out_dir, nshards=20, log=print):
 
 
 def write_manifest(out_dir, src_glob="", log=print, variant="r1ext"):
-    """manifest.json (counts, sim ids, mask hash, names) + hos_table.npz (basenames, R1 vectors, ext, key cosmo);
-    variant 'x' adds hosx_names / hosx_blocks / hosx_version to the manifest + hosx_table.npz (basenames, hos_x, cosmo)."""
+    """Write manifest.json (counts, sim ids, mask hash, names) and hos_table.npz (basenames, R1, ext, cosmo).
+
+    variant 'x' adds hosx_names / hosx_blocks / hosx_version to the manifest and writes hosx_table.npz."""
     import glob
     import h5py
     fs = sorted(glob.glob(os.path.join(out_dir, "output_*.h5")))
