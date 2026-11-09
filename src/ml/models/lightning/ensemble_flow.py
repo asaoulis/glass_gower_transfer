@@ -1,31 +1,9 @@
 """Vectorised ensemble likelihood for NLE sampling.
 
-The serial ensemble (`_EnsembleLikelihoodModel` in `ensemble_nle.py`) evaluates the M members'
-log-likelihoods one at a time inside the MCMC potential, so ensemble sampling costs ~M× a single
-model. The cost is overhead/launch-bound at the small batch sizes MCMC uses (a single flow on M×
-the rows costs only a little more than on 1× the rows), so folding the M members into ONE forward
-over an M-major-tiled batch recovers most of that factor.
-
-Mechanism (see the task plan for the full derivation):
-  - The production ``nsf`` flow is 5 × [RQS-coupling (conditioner = ResidualNet of nn.Linear) +
-    LULinear]. The ONLY parameterised leaves are ``nn.Linear`` and ``LULinear``; every other op
-    (spline math, base distribution, the deterministic coupling mask) is param-free and identical
-    across independently-seeded members.
-  - ``LULinear.forward_no_cache`` is two ``F.linear`` calls with a per-row-constant logabsdet, i.e.
-    an affine map. So EVERY parameterised op reduces to a (grouped) matmul once weights are stacked.
-  - We deep-copy member-0's raw nflows flow as a structural template and replace each ``nn.Linear``
-    / ``LULinear`` with a grouped variant holding the stacked params of the corresponding-named
-    module across all M members. The forward tiles inputs to M-major blocks ``(M*B, ·)``; each
-    grouped module reshapes ``(M*B,·)->(M,B,·)`` and applies member-specific weights via ``einsum``;
-    param-free ops run per-row unchanged (row order = member-major blocks is preserved throughout).
-
-``torch.func.vmap`` is NOT used: the RQS spline does a boolean-mask ``index_put`` and a data-dependent
-``if torch.any(...)`` branch, both of which vmap rejects. Eager grouped matmuls avoid that entirely
-and are numerically equivalent to the serial path (verified by an allclose gate in the bench).
-
-If the members' flow contains any parameterised leaf that is not ``nn.Linear``/``LULinear`` (e.g.
-``maf``'s RandomPermutation/MADE, or zuko flows), :func:`build_grouped_ensemble_likelihood` returns
-``None`` and the caller falls back to the serial loop, so we never produce wrong numbers silently.
+Folds the M ensemble members into one forward pass over an M-major tiled batch (M*B, .): the nsf
+members share every op except their nn.Linear and LULinear weights, which are stacked and applied
+per member by einsum. build_grouped_ensemble_likelihood returns None when a flow holds any other
+parameterised leaf (maf, zuko), and the caller falls back to the serial ensemble.
 """
 
 from __future__ import annotations
