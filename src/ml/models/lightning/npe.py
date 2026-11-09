@@ -1,3 +1,4 @@
+"""NDELightningModule: the NPE training module for the posterior p(theta | summary)."""
 from __future__ import annotations
 
 import torch
@@ -39,12 +40,6 @@ class NDELightningModule(BaseLightningModule):
         flow_type="nsf",
         num_extra_blocks=None,
         flow_kwargs=None,
-        # Map-only auxiliary VMIM head (counts-extended task, 2026-07-16): when weight > 0 a
-        # second small flow is trained on the hybrid's patch_mu alone (loss += w * aux_nll),
-        # giving the map CNN a first-class gradient path that the frozen band branch cannot
-        # satisfy. Validation logs val_patch_aux for diagnostics; model selection stays on the
-        # main val_log_prob. Requires the encoder to expose dim_patch/_last_patch_mu
-        # (KidsHybridBandpowersMaps).
         patch_aux_weight=0.0,
         patch_aux_flow_kwargs=None,
         **kwargs,
@@ -131,14 +126,7 @@ class NDELightningModule(BaseLightningModule):
         )
         print("Overwriting model weights from checkpoint:", checkpoint_path)
         state_dict = checkpoint["state_dict"]
-        # torch.compile wraps a submodule and inserts an `_orig_mod.` segment into its state_dict
-        # keys (e.g. ...shared_cnn.backbone._orig_mod.patch_embed.weight). The compile decision can
-        # differ between the saved checkpoint and the rebuilt model (e.g. the embeddings pipeline /
-        # eval rebuild a compile-trained hybrid UNcompiled), and a model can even carry a mix (the
-        # _CondEmbeddingFlow holds a second reference to embedding_net), so a strict load rejects the
-        # mismatched keys. Align EACH checkpoint key to the model's ACTUAL key by matching on the
-        # `_orig_mod.`-stripped ("canonical") name — per-key and bidirectional, so it works whichever
-        # side is compiled. Keep the load strict so a genuine architecture mismatch still surfaces.
+        # torch.compile inserts `_orig_mod.` into state-dict keys, so keys are matched with it stripped.
         canonical_to_model = {
             k.replace("._orig_mod.", "."): k for k in self.state_dict().keys()
         }
@@ -184,21 +172,9 @@ class NDELightningModule(BaseLightningModule):
     ):
         """Return intermediate representations and posterior samples on the test set.
 
-        Mirrors `generate_samples`, but additionally returns:
-          - `representation`: encoder features before the final head
-          - `z`: compressed outputs after applying the head (flow context)
-
-        Implementation details
-        ----------------------
-        We avoid running the embedding net twice by:
-          1) computing `rep = self.model.get_representation(data)`
-          2) computing `z = self.model.embedding_net.head(rep)`
-        then sampling using the posterior conditioned on `z`.
-
-        Returns
-        -------
-        dict with keys among: theta0s, representation, z, samples
-        where samples has shape [num_samples, N, D].
+        Returns a dict with keys among theta0s, representation (encoder features before the final
+        head), z (the flow context after the head) and samples [num_samples, N, D]. The embedding
+        net runs once: z is the head applied to the representation.
         """
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -285,8 +261,6 @@ class NDELightningModule(BaseLightningModule):
         theta0s = torch.cat(theta0s, dim=0)
         z_conds = torch.cat(z_conds, dim=0)
 
-        # Same availability check as the encoding loop above: an unconditional "cuda" here crashed
-        # every CPU-node misspec eval ("Found no NVIDIA driver"). GPU behaviour is unchanged.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         posterior.prior.to(device)
         posterior.to(device)
@@ -327,9 +301,7 @@ class NDELightningModule(BaseLightningModule):
             prog_bar=True,
             sync_dist=self.is_distributed,
         )
-        # Anti-collapse hinge on the hybrid's map-branch latent (patch_var_reg_coeff > 0 on the
-        # encoder, set via model_kwargs): penalise per-dim batch std of patch_mu falling below 1
-        # in scaled space, forbidding the constant-output collapse seen in stuck runs.
+        # Hinge penalty on a per-dim batch std of patch_mu below 1 (patch_var_reg_coeff > 0).
         enc = getattr(self.model, "embedding_net", None)
         coeff = float(getattr(enc, "patch_var_reg_coeff", 0.0) or 0.0) if enc is not None else 0.0
         if coeff > 0.0:
@@ -342,8 +314,6 @@ class NDELightningModule(BaseLightningModule):
                     var_pen,
                     sync_dist=self.is_distributed,
                 )
-        # counts-ext phase 4 E3: off-diagonal covariance (decorrelation) penalty on patch_mu —
-        # anti-rank-1 pressure (all escaped models carry a single effective map dimension).
         cov_coeff = float(getattr(enc, "patch_cov_reg_coeff", 0.0) or 0.0) if enc is not None else 0.0
         if cov_coeff > 0.0:
             patch_mu = getattr(enc, "_last_patch_mu", None)
@@ -355,8 +325,6 @@ class NDELightningModule(BaseLightningModule):
                 cov_pen = (cov.pow(2).sum() - torch.diagonal(cov).pow(2).sum()) / d
                 loss = loss + cov_coeff * cov_pen
                 self.log("train_patch_cov_pen", cov_pen, sync_dist=self.is_distributed)
-        # counts-ext phase 4 E4: asymmetric spectral decoupling — L2 on the BAND-only component
-        # of the fused latent (shrinks the readout's band reliance; Pezeshki-style SD).
         sd_coeff = float(getattr(enc, "sd_band_coeff", 0.0) or 0.0) if enc is not None else 0.0
         if sd_coeff > 0.0:
             band_mu = getattr(enc, "_last_band_mu", None)
@@ -382,8 +350,7 @@ class NDELightningModule(BaseLightningModule):
         patch_mu = getattr(enc, "_last_patch_mu", None) if enc is not None else None
         if patch_mu is None:
             return None
-        # The nflows spline stack is not autocast-safe (bf16/float mat mismatch): run the aux
-        # head in full precision outside any autocast region.
+        # The nflows spline stack is not autocast-safe, so the aux head runs in full precision.
         with torch.autocast(device_type=theta.device.type, enabled=False):
             lp = self.patch_aux_flow.log_prob(
                 theta.float().unsqueeze(0), patch_mu.float()
@@ -408,13 +375,11 @@ class NDELightningModule(BaseLightningModule):
         return loss
 
     def _hybrid_val_monitor(self, theta):
-        """counts-ext phase 4 L3: per-val-epoch zero-out information split + patch_mu rank.
+        """Per-val-batch information split of a hybrid encoder.
 
-        For hybrid encoders, logs val NLL with the map slice zeroed (band-only) and the band
-        slice zeroed (map-only), and accumulates patch_mu for a participation-ratio (effective
-        rank) log at epoch end. Catches dead branches AND false escapes (alive-but-uninformative
-        map branch) by ~ep20 instead of ep50. Self-arming: first val batch enables the encoder's
-        mu caching; costs two flow evals per val batch (encoder forward is NOT repeated).
+        Logs val NLL with the map slice zeroed (band-only) and the band slice zeroed (map-only),
+        and accumulates patch_mu for an effective-rank log at epoch end. The first val batch arms
+        the encoder's mu caching.
         """
         enc = getattr(self.model, "embedding_net", None)
         if enc is None or not hasattr(enc, "_fuse_mu") or not hasattr(enc, "hybrid_head"):
@@ -448,8 +413,7 @@ class NDELightningModule(BaseLightningModule):
             if pm.shape[0] > pm.shape[1]:
                 pm = pm - pm.mean(dim=0, keepdim=True)
                 cov = (pm.T @ pm) / (pm.shape[0] - 1)
-                # Diagnostic only: never let it kill training (CPU LAPACK eigh can fail to converge on a finite,
-                # near-degenerate 8x8 cov). float64 + skip the log on failure / non-finite input.
+                # Diagnostic only: eigh can fail to converge on a near-degenerate cov, so skip the log then.
                 try:
                     ev = torch.linalg.eigvalsh(cov.double()).clamp(min=0) if torch.isfinite(cov).all() else None
                 except RuntimeError:
@@ -471,10 +435,7 @@ class NDELightningModule(BaseLightningModule):
 
     @torch.no_grad()
     def compute_avg_log_prob(self):
-        # Eval-only metric; without no_grad a bare call retains the full encoder graph for
-        # every test batch (~15GB on the kids hybrid — OOM'd the GLASS misspec evals). The
-        # ensemble class already carries this decorator; training's usage was safe only
-        # because on_validation_epoch_end wraps the call in torch.no_grad() externally.
+        # no_grad, else every test batch retains the full encoder graph and runs out of memory.
         predictions = []
         for batch in self.test_dataloader:
             batch = self.transfer_batch_to_device(batch, self.device, 0)
