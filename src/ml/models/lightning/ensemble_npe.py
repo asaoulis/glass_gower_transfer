@@ -1,3 +1,4 @@
+"""Evaluation-time ensemble of separately trained NPE LightningModules (EnsembleNDELightningModule)."""
 from __future__ import annotations
 
 import numpy as np
