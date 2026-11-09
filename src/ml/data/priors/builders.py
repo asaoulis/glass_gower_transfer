@@ -1,3 +1,9 @@
+"""Constructors of the priors used for evaluation and NLE sampling.
+
+Analytic priors in physical units (S8 box, Gower paper priors), the empirical Gower flow prior,
+and the marginal priors of the IA and galaxy-bias parameters, each wrapped to the scaled [0, 1]^D
+space.
+"""
 import torch
 from torch.distributions import MultivariateNormal, Normal, Uniform
 
@@ -27,12 +33,9 @@ def _accept_within_unit_hypercube(theta):
 
 if RestrictedPrior is not None:
     class DeviceMovableRestrictedPrior(RestrictedPrior):
-        """sbi RestrictedPrior + a real ``to(device)`` method.
+        """sbi RestrictedPrior with a real to(device) method.
 
-        Must be a module-level SUBCLASS, not an instance-bound ``types.MethodType``
-        monkey-patch: bound methods stored on the instance pickle as
-        ``getattr(obj, func.__name__)`` and explode on unpickle inside joblib/loky
-        MCMC workers (AttributeError: no attribute 'to_device')."""
+        A module-level subclass, so it pickles into joblib/loky MCMC workers."""
 
         def to(self, device):
             self._prior.to(device)
@@ -55,10 +58,7 @@ cov = [
 mean = [mu_AIA, mu_beta]
 
 
-# --- NLA-family IA priors (Wright et al. 2025) ---------------------------------------------
-# These complement the NLA-M bivariate Gaussian above. The IA model is disambiguated by which
-# *companion* parameter accompanies `a_ia`: b_ia -> NLA-M, b_z -> NLA-z, b_src -> TATT/NLA-k,
-# none -> plain NLA.
+# --- NLA-family IA priors (Wright et al. 2025) ---
 AIA_NLA_RANGE = (-6.0, 6.0)     # wide top-hat on A_IA for NLA / NLA-z / TATT
 BZ_MEAN, BZ_STD = -3.7, 4.3     # NLA-z redshift-slope B_IA Gaussian prior
 BSRC_RANGE = (-0.5, 1.5)        # TATT / NLA-k density-weighting bias prior
@@ -66,18 +66,6 @@ BSRC_RANGE = (-0.5, 1.5)        # TATT / NLA-k density-weighting bias prior
 IA_COMPANION_PARAMS = ("b_ia", "b_z", "b_src")
 IA_PARAMS = ("a_ia",) + IA_COMPANION_PARAMS
 
-# Galaxy-bias marginalisation (BGP campaign). The per-tomo-bin b_g values are DRAWN per mock, so
-# when they are inferred (`b_g_bin1..6` in cosmo_param_names) their prior is analytic and known:
-# the Flamingo KiDS-Legacy O3-diag calibration at kappa=1, truncated at +-3 sigma.
-#
-# ⚠️ SOURCE OF TRUTH is `src/KiDS/simulation_config.py` (GALAXY_BIAS_PRIOR_MEANS / _SIGMAS), which
-# is what the SIMULATOR actually draws from. These are duplicated here rather than imported because
-# that module pulls in healpy and the whole survey-geometry stack, which has no business loading in
-# a GPU eval job — the same reason the IA constants above are duplicated. If the simulator's preset
-# ever changes, THIS MUST BE UPDATED IN LOCKSTEP or every shrinkage number silently references the
-# wrong prior. GALAXY_BIAS_CLIP binds only once the prior is WIDENED: at kappa=1 it lies far outside
-# +-3 sigma for every bin and never applies, but at kappa=2 it clips the low-z bins (up to ~2.18 % of
-# draws), so it must be carried here rather than assumed inert.
 GALAXY_BIAS_PRIOR_MEANS = [1.0181, 1.0698, 1.1302, 1.2427, 1.3739, 1.4805]
 GALAXY_BIAS_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
 GALAXY_BIAS_PRIOR_NSIGMA = 3.0
@@ -88,12 +76,8 @@ GALAXY_BIAS_PARAMS = tuple("b_g_bin%d" % i for i in range(1, len(GALAXY_BIAS_PRI
 def galaxy_bias_marginal_priors(params, kappa=1.0, clip=GALAXY_BIAS_CLIP):
     """Per-parameter 1D galaxy-bias priors for any `b_g_bin{i}` present in `params`.
 
-    Returns {} when none are present, so this is a no-op for every pre-BGP parameter set.
-
-    Each is a TruncatedNormal1D(mean_i, sigma_i) on [mean_i - 3 sigma_i, mean_i + 3 sigma_i],
-    matching the simulator's per-(sim, outer, rot) draw. Supplying these as ANALYTIC priors is what
-    keeps them out of `build_gower_prior`'s empirical-flow branch — the Gower Street CSV has no
-    b_g columns, so a b_g param reaching the flow is a hard failure, not a degraded prior.
+    Returns {} when none are present. Each is a TruncatedNormal1D(mean_i, kappa sigma_i) on
+    mean_i +- 3 kappa sigma_i, clipped to `clip`, matching the simulator's per-block draw.
     """
     present = [p for p in params if p in GALAXY_BIAS_PARAMS]
     if not present:
@@ -102,9 +86,7 @@ def galaxy_bias_marginal_priors(params, kappa=1.0, clip=GALAXY_BIAS_CLIP):
     for name in present:
         i = GALAXY_BIAS_PARAMS.index(name)
         loc = GALAXY_BIAS_PRIOR_MEANS[i]
-        # kappa RESCALES the width: the simulator draws b_i ~ N(mean_i, kappa*sigma_i) truncated at
-        # +-3*kappa*sigma_i and clipped to GALAXY_BIAS_CLIP (src/KiDS/simulation_config.py). Scaling
-        # only the BOUNDS and not the SIGMA would still mis-model the prior, so both scale here.
+        # kappa rescales the width and the truncation at +-3 kappa sigma, as the simulator draws.
         scale = kappa * GALAXY_BIAS_PRIOR_SIGMAS[i]
         half = GALAXY_BIAS_PRIOR_NSIGMA * scale
         low, high = loc - half, loc + half
@@ -117,13 +99,8 @@ def galaxy_bias_marginal_priors(params, kappa=1.0, clip=GALAXY_BIAS_CLIP):
 def _infer_galaxy_bias_kappa(preset_overrides):
     """Recover the b_g prior-width multiplier `kappa` from the scaled parameter boxes.
 
-    The boxes an experiment supplies as `scaler_options['cosmo']['preset_overrides']` are exactly
-    `(max(mean - 3*kappa*sigma, CLIP_LO), min(mean + 3*kappa*sigma, CLIP_HI))`, so kappa is
-    recoverable from any box that the clip did not touch. Clipping only ever SHRINKS a box, so the
-    WIDEST bin gives the true kappa; at kappa=2 the clip reaches at most 2.18 % of draws and leaves
-    several bins untouched, and at kappa=1 it is inert for every bin.
-
-    Returns 1.0 when no b_g boxes are supplied, which is the pre-existing behaviour.
+    The boxes are (max(mean - 3 kappa sigma, CLIP_LO), min(mean + 3 kappa sigma, CLIP_HI)), and the
+    clip only shrinks a box, so the widest bin gives kappa. Returns 1.0 when no b_g boxes are given.
     """
     if not preset_overrides:
         return 1.0
@@ -145,14 +122,11 @@ def _infer_galaxy_bias_kappa(preset_overrides):
 def ia_marginal_priors(params):
     """Per-parameter 1D IA priors for the IA params present in `params`.
 
-    The IA model is inferred from the companion parameter so a single `a_ia` name can carry the
-    right prior per model:
+    The IA model follows from the companion parameter:
       - {a_ia, b_ia}  -> NLA-M  (a_ia~U[4.48,7], b_ia~U[0.28,0.6] marginals)
       - {a_ia, b_z}   -> NLA-z  (a_ia~U[-6,6], b_z~N(-3.7,4.3))
       - {a_ia, b_src} -> TATT   (a_ia~U[-6,6], b_src~U[-0.5,1.5])
       - {a_ia}        -> NLA    (a_ia~U[-6,6])
-    (For NLA-M the joint Gaussian is used as a block by `build_analytic_prior`; these are the
-    independent marginals used by the empirical `build_gower_prior` path.)
     """
     present = [p for p in params if p in IA_PARAMS]
     if not present:
@@ -246,11 +220,7 @@ def build_s8_box_known_priors(
 def _combine_independent(dists):
     """Join independent priors into one distribution.
 
-    `sbi`'s MultipleIndependent asserts len(dists) > 1, so a SINGLE distribution must be returned
-    as-is rather than wrapped. That case arises whenever the leading distribution already spans
-    every inferred parameter and no extra analytic priors are appended -- e.g. the 2-param
-    {omega_m, sigma_8} runs, where the Gower flow covers both. With 2+ distributions the behaviour
-    is unchanged.
+    sbi's MultipleIndependent asserts len(dists) > 1, so a single distribution is returned as-is.
     """
     if len(dists) == 1:
         return dists[0]
@@ -376,18 +346,6 @@ def build_analytic_prior(
         "w0": phys_priors["w0"],
         "mnu": phys_priors["mnu"],
     }
-    # Marginalised galaxy bias (BGP), mirroring `build_gower_prior`. The b_g prior is a property of
-    # the STORE — the simulator draws b_i ~ N(mean_i, kappa*sigma_i) per mock — not of the cosmology
-    # prior, so the analytic (KiDS) path must supply exactly the same truncated Gaussians the
-    # empirical (Gower) path does. Without them every 15-parameter arm died here with "no analytic
-    # prior specified for parameter 'b_g_bin1'" (jobs 1358333/1358334, the kappa=2 matched runs);
-    # p15 is the production default, so this reached the real analysis, not just kappa=2.
-    #
-    # kappa is recovered from the SCALER's own boxes rather than a separate `preset_overrides`
-    # argument, so the prior can never disagree with the boxes the model was scaled with — the
-    # invariant `build_gower_prior` states after a hardcoded kappa=1 put 58.5 % of the kappa=2 test
-    # truths outside the sampler's support. `galaxy_bias_marginal_priors` returns {} when no b_g
-    # parameter is present, so this is a no-op for every pre-BGP parameter set.
     _bg_boxes = {n: (float(scaler.min[name_to_idx[n]]), float(scaler.max[name_to_idx[n]]))
                  for n in GALAXY_BIAS_PARAMS if n in params and n in name_to_idx}
     one_d_priors.update(galaxy_bias_marginal_priors(params, kappa=_infer_galaxy_bias_kappa(_bg_boxes)))
