@@ -1,14 +1,8 @@
 """Public survey chains for the Tier-4 reveal figures (CosmoSIS text format, header-driven).
 
-Every file is tab-separated text with a `#`-prefixed first line of column names and a `weight`
-column (PolyChord / MultiNest importance weights). Columns are matched by NAME (case-insensitive),
-never by index; S8 is derived as sigma_8 sqrt(Omega_m/0.3) when the file carries no S_8 column
-(checked to a ratio of 1.0000 on every file that has one).
-
-Registry: `SURVEY_CHAINS` = ordered list of (key, path, display name, model, probe) for the rows
-the user asked for (DES Y3 and HSC Y3, 2-pt and beyond-2-pt). Chains that are NOT public (DES Y3
-field-level / SBI Jeffrey+24, Gatti+24, Zuercher+22 peaks; HSC Y3 peaks / PDFs) are listed in
-`NOT_PUBLIC` so the README can say so.
+Columns are matched by name, case-insensitive, never by index, and a weight column is required.
+S8 is derived as sigma_8 sqrt(Omega_m/0.3) when a file has no S_8 column. SURVEY_CHAINS lists
+(key, path, display name, model, probe), and NOT_PUBLIC the chains that are not public.
 """
 from __future__ import annotations
 
