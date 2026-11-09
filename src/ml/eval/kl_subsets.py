@@ -1,30 +1,9 @@
-"""Parameter-SUBSET decomposition of the cross-encoder ensemble-disagreement KL (Tier-2 OOD axis).
+"""Parameter-subset decomposition of the cross-encoder ensemble-disagreement KL (Tier-2 OOD axis).
 
-The Tier-2 detector's ``kl`` column is
-``ensemble_discrepancies.diag_gaussian_symmetric_kl(mu, var)`` over ``[K encoders, N events,
-D params]`` -- a mean over unordered encoder pairs of the symmetric KL between two DIAGONAL
-Gaussians. Because that KL is a **sum over the parameter axis**, it decomposes exactly:
-
-    KL(event) = sum_d  kl_per_dim(event, d)
-
-so the KL restricted to any parameter subset is an exact slice of the SAME saved moments -- no
-re-evaluation, no cluster job. ``kl_per_dim(...).sum(-1)`` reproduces ``diag_gaussian_symmetric_kl``
-to machine precision (asserted in ``self_check``).
-
-Scaled vs physical space: the moments are saved in the min/max-SCALED space. Each dimension's
-symmetric-KL term is invariant under a common affine rescaling of that dimension (the log-ratio
-cancels and both quadratic terms carry the same 1/s^2), and all encoders share ONE scaler -- so a
-per-dim (hence any subset) KL is identical in scaled and physical space. **S_8 is the exception**:
-it is a nonlinear combination, so its moments are formed from the per-repeat sample dumps in
-PHYSICAL space (:func:`s8_moments`).
-
-The 9-parameter inference vector of the production packs is
-``[omega_m, sigma_8, w0, mnu, h, ns, ombh2, a_ia, b_ia]`` -- there are **no b_g dimensions**: in the
-``_bgp_`` packs the galaxy bias is marginalised in the training DATA, not inferred.
-
-Discriminating power is AUROC of a variate's scores against the in-distribution pool, with
-COSMOLOGY-block bootstrap CIs: the rows are ~8 correlated augmentations per cosmology, so
-row-level resampling gives intervals that are far too tight.
+The diagonal-Gaussian symmetric KL is a sum over parameters, so the per-event KL splits exactly into
+per-parameter and per-subset terms. The per-dimension terms are the same in scaled and physical
+space. S_8 is nonlinear, so its moments come from the physical-space sample dumps. AUROC CIs are
+cosmology-block bootstraps.
 """
 from __future__ import annotations
 
@@ -47,9 +26,7 @@ SUBSETS: Dict[str, Optional[Tuple[str, ...]]] = {
     "om_s8_w0": ("omega_m", "sigma_8", "w0"),
 }
 
-# Variants that are NOT a diagonal slice: they need the per-event posterior COVARIANCE (from the
-# moments npz) rather than the diagonal ``var``. ``om_s8_fullcov`` keeps the Omega_m-sigma_8
-# correlation (rho ~ -0.84 on the production pack) that a diagonal KL throws away.
+# Variants that need the per-event posterior covariance from the moments npz, not a diagonal slice.
 FULLCOV_SUBSETS: Dict[str, Tuple[str, ...]] = {
     "om_s8_fullcov": ("omega_m", "sigma_8"),
 }
@@ -65,15 +42,8 @@ PARAM_BLOCKS: Dict[str, Tuple[str, ...]] = {
 def kl_per_dim(mu: np.ndarray, var: np.ndarray, *, eps: float = 1e-8) -> np.ndarray:
     """Per-dimension contribution to the mean pairwise symmetric diag-Gaussian KL.
 
-    Parameters
-    ----------
-    mu, var:
-        ``[K, N, D]`` means and diagonal variances (K ensemble members / training repeats).
-
-    Returns
-    -------
-    ``[N, D]`` -- summing over the last axis reproduces
-    :func:`~src.ml.eval.ensemble_discrepancies.diag_gaussian_symmetric_kl` exactly.
+    mu and var are [K, N, D] means and diagonal variances over K members. Returns [N, D], whose sum
+    over the last axis is diag_gaussian_symmetric_kl.
     """
     mu = np.asarray(mu, dtype=np.float64)
     var = np.maximum(np.asarray(var, dtype=np.float64), eps)
@@ -103,15 +73,13 @@ def subset_kl(mu: np.ndarray, var: np.ndarray, idx: Sequence[int], *, eps: float
 
 
 def sym_kl_fullcov(mu: np.ndarray, cov: np.ndarray, *, jitter: float = 1e-12) -> np.ndarray:
-    """Mean pairwise symmetric KL between FULL-covariance Gaussians, ``[N]``.
+    """Mean pairwise symmetric KL between full-covariance Gaussians, [N].
 
-    ``mu`` ``[K, N, D]``, ``cov`` ``[K, N, D, D]``. The log-determinant terms cancel in the
-    symmetric sum, leaving
+    mu [K, N, D], cov [K, N, D, D]. With d = mu_i - mu_j the symmetric KL is
 
         0.5 * ( tr(S_j^-1 S_i) + tr(S_i^-1 S_j) + d^T (S_i^-1 + S_j^-1) d - 2D ) / 2
 
-    with ``d = mu_i - mu_j``. Reduces EXACTLY to :func:`diag_gaussian_symmetric_kl` when the
-    off-diagonals vanish (verified to 4e-16), and uses the same average-over-pairs convention.
+    which reduces to diag_gaussian_symmetric_kl for diagonal covariances.
     """
     mu = np.asarray(mu, dtype=np.float64)
     cov = np.asarray(cov, dtype=np.float64)
@@ -136,7 +104,7 @@ def sym_kl_fullcov(mu: np.ndarray, cov: np.ndarray, *, jitter: float = 1e-12) ->
 
 
 def fullcov_moments(moments_path: str, params: Sequence[str], want: Sequence[str]):
-    """(mean[N,k], cov[N,k,k], basenames) for the ``want`` parameters of ONE repeat's moments npz."""
+    """(mean[N,k], cov[N,k,k], basenames) for the `want` parameters of one repeat's moments npz."""
     idx = [list(params).index(p) for p in want]
     with np.load(moments_path, allow_pickle=False) as d:
         mean = np.asarray(d["mean"], dtype=np.float64)[:, idx]
@@ -146,7 +114,7 @@ def fullcov_moments(moments_path: str, params: Sequence[str], want: Sequence[str
 
 
 def self_check(mu: np.ndarray, var: np.ndarray, kl_reference: np.ndarray, *, rtol: float = 1e-5) -> float:
-    """Assert the decomposition reproduces the stored ``kl_score``. Returns the max rel. error."""
+    """Assert the decomposition reproduces the stored kl_score. Returns the max relative error."""
     got = kl_per_dim(mu, var).sum(axis=-1)
     ref = np.asarray(kl_reference, dtype=np.float64)
     denom = np.maximum(np.abs(ref), 1e-12)
@@ -157,12 +125,10 @@ def self_check(mu: np.ndarray, var: np.ndarray, kl_reference: np.ndarray, *, rto
     return err
 
 
-# --------------------------------------------------------------------------------------
-# S_8: the one subset that is NOT a slice (nonlinear in omega_m, sigma_8)
-# --------------------------------------------------------------------------------------
+# --- S_8, the one subset that is not a slice ---
 
 def s8_from_scaled(samples: np.ndarray, names: Sequence[str], lo: np.ndarray, hi: np.ndarray) -> np.ndarray:
-    """``S_8 = sigma_8 sqrt(omega_m / 0.3)`` from SCALED samples ``[S, N, D]`` -> ``[S, N]``."""
+    """S_8 = sigma_8 sqrt(omega_m / 0.3) from scaled samples [S, N, D] -> [S, N]."""
     names = list(names)
     iom, is8 = names.index("omega_m"), names.index("sigma_8")
     om = np.asarray(samples[..., iom], dtype=np.float64) * (hi[iom] - lo[iom]) + lo[iom]
@@ -172,9 +138,9 @@ def s8_from_scaled(samples: np.ndarray, names: Sequence[str], lo: np.ndarray, hi
 
 def s8_moments(samples_path: str, names: Sequence[str], lo: np.ndarray, hi: np.ndarray,
                *, max_events: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray, list]:
-    """Per-event S_8 mean/variance for ONE repeat's sample dump.
+    """Per-event S_8 mean and variance for one repeat's sample dump.
 
-    Returns ``(mu[N], var[N], test_file_basenames)`` in physical S_8 units.
+    Returns (mu[N], var[N], test_file_basenames) in physical S_8 units.
     """
     with np.load(samples_path, mmap_mode="r") as d:
         S = d["samples"]                                   # [S, N, D] scaled
@@ -184,12 +150,10 @@ def s8_moments(samples_path: str, names: Sequence[str], lo: np.ndarray, hi: np.n
     return S8.mean(axis=0), S8.var(axis=0), files[:n]
 
 
-# --------------------------------------------------------------------------------------
-# Discriminating power
-# --------------------------------------------------------------------------------------
+# --- discriminating power ---
 
 def sim_ids_from_files(files: Sequence[str]) -> np.ndarray:
-    """Cosmology id per row, parsed from ``output_<sim_id>_...h5`` basenames."""
+    """Cosmology id per row, parsed from `output_<sim_id>_...h5` basenames."""
     out = []
     for f in files:
         m = re.search(r"output_(\d+)_", os.path.basename(str(f)))
@@ -201,12 +165,10 @@ def auroc_with_block_ci(score_id: np.ndarray, sim_id: np.ndarray,
                         score_ood: np.ndarray, sim_ood: np.ndarray,
                         *, n_boot: int = 500, seed: int = 0,
                         quantiles: Tuple[float, float] = (0.16, 0.84)):
-    """AUROC(query=OOD) with a COSMOLOGY-block bootstrap CI.
+    """AUROC(query=OOD) with a cosmology-block bootstrap CI.
 
-    Rows are ~8 correlated augmentations of one cosmology, so both pools are resampled at the
-    cosmology level (memory ``cluster-aware-stats-gower-mocks``: row-level CIs are ~2.8x too tight).
-
-    Returns ``dict(auroc, lo, hi, n_id, n_ood, n_cosmo_id, n_cosmo_ood)``.
+    Rows are correlated augmentations of one cosmology, so both pools are resampled per cosmology.
+    Returns dict(auroc, lo, hi, n_id, n_ood, n_cosmo_id, n_cosmo_ood).
     """
     score_id = np.asarray(score_id, dtype=np.float64)
     score_ood = np.asarray(score_ood, dtype=np.float64)
@@ -242,8 +204,7 @@ def auroc_with_block_ci(score_id: np.ndarray, sim_id: np.ndarray,
 
 def auroc_rowlevel_ci(score_id: np.ndarray, score_ood: np.ndarray, *, n_boot: int = 500, seed: int = 0,
                       quantiles: Tuple[float, float] = (0.16, 0.84)):
-    """Row-level (i.i.d.) bootstrap CI -- kept ONLY to reproduce a historically recorded number
-    and to quantify how much the cosmology-block version widens it. Never the headline."""
+    """Row-level bootstrap CI."""
     score_id = np.asarray(score_id, dtype=np.float64)
     score_ood = np.asarray(score_ood, dtype=np.float64)
     score_id = score_id[np.isfinite(score_id)]
@@ -260,16 +221,13 @@ def auroc_rowlevel_ci(score_id: np.ndarray, score_ood: np.ndarray, *, n_boot: in
             "hi": float(np.quantile(draws, quantiles[1]))}
 
 
-# --------------------------------------------------------------------------------------
-# Loading one variate's scores from a misspec pack directory (shared by the study driver and
-# `src/observation/checks/tier2.load_rows`, so there is ONE implementation of the algebra).
-# --------------------------------------------------------------------------------------
+# --- loading one variate's scores from a misspec pack directory ---
 
 ALL_SCORES = list(SUBSETS) + list(FULLCOV_SUBSETS)
 
 
 def disagreement_npz(mdir: str, n_repeats: int):
-    """The disagreement file built from all ``n_repeats`` members (a 2-repeat one may also exist)."""
+    """The disagreement file built from all n_repeats members, as (path, k), or None."""
     best = None
     for f in sorted(glob.glob(os.path.join(mdir, "misspec_repeat_disagreement_*.npz"))):
         with np.load(f, mmap_mode="r") as d:
@@ -280,7 +238,7 @@ def disagreement_npz(mdir: str, n_repeats: int):
 
 
 def params_of_pack(mdir: str, match_template: str, repeats):
-    """Parameter names, read from a moments npz -- never hardcoded (the 2-pt pack may differ)."""
+    """Parameter names, read from a moments npz because the 2-pt pack may differ."""
     for r in repeats:
         p = os.path.join(mdir, "misspec_posterior_moments_%s.npz" % match_template.format(r=r))
         if os.path.exists(p):
@@ -302,7 +260,7 @@ def load_variate(base_dir: str, variate: str, match_template: str, repeats, name
         files = [os.path.basename(str(x)) for x in d["test_files"]]
         kl_stored = np.asarray(d["kl_score"], dtype=np.float64)
 
-    rel = self_check(mu, var, kl_stored)          # the decomposition must reproduce the stored KL
+    rel = self_check(mu, var, kl_stored)
     per_dim = kl_per_dim(mu, var)                 # [N, D]
 
     kl_s8 = np.full(len(files), np.nan)
@@ -368,23 +326,15 @@ def subset_scores(rec, names):
     return out
 
 
-# --------------------------------------------------------------------------------------
-# Non-parametric alternatives to the Gaussian approximations above.
-#
-# `diag_gaussian_symmetric_kl` and `sym_kl_fullcov` both summarise each member's posterior by
-# moments (diagonal, or first-two-with-correlations). These estimate the discrepancy from the
-# SAMPLES themselves, so they keep whatever structure the posterior actually has -- skew, tails,
-# curvature of the Omega_m-sigma_8 banana -- at the cost of estimator variance.
-# --------------------------------------------------------------------------------------
+# --- non-parametric discrepancies estimated from the samples ---
 
 def knn_kl(x: np.ndarray, y: np.ndarray, *, k: int = 1, eps: float = 1e-12) -> float:
-    """Wang-Kulkarni-Verdu k-NN estimator of KL(p_x || p_y) from samples. No density model.
+    """Wang-Kulkarni-Verdu k-NN estimator of KL(p_x || p_y) from samples.
 
         KL = (d/n) sum_i log(nu_i / rho_i) + log(m / (n - 1))
 
-    with ``rho_i`` the distance from x_i to its k-th nearest neighbour in X (excluding itself)
-    and ``nu_i`` the distance to its k-th nearest in Y. KL is invariant under invertible
-    reparametrisation, so a scaled-space estimate equals the physical-space one.
+    with rho_i the distance from x_i to its k-th nearest neighbour in X (excluding itself) and nu_i
+    the distance to its k-th nearest in Y.
     """
     from scipy.spatial import cKDTree
     x = np.asarray(x, dtype=np.float64)
@@ -404,10 +354,9 @@ def knn_kl(x: np.ndarray, y: np.ndarray, *, k: int = 1, eps: float = 1e-12) -> f
 
 
 def energy_distance(x: np.ndarray, y: np.ndarray) -> float:
-    """Energy distance ``2 E|X-Y| - E|X-X'| - E|Y-Y'|`` -- non-parametric, no density estimate.
+    """Energy distance 2 E|X-Y| - E|X-X'| - E|Y-Y'|.
 
-    Zero iff the two distributions coincide. NOT invariant under per-dimension rescaling (unlike
-    the KL estimators), so it is only comparable within one fixed scaling convention.
+    Not invariant under per-dimension rescaling, so compare it only within one scaling convention.
     """
     from scipy.spatial.distance import cdist
     x = np.asarray(x, dtype=np.float64)
