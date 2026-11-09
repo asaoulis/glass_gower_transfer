@@ -149,12 +149,6 @@ def write_standardised(st: Standardised, out_dir: str, stem: str) -> str:
     return p
 
 
-def load_standardised(path: str) -> Standardised:
-    with np.load(path, allow_pickle=False) as d:
-        return Standardised(z=d["z"], names=tuple(str(n) for n in d["names"]), frame=str(d["frame"]),
-                            source=str(d["source"]), n_samples=int(d["n_samples"]))
-
-
 # --- registry of raw runs, from filenames only ---
 def _arm_of(experiment: str) -> str:
     """Arm name of a per-repeat experiment (from the production arm table; '' if unknown)."""
