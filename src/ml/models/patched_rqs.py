@@ -1,3 +1,7 @@
+"""Rational-quadratic spline transforms from nflows with dtype-safe tensor creation.
+
+Used by the coupling flows in custom_sbi.py.
+"""
 import warnings
 
 import numpy as np
@@ -136,11 +140,7 @@ def rational_quadratic_spline(
         c = -input_delta * (inputs - input_cumheights)
 
         discriminant = b.pow(2) - 4 * a * c
-        # For a monotone RQS the discriminant is >= 0 analytically, but float roundoff can push
-        # it slightly negative under extreme (e.g. out-of-distribution) conditioning — stock
-        # nflows hard-asserts here and kills the whole sampling run. Clamp to 0 instead: the
-        # clamped root is the analytic double root, and genuinely broken params (inf/NaN) still
-        # surface as non-finite outputs for downstream filtering.
+        # Clamp the discriminant at 0 against roundoff, where stock nflows asserts.
         n_neg = int((discriminant < 0).sum())
         if n_neg:
             warnings.warn(
@@ -150,7 +150,6 @@ def rational_quadratic_spline(
             discriminant = discriminant.clamp_min(0.0)
 
         root = (2 * c) / (-b - torch.sqrt(discriminant))
-        # root = (- b + torch.sqrt(discriminant)) / (2 * a)
         outputs = root * input_bin_widths + input_cumwidths
 
         theta_one_minus_theta = root * (1 - root)
