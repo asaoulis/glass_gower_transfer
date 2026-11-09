@@ -115,15 +115,9 @@ def get_default_config():
     config.train_val_selection_cosmo_params = None
     config.train_val_stratified_bins = "auto"
 
-    config.dataset_name = "illustris"
-    config.dataset_suite = "LH"
-    config.scaling_dataset = None
     config.repeats = 1
     config.repeat_indices = None  # explicit repeat indices, overrides repeats
     config.experiment_name = None
-    config.data_seed = None
-    config.log_normal_dataset_path = None
-    config.unpaired = False
     config.match_string = ""
     config.pretrained_band_match_string = ""
     config.num_flow_heads = 1
