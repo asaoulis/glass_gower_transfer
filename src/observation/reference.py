@@ -1,19 +1,8 @@
-"""Reference-cloud extraction: the per-mock Tier-1 vectors over a whole store, and the same
-vectors for an observation file.
+"""Reference-cloud extraction: the per-mock Tier-1 vectors over a whole store, and for an observation.
 
-Per file we extract, into one npz:
-  files, sim_ids, aug_ids                      identity (cosmology-aware resampling needs sim_ids)
-  bandpowers   [N, 21, nbands]                 EE ``cls_results/full/mixed_bandpowers``
-  bb           [N, 21, nbands]                 BB bandpowers: ``cls_results/full/bb_bandpowers`` if
-                                               present, else re-binned from ``cls[:, :, 1, :]``
-                                               with the IDENTICAL Brown binning (raw stores only)
-  emap         [N, D]  + emap_names            hand-crafted E-map summaries (checks/summaries.py)
-                                               of the noise-normed E patches. For a BAKED store the
-                                               bare ``E`` group is read as is; for a RAW store the
-                                               bake is replicated on the fly (E_<variant> divided by
-                                               noise_std_<variant>/all) so both agree.
-
-Nothing here reads ``cosmo_dict``. The mapping sim_id -> cosmology is never joined in this package.
+One npz holds files, sim_ids, aug_ids, bandpowers [N, 21, nbands] (EE), bb [N, 21, nbands] (stored,
+or re-binned from cls) and emap [N, D] with emap_names. A raw store replicates the bake as
+E_<variant> / noise_std_<variant>/all. Nothing here reads cosmo_dict.
 """
 from __future__ import annotations
 
@@ -100,8 +89,8 @@ def _worker(args):
 
 def extract_reference(paths: Sequence[str], out_npz: str, *, workers: int = 8, max_files: Optional[int] = None,
                       seed: int = 0, **kw) -> Dict:
-    """Run ``extract_one`` over ``paths`` (a random subset of ``max_files`` if given, chosen by
-    WHOLE cosmologies so the sim_id structure survives) and write one npz. Returns a summary."""
+    """Run extract_one over `paths` (a random subset of max_files, by whole cosmologies, if given)
+    and write one npz. Returns a summary."""
     paths = sorted(paths)
     if max_files is not None and len(paths) > max_files:
         rng = np.random.default_rng(seed)
