@@ -1,3 +1,8 @@
+"""Train an NDE on frozen embeddings: python train_embeddings.py <target_exp> <source_exp...>.
+
+The source experiments' encoders produce cached embeddings, and the target experiment's flow is
+trained on them. RUN_TRAINING / RUN_EVALUATION (env, 0 or 1) override the target row's flags.
+"""
 import os
 import sys
 
@@ -12,18 +17,14 @@ from config.kids_legacy_hos import kids_legacy_hos_experiments
 from src.ml.embeddings.train import EmbeddingTrainArgs, train_embeddings_experiment
 from src.ml.models.custom_sbi import NeuralSplineFlow
 
-# Make ablation + KiDS-Legacy experiment configs visible to the embeddings pipeline.
-# `train_embeddings_experiment` / `load_pretrained_models` resolve target AND source experiments
-# against the SAME `config.experiments.experiments` dict object, so mutating it in place here
-# (mirroring train.py) is what makes the kids_legacy_* hybrid SOURCES resolvable. A reassignment
-# would NOT propagate to the already-imported reference, so use .update().
+# Merge the config modules so target and source names resolve inside the embeddings pipeline.
 experiments.update(paper_2026_experiments)
 experiments.update(kids_legacy_experiments)
-experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
-experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
-experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
-experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
-experiments.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
+experiments.update(kids_legacy_novd_experiments)
+experiments.update(euclid_experiments)
+experiments.update(kids_legacy_bgp_experiments)
+experiments.update(kids_legacy_vdq_experiments)
+experiments.update(kids_legacy_hos_experiments)
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -33,9 +34,7 @@ if __name__ == "__main__":
     target_experiment = sys.argv[1]
     source_experiments = sys.argv[2:]
 
-    # Submit-time overrides (cf. train.py REPEAT_INDICES): RUN_EVALUATION / RUN_TRAINING = 0|1 replace the target row's
-    # run_evaluation / run_training, so a node can train several Stage-B ensembles at once with the node-wide deferred
-    # MCMC eval off, then re-run it eval-only (RUN_TRAINING=0, same experiment name) per repeat on a whole node.
+    # RUN_EVALUATION / RUN_TRAINING (0 or 1) replace the target row's run_evaluation / run_training.
     for _env, _key in (("RUN_EVALUATION", "run_evaluation"), ("RUN_TRAINING", "run_training")):
         _v = os.environ.get(_env, "").strip()
         if _v:
