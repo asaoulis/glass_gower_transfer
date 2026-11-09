@@ -73,7 +73,7 @@ OUTER_NUM_SHAPE_NOISE_REALISATIONS = {
 }
 
 INNER_NUM_SHAPE_NOISE_REALISATIONS = {
-	# inner > 1 multiplies per-rank memory and runs out of memory; production uses 1.
+	# inner > 1 multiplies per-rank memory and runs out of memory. Production uses 1.
 	"external": 1,
 	"gower_street": 1,
 	"glass": 1,
