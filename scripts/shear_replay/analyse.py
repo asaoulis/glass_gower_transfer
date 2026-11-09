@@ -1,14 +1,8 @@
 """Analyse sweep JSONL -> paired b_g shifts, M2 linear/quadratic fits, leaderboard tables.
 
-Model per statistic x and triplet t:  s_t(b) = x_t(b)/x_t(1) - 1, fitted with
-    s(b) = alpha*(b-1) + beta*(b^2-1)
-Exactly determined by the (0.5, 1.0, 1.5) triplet:
-    s(0.5) = -0.5a - 0.75b ;  s(1.5) = +0.5a + 1.25b
-    => beta = (s(1.5)+s(0.5))/0.5 ,  alpha = (s(1.5)-s(0.5)) - 2*beta
-H1 (counts-noise convexity) predicts alpha ~ 0, beta > 0 for variance-like stats; first-order
-signal leakage predicts alpha != 0. Usage:
-    python scripts/replay_shear_maps.py  (sweep) -> sweep.jsonl
-    python -m scripts.shear_replay.analyse sweep.jsonl --out report.md
+Per statistic x and triplet t, s_t(b) = x_t(b)/x_t(1) - 1 is fitted with s(b) = alpha*(b-1) + beta*(b^2-1),
+which the (0.5, 1.0, 1.5) triplet determines exactly.
+Usage: python -m scripts.shear_replay.analyse sweep.jsonl --out report.md
 """
 from __future__ import annotations
 
