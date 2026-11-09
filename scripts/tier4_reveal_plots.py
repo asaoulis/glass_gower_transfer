@@ -121,7 +121,10 @@ VARIATE_ARMS = ("nla_z", "nla")
 STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
                  "band": "2-pt", "k2": r"field level, NLA-M, $\kappa=2$", "k2_nla": r"field level, NLA, $\kappa=2$",
                  "band_nla": "2-pt, NLA", "band_nla_z": r"2-pt, NLA-$z$", "hos": "2-pt + third moments (HOS)",
-                 "hos_gmrg": "2-pt + third moments + Gmrg (HOS)"}
+                 "hos_gmrg": "2-pt + third moments + Gmrg (HOS)",
+                 "vd2pr": "field level, VD v2", "vd2pr_band": "2-pt, VD v2",
+                 "vdqctl": "field level, quadcap control", "vdqctl_band": "2-pt, quadcap control",
+                 "vd2pr_p10k": "field level, VD v2 (preview)", "vd2pr_p10k_band": "2-pt, VD v2 (preview)"}
 STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level NLE, NLA-z IA, VD",
                 "nla": "field-level NLE, NLA IA, VD", "band": "2-pt (bandpowers) NLE, NLA-M IA, VD",
                 "k2": "field-level NLE, NLA-M IA, VD, kappa=2 b_g prior (b_g marginalised)",
@@ -129,15 +132,28 @@ STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level 
                 "band_nla": "2-pt (bandpowers) NLE, NLA IA (free A_IA), VD",
                 "band_nla_z": "2-pt (bandpowers) NLE, NLA-z IA (a_ia + b_z), VD",
                 "hos": "EE bandpowers + R1 third moments hybrid NLE (HOS), NLA-M IA, VD",
-                "hos_gmrg": "EE bandpowers + R1 + Gmrg third moments hybrid NLE (HOS), NLA-M IA, VD"}
-VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":", "band_nla_z": ":", "hos": "-", "hos_gmrg": "-"}  # 08 overlay outlines
+                "hos_gmrg": "EE bandpowers + R1 + Gmrg third moments hybrid NLE (HOS), NLA-M IA, VD",
+                "vd2pr": "field-level NLE, NLA-M IA, VD v2 noise model (PR#3), kappa=1",
+                "vd2pr_band": "2-pt (bandpowers) NLE, NLA-M IA, VD v2 noise model (PR#3), kappa=1",
+                "vdqctl": "field-level NLE, NLA-M IA, quadcap VD, kappa=1 (size-matched control for VD v2)",
+                "vdqctl_band": "2-pt (bandpowers) NLE, NLA-M IA, quadcap VD, kappa=1 (size-matched control for VD v2)",
+                "vd2pr_p10k": "field-level NLE, NLA-M IA, VD v2, PREVIEW on the partial 10k Gower store (r0 only)",
+                "vd2pr_p10k_band": "2-pt (bandpowers) NLE, NLA-M IA, VD v2, PREVIEW on the partial 10k Gower store (r0 only)"}
+VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":", "band_nla_z": ":", "hos": "-", "hos_gmrg": "-",
+                     "vd2pr": "--", "vd2pr_band": "--", "vdqctl": ":", "vdqctl_band": ":",
+                     "vd2pr_p10k": "-.", "vd2pr_p10k_band": "-."}  # 08 overlay outlines
 # per-variate figure group: (number, file stem)
 # 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14, the 2-pt NLA arm (T3b) 15, the 2-pt NLA-z arm 16,
 # the HOS hybrid (EE + third moments, NLA-M) 17 (+ 17g: field / 2-pt / HOS on one corner).
 # Opt-in: pass `--variates nla_z nla k2 [k2_nla] [band_nla] [band_nla_z] [hos]` (hos: usually with --arm-label hos=A2).
 VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA"), "k2": ("13", "field_k2"),
                   "k2_nla": ("14", "field_k2NLA"), "band_nla": ("15", "2pt_NLA"), "band_nla_z": ("16", "2pt_NLAz"),
-                  "hos": ("17", "HOS"), "hos_gmrg": ("18", "HOS_Gmrg")}
+                  "hos": ("17", "HOS"), "hos_gmrg": ("18", "HOS_Gmrg"),
+                  # 19-24 = the VD v2 noise-model row (PR#3, NLA-M kappa=1), its matched quadcap control, and the
+                  # r0-only preview on the partial 10k Gower store (2026-11-09, task vdq2-production-training-runs).
+                  "vd2pr": ("19", "field_VD2PR"), "vd2pr_band": ("20", "2pt_VD2PR"),
+                  "vdqctl": ("21", "field_VDQCTL"), "vdqctl_band": ("22", "2pt_VDQCTL"),
+                  "vd2pr_p10k": ("23", "field_VD2PR_p10k"), "vd2pr_p10k_band": ("24", "2pt_VD2PR_p10k")}
 # 18 = the R1 + Gmrg HOS hybrid (+ 18g: 2-pt / HOS / HOS+Gmrg / field on one corner, HOS+Gmrg filled; --gmrg-headline).
 # Usually `--variates hos hos_gmrg --gmrg-headline` (both HOS heads are needed for 18g).
 MODEL_PRIOR = {"LCDM": "LCDM_fixed_w0", "wCDM": "kids_s8_analytic"}
@@ -1299,7 +1315,9 @@ def main(argv=None):
     L, W = "LCDM_fixed_w0", "kids_s8_analytic"
     tt = {"band": "2-pt", "nla_m": "field", "nla_z": "field NLA-z", "nla": "field NLA", "k2": "field kappa=2",
           "k2_nla": "field kappa=2 NLA", "band_nla": "2-pt NLA", "band_nla_z": "2-pt NLA-z", "hos": "HOS",
-          "hos_gmrg": "HOS+Gmrg"}
+          "hos_gmrg": "HOS+Gmrg", "vd2pr": "field VD v2", "vd2pr_band": "2-pt VD v2",
+          "vdqctl": "field quadcap ctl", "vdqctl_band": "2-pt quadcap ctl",
+          "vd2pr_p10k": "field VD v2 preview", "vd2pr_p10k_band": "2-pt VD v2 preview"}
     ttl_kw = dict(titles=args.titles, mock=mock)
     written = []
 
