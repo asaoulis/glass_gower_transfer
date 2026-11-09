@@ -1,32 +1,9 @@
 #!/usr/bin/env python
-"""Tier-3 posterior-level SANITY gate (blind-safe): did every repeat score the observation with a
-correctly loaded model? Emits ONLY relative scalars (KL between repeats, width RATIOS, R-hat, PTEs)
--- never a posterior mean, std or location.
+"""Tier-3 posterior-level sanity gate (blind-safe): did every repeat score the observation with a correctly loaded model?
 
-    PYTHONPATH=. python scripts/tier3_sanity.py --label A2 --arms nla_m band \
-        --priors LCDM_fixed_w0 kids_s8_analytic --out-dir /data/alex/unblinding/real/work/tier3/sanity_A2
-
-Why a posterior-level check on top of the load-time identity assertions and the repro gate: a model
-can load the right FILES and still be wrong (e.g. a stale member, a mis-scaled input), and the
-observation has no truth. What it does have is FIVE independently trained repeats that should agree
-about it as well as they agree about in-distribution mocks. A misloaded encoder / whitener / member in
-one repeat moves that repeat's posterior far outside the repeat-to-repeat spread seen on mocks.
-
-Statistics per (arm, prior), each against the SAME statistic computed per event on a null:
-  kl_diag      mean pairwise symmetric diag-Gaussian KL over the free parameters
-               (`ensemble_discrepancies.diag_gaussian_symmetric_kl`, the misspec repeat-disagreement metric)
-  kl_oms8      mean pairwise symmetric FULL-covariance Gaussian KL on (omega_m, sigma_8)
-  loo_max      max over repeats of [mean diag-KL of repeat r vs the others] -> names the outlier repeat
-  width_max    max over (repeat, parameter) of |log(std_r / median_s std_s)|
-plus, per repeat, the between-shard R-hat (shards = `mcmc_workers` blocks of the dump) and the draw count.
-
-Nulls (scaled space; both KLs are invariant to per-parameter affine maps, so the frame does not matter):
-  testset   the Stage-B in-distribution Gower test-set dumps of the SAME 5 repeats
-            (`ensemble_posterior_samples_<match>.npz`, aligned by test-file basename), GOWER prior --
-            approximate for the KiDS priors; for LCDM each null posterior is Gaussian-CONDITIONED on
-            w0 = -1 (the U-E slab conditioning), so its widths match an LCDM posterior's.
-  matched   (if present for every repeat) the matched-mock dumps under the SAME prior.
-Verdict FLAG if any PTE < --pte-flag, any R-hat > --rhat-flag, or a draw count != --expect-draws.
+It emits only relative scalars (KL between repeats, width ratios, R-hat, PTEs), never a posterior
+mean, std or location. Each statistic is judged against the same statistic per event on a null.
+    PYTHONPATH=. python scripts/tier3_sanity.py --label A2 --arms nla_m band --out-dir <dir>
 """
 from __future__ import annotations
 
@@ -52,7 +29,7 @@ MATCHED_ROOT = "/data/alex/variate_samples_kids"
 OMS8 = ("omega_m", "sigma_8")
 
 
-# ------------------------------------------------------------------ moments + statistics
+# --- moments + statistics ---
 def _moments(S):
     """S [n_draws, N, D] -> mu [N, D], var [N, D], cov2 handled separately."""
     S = np.asarray(S, dtype=np.float64)
@@ -119,7 +96,7 @@ def pte(null, obs):
     return float((1 + np.sum(null >= obs)) / (1 + null.size)), int(null.size)
 
 
-# ------------------------------------------------------------------ loading
+# --- loading ---
 def _param_names(experiment):
     import eval as _eval
     cfg, _ = _eval.load_config(experiment)
@@ -145,8 +122,7 @@ def _full_moments(S, chunk=256):
 
 
 def _condition(mu, cov, free_idx, pin_idx, pin_val):
-    """Gaussian moments of the free block given the pinned coordinates = pin_val (the slab /
-    Gaussian conditioning of U-E, validated on mocks to 0.01-0.02 sigma); marginalisation if no pin."""
+    """Gaussian moments of the free block given the pinned coordinates = pin_val, a marginal if no pin."""
     mf, Sff = mu[:, free_idx], cov[:, free_idx][:, :, free_idx]
     if not pin_idx:
         return mf, Sff
@@ -158,10 +134,10 @@ def _condition(mu, cov, free_idx, pin_idx, pin_val):
 
 
 def _null_moments(paths, names_full, free, cache_dir, tag, pinned=None):
-    """Moments of K aligned null dumps on the `free` columns (cached as a small npz). `pinned`
-    {name: SCALED value}: the null posteriors were drawn with that parameter free (Gower prior), so
-    they are CONDITIONED on it (else an LCDM observation, whose posteriors are narrower, would be
-    judged against a too-wide null and false-flag)."""
+    """Moments of K aligned null dumps on the `free` columns (cached as a small npz).
+
+    The null posteriors are conditioned on `pinned` {name: scaled value}, so an LCDM observation is
+    not judged against a too-wide null."""
     pinned = dict(pinned or {})
     os.makedirs(cache_dir, exist_ok=True)
     cache = os.path.join(cache_dir, f"null_{tag}.npz")
@@ -223,8 +199,9 @@ def _obs_runs(label, experiment, prior, match):
 
 
 def _provenance(npz_path, match, prior):
-    """Per-prior provenance (written since 2026-10-09); the legacy per-match file is shared by the
-    priors of one repeat, so it is accepted only if it names THIS prior."""
+    """Per-prior provenance of one dump.
+
+    The legacy per-match file is shared by the priors of one repeat, so it is accepted only if it names this prior."""
     d = os.path.dirname(npz_path)
     p = os.path.join(d, f"external_provenance_{prior}_{match}.json")
     if os.path.exists(p):
@@ -236,7 +213,7 @@ def _provenance(npz_path, match, prior):
     return {}
 
 
-# ------------------------------------------------------------------ main
+# --- main ---
 _HULL = None
 
 
@@ -356,7 +333,7 @@ def run_arm_prior(args, arm, prior):
         res.setdefault("identity", {})[f"r{r}"] = {k: pv.get(k) for k in
                                                    ("source_checkpoints", "whitener_path", "member_checkpoints")}
     res["rhat"] = rh
-    # ---- SHAPE in-distribution test: obs repeats + pooled vs the test-set mock posteriors ------
+    # --- shape test: obs repeats and pooled vs the test-set mock posteriors ---
     obsX = res.pop("_obs_X")
     test_paths = [os.path.join(TESTSET_ROOT, e, f"ensemble_posterior_samples_{m}.npz") for e, m in zip(exps, matches)]
     if all(os.path.exists(p) for p in test_paths):
@@ -507,9 +484,7 @@ def main(argv=None):
                 results.append(run_arm_prior(args, arm, prior))
             except Exception as e:                      # one arm's failure must not hide the others
                 results.append({"arm": arm, "prior": prior, "issues": [f"{type(e).__name__}: {e}"], "verdict": "FLAG"})
-    # IDENTITY consistency (filenames only): one (arm, repeat) must have been scored with the SAME
-    # source encoder / whitener / 9 member files under every prior -- and in the matched-mock run when
-    # it exists. A differing file means a checkpoint was re-resolved differently between jobs.
+    # Identity consistency: one (arm, repeat) must use the same encoder, whitener and member files under every prior.
     for arm in args.arms:
         rows = [r for r in results if r.get("arm") == arm and r.get("identity")]
         refs = {}
