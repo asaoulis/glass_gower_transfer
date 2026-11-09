@@ -210,7 +210,7 @@ def run_summary_extraction(
         if max_train_files and len(train_paths) > max_train_files:
             train_paths = [train_paths[i] for i in sorted(rng.choice(len(train_paths), max_train_files, replace=False))]
         bs = min(64, int(getattr(cfg, "test_batch_size", None) or getattr(cfg, "batch_size", 64)))
-        train_plain, _ = _wrap_paths_as_loader(
+        train_plain = _wrap_paths_as_loader(
             train_paths, nested_keys, param_names, key_scalers, cosmo_scaler,
             batch_size=bs, num_workers=4, eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
         )
@@ -246,7 +246,7 @@ def run_summary_extraction(
                     variate["patterns"], vkeys, param_names, key_scalers, cosmo_scaler,
                     test_id_pool=test_id_pool, test_shape_noise_idx=test_shape_noise_idx,
                     batch_size=bs, max_test_files=max_test_files,
-                    eb_noise_norm=getattr(cfg, "eb_noise_norm", None), inject=variate.get("inject"),
+                    eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
                 )
                 missing_keys, present_cosmo, probe_path = _probe_variate_file(meta["test_paths"], vkeys, param_names)
                 if missing_keys:

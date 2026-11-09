@@ -996,7 +996,7 @@ def run_scaler_recovery(
 
             # RAW loader: empty key_scalers => DataDictScalerTransform passes values straight through.
             # Order must match the cache, which the reproduction gate proves (CHECK 2, theta exact).
-            raw_loader, _ = _wrap_paths_as_loader(
+            raw_loader = _wrap_paths_as_loader(
                 paths, nested_keys, list(cfg.cosmo_param_names), {}, None,
                 batch_size=batch_size, num_workers=2,
                 eb_noise_norm=getattr(cfg, "eb_noise_norm", None),

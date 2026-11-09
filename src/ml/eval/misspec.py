@@ -150,7 +150,6 @@ NOVD_GLASS_PRETRAIN_VARIATES: List[Dict] = [
 # gb0p7/gb1p0/gb1p5 share --rng-seed 4242, so the headline statistic is the PAIRED per-event
 # Δz = z(b_g) − z(b_g=1.0), matched on (sim_id, aug_id) offline from the sample npz.
 _DN_EB = "fwhm4_lmin56_lcut1400"
-_DN_EB_SC8 = "sc8_fwhm4_lmin56_lcut1400"
 
 
 def _dn_variate_set(arm_tag: str) -> List[Dict]:
@@ -184,30 +183,6 @@ def _bgp_variate_set(arm_tag: str) -> List[Dict]:
          "exclude_params": [], "in_distribution": True},
         {"name": "glass_gb0p7", "patterns": store("gb0p7"), "exclude_params": []},
         {"name": "glass_gb1p0", "patterns": store("gb1p0"), "exclude_params": []},
-        {"name": "glass_gb1p5", "patterns": store("gb1p5"), "exclude_params": []},
-    ]
-
-
-def _inject_variate_set(arm_tag: str) -> List[Dict]:
-    """Synthetic noise-variance injection on the b_g=1.0 store — see src/ml/eval/inject.py.
-
-    All arms share ONE file list (the gb1p0 store), so `paired_dz.py` pairs them on
-    (sim_id, aug_id) against `glass_gb1p0` with zero cosmic variance. `glass_gb1p5` is carried
-    as the real-effect reference the injections are measured against.
-    """
-    def store(which):
-        return f"{_GPU5}/glass_dn_{which}_f16_{arm_tag}_{_DN_EB}/output_*.h5"
-    base = store("gb1p0")
-    return [
-        {"name": "glass_gb1p0", "patterns": base, "exclude_params": [], "in_distribution": True},
-        {"name": "glass_gb1p0_inj_null", "patterns": base, "exclude_params": [],
-         "inject": {"source": "null", "target_b": 1.5}},
-        {"name": "glass_gb1p0_inj_grf", "patterns": base, "exclude_params": [],
-         "inject": {"source": "grf", "target_b": 1.5, "slope": 1.0}},
-        {"name": "glass_gb1p0_inj_grfwhite", "patterns": base, "exclude_params": [],
-         "inject": {"source": "grf", "target_b": 1.5, "slope": 0.0}},
-        {"name": "glass_gb1p0_inj_kappa", "patterns": base, "exclude_params": [],
-         "inject": {"source": "kappa", "target_b": 1.5}},
         {"name": "glass_gb1p5", "patterns": store("gb1p5"), "exclude_params": []},
     ]
 
@@ -355,55 +330,6 @@ VARIATE_SETS: Dict[str, List[Dict]] = {
          "exclude_params": []}
         for b in ("0p7", "1p0", "1p5")
     ],
-    "glass_inject_a0": _inject_variate_set("a0"),
-    "glass_inject_sc8": _inject_variate_set("sc8"),
-    # The "could a DES-sized channel pass at <0.3 sigma?" test. Same machinery, amplitudes from
-    # Gatti 2024's 5%->1% per-bin bracket instead of our ebdiff-measured ones (src/ml/eval/inject.py).
-    # Our network's reliance on the channel is frozen at TRAINING amplitude, so this UPPER-BOUNDS
-    # what a DES-amplitude channel could do through a compressor that has fully learned it.
-    # Spectral sweep: WHERE in scale is the network sensitive to a noise-variance modulation?
-    # Every arm carries the SAME total modulation variance (the transform renormalises `g` to unit
-    # variance), so the only thing varying is which scales that variance sits at. Patch pixels are
-    # 6.87' at NSIDE 512, so k in cycles/pixel maps to 6.87/k arcmin.
-    "glass_injectk_a0": [
-        {"name": "glass_gb1p0", "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5",
-         "exclude_params": [], "in_distribution": True},
-    ] + [
-        {"name": f"glass_gb1p0_inj_{tag}",
-         "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5", "exclude_params": [],
-         "inject": dict({"source": "grf", "target_b": 1.5}, **kw)}
-        for tag, kw in [
-            # band-limited: all the modulation variance in one octave
-            ("k14_27",   {"kband": (0.25, 0.5)}),        # 14-27 arcmin
-            ("k27_55",   {"kband": (0.125, 0.25)}),      # 27-55 arcmin
-            ("k55_110",  {"kband": (0.0625, 0.125)}),    # 55-110 arcmin (~1-2 deg)
-            ("k110_220", {"kband": (0.03125, 0.0625)}),  # 1.8-3.7 deg
-            ("k220_550", {"kband": (0.0125, 0.03125)}),  # 3.7-9.2 deg
-            # power laws. In 2-D the variance per log-k goes as k^2 P(k), so slope<2 is still
-            # small-scale dominated and only slope>2 concentrates variance at large scales.
-            ("slope2",   {"slope": 2.0}),
-            ("slope3",   {"slope": 3.0}),
-        ]
-    ],
-    "glass_injectdes_a0": [
-        {"name": "glass_gb1p0", "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5",
-         "exclude_params": [], "in_distribution": True},
-        {"name": "glass_gb1p0_inj_grfdes",
-         "patterns": f"{_GPU5}/glass_dn_gb1p0_f16_a0_{_DN_EB}/output_*.h5", "exclude_params": [],
-         "inject": {"source": "grf", "target_b": 1.5, "slope": 1.0, "profile": "des"}},
-    ],
-    # Depth-driven noise-kurtosis injection on the PRODUCTION Gower test set (src/ml/eval/inject.py
-    # source='depth'; task eval-and-viz/vd-residual-kurtosis-npe). Every arm reads the in-distribution
-    # (no-VD) store; `null` is an exact identity through the identical code path and is the paired clean
-    # reference (same job, same scaler frame): Δ = arm − null. residual = real − A' VD (noise-only rung
-    # calibration), residual_sn = the same pattern at the production-format obs − A' gap (lower bracket),
-    # full = real − no VD.
-    "gower_injectdepth": [
-        {"name": f"gower_bgp_nla_m_injdepth_{arm}",
-         "patterns": f"{_GPU5}/gower_bgp_nla_m_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": [],
-         "inject": {"source": "depth", "arm": arm}}
-        for arm in ("null", "residual", "residual_sn", "full")
-    ],
 }
 
 
@@ -486,7 +412,6 @@ def build_variate_test_loader(
     num_workers: int = 4,
     max_test_files: Optional[int] = None,
     eb_noise_norm: Optional[str] = None,
-    inject: Optional[Dict] = None,
 ):
     """Variate TEST loader with the ORIGINAL scalers injected (never refit).
 
@@ -551,16 +476,15 @@ def build_variate_test_loader(
         filtered = capped
         test_ids = kept_ids
 
-    loader, inject_tf = _wrap_paths_as_loader(
+    loader = _wrap_paths_as_loader(
         filtered, nested_keys, cosmo_param_names, key_scalers, cosmo_scaler,
-        batch_size=batch_size, num_workers=num_workers, eb_noise_norm=eb_noise_norm, inject=inject,
+        batch_size=batch_size, num_workers=num_workers, eb_noise_norm=eb_noise_norm,
     )
     meta = {
         "n_test_files": len(filtered),
         "n_test_cosmologies": len(test_ids),
         "test_ids_from_fixed_lock": not used_fallback,
         "test_paths": filtered,
-        "inject_transform": inject_tf,
     }
     return loader, meta
 
@@ -575,12 +499,10 @@ def _wrap_paths_as_loader(
     batch_size: int = 64,
     num_workers: int = 4,
     eb_noise_norm: Optional[str] = None,
-    inject: Optional[Dict] = None,
 ):
     """Plain (no augmentation, no shuffle) loader over explicit file paths with the ORIGINAL
     scalers injected — the shared tail of ``build_variate_test_loader``, also used by the
-    summary extraction to read the model's own train split without training-time augmentation.
-    Returns ``(loader, inject_transform_or_None)``."""
+    summary extraction to read the model's own train split without training-time augmentation."""
     ds = H5CosmoDataset(
         list(paths),
         nested_keys,
@@ -589,26 +511,14 @@ def _wrap_paths_as_loader(
         allow_missing_cosmo_params=True,
     )
     data_transform = DataDictScalerTransform(key_scalers)
-    inject_tf = None
-    if eb_noise_norm or inject:
+    if eb_noise_norm:
         from ..data.data_augmentations import EBNoiseNormTransform, ChainedDataTransform
-        chain = []
-        if inject:
-            # FIRST in the chain: the injection synthesises a b_g shift on the RAW maps, so
-            # everything downstream (eb_noise_norm, scalers) sees it exactly as it would see a
-            # real variate read. See src/ml/eval/inject.py.
-            from .inject import build_inject_transform
-            inject_tf = build_inject_transform(inject)
-            chain.append(inject_tf)
-        if eb_noise_norm:
-            chain.append(EBNoiseNormTransform(eb_noise_norm))
-        chain.append(data_transform)
-        data_transform = ChainedDataTransform(chain) if len(chain) > 1 else chain[0]
+        data_transform = ChainedDataTransform([EBNoiseNormTransform(eb_noise_norm), data_transform])
     wrapped = TransformingDataset(ds, data_transform=data_transform, cosmo_scaler=cosmo_scaler)
     loader = torch.utils.data.DataLoader(
         wrapped, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=False,
     )
-    return loader, inject_tf
+    return loader
 
 
 def resolve_shared_pool(variates: List[Dict]):
@@ -1300,7 +1210,6 @@ def _eval_one_variate(
         # Mirror the TRAIN-time loader: a config with eb_noise_norm set (B1_selfstd) scales only
         # the bandpowers, so the map standardisation MUST come from this transform.
         eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
-        inject=variate.get("inject"),
     )
 
     # Fail fast on a wrong eb-variant tag / absent params rather than skip-looping every file.
@@ -1331,18 +1240,6 @@ def _eval_one_variate(
         m.test_dataloader = loader
 
     theta0s, samples = model.generate_samples(num_samples=num_samples)
-
-    # Injection calibration self-check: the achieved per-bin map power ratio must reproduce the
-    # ebdiff-measured b_g=1.5 response, else the synthesised channel is the wrong size.
-    inject_tf = meta.get("inject_transform")
-    if inject_tf is not None:
-        inject_report = inject_tf.summary()
-        print(f"[misspec] {name}: injection {inject_tf!r}", flush=True)
-        for side, rep in inject_report.items():
-            print(f"[misspec]   {side}: achieved {rep['achieved_power_ratio']} "
-                  f"vs target {rep['target_power_ratio']} (n={rep['n_events']})", flush=True)
-        input_stats = dict(input_stats or {})
-        input_stats["injection"] = {"spec": repr(inject_tf), "calibration": inject_report}
 
     # Drop test points whose posterior samples came out non-finite (far-OOD conditioning can
     # degenerate the spline inverse even with the clamped discriminant). Keep the analysis on

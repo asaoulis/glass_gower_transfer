@@ -182,7 +182,7 @@ def _build_external_embedding_loader_for_cfg(
     nested_keys = build_nested_keys_from_quantities(
         list(cfg.dataset_quantities), eb_variant=getattr(cfg, "eb_map_variant", None),
     )
-    raw_loader, _ = _wrap_paths_as_loader(
+    raw_loader = _wrap_paths_as_loader(
         list(paths), nested_keys, list(cfg.cosmo_param_names), key_scalers, cosmo_scaler,
         batch_size=batch_size, num_workers=num_workers,
         eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
