@@ -29,9 +29,7 @@ MIXING_MATRIX_PATH = "/share/gpu5/asaoulis/KiDS_Legacy_mixing_matrix_mask.npy"
 DATA_DIR = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data"
 
 # --- discrepancy thresholds ---
-# |median(ratio) - 1| <= OK_FRAC          -> OK
-#                      <= WARN_FRAC        -> WARNING
-#                      >  WARN_FRAC        -> ERROR ("!!!")
+# |median(ratio) - 1| <= OK_FRAC is OK, <= WARN_FRAC is WARNING, otherwise ERROR ("!!!").
 OK_FRAC = 0.02
 WARN_FRAC = 0.05
 
