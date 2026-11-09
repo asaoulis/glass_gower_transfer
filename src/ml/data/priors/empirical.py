@@ -1,3 +1,4 @@
+"""Train or load the neural-spline-flow empirical prior over the Gower Street cosmologies."""
 import os
 import pickle
 
@@ -30,11 +31,6 @@ def train_or_load_gower_prior(
         print(f"[gower-prior] loaded cached flow from {save_path}", flush=True)
         return flow
 
-    # Imported HERE, below the cache-hit return, NOT at the top of the function: reading the
-    # Gower CSV pulls in src.cosmology.gower_street, which does `import camb` / `import glass`.
-    # Those compiled extensions are built for an instruction set some cluster nodes lack and
-    # SIGILL ("Illegal instruction") on import — which killed eval jobs on the l40s node even
-    # though a cached prior made the import unnecessary. Only the (rare) training path needs it.
     from src.cosmology.gower_street import GowerStPrior
     from ...models.custom_sbi import NeuralSplineFlow
 
