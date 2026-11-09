@@ -76,6 +76,10 @@ ARMS = {
     "vd2pr_band":  ("gower_nle_finetune_band_nla_m_vd2pr_k6_r{r}_ens9_e150",      "sc8a1", (0, 1, 2, 3, 4)),
     "vdqctl":      ("gower_nle_finetune_nla_m_vdqctl_z8_k6_r{r}_ens9_e150",       "sc8a1", (0, 1, 2, 3, 4)),
     "vdqctl_band": ("gower_nle_finetune_band_nla_m_vdqctl_k6_r{r}_ens9_e150",     "sc8a1", (0, 1, 2, 3, 4)),
+    # VD2PR PREVIEW (user 2026-11-09): Stage B r0 on the PARTIAL Gower VD2PR store (10 354 files, `_p10k` bake) while
+    # the Gower sim is re-fired. r0 only; never pool with `vd2pr`. APPENDED LAST (seed stability).
+    "vd2pr_p10k":      ("gower_nle_finetune_nla_m_vd2pr_p10k_z8_k6_r{r}_ens9_e150",   "sc8a1", (0,)),
+    "vd2pr_p10k_band": ("gower_nle_finetune_band_nla_m_vd2pr_p10k_k6_r{r}_ens9_e150", "sc8a1", (0,)),
 }
 
 # Per-(arm, repeat) experiment names that do NOT follow the arm's template. nla_z repeat 3 was re-run
@@ -106,7 +110,10 @@ EXPERIMENT_OVERRIDES = {
 # -log p(z|theta) -4.9..-8.1 on the 100-id lock; TARP 0.041-0.050; member frames must be recovered per repeat before external scoring).
 DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd",
                           # 2026-10-27: registered ahead of their Stage B (sims not yet generated); drop each once live.
-                          "vd2pr", "vd2pr_band", "vdqctl", "vdqctl_band"})
+                          "vd2pr", "vd2pr_band",
+                          "vd2pr_p10k", "vd2pr_p10k_band"})
+# vdqctl / vdqctl_band went live 2026-11-09: Stage B r0/r1 exist on both arms (bundled evals fetched; member frames
+# recovered per repeat before external scoring). Repeats r2-4 are still training -- always pass --repeats explicitly.
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
@@ -213,6 +220,8 @@ MATCH_TEMPLATES = {
     "vd2pr_band": "ncosmoNone_{r}",
     "vdqctl": "ncosmoNone_{r}",        # same split recipe on the 200-id subset of the main Gower VDQ bake
     "vdqctl_band": "ncosmoNone_{r}",
+    "vd2pr_p10k": "ncosmoNone_{r}",    # same split recipe as vd2pr on the partial `_p10k` Gower bake
+    "vd2pr_p10k_band": "ncosmoNone_{r}",
 }
 assert set(MATCH_TEMPLATES) == set(ARMS), "MATCH_TEMPLATES and ARMS must cover the same arms"
 assert all(a in ARMS and r in ARMS[a][2] for a, r in EXPERIMENT_OVERRIDES), "override for an unknown (arm, repeat)"

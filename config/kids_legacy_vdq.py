@@ -1217,6 +1217,19 @@ for _r in _NLE_REPEATS:
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
 
+# --- VD2PR PREVIEW Stage B r0 on the PARTIAL Gower store (user decision 2026-11-09) --------------------------------
+# The Gower VD2PR sim (job 1396018) hit its 48 h wall at 10 354 / ~15 920 files (188 of 200 fixed_test sims, ~56/80
+# augmentations each; 5 of 204 ranks OOM-killed). It is being re-fired for the production rows above; meanwhile the
+# 10 354-file snapshot is baked as `gower_vd2pr_nla_m_p10k_*` (job 1405622) and read by these PREVIEW rows. Identical
+# recipe to the production Stage B r0 rows (same Stage A r0, 100-id lock -> 94 of the locked ids present, ncosmoNone_0);
+# only the Gower store differs (~67 % of the trainval augmentations). A PREVIEW: never pool it with the production rows.
+_VD2PR_GOWER_P10K = f"{_GPU5}/gower_vd2pr_nla_m_p10k_f16_sc8a1_{_EB}/output_*.h5"
+kids_legacy_vdq_experiments["gower_nle_finetune_nla_m_vd2pr_p10k_z8_k6_r0_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_nla_m_vd2pr_z8_k6_r0", _VD2PR_GOWER_P10K, 0, _COSMO_9_NLAM, None)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vd2pr_p10k_k6_r0_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vd2pr_k6_r0", _VD2PR_GOWER_P10K, 0, _COSMO_9_NLAM, None)
+VDQ_NLE_SOURCES["gower_nle_finetune_nla_m_vd2pr_p10k_z8_k6_r0_ens9_e150"] = _VD2PR_ENC
+VDQ_NLE_SOURCES["gower_nle_finetune_band_nla_m_vd2pr_p10k_k6_r0_ens9_e150"] = _VD2PR_BAND
+assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
+
 
 # === VDQCTL — the matched quadcap CONTROL of the VD2PR rows (user 2026-10-27, U1d) ==================================
 # Training-only twin of every VD2PR row (field + 2-pt), byte-identical recipe, on FILE SUBSETS of the EXISTING main

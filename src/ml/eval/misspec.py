@@ -296,6 +296,11 @@ GOWER_VDQ_VARIATES: List[Dict] = [
     # BAKE LANDED 2026-10-17T10:45Z job 1388423 [15836].
     {"name": "gower_vdqk2_nla", "patterns": f"{_GPU5}/gower_vdqk2_nla_f16_{_BGP_EB_TAG}/output_*.h5",
      "exclude_params": ["a_ia"]},
+    # VD v2 (PR #3, --vd-table v2pr, vd_code 4) NLA-M kappa=1 noise-model variate, PREVIEW snapshot of the partial Gower
+    # store (sim 1396018 at its wall: 188/200 sims, ~56/80 augmentations). BAKE LANDED 2026-11-09 job 1405622 [10354],
+    # data-h5 n=50 errors=[] vd_code 4. The full-store `gower_vd2pr_nla_m` entry follows the re-fire (job 1405659).
+    {"name": "gower_vd2pr_nla_m_p10k",
+     "patterns": f"{_GPU5}/gower_vd2pr_nla_m_p10k_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
 ]
 
 
