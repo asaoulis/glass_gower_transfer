@@ -27,15 +27,6 @@ def load_rows(paths):
     return rows
 
 
-def _numeric_keys(rows):
-    keys = set()
-    for r in rows[:50]:
-        for k, v in r["arms"]["1"].items():
-            if isinstance(v, (int, float)) and np.isfinite(v):
-                keys.add(k)
-    return sorted(keys)
-
-
 def paired_shifts(rows):
     """{candidate: {stat: {'s05': [...], 's15': [...], 'alpha': [...], 'beta': [...]}}}"""
     out = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
