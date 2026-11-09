@@ -1,51 +1,9 @@
-"""Score a trained NLE ensemble on data it was not trained on — including a single observation.
+"""Score a trained NLE ensemble on data it was not trained on, including a single observation.
 
-WHAT THIS IS FOR
-----------------
-The Stage-B NLE rows (`gower_nle_finetune_*`) bundle their evaluation into the training job: the
-model is scored on the TEST split of its own `data_patterns`, with scalers fit on its own train
-split. That is the right thing during a campaign and the wrong thing for everything after it. Two
-jobs need the same model pointed at *different* files:
-
-  * the matched-nuisance variate comparison — 160 mocks per arm at 10 near-fiducial cosmologies;
-  * ⭐ **the real-data analysis** — ONE KiDS observation.
-
-Both are the same operation, so they are one code path. The design invariant that makes that
-possible:
-
-    **The mock HDF5 schema IS the observation contract.**
-
-An observation is a file with the same `cls_results/` + `pixelised_results/` groups a mock has and
-*no* `cosmo_dict`. `H5CosmoDataset(allow_missing_cosmo_params=True)` already tolerates that, so the
-real-data run is `paths=[obs.h5]` — not a new pipeline.
-
-THE HAZARD THIS EXISTS TO AVOID
--------------------------------
-Repointing a config's `data_patterns` at a small external store and re-running the normal eval is
-silently wrong in three separate ways, none of which raises:
-
-  1. `split_by_cosmology` over 10 cosmologies hits its no-train/val fallback;
-  2. the bandpower/map scalers are **refit** on those 10 cosmologies (or on one observation), so the
-     model sees inputs in a different frame from the one it was trained in;
-  3. `build_embedding_dataloaders` keys its `emb_*.pt` cache on the RUN, not on the data, so with
-     `use_cache_if_exists=True` it can return embeddings computed from an entirely different
-     dataset.
-
-This module instead fits the scalers ONCE on the experiment's own `data_patterns` and injects them,
-builds the loader from an explicit path list with no split, loads (never fits) the Stage-A whitener,
-and bypasses the embedding cache. Everything else — source-encoder resolution, ensemble member
-discovery, checkpoint selection — is the production path in `embeddings/train.py`, threaded rather
-than forked, so it cannot drift.
-
-OUTPUTS
--------
-Written under `{base_path}/checkpoints/<exp>/external/<tag>/`, never to the `ensemble_*_<match>`
-names the production eval owns — so an external run can never overwrite a campaign result.
-`<tag>` names the dataset (`gower_match_nla_m`, `kids_legacy_dr5`, …) and is decoupled from the glob
-that resolved it.
-
-The prior is part of the identity of an NLE posterior, so it is a first-class argument and appears
-in the filename: `external_posterior_samples_<prior>_<match>.npz`.
+An observation is a file in the mock HDF5 schema with no cosmo_dict. The original training scalers
+and Stage-A whitener are injected, never refit, and the embedding cache is bypassed. Outputs go to
+checkpoints/<exp>/external/<tag>/external_posterior_samples_<prior>_<match>.npz.
+run_reproduction_check proves this path reproduces the production eval on the model's own test set.
 """
 from __future__ import annotations
 
@@ -59,25 +17,18 @@ from typing import Dict, Optional, Sequence
 import numpy as np
 import torch
 
-# How many times the MEASURED scaler-refit noise floor a reproduction's z-deviation may reach
-# before it stops being attributable to the refit. 3x is the band the gate has always printed its
-# verdict against; it is now also the pass criterion (see run_reproduction_check CHECK 3).
+# How many times the measured scaler-refit noise floor a reproduction's z-deviation may reach
+# and still pass (run_reproduction_check CHECK 3).
 _Z_FLOOR_BAND = 3.0
 
 _GPU5 = "/share/gpu5/asaoulis/transfer_datasets"
 
 
-# --------------------------------------------------------------------------------------------
-# Priors. Hoisted out of `gen_samples.py` so the external path and the sample driver cannot
-# disagree about what "the kids_s8_analytic prior" means — the real-data run needs the KiDS
-# analytic S8 prior, not the Gower empirical one.
-# --------------------------------------------------------------------------------------------
+# --- priors, shared with gen_samples.py ---
 PRIOR_MODES = ("gower", "kids_s8_analytic", "LCDM_fixed_w0")
 
-# prior mode -> the parameters it PINS, {name: physical value}. Empty for a mode that samples the
-# full vector. This table is the single source of truth for two things that must never disagree:
-# what `build_prior_for_mode` pins at sampling time, and what `free_param_names` tells a READER to
-# expect in the dump (see the warning on that function).
+# prior mode -> the parameters it pins, {name: physical value}. Empty for a mode that samples the
+# full vector. build_prior_for_mode and free_param_names both read this table.
 FIXED_BY_PRIOR_MODE = {
     "gower": {},
     "kids_s8_analytic": {},
@@ -86,19 +37,11 @@ FIXED_BY_PRIOR_MODE = {
 
 
 def free_param_names(prior_mode: str, param_names):
-    """-> the parameters actually SAMPLED under `prior_mode`, in dump-column order.
+    """-> the parameters actually sampled under `prior_mode`, in dump-column order.
 
-    ⚠️ READ THIS BEFORE UNSCALING A DUMP. When a prior mode pins a parameter, sbi's
-    `conditional_potential` samples only `dims_to_sample`, so the saved ``samples`` array has one
-    column PER FREE PARAMETER — the pinned column is absent, not constant. ``theta0s`` is written
-    by the loader and keeps the FULL vector. So a dump from `LCDM_fixed_w0` has
-    ``samples.shape[-1] == len(param_names) - 1`` while ``theta0s.shape[-1] == len(param_names)``,
-    and unscaling ``samples`` with the full min/max box is a shape error at best and a silent
-    column shift at worst.
-
-    Readers should DROP the pinned names rather than re-insert the pinned value: a constant column
-    has zero variance, which turns every standardisation into NaN and breaks KDE-based corner
-    plots. Everything downstream aligns parameters by NAME, so dropping composes cleanly.
+    A pinned parameter is absent from the dump's samples, while theta0s keeps the full vector, so
+    an LCDM_fixed_w0 dump has samples.shape[-1] == len(param_names) - 1. Unscale samples with
+    these names, and drop the pinned names rather than re-inserting a constant column.
     """
     fixed = FIXED_BY_PRIOR_MODE.get(prior_mode, {})
     return [n for n in param_names if n not in fixed]
@@ -114,13 +57,8 @@ def build_prior_for_mode(prior_mode: str, param_names, *, preset_overrides=None)
     from .utils import _merged_preset, build_gower_prior, build_s8_analytic_prior
 
     param_names = list(param_names)
-    # ⚠️ Every branch must honour `preset_overrides`. The global preset carries no box for the
-    # per-tomo-bin galaxy biases, so a 15-param arm (kappa=2 and, from 2026-08-16, the production
-    # default) supplies them via scaler_options['cosmo']['preset_overrides'] and
-    # `_build_cosmo_preset_scaler` RAISES on any parameter without one. The two KiDS branches used
-    # to build their scaler from the bare global preset, which killed both kappa=2 matched runs
-    # with "Cosmological parameter 'b_g_bin1' not found in preset min/max dictionary" (jobs
-    # 1358333 / 1358334) -- and would have killed the real k2 arm under both KiDS priors.
+    # Every branch passes preset_overrides: the global preset has no box for b_g_bin1..6 and the
+    # preset scaler raises on a parameter without one.
     preset = _merged_preset(preset_overrides)
     if prior_mode == "gower":
         kw = {"preset_overrides": preset_overrides} if preset_overrides else {}
@@ -138,17 +76,14 @@ def build_prior_for_mode(prior_mode: str, param_names, *, preset_overrides=None)
     raise ValueError(f"unknown prior mode {prior_mode!r}; choose from {PRIOR_MODES}")
 
 
-# --------------------------------------------------------------------------------------------
-# Datasets addressable by a bare name (the gatekeeper --args charset forbids '/', '*' and '=',
-# so a cluster caller can only pass names; the name -> glob mapping has to live in code).
-# --------------------------------------------------------------------------------------------
+# --- datasets addressable by a bare name (the launcher passes no paths) ---
 def store_glob(name: str) -> str:
-    """A store basename -> its output glob: gpu5 first, then the gpu4 datasets root (the matched
-    near-fiducial stores `gower_match_*_bgp` live there). `<store>_hos` names the HOS sidecars of
-    `<store>` (`eval.py --mode hos-bake`, under {base_path}/checkpoints/hos_sidecars/<store>/); `<store>_hosx` the hos_x
-    sidecars (`--hos-variant x`, under hos_sidecars/<store>_hosx/)."""
+    """A store basename -> its output glob, on gpu5 first, then gpu4.
+
+    `<store>_hos` names the HOS sidecars under {base_path}/checkpoints/hos_sidecars/<store>/ and
+    `<store>_hosx` the hos_x sidecars under hos_sidecars/<store>_hosx/."""
     import os as _os
-    if name.endswith("_hosx"):         # hos_x sidecars keep the suffix in their dir name (hos_sidecars/<store>_hosx/)
+    if name.endswith("_hosx"):         # the hos_x directory keeps the suffix
         from config.default import get_default_config
         return _os.path.join(get_default_config().base_path, "checkpoints", "hos_sidecars", name, "output_*.h5")
     if name.endswith("_hos"):
@@ -171,9 +106,9 @@ class FrozenNLEPipeline:
     match_string: str
     config: object
     model: object                       # EnsembleLikelihoodNDELightningModule
-    scalers: Dict[str, object]          # the ORIGINAL training scalers ('data' / 'cosmo')
+    scalers: Dict[str, object]          # the original training scalers ('data' / 'cosmo')
     test_loader: object                 # embedding loader over the external paths
-    raw_dataset: object = None          # the H5CosmoDataset behind it (for path/id bookkeeping)
+    raw_dataset: object = None          # the H5CosmoDataset behind it
     provenance: Dict[str, object] = field(default_factory=dict)
 
     @property
@@ -228,8 +163,7 @@ def resolve_nle_pipeline(
             "source_experiments": list(source_experiments),
             "n_files": len(paths),
             "scaler_fit_patterns": getattr(art.config, "data_patterns", None),
-            # exact files scored (source encoders, whitener, the 9 members) -- the identity audit
-            # compares these across the obs / matched / Stage-B-eval runs of one (arm, repeat).
+            # The exact files scored: source encoders, whitener and members.
             **dict(getattr(art.model, "external_provenance", {}) or {}),
         },
     )
@@ -238,10 +172,7 @@ def resolve_nle_pipeline(
 def match_string_for(experiment: str, repeat: int) -> str:
     """Repeat index -> the run match string for a Stage-B row.
 
-    NOT constructible from a single rule: the `nla_m` flagship rows were trained with
-    `match_num_cosmo` on and carry `ncosmo300_<r>`, while every later chain carries
-    `ncosmoNone_<r>`. Getting this wrong resolves NO checkpoint (loud) or, worse, a different
-    repeat's (silent), so the mapping is read off the config rather than guessed.
+    Read from the config's max_trainval_cosmos: ncosmo<N>_<r>, or ncosmoNone_<r> when unset.
     """
     from config.experiments import experiments as _exps
     from config.kids_legacy_bgp import kids_legacy_bgp_experiments as _bgp
@@ -285,19 +216,12 @@ def sample_pipeline(
     mcmc_threads: Optional[int] = None,
     mcmc_seed: Optional[int] = None,
 ):
-    """Run the ensemble's MCMC over every row of `p.test_loader`.
+    """Run the ensemble's MCMC over every row of `p.test_loader`. Returns (theta0s, samples).
 
-    `num_samples` is TOTAL per observation (sbi's `sample_batched` splits it across `num_chains`),
-    so raising `num_chains` shortens each chain rather than multiplying the work — which is what
-    makes the N=1 case parallel without any cross-process replication.
-
-    ⭐ N=1 (the real-data run). The joblib fan-out is over EVENTS, so one observation = one work
-    item = ONE core busy on a 40/64-core node. `mcmc_workers=K` splits the sample budget of each
-    event across K processes instead (see `EnsembleLikelihoodNDELightningModule.generate_samples`);
-    combined with `num_chains` the per-chain length is `num_samples / (K * num_chains)`, which is
-    what actually moves the wall clock once `warmup_steps` stops dominating. Pooling K independent
-    chain groups is identical in distribution to one process with K x num_chains chains, so the
-    posterior is unchanged. `mcmc_threads=1` keeps the K processes from oversubscribing.
+    num_samples is the total per observation, split across num_chains. mcmc_workers=K splits each
+    event's sample budget across K processes, so the per-chain length is
+    num_samples / (K * num_chains) and the posterior is unchanged. mcmc_threads=1 keeps the K
+    processes from oversubscribing.
     """
     from .utils import _config_preset_overrides
 
@@ -379,8 +303,7 @@ def run_external_nle_eval(
         mcmc_workers=mcmc_workers, mcmc_threads=mcmc_threads, mcmc_seed=mcmc_seed,
     )
 
-    # An observation has no truth. Everything metric-shaped is scored against theta0s, so it is
-    # skipped rather than silently computed against NaN.
+    # An observation has no truth, so every metric is skipped.
     t = torch.as_tensor(theta0s) if not torch.is_tensor(theta0s) else theta0s
     has_truth = bool(torch.isfinite(t).all())
     if compute_metrics is None:
@@ -392,10 +315,7 @@ def run_external_nle_eval(
     _save_posterior_samples(npz, theta0s, samples, _paths_of(p, paths))
     print(f"[nle-external] wrote {npz}", flush=True)
 
-    # HOW the posterior was drawn is part of the record, not a runtime detail: for the blind run
-    # the provenance json is the only place the chain/warmup/shard geometry survives, and the
-    # between-shard R-hat a reader can compute from the npz needs `mcmc_workers` to know where
-    # the shard boundaries are (block s = rows [s*ceil(N/K), min((s+1)*ceil(N/K), N))).
+    # The sampling geometry is part of the record: mcmc_workers locates the shard boundaries.
     result = {"output_dir": out, "samples_npz": npz, "n_files": len(paths),
               "has_truth": has_truth, "prior": prior_mode,
               "experiment": experiment, "match_string": p.match_string,
@@ -411,12 +331,8 @@ def run_external_nle_eval(
             prior, _fx = build_prior_for_mode(prior_mode, p.param_names)
             score_theta0s, score_scaler = theta0s, p.scalers["cosmo"]
             if _fx:
-                # A pinning mode samples only the free dimensions, so `samples` is D-1 wide while
-                # `theta0s` is D: scoring them against the full cosmo scaler broadcast-errors and
-                # (before 2026-09-08) silently lost every LCDM_fixed_w0 metrics json. Restrict both
-                # truth and scaler to the free columns. The prior is dropped rather than
-                # conditioned: `build_prior_for_mode` returns the FULL-dimensional object, and a
-                # prior of the wrong dimension would produce plausible, wrong shrinkage numbers.
+                # A pinning prior mode samples only the free dimensions: samples is D-1 wide while
+                # theta0s is D. The full-dimensional prior is dropped.
                 from ..embeddings.embeddings_utils import (COSMO_PARAM_PRESET_MINMAX,
                                                            _build_cosmo_preset_scaler)
                 from .utils import _config_preset_overrides
@@ -432,8 +348,7 @@ def run_external_nle_eval(
                 print(f"[nle-external] metrics on the {len(free)} free parameters "
                       f"(pinned: {sorted(set(p.param_names) - set(free))}); prior-dependent "
                       f"metrics skipped", flush=True)
-            # NB argument order is (theta0s, samples, param_scaler) — the scaler carries
-            # `.parameter_names`, so the cosmo scaler is what run_evaluation_on_samples wants.
+            # Argument order is (theta0s, samples, param_scaler); the scaler carries .parameter_names.
             metrics = run_evaluation_on_samples(
                 score_theta0s, samples, score_scaler, prior=prior, compute_calibration=False,
             )
@@ -442,11 +357,10 @@ def run_external_nle_eval(
                 json.dump(_jsonable(metrics), fh, indent=2)
             result["metrics_json"] = mpath
             print(f"[nle-external] wrote {mpath}", flush=True)
-        except Exception as exc:                       # metrics are a bonus, samples are the point
+        except Exception as exc:
             print(f"[nle-external] metrics skipped ({type(exc).__name__}: {exc})", flush=True)
 
-    # Per-PRIOR record too: the legacy name is shared by every prior of one (experiment, repeat), so
-    # the LCDM and wCDM jobs overwrote each other's provenance (and raced when concurrent).
+    # A per-prior record, plus the legacy name that every prior of one (experiment, repeat) shares.
     for fname in (f"external_provenance_{prior_mode}_{p.match_string}.json",
                   f"external_provenance_{p.match_string}.json"):
         with open(os.path.join(out, fname), "w") as fh:
@@ -456,7 +370,7 @@ def run_external_nle_eval(
 
 @dataclass(frozen=True)
 class ProductionFrame:
-    """A Stage-B run's TRAINING frame, rebuilt exactly as `embeddings/train.py` built it."""
+    """A Stage-B run's training frame, rebuilt exactly as embeddings/train.py built it."""
     cfg: object
     match: str
     src_match: str
@@ -469,21 +383,9 @@ def rebuild_production_frame(experiment: str, repeat: int = 0, *,
                              source_experiments: Optional[Sequence[str]] = None) -> ProductionFrame:
     """Rebuild the exact training frame of a Stage-B run: cfg, source encoders, scalers, test split.
 
-    ONE definition, used by both the reproduction gate and scaler recovery. They must agree
-    field for field -- the gate's entire value is that it mirrors production, and recovery fits a
-    frame against embeddings produced by that same production path, so two drifting copies of this
-    logic would make both meaningless while still looking green.
-
-    The ORDER here is load-bearing, not cosmetic. `prepare_data_parameters` resolves the HDF5
-    nested keys from `cfg.dataset_quantities`, and for a Stage-B row those RAW-DATA quantities come
-    from the SOURCE ENCODER -- the Stage-B config itself describes embeddings, not maps. Production
-    does exactly this (embeddings/train.py:308-340): load_pretrained_models ->
-    cfg.dataset_quantities -> prepare_data_parameters. Calling it any earlier leaves
-    dataset_quantities unset and `dict(config.dataset_nested_keys)` raises on the None default.
-
-    Note `match_string` is set to the SOURCE match (None_<r>), NOT the Stage-B match, because that
-    is what production's `cfg_0` uses; a cfg differing from `cfg_0` in ANY field would fit
-    different scalers.
+    Shared by the reproduction gate and scaler recovery. The order matters: load_pretrained_models
+    sets cfg.dataset_quantities from the source encoder before prepare_data_parameters runs.
+    match_string is the source match (None_<r>), as in production's cfg_0.
     """
     from ..embeddings.train import build_cfg_from_experiment_dict
     from ..embeddings.embeddings_utils import load_pretrained_models
@@ -517,14 +419,12 @@ def rebuild_production_frame(experiment: str, repeat: int = 0, *,
 
     cfg.dataset_quantities = dataset_quantities
     cfg.match_string = str(src_match)
-    cfg.test_shape_noise_idx = [0]      # what embeddings/train.py sets; keeps 4 of 16 per cosmology
+    cfg.test_shape_noise_idx = [0]      # as embeddings/train.py sets it
     cfg.split_seed = 42
     set_seed_for_repeat_and_ensemble(cfg, repeat_idx=repeat, ensemble_idx=0)
     scalers, _tr, _va, test_loader = prepare_data_parameters(cfg)
 
-    # `TransformingDataset` keeps the H5 dataset on `.base_ds`, NOT `.dataset`, so a naive getattr
-    # chain silently yields [] and every downstream check becomes vacuously "fine". Reuse the
-    # helper that already walks both wrappers.
+    # TransformingDataset keeps the H5 dataset on .base_ds, not .dataset, so use the helper that walks both.
     paths = get_dataset_paths(test_loader) or []
     if not paths:
         raise RuntimeError(
@@ -543,37 +443,13 @@ def run_reproduction_check(
     batch_size: int = 64,
     z_tol: float = 1e-2,
 ) -> Dict[str, object]:
-    """⭐ THE ANTI-REFIT PROOF. Point this path at the model's OWN test set and check it reproduces
-    what the production eval produced.
+    """Check that this path reproduces the production eval on the model's own test set. No sampling.
 
-    Construction is not evidence: every guarantee this module claims (original scalers injected, no
-    split, whitener loaded not fit, cache bypassed) is invisible when it fails — a refit scaler
-    produces perfectly plausible numbers in the wrong frame. The only way to know is to run the new
-    path over the data the production run already scored and compare.
-
-    Three checks, cheapest first, no sampling:
-
-      1. **File-set equality** vs the production `ensemble_posterior_samples_<match>.npz` — plus a
-         row-count cross-check. ⚠️ Usually **UNAVAILABLE**: those dumps record only
-         ('samples', 'theta0s'), and the cached `emb_test.pt` serialises no paths either, so there
-         is nothing to compare basenames against. It is reported as `unavailable` rather than
-         skipped in silence, and CHECK 2 carries the weight instead.
-      2. ⭐ **EXACT split reproduction via `theta`**, against the run's cached `emb_test.pt`. This
-         is the load-bearing check. `theta` is read straight from the HDF5 files and scaled by the
-         DETERMINISTIC preset min/max cosmo scaler — no stochastic subsample anywhere on that path
-         — so rebuilding the same events in the same order must match bit for bit. A wrong split, a
-         wrong shape-noise filter, or a wrong ordering all fail here, and it runs before the
-         expensive second embedding pass. This tests exactly what CHECK 1 was specified to test,
-         but by value rather than by name, and without a tolerance.
-      3. **Raw `z` vs the same cached `emb_test.pt`**, which is the actual embedding the trained
-         flow consumed. Unlike 2 this CANNOT be exact — see below.
-
-    ⚠️ Check 3 cannot be exact. `_fit_data_key_scalers_from_paths` subsamples 1000 files with the
-    GLOBAL, unseeded RNG, so the training-time scalers are unrecoverable for an already-trained run.
-    The check therefore ALSO measures the irreducible floor by refitting twice under different RNG
-    states, and requires the reproduction deviation not to exceed it materially. A deviation well
-    above the floor means something other than the scaler subsample differs — stop and diagnose
-    rather than widening the tolerance.
+    CHECK 1: file-set and row-count equality against the production posterior dump, reported as
+    unavailable for dumps without test_files. CHECK 2: exact split reproduction, theta against the
+    cached emb_test.pt. CHECK 3: raw z against the cache, within _Z_FLOOR_BAND times the measured
+    scaler-refit floor (or z_tol, whichever is larger). CHECK 4: the recovered per-member frame,
+    when one is persisted. Returns the report dict with its verdict.
     """
     import numpy as _np
     import torch as _torch
@@ -589,11 +465,8 @@ def run_reproduction_check(
     report["n_test_paths"] = len(prod_paths)
     print(f"[repro] production test split: {len(prod_paths)} files", flush=True)
 
-    # ---- CHECK 1: file-set equality vs the production posterior dump ----------------------------
-    # The dump names this key `test_files`, NOT `files` (alongside `sim_ids` / `aug_ids`). Older
-    # dumps -- e.g. the 2026-07-08 flagship ones -- carry only ('samples', 'theta0s') and genuinely
-    # cannot support this check, so report `unavailable` explicitly rather than skipping in silence
-    # (the original bug: a key-name miss took neither branch and printed nothing at all).
+    # --- CHECK 1: file-set equality against the production posterior dump ---
+    # The dump's key is test_files. Older dumps without it report `unavailable`.
     npz_path = os.path.join(cfg.base_path, "checkpoints", experiment,
                             f"ensemble_posterior_samples_{match}.npz")
     prod_theta0s = None
@@ -614,9 +487,7 @@ def run_reproduction_check(
                   f"{'PASS' if same else 'FAIL'} "
                   f"({len(ours)} ours vs {len(prod_files)} production)", flush=True)
             if same:
-                # CHECK 1c: align on basename and compare the recorded ids row-wise. Order is NOT
-                # required to match -- production order comes from split_by_cosmology, this path
-                # preserves the given path order -- so align first, then compare.
+                # CHECK 1c: align on basename, since the orders differ, then compare the ids row-wise.
                 idx = {f: i for i, f in enumerate(prod_files)}
                 order = [idx[f] for f in ours]
                 for key in ("sim_ids", "aug_ids"):
@@ -644,26 +515,23 @@ def run_reproduction_check(
         report["file_set_equal"] = None
         print(f"[repro] CHECK 1 SKIPPED: no production dump at {npz_path}", flush=True)
 
-    # ---- CHECK 3: raw z vs the cached emb_test.pt ----------------------------------------------
-    # (source_models / cfg.dataset_quantities were resolved above -- see the ordering note.)
+    # --- CHECK 3: raw z against the cached emb_test.pt ---
 
     def _raw_z(key_scalers, cosmo_scaler):
         loader, _ds = _build_external_embedding_loader_for_cfg(
             cfg, source_models, prod_paths, key_scalers, cosmo_scaler,
-            whiten_cfg=None,                      # RAW z: the cache stores pre-whitening embeddings
+            whiten_cfg=None,                      # raw z: the cache stores pre-whitening embeddings
             batch_size=batch_size,
         )
         zs, ths = [], []
-        for b in loader:                       # ONE pass: the embedding forward is the cost here
+        for b in loader:
             zs.append(b[0])
             ths.append(b[1])
         return _torch.cat(zs, dim=0), _torch.cat(ths, dim=0)
 
     z_ours, th_ours = _raw_z(scalers_a["data"], scalers_a["cosmo"])
 
-    # Locate the run's cached embeddings. An ensemble writes one per member
-    # (pretrain_<match>_ens<j>_<source>/datasets/emb_test.pt); they share the split and differ only
-    # by each member's own stochastic scaler fit, so compare against ONE and say which.
+    # Locate the run's cached embeddings, one per member, and compare against the first.
     cache_hits = sorted(_glob.glob(os.path.join(cfg.base_path, "checkpoints", experiment,
                                                 f"*{match}*", "datasets", "emb_test.pt")))
     report["n_cache_candidates"] = len(cache_hits)
@@ -673,13 +541,8 @@ def run_reproduction_check(
         print(f"[repro] cache: {len(cache_hits)} member caches found; comparing against "
               f"{os.path.basename(os.path.dirname(os.path.dirname(cache_hits[0])))}", flush=True)
 
-    # ---- CHECK 2: EXACT split reproduction, via theta ------------------------------------------
-    # This is what actually carries the weight (CHECK 1 cannot run -- no paths are recorded
-    # anywhere). theta is read straight from the HDF5 files and scaled by the DETERMINISTIC preset
-    # min/max cosmo scaler -- no stochastic subsample anywhere in that path -- so if we rebuilt the
-    # same events in the same order it must match the cache BIT FOR BIT. A different split, a
-    # different shape-noise filter, or a different ordering all show up here immediately, before
-    # the expensive second embedding pass.
+    # --- CHECK 2: exact split reproduction, via theta ---
+    # theta goes through the deterministic preset cosmo scaler, so it must match the cache exactly.
     th_cached = cached.get("theta") if isinstance(cached, dict) else None
     if th_cached is not None:
         if tuple(th_cached.shape) != tuple(th_ours.shape):
@@ -698,12 +561,6 @@ def run_reproduction_check(
         report["theta_check"] = "no-cache"
         print("[repro] CHECK 2 SKIPPED: no cached theta to compare against", flush=True)
 
-    # The irreducible floor: refit the scalers on a DIFFERENT 1000-file subsample and re-embed.
-    # This must vary `scaler_fit_seed`, not the global RNG: the fit no longer consumes the global
-    # stream (it takes a local Generator seeded from the config), so re-seeding numpy would leave
-    # the subsample identical and collapse the measured floor to exactly zero -- silently turning
-    # CHECK 3 into a comparison against nothing. The quantity we want is unchanged either way:
-    # how far does z move when the subsample choice moves?
     _base_seed = int(getattr(cfg, "scaler_fit_seed", 0) or 0)
     cfg.scaler_fit_seed = _base_seed + 20260907
     scalers_b, _t2, _v2, _te2 = prepare_data_parameters(cfg)
@@ -722,14 +579,6 @@ def run_reproduction_check(
             dev = ((z_ours - z_cached).abs() / sd)
             report["z_dev_median"] = float(dev.median())
             report["z_dev_max"] = float(dev.max())
-            # The criterion is FLOOR-RELATIVE by design (plan 3.0.8), not a fixed absolute number.
-            # The training-time scalers are unrecoverable (stochastic 1000-file subsample), so the
-            # question is never "is the deviation small in absolute terms" but "is it bigger than
-            # the irreducible refit noise we just measured". A fixed tolerance sitting BELOW the
-            # measured floor can never pass: the first clean run measured floor = 1.11e-2 against a
-            # hardcoded tol of 1e-2 and duly reported FAIL at 1.29e-2 -- a deviation just 1.16x the
-            # floor, i.e. exactly what a correct reproduction looks like. z_tol is kept as an
-            # absolute LOWER BOUND on the budget, so a tiny floor still demands a tiny deviation.
             floor_med = float(report["refit_floor_median"])
             budget = max(z_tol, _Z_FLOOR_BAND * floor_med)
             ratio = float(dev.median()) / max(floor_med, 1e-12)
@@ -744,9 +593,7 @@ def run_reproduction_check(
             if not ok:
                 print("[repro]   ABOVE THE FLOOR -- something other than the scaler subsample "
                       "differs. Diagnose; do NOT widen the band.", flush=True)
-            # Plan risk #7: a floor above z_tol is itself a finding -- the SAME irreducible
-            # uncertainty attaches to the production misspec numbers, which came through this very
-            # refit path. Surface it rather than burying it in a PASS.
+            # A floor above z_tol is itself a finding.
             if floor_med > z_tol:
                 report["floor_above_tol"] = True
                 print(f"[repro]   NOTE the refit floor ({floor_med:.3e}) EXCEEDS z_tol "
@@ -761,10 +608,7 @@ def run_reproduction_check(
         report["z_check"] = "no-cache"
         print("[repro] CHECK 3 SKIPPED: no emb_test.pt found for this run", flush=True)
 
-    # ---- CHECK 4: the RECOVERED frame, if one has been persisted --------------------------------
-    # The generalisation test for scaler recovery. The fit only ever saw a few hundred events; this
-    # scores the recovered frame over the FULL split, so a frame that merely memorised its fitting
-    # subset shows up here as a deviation no better than the refit's.
+    # --- CHECK 4: the recovered frame, if one has been persisted, over the full split ---
     if cache_hits:
         sc_path = os.path.join(os.path.dirname(cache_hits[0]), "scalers.pt")
         if os.path.exists(sc_path):
@@ -777,8 +621,7 @@ def run_reproduction_check(
                 report["z_dev_max_recovered"] = float(dvr.max())
                 report["recovered_provenance"] = {k: rec_prov.get(k)
                                                   for k in ("method", "n_events", "z_dev_median_after")}
-                # Read the comparison numbers from the report, not from CHECK 3's locals:
-                # `dev`/`floor_med` only exist on that check's success branch.
+                # From the report: CHECK 3's locals exist only on its success branch.
                 refit_med = report.get("z_dev_median")
                 fl = report.get("refit_floor_median")
                 gain = (float(refit_med) / max(float(dvr.median()), 1e-30)) if refit_med else float("nan")
@@ -795,10 +638,7 @@ def run_reproduction_check(
             print(f"[repro] CHECK 4 SKIPPED: no persisted scalers.pt beside the cache "
                   f"(run eval --mode recover-scalers first)", flush=True)
 
-    # ONE verdict for the encoder-identity gate. CHECK 2 (exact split) and CHECK 3 (raw z vs the
-    # embeddings the trained flow actually consumed) are the only evidence that THIS repeat's source
-    # encoder + data frame are what Stage B trained on; a SKIPPED / inconclusive check is therefore a
-    # FAIL here, never a silent pass.
+    # One verdict: CHECK 2 and CHECK 3 must both PASS. A skipped or inconclusive check is a FAIL.
     report["verdict"] = "PASS" if (report.get("theta_check") == "PASS" and report.get("z_check") == "PASS") else "FAIL"
     print(f"[repro] VERDICT {report['verdict']} ({experiment} r{repeat}: theta={report.get('theta_check')}, "
           f"z={report.get('z_check')}, z_dev/floor={report.get('z_dev_over_floor')})", flush=True)
@@ -836,14 +676,11 @@ def run_frame_verification(
     batch_size: int = 64,
     accept_dev: float = 1e-3,
 ) -> Dict[str, object]:
-    """⭐ Verify every member's PERSISTED input frame on HELD-OUT events, through the exact
-    embedding path the observation sampler uses (`_build_external_embedding_loader_for_cfg` ->
-    `compute_embeddings`), on whatever node this runs on.
+    """Verify every member's persisted input frame on held-out events, through the embedding path
+    the observation sampler uses, on this node.
 
-    recover-scalers fits each frame on 200 strided test events; this scores a DISJOINT stride
-    (offset by half a step) so a frame that merely absorbed node/batch-specific numerics of its
-    fitting subset, or does not transfer to this node type, shows up as a deviation. Run it on the
-    SAME partition the sampling jobs use. PASS per member: median |dz|/sd <= accept_dev.
+    The events are a stride disjoint from the one recover-scalers fits on. Run it on the partition
+    the sampling jobs use. A member passes when median |dz|/sd <= accept_dev.
     """
     from ..data.scaling import load_scalers
     from ..embeddings.train import _build_external_embedding_loader_for_cfg
@@ -904,17 +741,10 @@ def run_scaler_recovery(
     save: bool = True,
     accept_dev: float = 1e-3,
 ) -> Dict[str, object]:
-    """Recover and persist each ensemble member's TRAINING-TIME input frame.
+    """Recover and persist each ensemble member's training-time input frame.
 
-    Runs PER MEMBER on purpose. The nine members were each fitted on their own stochastic
-    1000-file subsample, so they consumed nine different frames -- measured directly from their
-    caches (z: ens0-ens1 1.205e-2, ens1-ens2 1.102e-2, while theta is identical to 0.000e+00).
-    One recovered frame would therefore be right for one member and ~1e-2 wrong for the other
-    eight, which is the very error this exists to remove.
-
-    Acceptance is `z_dev_median_after <= accept_dev` (default 1e-3), an order of magnitude BELOW
-    the ~1.1e-2 refit floor. Landing merely "under budget" at ~floor would mean the fit did not
-    find the training draw, and is reported as a FAIL rather than quietly accepted.
+    Runs per member, since each member was fitted in its own frame. A member is accepted when
+    z_dev_median_after <= accept_dev, well below the refit floor. Returns the report dict.
     """
     from ..data.data_augmentations import build_nested_keys_from_quantities
     from ..data.scaling import save_scalers
@@ -927,9 +757,8 @@ def run_scaler_recovery(
 
     frame = rebuild_production_frame(experiment, repeat, source_experiments=source_experiments)
     cfg, match = frame.cfg, frame.match
-    # Events SPREAD over the whole test split (stride), not the first `max_events`: a cache can agree
-    # on its first rows and disagree later (seen: field r0 2026-10-09, first 200 rows 5e-5, full split
-    # 8x the refit floor), and a frame accepted on a prefix would hide that.
+    # Events spread over the whole test split (stride), not the first max_events: a cache can agree
+    # on its first rows and disagree later.
     n_all = len(frame.paths)
     if max_events and max_events < n_all:
         stride = n_all // max_events
@@ -962,20 +791,11 @@ def run_scaler_recovery(
             raise RuntimeError(f"{name}: cache has {z_cached.shape[0]} rows, production split {n_all}")
         z_cached = z_cached[sel]
 
-        # ⭐ EXACT member frame first. Ensemble scalers are fit on train+val, whose concatenation ORDER
-        # depends on the member's `ensemble_seed`; the seeded 1000-file subsample is then drawn from
-        # that order, so each member trained in its OWN frame. Since `scaler_fit_seed` made the fit
-        # deterministic, rebuilding member j's cfg (split_seed 42 + ensemble_idx j, as training did)
-        # reproduces member j's frame EXACTLY -- the LBFGS refinement below is then a no-op and the
-        # initial z_dev is the proof. Older (unseeded) runs fall back to the fit as before.
+        # Rebuild member j's config (split_seed 42 + j): with scaler_fit_seed this reproduces its
+        # input frame exactly, so the LBFGS refinement is a no-op.
         m_ens = _re.search(r"_ens(\d+)_", name)
-        # The seeded subsample is drawn per key IN KEY ORDER from one generator, so the frame also
-        # depends on the order of `dataset_quantities`. Runs trained before that order was pinned
-        # (load_pretrained_models built it as list(set(...))) got it from the training process's
-        # string-hash seed: with two keys, each member trained in one of exactly two frames, and a
-        # refit hit it ~50% of the time (measured on HOS r3 ens5: hos-first 9.4e-7 EXACT,
-        # bandpowers-first 2.289e-2, for every PYTHONHASHSEED). So try each key order and keep the
-        # one that reproduces the cache; the acceptance rule below is unchanged.
+        # The seeded subsample is drawn per key in key order, so try each order of
+        # dataset_quantities and keep the one that reproduces the cache.
         orders = [list(cfg.dataset_quantities)]
         if m_ens is not None and 1 < len(orders[0]) <= 4:
             orders += [list(o) for o in _permutations(orders[0]) if list(o) != orders[0]]
@@ -994,15 +814,13 @@ def run_scaler_recovery(
                 if len(orders) > 1:
                     method_i += "[" + ",".join(order) + "]"
 
-            # RAW loader: empty key_scalers => DataDictScalerTransform passes values straight through.
-            # Order must match the cache, which the reproduction gate proves (CHECK 2, theta exact).
+            # Raw loader: empty key_scalers pass values straight through, in the cache's order.
             raw_loader = _wrap_paths_as_loader(
                 paths, nested_keys, list(cfg.cosmo_param_names), {}, None,
                 batch_size=batch_size, num_workers=2,
                 eb_noise_norm=getattr(cfg, "eb_noise_norm", None),
             )
             print(f"[recover] --- {name} (init: {method_i}, {len(paths)} events spread over {n_all})", flush=True)
-            # NB frame.scalers is {'data': {...}, 'cosmo': ...}; recovery wants the KEY scalers.
             res_i = recover_key_scalers(encoders, raw_loader, z_cached, init_scalers,
                                         max_events=len(paths), steps=steps)
             if res is None or res_i.z_dev_median_after < res.z_dev_median_after:
