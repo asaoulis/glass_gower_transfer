@@ -1,3 +1,8 @@
+"""Fixed survey and simulation constants for the KiDS-Legacy mocks.
+
+Grids (nside, lmax, shells), tomographic bins, bandpower scales, N/S patches, shape-noise
+augmentation counts, galaxy-bias prior presets and the CAMB-Cls cache location.
+"""
 from pathlib import Path
 
 import healpy as hp
@@ -7,35 +12,16 @@ import numpy as np
 nbins = 6
 bias = 1
 
-# Galaxy-bias prior presets (O3-diag, task simulation-runs/galaxy-bias-priors).
-# Per (sim, outer, rot) block draw of an independent per-tomo-bin 6-vector
-# b_i ~ N(mean_i, kappa * sigma_i), truncated at +-3*kappa*sigma_i and clipped to
-# GALAXY_BIAS_CLIP. Means/sigmas are the Flamingo KiDS-Legacy calibration
-# (data/galaxy_bias_priors.txt: columns b and TOTAL). kappa=1 is the calibrated
-# width; the _rob preset inflates it for robustness (pending final width decision).
+# Galaxy-bias prior presets (O3-diag): per block, independent per-bin b_i ~ N(mean_i, kappa * sigma_i),
+# truncated at +-3 kappa sigma.
 GALAXY_BIAS_PRIOR_MEANS = [1.0181, 1.0698, 1.1302, 1.2427, 1.3739, 1.4805]
 GALAXY_BIAS_PRIOR_SIGMAS = [0.1801, 0.1491, 0.1252, 0.0951, 0.0960, 0.0985]
 GALAXY_BIAS_PRIORS = {
 	"flamingo_pt_diag": {"kappa": 1.0},
 	"flamingo_pt_diag_rob": {"kappa": 1.5},
-	# kappa=2 — the "galaxy bias as a VARIATE" prior (user, 2026-08-18). Deliberately wider than a
-	# calibrated prior: the point is to make b_g a broadly-sampled nuisance the network must learn to
-	# marginalise. Keeps the Flamingo per-bin MEANS and doubles the published sigmas, so it is a clean
-	# "2x the published sigma" statement.
-	# Effective coverage, P(0.8 < b_g < 1.8) per tomo bin (+-3sigma-truncated):
-	#   bin1 71.5 %  bin2 81.2 %  bin3 90.5 %  bin4 99.1 %  bin5 98.8 %  bin6 94.9 %
-	# i.e. the LOW-z bins deliberately sample well below 0.8 (bin1 central-90 % = [0.43, 1.61]).
-	# That asymmetry is structural, not a bug: kappa RESCALES but does not RE-CENTRE, and the Flamingo
-	# means run 1.018 -> 1.481, so bin1 sits only 0.22 above 0.8 while bin6 sits 0.32 below 1.8.
-	# Clip interaction is mild here — max 2.18 % of draws reach GALAXY_BIAS_CLIP (vs 10.38 % at
-	# kappa=3, which is why kappa=3 was considered and REJECTED; kappa=1 clips 0.00 %).
+	# kappa=2: a deliberately wide prior so b_g is a broadly sampled nuisance.
 	"flamingo_pt_diag_k2": {"kappa": 2.0},
-	# kappa=0 -- b_g PINNED at the Flamingo per-bin MEANS, no scatter. `rng.normal(means, 0)`
-	# returns the means exactly and the +-3 kappa sigma truncation / GALAXY_BIAS_CLIP are both
-	# no-ops, while the draw is still made so the RNG stream stays byte-aligned with the scattered
-	# presets. Used by the matched-nuisance suite, where b_g must not vary between arms.
-	# Named `_mean` (not `_fixed`) to avoid colliding with the `--galaxy-bias` fixed-SCALAR override,
-	# which the gatekeeper already treats as mutually exclusive with a prior preset.
+	# kappa=0: b_g pinned at the per-bin means (no scatter, truncation is a no-op).
 	"flamingo_pt_diag_mean": {"kappa": 0.0},
 }
 GALAXY_BIAS_CLIP = (0.3, 2.2)
@@ -71,21 +57,14 @@ CAMB_LIMITS = {
 }
 
 
-# Shared, persistent cache of CAMB-computed matter Cls (shells + glass_cls), keyed by sim_id.
-# MUST be separate from any per-variate `output_dir` so that different analysis variates
-# (e.g. NLA-M, NLA-z, clustering, post-proc) reuse the same expensive CAMB products. The first
-# variate to run a given sim_id populates the cache; later variates load it and skip CAMB.
+# Shared CAMB-Cls cache keyed by sim_id. Keep it separate from any per-variate output_dir.
 CAMB_CLS_CACHE_DIR = Path("/share/gpu5/asaoulis/camb_cls_cache")
 
-# Base seed for deterministic per-sim_id cosmology sampling. Combined with sim_id it fixes the
-# cosmology drawn for each sim_id across runs/variates. Change only to deliberately regenerate a
-# different fixed cosmology set (the on-disk cache guard will then flag stale entries).
+# Base seed of the per-sim_id cosmology draw. Changing it regenerates every cosmology.
 COSMO_BASE_SEED = 0
 
 
-# Shape-noise augmentation counts (outer = independent realisations; inner = per-rotation augmentations).
-# NOTE: gower_street outer set to 1 for the theory-test runs (outer reloads the N-body backend,
-# ~40 min each; inner+mask augmentations are cheap). Restore to 4 for production Gower datasets.
+# Shape-noise augmentation: outer = independent realisations (reload the N-body shells), inner = per-rotation.
 OUTER_NUM_SHAPE_NOISE_REALISATIONS = {
 	# external: 1 outer x 5 rot x 1 inner x 4 mask = 20 mocks/cosmology (disjoint rotations).
 	"external": 1,
@@ -94,9 +73,7 @@ OUTER_NUM_SHAPE_NOISE_REALISATIONS = {
 }
 
 INNER_NUM_SHAPE_NOISE_REALISATIONS = {
-	# Prod value is 1: 4 outer x 5 rot x 1 inner x 4 mask = 80 augs/sim (matches the on-disk
-	# gower_mocks dataset). inner>1 multiplies per-rank memory and OOMs; the eb85842 cleanup
-	# wrongly bumped this 1->4 (=320 augs/sim). Keep at 1 for production Gower datasets.
+	# inner > 1 multiplies per-rank memory and runs out of memory; production uses 1.
 	"external": 1,
 	"gower_street": 1,
 	"glass": 1,
