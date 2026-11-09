@@ -1,14 +1,8 @@
 """Load saved mocks and compute empirical/theory bandpower ratios over an ensemble.
 
-Each mock ``.h5`` written by the master simulator stores ``mixed_bandpowers`` (21, 8)
-and ``bandpower_ls`` (8,) under ``cls_results/full``.  For every file we read those,
-compute the matching theory bandpowers for that file's cosmology, and form the ratio
-``empirical / theory`` per (spectrum, band).
-
-Production files contain ONLY ``mixed_bandpowers`` (no raw ``bandpowers`` key), so the
-default empirical source is ``mixed_bandpowers`` and the theory side is mixed with the
-KiDS mixing matrix to match.  A legacy ``empirical_key='bandpowers'`` + ``mixing=None``
-path is kept for old datasets that pre-date the mixed-only writer.
+Each mock's cls_results/full/mixed_bandpowers (21, 8) is divided by its cosmology's theory
+bandpowers, mixed with the KiDS mixing matrix, per (spectrum, band). empirical_key='bandpowers'
+with mixing=None serves datasets older than the mixed-only writer.
 """
 
 from __future__ import annotations
@@ -55,12 +49,8 @@ _COSMO_ID_RE = re.compile(r"output_(\d+)")
 def cosmo_id_from_path(path: str) -> str:
     """Cosmology identifier for a mock = the first integer after ``output_`` in the basename.
 
-    Mocks are named ``output_{sim}_out{outer}_rot{rot}_{inner}.h5`` (see the master
-    simulator); all augmentations (outer/inner shape-noise, rotation) of one ``{sim}``
-    share the SAME cosmology, hence the SAME theory bandpowers.  Grouping by this id lets
-    the validation compute theory once per cosmology instead of once per file.  Falls back
-    to the full basename when the pattern does not match (each such file is its own group,
-    so the result is still correct — just not deduplicated).
+    Mocks are named output_{sim}_out{outer}_rot{rot}_{inner}.h5, and all augmentations of one
+    {sim} share its cosmology. Falls back to the full basename when the pattern does not match.
     """
     base = os.path.basename(path)
     m = _COSMO_ID_RE.match(base)
@@ -68,15 +58,9 @@ def cosmo_id_from_path(path: str) -> str:
 
 
 def load_numeric_cosmo_vec(path: str) -> Tuple[np.ndarray, List[str]]:
-    """Read ``cosmo_dict`` keeping ONLY float-convertible scalar entries -> ``(values, names)``.
+    """Read cosmo_dict keeping only float-convertible scalar entries -> (values, names).
 
-    Mirrors the cosmo vector that ``unpack_data(..., return_names=True)`` returns, but is robust
-    to non-numeric metadata: the NLA-era mocks tag ``cosmo_dict`` with a STRING ``ia_model``
-    (e.g. ``b'nla_m'``, see ``master_kids_legacy_simulator.py``), and
-    ``load_cosmo_params(cosmo_params=None)`` blindly ``float()``s every key — so it raises on
-    that string.  The theory only needs the numeric CAMB params (``params_from_cosmo_vec`` pulls
-    h/ombh2/omega_m/ns/w0/sigma_8/mnu), so anything that is not a float scalar (strings, arrays)
-    is skipped here.
+    NLA-era mocks store a string ia_model in cosmo_dict, which load_cosmo_params would float().
     """
     names: List[str] = []
     values: List[float] = []
@@ -84,12 +68,12 @@ def load_numeric_cosmo_vec(path: str) -> Tuple[np.ndarray, List[str]]:
         grp = f["cosmo_dict"]
         for k in grp.keys():
             v = np.asarray(grp[k][()])
-            if v.shape != ():            # scalars only
+            if v.shape != ():
                 continue
             try:
                 fv = float(v)
             except (ValueError, TypeError):
-                continue                  # skip non-numeric metadata (e.g. ia_model='nla_m')
+                continue
             names.append(k)
             values.append(fv)
     return np.asarray(values), names
@@ -135,11 +119,9 @@ def _ratios_from_theory(cl_bandpowers, theory_bandpowers: Dict[str, np.ndarray],
 def _load_empirical(path, nested_keys, empirical_key):
     """Read one mock's empirical bandpowers + ℓ-bandpowers (NO cosmo).
 
-    Passes ``cosmo_params=[]`` so unpack_data does NOT float-convert ``cosmo_dict`` — the
-    NLA-era mocks store a STRING ``ia_model`` there that would otherwise raise.  The cosmo
-    vector, when needed for theory, is read separately via :func:`load_numeric_cosmo_vec`.
-    Returns ``(cl_bandpowers (n_spectra, nbands), cls (nbands,))``; raises a clear error if the
-    requested empirical field is missing (the "did each sim save its results?" check).
+    cosmo_params=[]: NLA-era mocks store a string ia_model in cosmo_dict.
+    Returns (cl_bandpowers (n_spectra, nbands), cls (nbands,)). Raises KeyError if the requested
+    empirical field is missing.
     """
     data, _ = unpack_data(path, nested_keys, [], as_torch=False, return_names=True)
     if empirical_key not in data:
@@ -163,11 +145,9 @@ def load_ratios_with_theory(
 ):
     """Load one mock's empirical bandpowers and divide by a PRECOMPUTED theory dict.
 
-    The theory depends only on the cosmology, which is shared across a cosmology's
-    augmentations, so ``theory_bandpowers`` is computed once per cosmology upstream
-    (:func:`compute_theory_by_cosmology`) and reused here for every file of that cosmology.
-    Returns ``{path, ratios (n_spectra, nbands), cls (nbands,), labels}`` or None on failure
-    (logged + counted, so one bad file does not kill the joblib batch).
+    theory_bandpowers comes from compute_theory_by_cosmology, once per cosmology.
+    Returns {path, ratios (n_spectra, nbands), cls (nbands,), labels}, or None on failure so one
+    bad file does not kill the joblib batch.
     """
     try:
         if theory_bandpowers is None:
@@ -248,21 +228,14 @@ def compute_theory_by_cosmology(
     n_jobs: int = 8,
     omp_threads: int = 8,
 ) -> Dict[str, Dict[str, np.ndarray]]:
-    """Compute the theory bandpowers ONCE per unique cosmology.
+    """Compute the theory bandpowers once per unique cosmology.
 
-    Files are grouped by :func:`cosmo_id_from_path`; one representative file per cosmology
-    supplies the cosmo vector.  Theory depends only on the cosmology, which is shared across
-    its augmentations, so the result is reused for every file of that cosmology — cutting the
-    theory work by the augmentation multiplicity (e.g. 16x for 16 augmentations/cosmology).
-    Returns ``{cosmo_id: {"S{i}-S{j}": (nbands,)}}``; a cosmology whose representative file (or
-    theory) fails is omitted, and its files are counted as failures downstream.
-
-    For ``shell_projection`` the slow non-Limber matter_cls is warmed into the disk cache first
-    (omp-pinned, capped concurrency) so the per-cosmology theory step below only hits cache.
+    Files are grouped by cosmo_id_from_path, one representative per cosmology. Returns
+    {cosmo_id: {"S{i}-S{j}": (nbands,)}}, omitting a cosmology whose theory fails. For
+    shell_projection the non-Limber matter_cls is warmed into the disk cache first.
     """
     import joblib
 
-    # group by cosmology: cosmo_id -> first representative file
     groups: Dict[str, str] = {}
     for f in files:
         groups.setdefault(cosmo_id_from_path(f), f)
@@ -271,7 +244,6 @@ def compute_theory_by_cosmology(
           f"(~{n_files / max(1, n_cos):.0f} augmentations/cosmology); "
           f"computing theory once per cosmology")
 
-    # read the cosmo vector for each representative (skip unreadable reps)
     ids: List[str] = []
     vecs: List = []
     for cid, rep in groups.items():
@@ -285,8 +257,7 @@ def compute_theory_by_cosmology(
     if not vecs:
         return {}
 
-    # shell_projection: warm the slow matter_cls disk cache once per cosmology so the theory
-    # step below only hits cache (avoids many heavy concurrent non-Limber CAMB jobs / OOM).
+    # Warm the matter_cls cache serially first, so the parallel step avoids concurrent CAMB jobs (OOM).
     if theory_mode == "shell_projection":
         from .theory import warm_matter_cache
         warm_jobs = max(1, n_jobs // omp_threads)
@@ -350,10 +321,6 @@ def compute_ensemble_ratios(
         )
     print(f"[validation] found {len(files)} simulation files in {folder}")
 
-    # Theory depends only on the cosmology, which is shared across a cosmology's augmentations
-    # (output_{sim}_*), so compute it ONCE per cosmology and reuse for every file — not once
-    # per file (a 16x-ish saving for 16 augmentations/cosmology). The slow shell-projection
-    # matter_cls is warmed into the disk cache inside this call.
     theory_by_cosmo = compute_theory_by_cosmology(
         files, nested_keys, cosmo_params,
         nside=nside, nbins=nbins, lmin_cut=lmin_cut, lmax_cut=lmax_cut,
