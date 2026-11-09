@@ -1,4 +1,4 @@
-
+"""The 20 footprint rotations (angles in degrees) used for field-rotation augmentation."""
 from src.cosmology.simulators import generate_rotation_specs
 base_rotation_specs = generate_rotation_specs(
     delta_deg=0.0,
