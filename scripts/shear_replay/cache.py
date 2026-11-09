@@ -1,22 +1,8 @@
-"""Catalogue -> sparse per-pixel moment cache.
+"""Catalogue -> sparse per-pixel moment cache, one file per mock with one group per tomographic bin.
 
-One cache file per mock, per tomographic bin: the sufficient statistics of the pixel-level
-estimator, so every candidate normalisation is a cheap function of the cache instead of a
-~30M-galaxy replay. Pixel indices are stored in NESTED ordering at the catalogue's native nside
-so coarser binnings (nside 512/256) are exact bit-shifts of the same sums.
-
-Stored per bin (sparse, occupied pixels only; ``she`` = (e1-ē1 + i(e2-ē2))/(1+m_i), i.e. the
-exact per-galaxy quantity `make_alm_shear_convergence` accumulates):
-    pix   int32   NESTED pixel index at native nside
-    N     int32   galaxy count
-    S1,S2 float64 Σ she (real, imag)                      -> the estimator numerator
-    Q11,Q22,Q12 float32  Σ she_re², Σ she_im², Σ she_re·she_im  -> exact per-pixel noise moments
-    NA    int32,  SA1,SA2 float32   half-split "A" (even in-bin galaxy index); B = total - A
-    R{k}r,R{k}i float32  k=0..n_rand-1: Σ e^{iθ_g}·she  random-rotation noise realisations
-                 (θ ~ U[0,2π) per galaxy, deterministic per (cache, k) from the seed sequence)
-Bin attrs: e1_mean, e2_mean, n_gal. File attrs: everything from the catalogue file (sim_id,
-cat_idx, galaxy_bias, m_bias_for_shear, nside, nside_out, shear_normalization, rng_seed, ...),
-plus cache_version and the rand seed material. cosmo_dict group is copied through.
+Each bin stores, over occupied pixels in NESTED order at the native nside, pix, N, the sums S1/S2
+of she = (e1-ē1 + i(e2-ē2))/(1+m_i), the moments Q11/Q22/Q12, the half-split NA/SA1/SA2 and the
+random-rotation sums R{k}r/R{k}i. Coarser binnings are exact bit-shifts of the same sums.
 """
 from __future__ import annotations
 
