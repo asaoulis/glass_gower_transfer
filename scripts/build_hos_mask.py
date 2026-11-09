@@ -1,11 +1,7 @@
 """Build the KiDS-Legacy patch footprint fraction used by the HOS bake (src/ml/data/hos.py).
 
-KiDS frac masks (nside 1024, N + S) -> hp.ud_grade to nside 512 -> the simulator's patch projection
-(`get_patch_values(..., rot_angle=0)`, nearest sampling, `named_patches`). Every mock shares this grid and
-mask (master_kids_legacy_simulator.py extracts every patch at angle 0). Reproduces the field_misspec
-`patch_mask_frac.npz` bit-exactly (max |d| = 0; footprint N 42 904 / S 47 602 pixels at frac > 0.5).
-
-Usage: python scripts/build_hos_mask.py [--data-dir kids-legacy-sbi/data] [--out config/hos_assets/kids_patch_mask_frac_nside512.npz]
+The KiDS frac masks go to nside 512 and through the simulator's patch projection at rot_angle=0.
+Usage: python scripts/build_hos_mask.py [--data-dir kids-legacy-sbi/data] [--out <npz>]
 """
 import argparse
 from pathlib import Path
