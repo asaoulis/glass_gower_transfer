@@ -1,13 +1,7 @@
-"""Ensemble agreement / discrepancy diagnostics.
+"""Ensemble agreement and discrepancy diagnostics.
 
-This module centralizes the metrics used by `ensemble_uncertainty.py` so that
-scripts can stay thin and evaluation logic is reusable.
-
-Currently includes:
-- RBF-kernel agreement across ensemble members (MMD-style) for intermediate
-  vectors like representations or compressed latents.
-- Symmetric KL disagreement between diagonal-Gaussian approximations fitted to
-  posterior samples.
+RBF-kernel (MMD-style) agreement across ensemble members and the symmetric KL between diagonal-Gaussian
+fits to posterior samples.
 """
 
 from __future__ import annotations
