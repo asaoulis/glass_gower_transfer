@@ -1,39 +1,9 @@
 #!/usr/bin/env python
-"""Chainconsumer corner-plot overlays from saved posterior-sample npz files.
+"""Chainconsumer corner-plot overlays from saved posterior-sample npz files (the eval dump schema).
 
-Consumes the eval sample-dump schema (src/ml/eval/utils.py:_save_posterior_samples,
-also written by gen_samples.py):
-  samples    [S, N, D]  scaled [0,1]
-  theta0s    [N, D]     scaled [0,1]
-  test_files [N]        basenames output_<sim>_out<o>_rot<r>_<n>.h5   (optional but expected)
-  sim_ids    [N], aug_ids [N]                                          (optional)
-
-Test points are matched ACROSS input files by the full test-file basename — NOT by
-(sim_id, aug_id): aug_id is only the TRAILING noise index, so e.g. out0_rot0_0 and
-out1_rot0_0 of one cosmology both have aug_id=0 — only the basename is unique. Files
-without `test_files` fall back to positional matching (requires equal N everywhere;
-warned loudly).
-
-Samples/truths are inverse-transformed to physical units with the preset Gower box
-(src/ml/data/constants.py:COSMO_PARAM_PRESET_MINMAX — the same box used to scale cosmo
-params for training), then a derived S8 = sigma_8*sqrt(omega_m/0.3) column is inserted
-and ombh2 is displayed as ombh2*100. Contours are drawn with shading OFF (lines only) by
-default, per-chain colors, and a Truth marker (chainconsumer >= 1.x pandas API).
-
-Input modes:
-  A) explicit files:   --samples r0.npz r1.npz r2.npz [--labels r0 r1 r2]
-  B) experiment dirs:  --experiments exp_r0 exp_r1 exp_r2 \
-                       --checkpoints-root /share/gpu5/.../transfer_models/checkpoints \
-                       --pattern 'samples_kids_s8_analytic_*.npz'
-     (each matched file becomes one chain; label = experiment name, or exp:stem when a
-      pattern matches several files in one experiment dir)
-
-Examples:
-  python scripts/plot_posteriors.py --samples m0.npz m1.npz m2.npz --out plots/
-  python scripts/plot_posteriors.py \
-      --experiments gower_nle_finetune_nla_m_z8_r0_ens9 gower_nle_finetune_nla_m_z8_r1_ens9 \
-      --checkpoints-root $MODELS_ROOT/checkpoints --pattern 'samples_kids_s8_analytic_*.npz' \
-      --out $MODELS_ROOT/plots/nle_z8 --max-points 4
+Inputs are --samples <npz ...>, or --experiments <exp ...> --checkpoints-root <dir> --pattern <glob>.
+Test points are matched across files by the full test-file basename, since aug_id is not unique.
+Samples are unscaled with the preset Gower box, and a derived S8 column is added.
 """
 import argparse
 import glob
@@ -43,8 +13,6 @@ import sys
 
 import numpy as np
 
-# Repo root on sys.path so `src.ml.data.constants` resolves regardless of the CWD the
-# script is launched from (locally or in the cluster sbatch).
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
@@ -65,7 +33,7 @@ LABELS = {
 }
 S8_LABEL = r"$S_8$"
 
-# Paul Tol muted palette — avoids a scienceplots dependency on cluster nodes.
+# Paul Tol muted palette, which avoids a scienceplots dependency on cluster nodes.
 DEFAULT_COLORS = ["#332288", "#CC6677", "#117733", "#DDCC77", "#88CCEE", "#AA4499", "#44AA99"]
 
 
@@ -270,16 +238,12 @@ def main():
             f"data has D={D} params but --param-names lists {len(param_names)}: {param_names}"
         )
 
-    # --params accepts raw parameter names as well as display labels, space- OR comma-separated
-    # (the cluster `plot` verb documents a CSV subset and its submit script splits on commas, so
-    # accepting both here means the same string works locally and remotely).
+    # --params takes raw names or display labels, space- or comma-separated (the cluster plot verb).
     if args.params:
         name_to_label = {**LABELS, "S8": S8_LABEL, "s8": S8_LABEL}
         requested = [p for tok in args.params for p in tok.split(",") if p]
         args.params = [name_to_label.get(p, p) for p in requested]
-        # Fail loudly on a name that matches no column. Without this the subset silently selects
-        # nothing and chainconsumer dies on an opaque "Your chain is empty" pydantic assertion —
-        # which reads like a data problem rather than the typo it actually is.
+        # Fail loudly on a name that matches no column, before chainconsumer's opaque empty-chain error.
         _, _all_cols = _to_display(np.zeros((1, len(param_names))), param_names)
         _unknown = [p for p in args.params if p not in set(_all_cols)]
         if _unknown:
@@ -294,8 +258,7 @@ def main():
     if len(entries) > len(colors):
         raise SystemExit(f"{len(entries)} chains but only {len(colors)} colors; pass --colors")
 
-    # Cross-file truth consistency: the same test point must carry the same theta0 in every
-    # input (catches a silently-diverged split, especially in positional-fallback mode).
+    # The same test point must carry the same theta0 in every input file.
     for key, idx_by_label in points:
         t0 = entries[0][1]["theta0s"][idx_by_label[entries[0][0]]]
         for lab, d in entries[1:]:
