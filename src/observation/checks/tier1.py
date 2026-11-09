@@ -1,26 +1,8 @@
-"""Tier-1 pre-model data checks of ONE observation against the nla_m mock cloud.
+"""Tier-1 pre-model data checks of one observation against the nla_m mock cloud.
 
-  1a  two-point in-distribution   whitened EE bandpowers: Mahalanobis + kNN conformal p-values
-                                  against a held-out half of the cloud; per-(spectrum, band)
-                                  robust z-scores; per-spectrum chi^2 PTEs.
-  1b  B-mode null                 chi^2 of the BB bandpowers against the mock-BB mean/covariance
-                                  (PTE from the EMPIRICAL null of the same statistic on held-out
-                                  mocks, plus the analytic chi^2 PTE for reference), the same
-                                  statistic against ZERO, and per-tomo-auto PTEs.
-  1c  pre-CNN E-map OOD           whitened hand-crafted map summaries: kNN conformal p (primary,
-                                  Sun+22 / Bates+23), Mahalanobis p (global cross-check), a PCA-k
-                                  kNN variant, and per-group kNN p-values.
-
-Null calibration: the cloud is split by COSMOLOGY (sim_id) into a FIT half (mean/covariance/
-whitener/kNN reference) and a NULL half (empirical p-values). Rows of the null half are ~8-80
-correlated augmentations per cosmology; that reduces the effective size of the null (p-value
-resolution), not the validity of the marginal p for a NEW observation drawn from the same
-mixture. A mock-as-real observation must have its own sim_id EXCLUDED from the cloud (see
-``exclude_sim_ids``), otherwise its augmentation siblings make it look in-distribution.
-
-Caveat stated up front: every statistic here is MARGINAL over the prior (the cloud spans it while
-the observation sits at one unknown cosmology), so a pass is a weak statement and a fail a strong
-one. The conditional version (cond_knn) needs theta the observation does not have.
+1a two-point in-distribution, 1b B-mode null, 1c pre-CNN E-map OOD (kNN, Sun+22, Bates+23). The cloud
+is split by sim_id into a fit half and a null half for the empirical p-values. A mock-as-real
+observation needs its own sim_id in exclude_sim_ids. Every statistic is marginal over the prior.
 """
 from __future__ import annotations
 
@@ -57,8 +39,8 @@ class Cloud:
 
     @classmethod
     def from_npz(cls, baked_npz: Optional[str] = None, raw_npz: Optional[str] = None) -> "Cloud":
-        """bandpowers + emap from the baked-store npz; bb (and, if absent above, bandpowers/emap)
-        from the raw-store npz. The two need not cover the same files (bb has its own cloud)."""
+        """bandpowers and emap from the baked-store npz, bb (and any missing above) from the raw-store
+        npz. The two may cover different files, so bb has its own sim_ids."""
         from ..reference import load_reference
         base = load_reference(baked_npz) if baked_npz else load_reference(raw_npz)
         c = cls(sim_ids=base["sim_ids"], aug_ids=base["aug_ids"], files=base.get("files"),
@@ -118,21 +100,17 @@ def _shrink_whitener(x_fit: np.ndarray, shrinkage: Optional[float] = None) -> Tr
 
 def _score_block(x_fit: np.ndarray, x_null: np.ndarray, x_obs: np.ndarray, *, k: int = 10,
                  pca: Optional[int] = None) -> Dict:
-    """Whiten on fit, score null + obs (Mahalanobis, kNN), return per-obs scores + empirical p.
+    """Whiten on fit, score null and obs (Mahalanobis, kNN). Returns per-obs scores and empirical p.
 
-    Columns are first put in fit-half scatter units: the raw bandpowers are ~1e-9, so any absolute
-    ridge in the whitener would otherwise dominate their covariance and the "whitened" statistic
-    would silently degrade to a Euclidean one weighted by the largest-amplitude bands (found on
-    the first production report, 2026-09-08). Scale-free inputs (the MAD-standardised map
-    summaries) are unaffected."""
+    Columns go to fit-half scatter units first, so the whitener's ridge cannot dominate the ~1e-9
+    bandpowers' covariance."""
     sd = np.asarray(x_fit, dtype=np.float64).std(0)
     sd = np.where(sd > 0, sd, 1.0)
     x_fit, x_null, x_obs = (np.asarray(a, dtype=np.float64) / sd for a in (x_fit, x_null, x_obs))
     w = _shrink_whitener(x_fit)
     zf, zn, zo = w(x_fit), w(x_null), w(x_obs)
     if pca:
-        # PCA of the whitened fit cloud (directions of largest residual variance after whitening are
-        # ~isotropic; PCA here just truncates to the leading k subspace for a lower-d kNN)
+        # Truncate the whitened fit cloud to its leading k PCA subspace for a lower-d kNN.
         u, s, vt = np.linalg.svd(zf - zf.mean(0), full_matrices=False)
         P = vt[:pca].T
         zf, zn, zo = zf @ P, zn @ P, zo @ P
@@ -149,9 +127,7 @@ def _score_block(x_fit: np.ndarray, x_null: np.ndarray, x_obs: np.ndarray, *, k:
     return out
 
 
-# ----------------------------------------------------------------------------------------------
-# 1a  two-point
-# ----------------------------------------------------------------------------------------------
+# --- 1a two-point ---
 def twopoint_check(cloud: Cloud, obs_bp: np.ndarray, *, seed: int = 0, exclude_sim_ids: Sequence[int] = (),
                    k: int = 10) -> Dict:
     """``obs_bp``: [M,21,B] (M labels)."""
@@ -159,8 +135,7 @@ def twopoint_check(cloud: Cloud, obs_bp: np.ndarray, *, seed: int = 0, exclude_s
     O = np.asarray(obs_bp).reshape(len(obs_bp), -1)
     fit, null = cosmology_split(cloud.sim_ids, seed=seed, exclude=exclude_sim_ids)
     res = _score_block(X[fit], X[null], O, k=k)
-    # per-entry robust z (vs the whole cloud) and per-spectrum chi^2 PTE from the fit covariance,
-    # with the null-half empirical distribution of the same per-spectrum statistic
+    # Per-entry robust z against the cloud, and per-spectrum chi^2 PTE against the null half.
     nb = cloud.bandpowers.shape[-1]
     z = _robust_z(O, X).reshape(len(O), N_SPECTRA, nb)
     per_spec = []
@@ -184,9 +159,7 @@ def twopoint_check(cloud: Cloud, obs_bp: np.ndarray, *, seed: int = 0, exclude_s
     return res
 
 
-# ----------------------------------------------------------------------------------------------
-# 1b  B-mode null
-# ----------------------------------------------------------------------------------------------
+# --- 1b B-mode null ---
 def bmode_check(cloud: Cloud, obs_bb: np.ndarray, *, seed: int = 0, exclude_sim_ids: Sequence[int] = ()) -> Dict:
     """``obs_bb``: [M,21,B]. chi^2 against the mock-BB mean/cov (empirical + analytic PTE), the
     same statistic against zero, per-tomo-auto PTEs, and per-entry robust z."""
@@ -198,18 +171,14 @@ def bmode_check(cloud: Cloud, obs_bb: np.ndarray, *, seed: int = 0, exclude_sim_
     d = B.shape[1]
     n_fit_rows = len(fit)
     n_fit_cosmo = len(set(sim_ids[fit].tolist()))
-    # Work in SCATTER-NORMALISED units. BB bandpowers are ~1e-9, their covariance ~1e-18, and an
-    # absolute ridge (the 1e-12*I first used here) swamped it -- the "chi^2" then read 3-5 for
-    # 168 dof (found on the T report, 2026-09-08). Dividing every entry by its fit-half scatter
-    # makes the ridge negligible (1e-8 on a unit diagonal) and the statistic the chi^2 it claims.
+    # Work in scatter-normalised units: an absolute ridge swamps the 1e-18 BB covariances.
     sd = B[fit].std(0) + 1e-30
     B = B / sd
     O = O / sd
     mu = B[fit].mean(0)
     cov = np.cov(B[fit], rowvar=False) + 1e-8 * np.eye(d)
     ci = np.linalg.inv(cov)
-    # Hartlap factor with the CONSERVATIVE count (cosmologies, not rows) -- reported, and applied
-    # only to the analytic PTE; the empirical PTE needs no correction.
+    # Hartlap factor with the conservative count (cosmologies, not rows), for the analytic PTE only.
     hartlap = (n_fit_cosmo - d - 2) / (n_fit_cosmo - 1) if n_fit_cosmo > d + 2 else float("nan")
 
     def chi2_of(x, centre):
@@ -250,9 +219,6 @@ def bmode_check(cloud: Cloud, obs_bb: np.ndarray, *, seed: int = 0, exclude_sim_
         co = np.einsum("ni,ij,nj->n", Os[:, s, :] - m, cinv, Os[:, s, :] - m)
         per_auto.append({"spectrum": labs[s], "chi2": co.tolist(), "pte_empirical": empirical_pvalues(cn, co).tolist()})
     out["per_auto"] = per_auto
-    # ALL 21 spectra (autos AND crosses), the same statistic as twopoint_check's per_spectrum, so the
-    # Tier-1 chi^2 colour tables can show EE and BB side by side (added 2026-09-24; additive -- every
-    # key above is unchanged). A cross-BB excess has no shape-noise bias to hide behind.
     per_spec = []
     for s in range(N_SPECTRA):
         xs_fit = Bs[fit, s, :]
@@ -267,9 +233,7 @@ def bmode_check(cloud: Cloud, obs_bb: np.ndarray, *, seed: int = 0, exclude_sim_
     return out
 
 
-# ----------------------------------------------------------------------------------------------
-# 1c  pre-CNN E-map OOD
-# ----------------------------------------------------------------------------------------------
+# --- 1c pre-CNN E-map OOD ---
 def emap_check(cloud: Cloud, obs_emap: np.ndarray, *, seed: int = 0, exclude_sim_ids: Sequence[int] = (),
                k: int = 10, pca: int = 30, groups: Sequence[str] = GROUPS) -> Dict:
     """``obs_emap``: [M,D]. Robust-standardise on the cloud, then whitened kNN / Mahalanobis
@@ -278,7 +242,7 @@ def emap_check(cloud: Cloud, obs_emap: np.ndarray, *, seed: int = 0, exclude_sim
     O = np.asarray(obs_emap, dtype=np.float64)
     names = [str(n) for n in cloud.emap_names]
     finite = np.isfinite(E).all(0) & np.isfinite(O).all(0)
-    # drop constant / non-finite columns
+    # Drop constant and non-finite columns.
     sd = E[:, finite].std(0)
     keep = np.where(finite)[0][sd > 0]
     E, O = E[:, keep], O[:, keep]
@@ -304,16 +268,11 @@ def emap_check(cloud: Cloud, obs_emap: np.ndarray, *, seed: int = 0, exclude_sim
 
 def power_check(cloud_id: Cloud, cloud_ood: Cloud, *, which: str = "emap", seed: int = 0, k: int = 10,
                 pca: int = 30, max_ood: int = 2000) -> Dict:
-    """AUROC of each Tier-1 statistic at separating a KNOWN-OOD cloud from the in-distribution null
-    (the power measurement GATE 1 requires). Uses the same fit/null split machinery."""
+    """AUROC of each Tier-1 statistic at separating a known-OOD cloud from the in-distribution null,
+    with the same fit/null split."""
     from src.ml.eval.ood import auroc
     fit, null = cosmology_split(cloud_id.sim_ids, seed=seed)
-    # The variate stores re-process the SAME Gower simulations as the in-distribution store, so an
-    # OOD row whose cosmology (and density field) sits in the FIT half has an unfairly close
-    # neighbour there (measured: AUROC 0.23 for the VD variate before this filter). Score only OOD
-    # rows from cosmologies of the NULL half -- the same unseen-cosmology footing as the null
-    # events themselves (and paired with them when the sim ids coincide). Unrelated OOD clouds
-    # (no shared sim ids) fall back to all rows.
+    # Variate stores re-process the same Gower sims, so score only OOD rows from null-half cosmologies.
     null_ids = set(np.asarray(cloud_id.sim_ids)[null].tolist())
     q_ok = np.array([int(i) in null_ids for i in np.asarray(cloud_ood.sim_ids)], dtype=bool)
     if not q_ok.any():
