@@ -1,3 +1,9 @@
+"""Encoders for the KiDS inputs and the registry KIDS_MODEL_BUILDERS (model_type -> builder).
+
+KidsBandpowersMLP and KidsBandpowersCNN1D encode the (21, 8) bandpowers, KidsO3NorthSouthEmbedding
+is a weight-sharing CNN over the north and south patches, KidsHOSMLP encodes a third-moment vector,
+and KidsHybridBandpowersMaps fuses a bandpower encoder with a map encoder.
+"""
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,29 +15,12 @@ from .unet.poolproj import PoolProj
 def stack_hemi(data, hemi):
     keys = [k for k in ["E_" + hemi, "B_" + hemi] if k in data]
     return torch.cat([data[k] for k in keys], dim=1)
-# Small common interface for encoders used by NDELightningModule
 class KidsInferenceEncoder(nn.Module):
-    """Common interface for kids encoders.
+    """Common interface for KiDS encoders: compress(data) -> latent z of size latent_dim.
 
-    - compress(data) -> latent representation z
-
-    If ``use_kl`` is True the encoder is interpreted as predicting a
-    diagonal Gaussian in latent space. In that case ``latent_dim`` is
-    the dimensionality of ``mu`` and the underlying network is assumed
-    to return a tensor of shape ``[B, 2 * latent_dim]`` which is split
-    into ``(mu, logvar)``.
-
-    For backward compatibility, if the underlying network only returns
-    ``[B, latent_dim]`` we assume this to be ``mu`` and set
-    ``logvar = zeros_like(mu)``.
-
-    The public interface is:
-      * forward/compress() ->
-          - train mode: logvar (so downstream modules can do reparam).
-          - eval mode:  mu     (deterministic latents for inference).
-
-    This keeps ``latent_dim`` equal to the dimension of ``mu`` so that
-    downstream code that only cares about latent size does not break.
+    With use_kl the network emits [B, 2 * latent_dim], split into (mu, logvar), and forward
+    returns (mu, logvar) unless only_return_mu is set. Without use_kl it returns [B, latent_dim].
+    latent_dim is always the dimension of mu.
     """
 
     def __init__(self, *args, latent_dim: int | None = None, use_kl: bool = False, **kwargs):
@@ -46,19 +35,12 @@ class KidsInferenceEncoder(nn.Module):
             self.model_output_dim = 2 * latent_dim if use_kl else latent_dim
         # When True, forward()/compress() only return mu, even if KL is used
         self.only_return_mu = False
-        # Generic head placeholder; subclasses should either use
-        # ``build_head`` or override it completely.
+        # Subclasses set this with build_head or override _forward_base.
         self.head: nn.Module | None = None
 
-    # ------------------------------------------------------------------
-    # Head utility
-    # ------------------------------------------------------------------
+    # --- head utility ---
     def build_head(self, in_dim: int, hidden_head: int | None = None) -> nn.Sequential:
-        """Utility to build a standard 2-layer MLP head.
-
-        All subclasses should prefer this helper so we keep the same
-        pattern everywhere.
-        """
+        """Build the standard 2-layer MLP head in_dim -> hidden_head -> model_output_dim."""
         if self.model_output_dim is None:
             raise ValueError("model_output_dim is None; KidsInferenceEncoder must have latent_dim set before building head.")
         if hidden_head is None:
@@ -69,24 +51,13 @@ class KidsInferenceEncoder(nn.Module):
             nn.Linear(hidden_head, self.model_output_dim),
         )
 
-    # ------------------------------------------------------------------
-    # Representation interface
-    # ------------------------------------------------------------------
+    # --- representation interface ---
     def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Return a feature representation before the final head.
-
-        Subclasses are expected to override this method and use
-        ``self.head`` to map the representation to the final latent
-        space in ``_forward_base``.
-        """
+        """Return the feature representation before the final head. Subclasses override this."""
         raise NotImplementedError
 
     def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Default implementation using get_representation + head.
-
-        Subclasses that override ``get_representation`` and use a
-        standard head do not need to override this.
-        """
+        """Apply self.head to get_representation(data)."""
         if self.head is None:
             raise RuntimeError("head is not defined; subclasses must create self.head using build_head or override _forward_base.")
         feats = self.get_representation(data)
@@ -109,45 +80,20 @@ class KidsInferenceEncoder(nn.Module):
         return mu, logvar
 
     def compress(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Default implementation: call ``forward``.
         return self.forward(data)
 
 # Maximum input spatial size (H, W) expected by the CNN to size its head.
-# The FlexibleO3 backbone will run a dummy pass with this size to infer head dims.
 MAX_INPUT_HW: Tuple[int, int] = (100, 1000)
 
 
 class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
-    """
-    Embedding network that:
-      - expects a data dict with keys: 'E_south', 'B_south', 'E_north', 'B_north'
-      - each entry is a tensor of shape [B, C, H, W] with C=6
-      - stacks E and B channelwise per hemisphere to form 12-channel inputs
-      - applies the SAME CNN encoder (shared weights) to north and south stacks separately
-      - zero-pads the south stack to match the north spatial size (if smaller)
-      - concatenates the two feature vectors and passes through a shallow MLP
-        to produce a final latent vector of size `latent_dim`.
+    """Weight-sharing CNN over the north and south patches.
 
-    The shared encoder can be:
-      - 'flex_o3' (default): FlexibleO3 head from ``compressors.py``.
-      - 'unet_o3': UNetO3StyleEncoder from ``unet.unet`` using UNet blocks
-        with an O3-like head.
-
-    Optionally, instead of concatenating north and south features, we can
-    stack them as (B, C, 2) and aggregate across the hemisphere dimension
-    (the last spatial dim) using a PoolProj module. This is controlled by the
-    ``aggregate_north_south`` flag for backward compatibility.
-
-    Optional `patch_conditioning` allows the shared CNN to know which hemisphere
-    it is encoding via either an extra input channel ("channel") and/or a
-    side-information embedding passed through the UNet FiLM pathway ("side_info").
-    Supported values:
-        None (default): no conditioning, fully backward compatible.
-        ("channel",)
-        ("side_info",)
-        ("channel", "side_info")
-    For `flex_o3` encoders only "channel" is used; "side_info" is ignored.
-    For `unet_o3` encoders both mechanisms are supported.
+    Expects data keys 'E_south', 'E_north' and optionally 'B_south', 'B_north', each [B, 6, H, W].
+    E and B are stacked channelwise per hemisphere, zero-padded to MAX_INPUT_HW, passed through
+    the same encoder, then concatenated (or pooled with aggregate_north_south) and mapped to
+    latent_dim by a shallow head. patch_conditioning is None, ("channel",), ("side_info",) or
+    both. "side_info" (FiLM patch_id) is honoured only by encoder_type 'unet_o3'.
     """
 
     def __init__(
@@ -203,8 +149,7 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
                 image_size=MAX_INPUT_HW[0],  # assume roughly square-ish height scale
                 in_channels=in_channels,
                 num_outputs=cnn_out_dim,
-                # Backbone depth/width are overridable via map_kwargs (counts-extended task);
-                # defaults preserve the historical architecture exactly.
+                # Backbone depth and width are overridable via map_kwargs.
                 model_channels=kwargs.pop("model_channels", 32),
                 num_res_blocks=kwargs.pop("num_res_blocks", 2),
                 attention_resolutions=kwargs.pop("attention_resolutions", (3,)),
@@ -247,9 +192,6 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
         else:
             head_in_dim = 2 * cnn_out_dim
 
-        # head_hidden_dims (counts-ext P4.7, 2026-07-19): optional gradual-taper N/S head, e.g.
-        # (256, 64, 16) -> Linear 512-256-64-16-latent with GELU between, replacing the historical
-        # 2-layer 512-256-8 cliff. None => exact historical head (build_head).
         head_hidden_dims = kwargs.get("head_hidden_dims", None)
         if head_hidden_dims:
             dims = [head_in_dim, *[int(d) for d in head_hidden_dims]]
@@ -341,12 +283,10 @@ class KidsO3NorthSouthEmbedding(KidsInferenceEncoder):
 from .deprecated.kids_inference_architectures import KidsCombinedCNNTransformer
 
 
-# New simple models for bandpowers inputs
 class KidsBandpowersMLP(KidsInferenceEncoder):
-    """
-    Simple MLP that flattens bandpowers of shape [B, 21, 20] and maps to latent_dim.
-    Hidden layer width is latent_dim * hidden_multiple (default 2), with an
-    adaptive number of hidden layers controlled by num_layers.
+    """MLP that flattens bandpowers of shape [B, 21, 8] and maps them to latent_dim.
+
+    Hidden width is latent_dim * hidden_multiple, with num_layers hidden layers.
     """
     def __init__(
         self,
@@ -369,7 +309,7 @@ class KidsBandpowersMLP(KidsInferenceEncoder):
         self.redundancy_dim = redundancy_dim
 
     def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        x = data["mixed_bandpowers"]  # [B, 21, 20]
+        x = data["mixed_bandpowers"]  # [B, 21, 8]
         x = x.view(x.shape[0], -1)
         if self.redundancy_dim != 0:
             zeros = torch.zeros(x.shape[0], self.redundancy_dim, device=x.device, dtype=x.dtype)
@@ -378,10 +318,9 @@ class KidsBandpowersMLP(KidsInferenceEncoder):
 
 
 class KidsBandpowersCNN1D(KidsInferenceEncoder):
-    """
-    1D CNN over length-20 series with 21 channels (bandpowers stacked on channel dim).
-    The number of Conv1d blocks is controlled by the length of `channels`.
-    Produces a latent vector of size latent_dim.
+    """1D CNN over the bandpowers [B, 21, seq_len], spectra on the channel dim, to latent_dim.
+
+    One Conv1d block per entry of `channels`.
     """
     def __init__(
         self,
@@ -408,14 +347,13 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
             curr_in = c
         conv_layers += [nn.Flatten()]
         self.conv = nn.Sequential(*conv_layers)
-        # Keep length dimension; project flattened [B, C_out * L] -> latent_dim
+        # Project the flattened [B, C_out * L] to latent_dim.
         in_features = curr_in * seq_len
         self.head = self.build_head(in_features)
         self.redundancy_dim = redundancy_dim
 
     def _forward_base(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        # Preserve the original behaviour that also handles redundancy_dim
-        x = data["mixed_bandpowers"]  # [B, 21, 20]
+        x = data["mixed_bandpowers"]  # [B, 21, 8]
         if x.dim() != 3:
             raise ValueError(f"Expected bandpowers tensor with 3 dims [B, C, L], got shape {tuple(x.shape)}")
         x = self.conv(x)
@@ -426,7 +364,7 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
         return z
     
     def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        x = data["mixed_bandpowers"]  # [B, 21, 20]
+        x = data["mixed_bandpowers"]  # [B, 21, 8]
         if x.dim() != 3:
             raise ValueError(f"Expected bandpowers tensor with 3 dims [B, C, L], got shape {tuple(x.shape)}")
         x = self.conv(x)
@@ -434,12 +372,12 @@ class KidsBandpowersCNN1D(KidsInferenceEncoder):
 
 
 class KidsHOSMLP(KidsInferenceEncoder):
-    """Feed-forward encoder of a per-mock higher-order-statistic vector (default `data['hos']`, the 112-D R1
-    third-moment vector of src/ml/data/hos.py, already standardised per dimension by the data scaler).
+    """Feed-forward encoder of a per-mock higher-order-statistic vector (default data['hos'], the
+    standardised 112-D R1 vector of src/ml/data/hos.py).
 
-    `feature_index` selects a subset of the input (e.g. the distinct-bin triples, or one scale); `input_transform`
-    'asinh' compresses the heavy tails of the standardised moments. Used alone (`kids_hos_mlp`) or as the
-    `map_encoder_type='hos_mlp'` branch of KidsHybridBandpowersMaps (`kids_hybrid_bandpowers_hos`)."""
+    `feature_index` selects a subset of the input. input_transform 'asinh' compresses the heavy
+    tails. Used alone (kids_hos_mlp) or as the map_encoder_type='hos_mlp' branch of
+    KidsHybridBandpowersMaps."""
 
     def __init__(
         self,
@@ -483,12 +421,10 @@ class KidsHOSMLP(KidsInferenceEncoder):
 
 
 class KidsHybridBandpowersMaps(KidsInferenceEncoder):
-    """Hybrid model that processes both bandpowers and map patches.
+    """Hybrid encoder of the bandpowers and the map patches.
 
-    This subclass owns the KL behaviour for the *concatenated* latent.
-    The child encoders (band_encoder, patch_encoder) may themselves be
-    KL or non‑KL. We therefore do not assume anything about their
-    ``use_kl`` flags and instead inspect their outputs at runtime.
+    Owns the KL behaviour of the concatenated latent. The child encoders may or may not be KL,
+    so their outputs are inspected at runtime.
     """
 
     def __init__(
@@ -507,45 +443,16 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         fusion_hidden: int | None = None,
         patch_scale_init: float = 0.1,
         patch_scale_learnable: bool = True,
-        # Anti-collapse controls (counts-training-performance task, 2026-07-14). All default OFF.
-        # band_dropout_p: per-SAMPLE modality dropout of the (frozen) band branch during training
-        #   — with prob p, band_mu is zeroed so the flow must explain theta from the maps alone,
-        #   keeping gradient flowing into the map CNN even when the band shortcut saturates the
-        #   VMIM loss. Eval/val always sees the full band.
-        # patch_head_init_gain: init-only rescale of the patch encoder head's final Linear. At
-        #   default init patch_mu enters the concat ~18x smaller than the pretrained band_mu
-        #   (measured std 0.012 vs 0.225), leaving the map branch near-invisible to the flow at
-        #   the start of training; a gain ~O(10) restores scale parity. Training remains free to
-        #   shrink it (weights only scaled at construction).
-        # patch_var_reg_coeff: coefficient for a VICReg-style hinge penalty
-        #   mean(relu(1 - std(patch_mu, dim=0))^2) added by the Lightning training step —
-        #   directly forbids the collapsed constant-patch_mu state observed in stuck runs.
         band_dropout_p: float = 0.0,
         patch_head_init_gain: float = 1.0,
         patch_var_reg_coeff: float = 0.0,
         patch_cov_reg_coeff: float = 0.0,
         sd_band_coeff: float = 0.0,
-        # patch_norm (counts-extended task, 2026-07-16): normalisation barrier on patch_mu
-        # before fusion. 'layernorm' = non-affine LayerNorm per sample — structurally removes
-        # the measured DC-blowup/amplitude-explosion failure mode (patch_mu means grow to O(10)
-        # while stds collapse) and fixes the ~280x band/patch scale imbalance at ALL times, not
-        # just at init (cf. patch_head_init_gain). Applied in train AND eval (deterministic).
         patch_norm: str | None = None,
         **kwargs,
     ):
-        # For the *hybrid* encoder, latent_dim is the dim of mu after concatenation of the
-        # band + patch branches: it drives the dim_band/dim_patch split AND the hybrid_head
-        # INPUT. hybrid_output_dim, when set, decouples the FINAL summary width (the hybrid_head
-        # OUTPUT == model_output_dim == what the flow conditions on) from that concat dim -- e.g.
-        # project a band(8)+patch(8)=16-D concat down to a 6-D summary. When None the output
-        # equals latent_dim (fully backward compatible). NB: build_model mirrors this on the flow
-        # side (src/ml/utils.py: latent_dim <- hybrid_output_dim for conditioning_dim), so the two
-        # stay consistent. (Only exercised with use_kl=False; the hybrid_output_dim + KL combo is
-        # untested -- forward()'s KL shape check assumes model_output_dim == 2*latent_dim.)
         super().__init__(latent_dim=latent_dim, use_kl=use_kl, **kwargs)
         if hybrid_output_dim is not None:
-            # Override ONLY the head output width; keep self.latent_dim == concat dim so the
-            # band/patch split and the hybrid_head input stay correct.
             self.model_output_dim = 2 * hybrid_output_dim if use_kl else hybrid_output_dim
 
         bandpower_kwargs = bandpower_kwargs or {}
@@ -578,8 +485,6 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         }
         if bandpower_type not in bp_builders:
             raise ValueError(f"Unknown bandpower_type '{bandpower_type}', expected one of {list(bp_builders.keys())}")
-        # IMPORTANT: propagate KL-flag to the band encoder so pretrained KL checkpoints
-        # (trained with use_KL_loss=True) have matching head parameter shapes.
         self.band_encoder = bp_builders[bandpower_type](
             latent_dim=dim_band,
             use_kl=self.use_kl,
@@ -599,10 +504,6 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
 
         self.band_dropout_p = float(band_dropout_p)
         self.patch_var_reg_coeff = float(patch_var_reg_coeff)
-        # counts-ext phase 4: patch_cov_reg_coeff = off-diagonal covariance (decorrelation)
-        # penalty on patch_mu (anti-rank-1 pressure); sd_band_coeff = asymmetric spectral-
-        # decoupling L2 on the band-only component of the fused latent (Pezeshki-style).
-        # Both are read by the Lightning training step; the encoder just stores/caches.
         self.patch_cov_reg_coeff = float(patch_cov_reg_coeff)
         self.sd_band_coeff = float(sd_band_coeff)
         self._last_patch_mu = None
@@ -613,10 +514,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         elif patch_norm == "layernorm":
             self.patch_norm_layer = nn.LayerNorm(self.dim_patch, elementwise_affine=False)
         elif patch_norm == "batchnorm":
-            # Non-affine BatchNorm1d: forces per-dim batch std ~1 in training, making the
-            # cross-sample constant-output collapse structurally impossible (LayerNorm cannot:
-            # it normalises per sample). Eval uses running stats. Single-GPU runs only (no
-            # SyncBN wiring) — our counts runs train on one GPU.
+            # Non-affine BatchNorm1d prevents the constant-output collapse across samples.
             self.patch_norm_layer = nn.BatchNorm1d(self.dim_patch, affine=False)
         else:
             raise ValueError(
@@ -639,10 +537,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
                     last_linear.bias.mul_(float(patch_head_init_gain))
             print(f"Applied patch_head_init_gain={patch_head_init_gain} to the patch head final Linear", flush=True)
 
-        # -----------------
-        # Fusion modules
-        # -----------------
-        # In all cases we produce mu_concat with dimension == self.latent_dim.
+        # --- fusion modules (mu_concat has dimension self.latent_dim) ---
         if self.fusion_type not in {"concat", "film", "gated"}:
             raise ValueError("fusion_type must be one of {'concat','film','gated'}")
 
@@ -689,10 +584,6 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
                 nn.Linear(fusion_hidden, self.dim_band),
             )
 
-        # Head maps concatenated mu (and optionally logvar) to final output.
-        # When self.use_kl is True, self.model_output_dim == 2 * latent_dim.
-        # hybrid_head_hidden (Phase 2b, default None = historical single Linear): when set, use a
-        # small MLP so the fusion can model band x map interactions (a single Linear cannot).
         in_features = self.latent_dim if not self.use_kl else 2 * self.latent_dim
         hybrid_head_hidden = kwargs.get("hybrid_head_hidden", None)
         if hybrid_head_hidden:
@@ -704,8 +595,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         else:
             self.hybrid_head = nn.Linear(in_features, self.model_output_dim)
         self.freeze_band = False
-        # Optional extra conditioning appended AFTER hybrid_head (config.side_input; see
-        # src/ml/models/side_input.py). None => forward unchanged.
+        # Optional conditioning appended after hybrid_head (config.side_input, see side_input.py).
         self.side_input_module = None
 
     def attach_side_input(self, module: nn.Module) -> None:
@@ -716,10 +606,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
     def _normalise_child_output(self, out: torch.Tensor | tuple[torch.Tensor, torch.Tensor], expected_mu_dim: int) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (mu, logvar) for a child encoder output.
 
-        - If the child returns a tuple, interpret as (mu, logvar).
-        - If it returns a single tensor, treat it as mu and create
-          a zeros logvar of matching shape.
-        Ensures mu has the requested dimension.
+        A tuple is (mu, logvar). A single tensor is mu, with a zero logvar. Checks mu's dimension.
         """
         if isinstance(out, tuple) and len(out) == 2:
             mu, logvar = out
@@ -747,7 +634,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         - film:      band_mu + s * (gamma(band,patch)*band_mu + beta)
         - gated:     band_mu + s * (g*band_mu + (1-g)*cand(patch))  (requires equal dims)
 
-        The scale s is initialized small (patch_scale_init) to keep patch contribution small at start.
+        The scale s starts at patch_scale_init.
         """
         if self.fusion_type == "concat":
             return torch.cat([band_mu, patch_mu], dim=-1)
@@ -768,15 +655,10 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         return band_mu + s * correction
 
     def forward(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """KL‑aware forward for the hybrid encoder.
-
-        Child encoders may or may not use KL internally; we always
-        expose (mu, logvar) at the hybrid level when self.use_kl=True.
-        """
+        """KL-aware forward: returns (mu, logvar) when use_kl, else [B, model_output_dim]."""
         raw = self._forward_base(data)
 
         if not self.use_kl:
-            # Hybrid KL disabled: raw is [B, latent_dim]. Only mu exists.
             return raw
 
         if raw.shape[-1] != 2 * self.latent_dim:
@@ -789,13 +671,7 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         return mu, logvar
 
     def get_representation(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Compute the hybrid latent representation.
-
-        - Non-KL: returns a mu-like vector of shape [B, latent_dim].
-        - KL: returns a single vector of shape [B, 2*latent_dim] containing
-          [mu, logvar] so that the shared ``hybrid_head`` can operate on the
-          full latent statistics.
-        """
+        """Return the fused latent [B, latent_dim], or [mu, logvar] as [B, 2 * latent_dim] with KL."""
 
         # --- band branch ---
         band_out = self.band_encoder.compress(data)
@@ -852,9 +728,8 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
 
     @torch.no_grad()
     def get_frozen_features(self, data: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """Pre-head cut for frozen-trunk embedding caching (Phase 2b): band_mu ++ the patch
-        encoder's pre-head N/S features (KidsO3 get_representation, i.e. BEFORE its head MLP).
-        Eval-mode semantics (no band dropout); used via embedding_cut='hybrid_pre_head'."""
+        """Pre-head features for frozen-trunk embedding caching: band_mu concatenated with the patch
+        encoder's get_representation (before its head). Used via embedding_cut='hybrid_pre_head'."""
         band_out = self.band_encoder.compress(data)
         band_mu = band_out[0] if isinstance(band_out, tuple) else band_out
         feats = self.patch_encoder.get_representation(data)
@@ -870,15 +745,14 @@ class KidsHybridBandpowersMaps(KidsInferenceEncoder):
         return z
 
     def head_with_side(self, head_input: torch.Tensor) -> torch.Tensor:
-        """``hybrid_head`` plus the side input of the LAST forward: the summary the flow conditions
-        on, for monitors that re-run only the head on an ablated fused vector (npe.py)."""
+        """hybrid_head plus the side input of the last forward, for monitors that re-run only the
+        head on an ablated fused vector (npe.py)."""
         z = self.hybrid_head(head_input)
         if self.side_input_module is not None:
             z = torch.cat([z, self._last_side.to(z.dtype)], dim=-1)
         return z
 
 
-# Simple registry to integrate with the existing model selection flow
 KIDS_MODEL_BUILDERS = {
     "kids_o3_dual": lambda num_outputs, **kwargs: KidsO3NorthSouthEmbedding(latent_dim=num_outputs, **kwargs),
     "kids_combined_cnn_transformer": lambda num_outputs, **kwargs: KidsCombinedCNNTransformer(latent_dim=num_outputs, **kwargs),
@@ -901,7 +775,7 @@ KIDS_MODEL_BUILDERS = {
                    **kwargs,
                )
     ),
-    # Beyond-2-pt HOS hybrid: frozen band encoder + feed-forward MLP over the HOS vector (data['hos']).
+    # Frozen band encoder plus an MLP over the HOS vector data['hos'].
     "kids_hybrid_bandpowers_hos": (
         lambda num_outputs, bandpower_type='mlp', bandpower_kwargs=None, map_kwargs=None, **kwargs:
         KidsHybridBandpowersMaps(
