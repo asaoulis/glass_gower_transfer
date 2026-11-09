@@ -147,11 +147,6 @@ def checkpoint(func, inputs, params, flag):
     :param flag: if False, disable gradient checkpointing.
     """
     if flag:
-        # The legacy CheckpointFunction below passed `params` positionally into `func`, but the
-        # ResBlock/AttentionBlock `_forward(x, emb)` signatures don't accept them (=> "takes 3
-        # positional arguments but 11 were given"). torch's non-reentrant checkpoint tracks the
-        # module params through the autograd graph automatically, so `params` is unused here.
-        # Numerically identical to a normal forward; only activates when use_checkpoint=True.
         from torch.utils.checkpoint import checkpoint as _torch_checkpoint
         return _torch_checkpoint(func, *inputs, use_reentrant=False)
     else:
@@ -172,9 +167,7 @@ class CheckpointFunction(th.autograd.Function):
     def backward(ctx, *output_grads):
         ctx.input_tensors = [x.detach().requires_grad_(True) for x in ctx.input_tensors]
         with th.enable_grad():
-            # Fixes a bug where the first op in run_function modifies the
-            # Tensor storage in place, which is not allowed for detach()'d
-            # Tensors.
+            # Shallow copies, as run_function may modify the detached tensors' storage in place.
             shallow_copies = [x.view_as(x) for x in ctx.input_tensors]
             output_tensors = ctx.run_function(*shallow_copies, *ctx.input_params)
         input_grads = th.autograd.grad(
