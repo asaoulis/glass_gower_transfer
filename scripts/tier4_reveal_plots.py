@@ -1,63 +1,9 @@
 #!/usr/bin/env python
-"""Tier-4 REVEAL figure set: PHYSICAL-unit posteriors of the KiDS-Legacy observation, numbered in
-the notebook's section-8 order, with the public external chains over-plotted.
+"""Tier-4 reveal figure set: physical-unit posteriors of the KiDS-Legacy observation with public external chains.
 
-    01  2-pt (bandpowers) ΛCDM  (+ 01e vs Planck, 01f vs DES Y3 / HSC Y3)   -- Stage 1 (the 2-pt arm alone)
-    02  2-pt + field level ΛCDM                      -- Stage 2
-    03  2-pt wCDM  (+ 03f vs DES Y3 wCDM)            -- Stage 1
-    04  2-pt + field level wCDM                      -- Stage 2
-    05  final ΛCDM: field + 2-pt vs Planck 2018  (05b: the wCDM arms vs the Planck ΛCDM chain)   -- Stage 2
-    06  S_8 summary whiskers (ours, KiDS-Legacy, companion 2-pt SBI, DES/HSC, Planck)   -- Stage 2
-        (06b: wCDM; externals without a wCDM chain keep their ΛCDM row, tagged)
-    07  field + 2-pt vs DES Y3 / HSC Y3 (a ΛCDM, b wCDM)   -- Stage 2
-    08  IA-variate OVERLAY: field level NLA-M (pooled, filled teal) + NLA-z + NLA (outlines), one
-        contour per model (08a ΛCDM / wCDM on Om, s8, S8 [+w]; 08d on every shared parameter incl. A_IA)
-                                                     -- Stage 3 (the IA variates)
-    09  S_8 whiskers as 06/06b with the variate rows added (09 ΛCDM, 09b wCDM)   -- Stage 3
-    10  field level NLA-z suite (a/b/c/d/e/f as for the field arm; `_LCDM` / `_wCDM` in the name)   -- Stage 3
-    11  field level NLA suite (same)                                                             -- Stage 3
-  per group: `a` = headline corner (pooled / final), `b` = repeats-vs-pooled diagnostic,
-  `c` = headline + KiDS-Legacy / companion comparisons, `d` = all free parameters (+S8) with the
-  sampling prior on the diagonal, `e` = vs Planck, `f` = vs the other surveys;
-  `tables/<group>.{csv,md}` = mean / std / median / 68 %.
-
-Style (one layout, the VD-report look): everything drawn in `S.context()` (18 pt serif LaTeX) and
-saved by `S.save()` (PNG 200 dpi + PDF 300 dpi); corners 9 in (3 params) / 11 in (4) / 16 in (all),
-whiskers 8.5 x 5 in; no titles (`--titles` opts in); short legend labels ("field level", "2-pt",
-"repeat i", "pooled", "KiDS-Legacy COSEBIs", "Planck 2018", "prior", ...) with the full qualified
-names in the tables and the manifest `legend` map.
-
-Two sources, one code path:
-  --source mock   a matched Gower mock (truth known, dashed grey crosshairs): the LAYOUT rehearsal.
-                  Reads `<matched-root>/<exp>/external/<matched-tag>/` per arm x repeat x prior
-                  (`--event K` picks the event). Pooled-equivalent = the repeats' draws concatenated
-                  (equal weight, like `eval.py --mode pool`). Every file is `MOCK_`-prefixed and every
-                  figure carries a grey "MOCK" tag (top left).
-  --source real   the blind store label (`--label A2long`): pooled runs + per-repeat runs, read
-                  ONLY through `src.blind.standardise` (the sole raw reader). THIS IS THE REVEAL:
-                  it is run by the user (guard_blind denies the agent); nothing is printed except
-                  output paths -- every number goes to files.
-
-Stage gate (UNBLINDING_PROTOCOL Tier 4, one-way): `--stage 1` writes only the 2-pt groups (01, 03)
-into `stage1_2pt/`; `--stage 2` the field groups (02, 04, 05, 06) into `stage2_field/`; `--stage 3`
-the IA-variate groups (08-11) into `stage3_variates/`; `all` every stage.
-
-Stage 3 (IA variates, `--variates nla_z nla`): availability is PARTIAL and grows. Each variate arm x
-prior uses exactly the dumps on disk -- the cluster pooled dump when one exists (its member repeats read
-from the dump's `pooled_provenance`), else the per-repeat dumps concatenated at equal weight -- and a
-missing arm / prior / repeat is skipped with a printed note, never an error. The repeats behind every
-headline are recorded in the manifest (`variates` block) and in the README section this stage writes.
-A `--stage 3` run MERGES into an existing manifest.json (the stage-1/2 record is kept) and rewrites only
-the README's stage-3 section (between `<!-- stage3-variates -->` markers).
-
-External chains (public):
-  KiDS-Legacy (Wright et al. 2025) CosmoSIS/Nautilus text chains, `--kids-dir` = the extracted
-  release's `chains_and_config_files/`, `--kids-stats cosebis bandpowers [xipm cosebis_plus_external]`;
-  weight = exp(log_weight). ΛCDM only (w = -1 fixed) -> never on the wCDM figures.
-  Planck 2018 GetDist chains (`--planck-dir` = the `base/plikHM_TTTEEE_lowl_lowE_lensing/` dir):
-  col 0 weight, col 1 -lnL, params per `.paramnames`; first `--planck-burnin` fraction of each chain dropped.
-  Companion score-based 2-pt SBI (`--companion-dir` with `novd/` and `vd/`): loader `load_companion`
-  (format set once the files are inspected; a missing dir is skipped with a note).
+Figures are numbered in the notebook's section-8 order. --stage 1, 2 and 3 write the 2-pt, field and
+IA-variate groups. --source mock rehearses the layout on a matched Gower mock. --source real reads
+the blind store only through src.blind.standardise, is run by the user and prints only output paths.
 """
 from __future__ import annotations
 
@@ -97,25 +43,9 @@ PLANCK_NAME = "Planck 2018 TT,TE,EE+lowE+lensing"
 PLANCK_LABEL = "Planck 2018"
 ARM_LABELS = {"nla_m": "field level", "band": "2-pt", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
               "k2": r"field level, $\kappa=2$", "k2_nla": r"field level, $\kappa=2$ + NLA"}
-# Colours: the VD-report scheme (Paul Tol muted, `S.palette()`): field level teal PAL[6], 2-pt wine
-# PAL[5] (script-local overrides of the style's `nla_m`/`band` colours: the style's indigo flagship
-# clashed with the wine next to it -- user 2026-10-12 -- so Tier-4 draws the field arm teal while
-# the Tier-3 figures keep the style's indigo), KiDS-Legacy sand (COSEBIs, solid) / olive (band
-# powers, dashed), companion cyan (no VD, dashed) / green (VD, solid), Planck the black reference
-# outline (never filled), prior grey. Repeats are a `tint_ramp` of their arm's hue.
 PAL = S.palette()
-# IA variates (stage 3): Paul Tol VIBRANT blue (NLA-z) and red (NLA), script-local like the teal above.
-# The style's own variate colours clash here (nla_z = PAL[5] wine = the 2-pt arm, nla = PAL[0] rose = DES
-# Y3 + KiDS-1000); the muted cycle has no free hue left after the externals (sand, olive, cyan, green,
-# indigo, rose, orange, purple = KiDS + ext.). Blue sits between indigo (DES) and cyan (companion) but is far from both in
-# lightness; red is the vibrant partner of the HSC orange (that scheme's two warm hues are designed to
-# be told apart) and redder than the rose. In the 08 overlay NLA is also dashed (identity without colour).
-# kappa=2 b_g-prior variates (2026-10-17): dark gold / deep violet, script-local like the IA variates (k2 = NLA-M IA
-# with the 2x broader b_g prior marginalised; k2_nla = the same with NLA IA).
-# 2-pt NLA: Tol-vibrant magenta (the style's sand fallback is the KiDS-Legacy COSEBIs colour in the 09 whiskers).
 ARM_COLOURS = {"nla_m": PAL[6], "band": PAL[5], "nla_z": "#0077BB", "nla": "#CC3311", "k2": "#997700", "k2_nla": "#5D3A9B",
-               "band_nla": "#EE3377", "hos": "#0077BB", "hos_gmrg": "#33BBEE"}   # hos: Tol-vibrant blue (the style's magenta ~ the 2-pt wine;
-                                                           # shared with NLA-z, so plot hos and nla_z in separate runs)
+               "band_nla": "#EE3377", "hos": "#0077BB", "hos_gmrg": "#33BBEE"}   # hos shares the NLA-z blue: plot them in separate runs
 VARIATE_ARMS = ("nla_z", "nla")
 # stage-3 legend labels (stage 1/2 keep "field level" for NLA-M: a rerun of those must not relabel them)
 STAGE3_LABELS = {"nla_m": "field level, NLA-M", "nla_z": r"field level, NLA-$z$", "nla": "field level, NLA",
@@ -142,20 +72,13 @@ STAGE3_NAMES = {"nla_m": "field-level NLE, NLA-M IA, VD", "nla_z": "field-level 
 VARIATE_LINESTYLE = {"nla_z": "-", "nla": "--", "k2": ":", "k2_nla": "-.", "band_nla": ":", "band_nla_z": ":", "hos": "-", "hos_gmrg": "-",
                      "vd2pr": "--", "vd2pr_band": "--", "vdqctl": ":", "vdqctl_band": ":",
                      "vd2pr_p10k": "-.", "vd2pr_p10k_band": "-."}  # 08 overlay outlines
-# per-variate figure group: (number, file stem)
-# 12 is the A_IA,total figure -> the kappa=2 suites are 13 / 14, the 2-pt NLA arm (T3b) 15, the 2-pt NLA-z arm 16,
-# the HOS hybrid (EE + third moments, NLA-M) 17 (+ 17g: field / 2-pt / HOS on one corner).
-# Opt-in: pass `--variates nla_z nla k2 [k2_nla] [band_nla] [band_nla_z] [hos]` (hos: usually with --arm-label hos=A2).
+# per-variate figure group: (number, file stem), 12 being the A_IA,total figure
 VARIATE_GROUPS = {"nla_z": ("10", "field_NLAz"), "nla": ("11", "field_NLA"), "k2": ("13", "field_k2"),
                   "k2_nla": ("14", "field_k2NLA"), "band_nla": ("15", "2pt_NLA"), "band_nla_z": ("16", "2pt_NLAz"),
                   "hos": ("17", "HOS"), "hos_gmrg": ("18", "HOS_Gmrg"),
-                  # 19-24 = the VD v2 noise-model row (PR#3, NLA-M kappa=1), its matched quadcap control, and the
-                  # r0-only preview on the partial 10k Gower store (2026-11-09, task vdq2-production-training-runs).
                   "vd2pr": ("19", "field_VD2PR"), "vd2pr_band": ("20", "2pt_VD2PR"),
                   "vdqctl": ("21", "field_VDQCTL"), "vdqctl_band": ("22", "2pt_VDQCTL"),
                   "vd2pr_p10k": ("23", "field_VD2PR_p10k"), "vd2pr_p10k_band": ("24", "2pt_VD2PR_p10k")}
-# 18 = the R1 + Gmrg HOS hybrid (+ 18g: 2-pt / HOS / HOS+Gmrg / field on one corner, HOS+Gmrg filled; --gmrg-headline).
-# Usually `--variates hos hos_gmrg --gmrg-headline` (both HOS heads are needed for 18g).
 MODEL_PRIOR = {"LCDM": "LCDM_fixed_w0", "wCDM": "kids_s8_analytic"}
 
 
@@ -186,16 +109,6 @@ CORNER_FULL = ((16.0, 16.0), dict(tick_font_size=13, label_font_size=15, max_tic
 TICKS_3_4 = (3, 0)
 TICKS_FULL = (3, 45)
 TICK_MARGIN = 0.1
-# Smoothing. chainconsumer's kernel width is range / (2 * bins) whatever `smooth` is (`smooth` only
-# sets the grid resolution: smooth=20 alone is the same kernel on a finer, noisier grid), so the
-# lever is the per-chain `bins`. 3/4-param corners: bins 25 (range/50; chainconsumer default 35 ->
-# range/70), ~1.5 % contour broadening. Full corners: ALL draws (`--full-max-samples 0`) and a
-# Silverman-scaled kernel, bins = FULL_BINS x (N_eff / FULL_BINS_NREF)^(1/6) clipped to
-# FULL_BINS_CLIP (20 at 125k draws = range/40, ~2 % broadening; ~15 at 25k; ~25 at 500k). The
-# earlier 12/(8,20) (range/24, ~6 %) was judged too aggressive by the user (2026-10-12): it visibly
-# fattened the Om / sigma_8 marginals. The histogram path reflects at the prior-box edge (correct).
-# kde=True was tested: rounded box corners but jagged 68 % lines on flat-flat panels (MegKDE's hard
-# 3-sigma truncation) and ~2 min per figure.
 CORNER_BINS = 25
 FULL_SMOOTH = 10
 FULL_BINS = 20
@@ -230,9 +143,7 @@ def tint_ramp(hex_colour: str, n: int, lo: float = 0.62, hi: float = 0.18) -> Li
     return [mc.to_hex(base + (1 - base) * f) for f in np.linspace(lo, hi, max(n, 1))]
 
 
-# --------------------------------------------------------------------------------------------
-# one posterior = physical draws + names (+ optional weights, truth)
-# --------------------------------------------------------------------------------------------
+# --- one posterior = physical draws + names (+ optional weights, truth) ---
 class Post:
     def __init__(self, name, x, names, weights=None, kind="ours", colour=None, role="outline", key="",
                  linestyle="-", linewidth=None, label=None):
@@ -296,9 +207,7 @@ def summarise(p: Post, params: Sequence[str]) -> List[dict]:
     return rows
 
 
-# --------------------------------------------------------------------------------------------
-# our posteriors: mock (matched dumps) or real (blind store)
-# --------------------------------------------------------------------------------------------
+# --- our posteriors: mock (matched dumps) or real (blind store) ---
 def _dump_match(fname: str) -> str:
     body = os.path.splitext(fname)[0]
     return "ncosmo" + body.split("_ncosmo", 1)[1] if "_ncosmo" in body else ""
@@ -476,9 +385,7 @@ def load_ours(args, arms: Optional[Sequence[str]] = None, strict: bool = True, p
     return heads, reps, truth, prov
 
 
-# --------------------------------------------------------------------------------------------
-# external chains
-# --------------------------------------------------------------------------------------------
+# --- external chains ---
 def load_kids(kids_dir: str, stats: Sequence[str]) -> List[Post]:
     out = []
     for st in stats:
@@ -493,9 +400,7 @@ def load_kids(kids_dir: str, stats: Sequence[str]) -> List[Post]:
             hdr = fh.readline().lstrip("#").strip().split("\t")
         X = np.loadtxt(path)
         col = {h.upper(): i for i, h in enumerate(hdr)}
-        # the release's derived `COSMOLOGICAL_PARAMETERS--S_8` column is all-NaN (the sampled
-        # parameter is `s_8_input`); derive S8 = sigma_8 sqrt(Omega_m/0.3) like everywhere else.
-        # Rows with log_weight = -inf are prior-rejected Nautilus points: dropped.
+        # The release's derived S_8 column is all-NaN, so S8 is derived from sigma_8 and omega_m.
         idx = [col["COSMOLOGICAL_PARAMETERS--OMEGA_M"], col["COSMOLOGICAL_PARAMETERS--SIGMA_8"]]
         lw = X[:, col["LOG_WEIGHT"]]
         ok = np.isfinite(lw) & np.all(np.isfinite(X[:, idx]), axis=1)
@@ -532,9 +437,7 @@ def load_planck(planck_dir: str, burnin: float) -> Optional[Post]:
 
 
 def load_companion(companion_dir: str) -> List[Post]:
-    """Companion score-based 2-pt SBI posteriors (hypatia `sbi_score_{novd,vd}_real_data/`, fetched by
-    the user): `nle_real_data_samples_r3.npz`, keys `joint` [N, 10] + `params`; LCDM, unweighted.
-    Parsed by `scripts/tier4_external_chains.read_companion`."""
+    """Companion score-based 2-pt SBI posteriors (LCDM, unweighted), parsed by tier4_external_chains.read_companion."""
     from tier4_external_chains import read_companion
     out = []
     for tag in ("novd", "vd"):
@@ -549,10 +452,7 @@ def load_companion(companion_dir: str) -> List[Post]:
     return out
 
 
-# public DES Y3 / HSC Y3 chains (scripts/tier4_external_chains.SURVEY_CHAINS): outline chains, one hue
-# per survey (DES indigo PAL[1], HSC Tol-vibrant orange HSC_ORANGE -- the muted purple PAL[8] was a third
-# magenta next to the 2-pt wine and the DES+KiDS-1000 rose PAL[0] in 07 -- indigo is free since the
-# field arm moved to teal), linestyle per statistic. Surveys appear only in 06/07 next to the arms.
+# Public DES Y3 / HSC Y3 chains: outlines, one hue per survey and one linestyle per statistic.
 HSC_ORANGE = "#EE7733"
 SURVEY_STYLE = {   # (colour, linestyle); outlines only
     "des_y3_cs_lcdm": (PAL[1], "-"), "des_y3_cs_wcdm": (PAL[1], "-"),
@@ -576,9 +476,7 @@ def load_surveys(include_beyond2pt: bool = False) -> List[Post]:
     return out
 
 
-# --------------------------------------------------------------------------------------------
-# figures
-# --------------------------------------------------------------------------------------------
+# --- figures ---
 LAYOUTS = ("paper",)            # one layout: the paper's 18 pt context, figures drawn large (VD-report look)
 LEGEND_LOG: Dict[str, List[List[str]]] = {}     # figure -> [[legend label, full name], ...] (manifest)
 
@@ -722,9 +620,7 @@ WHISKER_GROUPS = ("this work", "KiDS-Legacy", "other surveys", "CMB")
 
 def s8_whiskers(groups: Sequence[List[Post]], out: str, title: str, truth: Dict[str, float], titles=False,
                 mock=False, height: float = 5.0):
-    """Median + 68 % bar per posterior (Wright+25 Fig. 11 grammar), one block per group in
-    `WHISKER_GROUPS` order (ours | KiDS-Legacy | other surveys | Planck) split by thin rules; the
-    headline's and Planck's 68 % intervals are also drawn as faint vertical bands."""
+    """Median + 68 % bar per posterior (Wright+25 Fig. 11 grammar), one block per group in WHISKER_GROUPS order."""
     import matplotlib.pyplot as plt
     from matplotlib.ticker import NullLocator
     groups = [[p for p in g if p is not None and "S8" in p.names] for g in groups]
@@ -800,9 +696,7 @@ def write_table(posts: List[Post], params: Sequence[str], out_base: str, note: s
     print("[table] %s.{csv,md}" % out_base)
 
 
-# --------------------------------------------------------------------------------------------
-# stage 3: the IA variates (08 overlay, 09 S8 whiskers, 10+ per-variate suites)
-# --------------------------------------------------------------------------------------------
+# --- stage 3: the IA variates (08 overlay, 09 S8 whiskers, 10+ per-variate suites) ---
 def _s3copy(p: Post, arm: str, legend_rank=None, **over) -> Post:
     """A stage-3 relabelled copy (same draws): "field level, NLA-M" etc. in the shared figures."""
     kw = dict(weights=p.weights, kind=p.kind, colour=p.colour, role=p.role, key=p.key, linestyle=p.linestyle,
@@ -984,9 +878,7 @@ def stage3_variates(args, variates, heads, reps, truth, rng, written, group, vs_
                 ia_total={k: v for k, v in ia.items() if k != "inputs"})
 
 
-# --------------------------------------------------------------------------------------------
-# 12: A_IA,total(z) per IA model (Wright et al. 2025 style), from each model's prefactor
-# --------------------------------------------------------------------------------------------
+# --- 12: A_IA,total(z) per IA model (Wright et al. 2025 style), from each model's prefactor ---
 A_PIV = 0.769                  # NLA-z pivot scale factor (src/cosmology/nla.py:nla_z_effective_amplitude)
 LOG10_M_PIVOT = 13.5           # NLA-M halo-mass pivot (src/cosmology/nla.py:kappa_ia_nla_m)
 IA_TOTAL_NZ_DRAWS = 256        # dz-shift realisations of the tomographic n(z) (marginalised per draw)
@@ -1235,7 +1127,7 @@ def write_stage3_readme(out_dir: str, v3: dict, pre: str, args):
     print("[readme] %s (stage-3 section)" % path)
 
 
-# --------------------------------------------------------------------------------------------
+# --- main ---
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", choices=("mock", "real"), required=True)
@@ -1244,8 +1136,8 @@ def main(argv=None):
                     help="1 = 2-pt, 2 = field + 2-pt, 3 = IA variates (merges into an existing manifest), all")
     ap.add_argument("--label", default="A2long", help="real: blind-store label")
     ap.add_argument("--arm-label", nargs="*", default=[], metavar="ARM=LABEL",
-                    help="real: read these arms from another blind-store label (e.g. band_nla_z=A2 before its A2long "
-                         "dumps exist); recorded in the figure inputs as '[label X]'")
+                    help="real: read these arms from another blind-store label, such as band_nla_z=A2. "
+                         "It is recorded in the figure inputs as '[label X]'.")
     ap.add_argument("--matched-root", default="/data/alex/variate_samples_kids")
     ap.add_argument("--matched-tag", default="gower_match_vdq")
     ap.add_argument("--event", type=int, default=0, help="mock: event index of the matched dump")
@@ -1274,11 +1166,11 @@ def main(argv=None):
     ap.add_argument("--beyond2pt", action="store_true", help="also include the HSC cluster-abundance chain (different S8 definition)")
     ap.add_argument("--prior-draws", type=int, default=200000, help="prior draws for the full-parameter corner diagonal")
     ap.add_argument("--hos-headline", action="store_true",
-                    help="stage 3 with --variates hos: HOS filled as the headline, 2-pt solid outline first, field "
-                         "level dashed outline (08 overlay, 17g trio, 09 row order 2-pt / HOS / field)")
+                    help="Stage 3 with --variates hos: HOS is the filled headline, with 2-pt as a solid and field "
+                         "level as a dashed outline.")
     ap.add_argument("--gmrg-headline", action="store_true",
-                    help="with --variates hos hos_gmrg: 18g 4-way corner (2-pt solid / HOS dash-dot outlines, HOS + Gmrg "
-                         "filled, field level dashed), 08 overlay and 09 rows 2-pt / HOS / HOS+Gmrg / field")
+                    help="With --variates hos hos_gmrg: HOS + Gmrg is the filled headline of the 18g 4-way corner, "
+                         "the 08 overlay and the 09 rows.")
     ap.add_argument("--titles", action="store_true",
                     help="draw figure titles (off by default: file names + captions carry them)")
     ap.add_argument("--layout", choices=LAYOUTS, default="paper",
@@ -1367,18 +1259,15 @@ def main(argv=None):
     sv_W = [p for p in surveys if getattr(p, "model", "LCDM") == "wCDM"]
 
     def as_lcdm(p: Post) -> Post:
-        """A copy of an external LCDM-only posterior for the wCDM figures: same draws, label tagged
-        ($\Lambda$CDM) so the reader sees the chain carries no w (user 2026-10-12: 'add an extra row
-        without w from the ones that are missing it')."""
+        """A copy of an external LCDM-only posterior for the wCDM figures, labelled ($\Lambda$CDM) because it carries no w."""
         return Post(p.name + " [LCDM chain]", p.x, p.names, weights=p.weights, kind=p.kind, colour=p.colour,
                     role=p.role, key=p.key + "_aslcdm", linestyle=p.linestyle, linewidth=p.linewidth,
                     label=p.label + r" ($\Lambda$CDM)")
 
     def vs_planck_and_surveys(arms_in, stage_dir, planck_stem, surv_L_stem, surv_W_stem, planck_W_stem=None):
-        """Our headline posteriors against Planck 2018 (LCDM) and the public DES Y3 / HSC Y3 chains
-        (LCDM; wCDM vs DES Y3 only). Stage 1: the 2-pt arm alone (01e/01f/03f/03e); stage 2: field + 2-pt
-        (05/07a/07b/05b). The KiDS-Legacy release has LCDM chains only, so no wCDM KiDS overlay exists;
-        `planck_W_stem` draws the wCDM arms against the Planck LCDM chain on the (Om, s8, S8) corner."""
+        """Our headline posteriors against Planck 2018 (LCDM) and the public DES Y3 / HSC Y3 chains.
+
+        wCDM is compared with DES Y3 only. planck_W_stem draws the wCDM arms against the Planck LCDM chain."""
         who = " + ".join(tt[a] for a in arms_in)
         hs_L = [head(a, L) for a in arms_in if head(a, L) is not None]
         hs_W = [head(a, W) for a in arms_in if head(a, W) is not None]
@@ -1417,9 +1306,6 @@ def main(argv=None):
         written.append(s8_whiskers([ours, comp + kids, sv_L, [planck] if planck else []],
                                    os.path.join(s2, pre + "06_S8_summary.png"),
                                    "%s $S_8$ summary (median, 68%%)" % PRIOR_NAMES[L], truth, **ttl_kw))
-        # 06b: the wCDM whisker. Externals with a wCDM chain (DES Y3 cosmic shear / 3x2pt) appear as such;
-        # those without one (KiDS-Legacy, the companion SBI, HSC Y3, DES Y3 + KiDS-1000, Planck) keep their
-        # LCDM row, tagged (LCDM).
         ours_W = [head(a, W) for a in ("nla_m", "band") if head(a, W) is not None]
         if ours_W:
             w_keys = {p.key for p in sv_W}
