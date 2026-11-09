@@ -1,3 +1,4 @@
+"""Checkpoint lookup: find_best_checkpoint and get_best_checkpoint pick the best file in a run folder by validation log-prob."""
 import os
 import glob
 import re
@@ -9,14 +10,13 @@ def find_best_checkpoint(checkpoint_dir):
     best_checkpoint = None
     best_val_loss = float("inf")
     
-    # Updated regex pattern to match any number of digits for epoch and allow negative float for loss
     loss_pattern = re.compile(r"checkpoint-epoch=(\d+)-val_log_prob=(-?\d+\.\d+).ckpt")
     
     for ckpt in checkpoint_files:
         match = loss_pattern.search(ckpt)
         if match:
-            epoch = int(match.group(1))  # Extract epoch number
-            val_loss = float(match.group(2))  # Extract validation loss
+            epoch = int(match.group(1))
+            val_loss = float(match.group(2))
             
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
@@ -31,30 +31,19 @@ def get_best_checkpoint(experiment_path, match_string):
     best_checkpoints = []
     val_losses = []
     
-    # os.walk explores the experiment_path and all of its subdirectories
     for root, dirs, files in os.walk(experiment_path):
-        # 'root' is the current directory being evaluated 
-        # (e.g., '/this/is/a/path_0')
         run_folder_name = os.path.basename(os.path.normpath(root))
-        
-        # Check if the match_string is in this specific folder's name
+
         if match_string not in run_folder_name:
             continue
-            
-        # If it matches, pass the full path (root) to your helper function
+
         best_checkpoint, best_val_loss = find_best_checkpoint(root)
-        
-        # Protect against appending None if find_best_checkpoint comes up empty
+
         if best_checkpoint is not None:
             best_checkpoints.append(best_checkpoint)
             val_losses.append(best_val_loss)
-            
-    # ⚠️ SORT BY val_loss SO `[0]` IS THE GLOBAL BEST. Almost every caller takes `best[0]`, but
-    # `os.walk` order is filesystem-dependent, so with MORE THAN ONE run folder matching
-    # `match_string` the resolved checkpoint used to be arbitrary — and silently unstable between
-    # two runs of "the same" eval. (`_select_best_checkpoint_for_match` already worked around this
-    # with its own argmin; sorting here fixes it for every other caller too. Measured symptom: the
-    # kappa=2 k5 Stage-A parent resolved best val 1.396 on 2026-08-27 and 1.735 on 2026-09-01.)
+
+    # Sorted by val_loss so [0] is the global best. os.walk order is not.
     if val_losses:
         order = sorted(range(len(best_checkpoints)), key=lambda i: val_losses[i])
         best_checkpoints = [best_checkpoints[i] for i in order]
