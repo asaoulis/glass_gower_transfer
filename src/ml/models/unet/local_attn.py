@@ -148,7 +148,6 @@ class NeighborhoodSelfAttentionBlock(nn.Module):
             pos = make_axial_pos(h, w, 1.0, dtype=q.dtype, device=q.device).view(
                 h, w, 2
             )
-            # pos = rearrange(pos, "... h w e -> ... (h w) e").to(qkv.dtype)
             theta = self.pos_emb(pos).movedim(-2, -4)
             q = apply_rotary_emb_(q, theta)
             k = apply_rotary_emb_(k, theta)
