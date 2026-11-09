@@ -1,42 +1,9 @@
 """MPI GLASS forward simulator for Euclid-DR3-like mocks (14 000 deg^2, 13 tomographic bins).
 
-This is the Euclid sibling of `master_kids_legacy_simulator.py`. It reuses the SAME forward
-model (`src/cosmology/`) and the same HDF5 output contract, and differs only in the survey
-configuration, which lives in `src/Euclid/simulation_config.py`:
-
-  * footprint: a full-RA declination band of 14 000 deg^2 (|Dec| <= 19.84 deg), not the KiDS mask
-  * 13 tomographic bins from `KiDS_data/euclid_nzs_dr3.txt`, n = 6.2 gal/arcmin^2 in total
-  * sigma_e = 0.26 per component, identical in every bin
-  * NO survey systematics at all: no intrinsic alignments, no variable depth, no m/c shear bias,
-    no photo-z shifts (`systematics=None` -> `NoSystematics`)
-  * NO field-rotation augmentation (see "Rotations" below)
-  * a single stored map product: the E maps at one (fwhm, lcut) variant, in float16
-
-Everything expensive is shared with the KiDS path: the deterministic per-`sim_id` cosmology draw
-from the Gower Street prior, the on-disk CAMB matter-Cls cache, the counts-normalised pseudo-Cl
-bandpowers, and the idempotent file-resume.
-
-Rotations
----------
-The KiDS pipeline augments each cosmology with rotated footprints. That is a no-op here and is
-switched off entirely:
-
-  * The band is invariant under ANY RA (Z-axis) rotation, exactly (verified numerically).
-  * A declination rotation cannot be undone by a Dec crop: a Y-axis rotation maps a constant-Dec
-    annulus onto an annulus about a TILTED axis, so a full-RA band cannot be "recentred" on the
-    equator. The origin/Euclid branch's `get_recentred_patch_values` attempted exactly that and
-    silently lost ~50 % of the footprint. See
-    `.claude/runs/euclid/dataset-generation/artifacts/rotation_bug.png`.
-
-Independent realisations therefore come only from `--outer-reps` (fresh GLASS field + shape
-noise per rep), not from rotations.
-
-Memory
-------
-n = 6.2 gal/arcmin^2 over 14 000 deg^2 is ~3.1e8 galaxies, i.e. ~15 GB for one catalogue and
-~30 GB across the `np.concatenate`. The augmentation loops inside `BaseSimulator.run` are all
-collapsed to 1 (`mask_rotation_angles=[0]`, `num_shape_noise_realisations=1`) so exactly ONE
-catalogue is ever resident. Budget ~40 GB per MPI rank and size `--ntasks-per-node` accordingly.
+Sibling of master_kids_legacy_simulator.py: same forward model (src/cosmology) and HDF5 contract,
+with the survey set in src/Euclid/simulation_config.py (full-RA declination band, n = 6.2 per
+arcmin^2, sigma_e = 0.26, no systematics, no rotations). Stores E maps at one (fwhm, lcut)
+variant in float16 plus counts-normalised bandpowers.
 """
 
 import argparse
@@ -142,14 +109,13 @@ def main():
     lower_lscale, upper_lscale, nbands = cfg.lower_lscale, cfg.upper_lscale, cfg.nbands
     zmin, zmax, dx, n_los_chi = cfg.zmin, cfg.zmax, cfg.dx, cfg.n_los_chi
     map_dtype = np.dtype(args.map_dtype)
-    expected_files_per_sim = args.outer_reps   # 1 identity rotation x 1 inner x 1 mask angle
+    expected_files_per_sim = args.outer_reps
 
     smoke_cfg = None
     if SMOKE:
         from src.smoke_sim import SMOKE_CONFIG, prepare_smoke_backend
         smoke_cfg = dict(SMOKE_CONFIG)
-        # The Euclid n(z) runs to z ~ 3, so the smoke shells must cover it or the high-z bins
-        # stay empty and the bandpower matrix is degenerate.
+        # Euclid n(z) extends to z ~ 3: the smoke shells must reach it or the high-z bins are empty.
         smoke_cfg.update({"zmax": cfg.zmax, "nbins": nbins})
         if args.smoke_n_eff_scale is not None:
             smoke_cfg["n_eff_scale"] = float(args.smoke_n_eff_scale)
@@ -159,13 +125,11 @@ def main():
         lower_lscale, upper_lscale = smoke_cfg["lower_lscale"], smoke_cfg["upper_lscale"]
         zmax, dx, n_los_chi = smoke_cfg["zmax"], smoke_cfg["dx"], smoke_cfg["n_los_chi"]
 
-    # Footprint + Cartesian crop boxes. Both are pure geometry (see simulation_config).
     footprint = np.ones(12 * nside ** 2) if args.full_sky else cfg.build_footprint(nside).astype(float)
     patch_names = list(cfg.named_patches.keys())
     patches = [cfg.named_patches[n] for n in patch_names]
 
-    # Deterministic per-sim_id cosmology sampler (Gower Street flow prior). Lazily imported:
-    # it pulls in the ML/eval stack, which the smoke path does not need.
+    # imported lazily: pulls in the ML stack, which the smoke path does not need
     cosmo_sampler = None
     if not SMOKE:
         from src.ml.eval.utils import build_cosmo_param_sampler
@@ -226,7 +190,7 @@ def main():
                         cosmo_sampler=cosmo_sampler,
                         cosmo_base_seed=args.cosmo_base_seed,
                         cls_cache_dir=args.camb_cache_dir,
-                        prior_ranges={},          # no IA nuisance parameters for Euclid
+                        prior_ranges={},
                         sim_grid={"nside": nside, "lmax": lmax},
                         los_grid={"zmin": zmin, "zmax": zmax, "dx": dx},
                         camb_limits=cfg.CAMB_LIMITS,
@@ -257,7 +221,7 @@ def main():
                     nside=nside,
                     nbins=nbins,
                     rng=rng,
-                    systematics=None,          # -> NoSystematics
+                    systematics=None,
                 )
                 print(f"[rank {rank}] sim {sim_num} out{outer_idx}: sampling catalogue...", flush=True)
                 catalogues = simulator.run(
@@ -268,17 +232,13 @@ def main():
 
                 cat_queue = deque(catalogues)
                 del catalogues
-                # Drop everything the post-processing does not need BEFORE the concatenate,
-                # which is the memory peak. `matter` is a generator on the production path
-                # (`glass.generate` is not list()ed in prepare_glass_backend) so it is already
-                # spent, but the simulator still pins the nside-1024 mask + the MultiPlane
-                # convergence kappa map (~0.3 GB at production nside).
+                # Drop unused arrays before the concatenate, which is the memory peak.
                 backend["matter"] = None
                 simulator = None
                 del matter
                 gc.collect()
 
-                m_bias = np.zeros(nbins)       # systematics off -> no multiplicative bias
+                m_bias = np.zeros(nbins)
                 cat_idx = 0
                 while cat_queue:
                     cat_parts = cat_queue.popleft()
@@ -342,14 +302,10 @@ def main():
                 gc.collect()
                 print(f"[rank {rank}] sim {sim_num} out{outer_idx} done in "
                       f"{time.time() - t_block:.1f} s", flush=True)
-            # Release this sim's cached CAMB products. `prepare_glass_backend`'s in-memory
-            # cache exists only to let the OUTER reps of one sim reuse the loaded Cls; it is
-            # never evicted, and a Euclid rank works through ~350 sims (50 000 / ~144 ranks)
-            # against KiDS's ~16, so at ~10 MB of shell x shell glass_cls per sim (630 spectra
-            # x 2049 at ~35 shells) an un-popped cache would grow by several GB over a run.
+            # Release this sim's cached CAMB products: the in-memory cache is never evicted and a
+            # rank works through many sims.
             backend_cache.pop(sim_num, None)
         except Exception as exc:
-            # Per-sim isolation, as in the KiDS master: one bad sim must not abort the rank.
             import traceback
             print(f"[rank {rank}] ERROR on sim {sim_num}: {exc}\n{traceback.format_exc()}",
                   flush=True)
