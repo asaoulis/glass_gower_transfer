@@ -1,22 +1,8 @@
 """Local hyperparameter / epoch sweep driver for the HOS hybrid (config/kids_legacy_hos.py).
 
-  python scripts/hos_sweep.py run --spec <spec.json> [--parallel 5] [--cores-per 8] [--core-offset 0]
+  python scripts/hos_sweep.py run --spec <spec.json> [--parallel 5] [--cores-per 8]
   python scripts/hos_sweep.py collect --spec <spec.json> [--out <csv>]
-  python scripts/hos_sweep.py run-trial <trial.json>          (internal; one subprocess per trial)
-
-Spec JSON:
-  {"stage": "A1", "base": "glass" | "gower" | "band_side" | "glassx" | "gowerx",
-   "groups": [<hos_x group keys>]             (glassx / gowerx only; per trial override "groups"),
-   "common": {<top-level config overrides>}, "common_hos": {<HOS MLP map_kwargs overrides>},
-   "common_mk": {<merged into model_kwargs>}, "common_opt": {<merged into optimizer_kwargs, e.g. weight_decay>},
-   "glass_ckpt": "<checkpoint dir>"            (gower base only; per-repeat '_{r}' resolution as in production),
-   "trials": [{"id": "h256_d3", "hos": {...}, "top": {...}, "mk": {...}, "opt": {...}}, ...]}
-Each trial trains `hossw_<stage>_<id>` exactly like train.py (get_default_config + row + overrides, the
-max_trainval_cosmos list loop, train_model) under $GLASS_MODELS_ROOT (default /data/alex/hos_models) with
-WANDB_MODE=offline. Trials are resumable: a trial with a DONE marker is skipped. Each run dir gets a val_history.csv
-(every validation: epoch, step, all val_* and train_* metrics) written by a callback added in the trial process.
-`collect` writes one CSV row per (trial, run): best val_log_prob (= NLL, lower is better) + its epoch from the
-best-checkpoint filename, the val curve summary from val_history.csv, wall time, and the trial's hyperparameters.
+Each trial trains hossw_<stage>_<id> like train.py under $GLASS_MODELS_ROOT. A trial with a DONE marker is skipped.
 """
 import argparse
 import copy
