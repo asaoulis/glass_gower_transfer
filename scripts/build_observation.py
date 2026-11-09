@@ -27,8 +27,10 @@ if str(REPO) not in sys.path:
 
 import numpy as np  # noqa: E402
 
-from src.observation import (Geometry, MapVariants, apply_c_terms, apply_m_bias, apply_weights,  # noqa: E402
-                             build_observation, compare_observation_to_mock, load_catalogue)
+from src.observation.geometry import Geometry, MapVariants  # noqa: E402
+from src.observation.catalogue_io import apply_c_terms, apply_m_bias, apply_weights, load_catalogue  # noqa: E402
+from src.observation.build import build_observation  # noqa: E402
+from src.observation.fidelity import compare_observation_to_mock  # noqa: E402
 from src.observation.fidelity import format_report, jitter_floor  # noqa: E402
 from src.observation.geometry import master_postproc_rng  # noqa: E402
 

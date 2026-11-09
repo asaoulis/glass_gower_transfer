@@ -40,9 +40,11 @@ REPO = Path(__file__).resolve().parents[1]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from src.observation import (Catalogue, Geometry, MapVariants, apply_c_terms, apply_m_bias,  # noqa: E402
-                             apply_weights, build_observation, compare_observation_to_mock,
-                             estimator_accepts_weights, load_catalogue, weight_summary)
+from src.observation.geometry import Geometry, MapVariants  # noqa: E402
+from src.observation.catalogue_io import (Catalogue, apply_c_terms, apply_m_bias, apply_weights,  # noqa: E402
+                                          load_catalogue, weight_summary)
+from src.observation.build import build_observation, estimator_accepts_weights  # noqa: E402
+from src.observation.fidelity import compare_observation_to_mock  # noqa: E402
 from src.observation.geometry import master_postproc_rng  # noqa: E402
 
 from src.KiDS.tomo import n_arcmin2 as _N_ARCMIN2  # noqa: E402

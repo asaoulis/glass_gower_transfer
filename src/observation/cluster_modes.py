@@ -429,9 +429,11 @@ def _resolve_catalogue(args) -> tuple:
 
 
 def run_observe_build(args) -> int:
-    from src.observation import (Geometry, MapVariants, apply_c_terms, apply_m_bias, apply_weights,
-                                 bake_observation, build_observation, compare_observation_to_mock,
-                                 load_catalogue)
+    from src.observation.geometry import Geometry, MapVariants
+    from src.observation.catalogue_io import apply_c_terms, apply_m_bias, apply_weights, load_catalogue
+    from src.observation.bake import bake_observation
+    from src.observation.build import build_observation
+    from src.observation.fidelity import compare_observation_to_mock
     from src.observation.fidelity import format_report, jitter_floor
     from src.observation.geometry import master_postproc_rng
 
