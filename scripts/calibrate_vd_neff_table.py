@@ -1,21 +1,9 @@
 #!/usr/bin/env python
-"""Derive the A' variable-depth count-contrast table (`vd_contrast_xbar`, `vd_contrast_neff` in
-src/KiDS/variable_depth_config.py) from the real KiDS-Legacy catalogue.
+"""Derive the variable-depth count-contrast tables in src/KiDS/variable_depth_config.py from the real catalogue.
 
-Per tomographic bin: smooth the tracer map with `smooth_vd_tracer` (mask-weighted Gaussian, FWHM
-`vd_contrast_fwhm_arcmin`), split the galaxies on non-hole pixels into 10 galaxy-equipopulated bins of the
-smoothed tracer, and record the mask-weighted mean smoothed tracer and the H12 effective density
-(sum w)^2 / sum w^2 / area of each bin. Survey properties only (positions, TOMOBIN, lensfit weights):
-blind-safe.
-
-    python scripts/calibrate_vd_neff_table.py            # print paste-ready constants + write JSON
-    python scripts/calibrate_vd_neff_table.py --check    # compare with the committed constants
-    python scripts/calibrate_vd_neff_table.py --table patch [--check]   # the per-patch table (vd_patch_*)
-    python scripts/calibrate_vd_neff_table.py --table quadcap [--check] # the per-patch capped quadratic (vd_quadcap_*)
-
-`--table patch` calibrates KiDS-N and KiDS-S separately on the tail-resolved galaxy quantiles
-`vd_patch_quantiles` (1, 2.5, 5, 10, ..., 90, 95, 97.5, 99 %), resolving the shallow and deep tails that
-the ten 10 % bins average over.
+Per tomographic bin it bins the galaxies on the smoothed tracer and records each bin's mean tracer
+and effective density. It reads survey properties only, so it is blind-safe.
+Usage: python scripts/calibrate_vd_neff_table.py [--table pooled|patch|quadcap] [--check]
 """
 import argparse
 import json
@@ -107,9 +95,8 @@ def main():
     ap.add_argument("--data-dir", default=str(REPO / "kids-legacy-sbi" / "data"))
     ap.add_argument("--fwhm", type=float, default=vd_contrast_fwhm_arcmin)
     ap.add_argument("--table", choices=["pooled", "patch", "quadcap"], default="pooled",
-                    help="pooled: the A' table (10 equipopulated bins, KiDS-N+S together); patch: one table per "
-                         "KiDS patch on the tail-resolved quantiles `vd_patch_quantiles`; quadcap: per-patch capped "
-                         "quadratic fit to the `vd_quadcap_quantiles` bins")
+                    help="pooled is the A' table over KiDS-N and S together. patch is one table per KiDS patch "
+                         "on vd_patch_quantiles. quadcap is the per-patch capped quadratic fit.")
     ap.add_argument("--out", default=None, help="JSON output path")
     ap.add_argument("--check", action="store_true", help="compare with the committed constants (rtol 1e-6)")
     a = ap.parse_args()
