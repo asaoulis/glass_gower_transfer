@@ -1,3 +1,9 @@
+"""Map quantity names, paths and the train-time transforms of the E/B patches.
+
+DEFAULT_QUANTITY_PATHS maps a dataset quantity to its HDF5 path. RandomEBPatchAugment flips and
+rotates patches, EBNoiseNormTransform standardises each E/B map per bin, and
+build_nested_keys_from_quantities builds the loader keys.
+"""
 import re
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
@@ -25,20 +31,17 @@ EB_MAP_KEYS: Tuple[str, str, str, str] = (
     "E_north", "E_south", "B_north", "B_south"
 )
 
-# E/B pixelised-map quantity names: an E or B prefix, an OPTIONAL smoothing tag
-# (e.g. "fwhm8", "fwhm6_lcut1024", "fwhm6_lmin76_lcut1024"), then the patch side. Matches both the
-# logical names ("E_north") and explicit variant-tagged names ("E_fwhm6_lmin76_lcut1024_north").
+# E/B map quantity names: E or B, an optional smoothing tag, then the patch side. Matches both
+# "E_north" and "E_fwhm6_lmin76_lcut1024_north".
 _EB_QUANTITY_RE = re.compile(r"^(E|B)(?:_(.+))?_(north|south)$")
 
 
 def _resolve_eb_quantity(quantity: str, eb_variant: Optional[str]) -> Optional[Tuple[str, str, str]]:
     """Resolve an E/B map quantity name to its ('pixelised_results', group, side) path.
 
-    - Logical names (no tag, e.g. 'E_north') resolve to group 'E' when ``eb_variant`` is
-      None/empty (legacy bare groups), else 'E_{eb_variant}' (the new multi-variant schema).
-    - Explicit tagged names (e.g. 'E_fwhm8_north') resolve directly to 'E_fwhm8',
-      independent of ``eb_variant`` (lets you load several variants at once).
-    Returns None if ``quantity`` is not an E/B map name.
+    An untagged name maps to group 'E' (eb_variant empty) or 'E_{eb_variant}'. A tagged name
+    such as 'E_fwhm8_north' maps to 'E_fwhm8' whatever eb_variant is. Returns None for a
+    non-E/B quantity.
     """
     m = _EB_QUANTITY_RE.match(quantity)
     if m is None:
@@ -60,11 +63,7 @@ class RandomEBPatchAugment:
             ("hflip", self._hflip),
             ("rot180", self._rot180),
         ]
-        # Cyclic translation along the last (longitude) axis. Only valid when the stored patch
-        # spans the FULL 360 deg of RA, as the Euclid DR3 band does -- there the footprint is
-        # exactly invariant under an RA rotation, so the roll is an exact symmetry of the forward
-        # model rather than an approximation. It is meaningless for the KiDS N/S patches (a
-        # partial-RA footprint), hence opt-in and OFF by default.
+        # Cyclic RA roll along the last axis: valid only for a patch spanning the full 360 deg of RA.
         self.ra_roll = bool(ra_roll)
 
     @staticmethod
@@ -110,18 +109,12 @@ class RandomEBPatchAugment:
         if not present:
             return data
 
-        # Group by patch side (north/south) so E and B -- and every smoothing variant -- on
-        # the same side receive the SAME random flips, keeping the E/B pair and all variants
-        # spatially aligned. (For the legacy bare keys this is identical to the old grouping.)
         by_patch: Dict[str, List[str]] = {}
         for k in present:
             side = "north" if k.endswith("north") else "south"
             by_patch.setdefault(side, []).append(k)
 
-        # The RA shift is drawn ONCE PER SAMPLE and applied to every side. north/south are the
-        # two adjacent halves of one Dec band on a shared longitude grid, so a physical RA
-        # rotation moves both by the same amount; independent per-side shifts would scramble the
-        # large-scale modes that run across the Dec=0 split and would NOT be an exact symmetry.
+        # One RA shift per sample, applied to both sides: they are halves of one band.
         ra_shift = None
         if self.ra_roll:
             first_any = data[present[0]]
@@ -143,21 +136,11 @@ class RandomEBPatchAugment:
 
 
 class EBNoiseNormTransform:
-    """Per-sample E/B map noise normalisation (shear-estimator hardening, Track B).
+    """Per-sample E/B map noise normalisation.
 
-    Removes the source-clustering-modulated noise-amplitude channel from the map branch
-    (the b_g leakage measured in .claude/runs/kids-preparation/improved-shear-processing):
-
-    - mode='self'  (B1_selfstd): each E/B map bin is standardised over its own footprint
-      ((v - mean)/std on pixels != 0; zeros outside the footprint stay 0). The map branch
-      carries no per-mock amplitude; the bandpower branch (noise-debiased) keeps it.
-
-    Mirrors scripts/shear_replay/replay.py map_post 'self_std', validated on the paired
-    b_g catalogues (residual < 0.2 sigma vs baseline 7-9 sigma). Stats are per
-    (bin, patch-side) here — the loader never sees the joint N+S footprint.
-    (A 'divB' mode — divide E by the B-map std — also passed the paired test but is
-    deliberately NOT implemented: B-modes are poorly modelled on real data and the main
-    analysis must not rely on them; user decision 2026-08-05.)
+    mode='self' standardises each map bin over its own footprint: (v - mean) / std on the
+    nonzero pixels, zeros outside stay 0. Stats are per (bin, patch side). Mirrors map_post
+    'self_std' in scripts/shear_replay/replay.py.
     """
 
     def __init__(self, mode: str, eps: float = 1e-12):
@@ -214,9 +197,8 @@ def build_nested_keys_from_quantities(
 ) -> Dict[str, Tuple[str, ...]]:
     """Convert a list of dataset quantity names into a nested_keys mapping.
 
-    E/B pixelised-map quantities are resolved by pattern (honouring ``eb_variant`` for the
-    logical names E_north/E_south/B_north/B_south); all other quantities come from
-    DEFAULT_QUANTITY_PATHS.
+    E/B map quantities resolve by pattern, honouring eb_variant for the untagged names. All
+    other quantities come from DEFAULT_QUANTITY_PATHS.
     """
     nested: Dict[str, Tuple[str, ...]] = {}
     for q in quantities:
