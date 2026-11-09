@@ -3,7 +3,7 @@
 
 Figures are numbered in the notebook's section-8 order. --stage 1, 2 and 3 write the 2-pt, field and
 IA-variate groups. --source mock rehearses the layout on a matched Gower mock. --source real reads
-the blind store only through src.blind.standardise, is run by the user and prints only output paths.
+the blind store only through src.blind.standardise, is run by hand and prints only output paths.
 """
 from __future__ import annotations
 
@@ -1259,7 +1259,7 @@ def main(argv=None):
     sv_W = [p for p in surveys if getattr(p, "model", "LCDM") == "wCDM"]
 
     def as_lcdm(p: Post) -> Post:
-        """A copy of an external LCDM-only posterior for the wCDM figures, labelled ($\Lambda$CDM) because it carries no w."""
+        """A copy of an external LCDM-only posterior for the wCDM figures, labelled LCDM because it carries no w."""
         return Post(p.name + " [LCDM chain]", p.x, p.names, weights=p.weights, kind=p.kind, colour=p.colour,
                     role=p.role, key=p.key + "_aslcdm", linestyle=p.linestyle, linewidth=p.linewidth,
                     label=p.label + r" ($\Lambda$CDM)")
