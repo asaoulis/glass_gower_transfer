@@ -1,3 +1,8 @@
+"""Figure of merit.
+
+Posterior covariance per observation, and the standard and dimension-normalised FoM, optionally
+relative to the prior.
+"""
 import torch
 
 
