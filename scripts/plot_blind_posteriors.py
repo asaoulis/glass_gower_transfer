@@ -1,26 +1,9 @@
 #!/usr/bin/env python
-"""Half-blind posterior plots (Tier 3) + the corner-plot battery. Reads raw observation posteriors
-ONLY through src.blind.standardise and writes standardised npz + figures. Never prints a location.
+"""Half-blind posterior plots (Tier 3) and the corner-plot battery.
 
-    PYTHONPATH=. python scripts/plot_blind_posteriors.py \
-        --blind-root /data/alex/unblinding/blind_store --out-dir <dir> \
-        [--flagship-experiment gower_nle_finetune_nla_m_vdq_z8_r0_ens9] [--flagship-label A] \
-        [--matched-mocks nla_m=/data/alex/variate_samples/<exp>/external/gower_match_nla_m/external_posterior_samples_gower_ncosmo300_0.npz:<exp> ...] \
-        [--params omega_m sigma_8 S8 w0 ...] [--prior gower]
-
-Figures (all standardised; axes in sigma units of SOME posterior, never physical):
-  plotA_<label>.png       every arm x repeat of one label standardised to N(0,1) per parameter
-                          (Plot A: shapes / degeneracy directions only; maximally blind)
-  plotB_<label>.png       flagship posterior in its OWN frame vs the matched near-fiducial mocks
-                          standardised with the flagship's std and their OWN mean (Plot B: SIZE and
-                          degeneracies comparable, location hidden)
-  plotBprime_<label>.png  every arm in the FLAGSHIP frame (mean AND std of the flagship): inter-arm
-                          offsets visible in sigma units (user-approved arm-consistency check)
-  battery/<label>_<arm>_corner.png    per-arm full-parameter corner (self frame)
-  battery/<label>_shared_corner.png   all arms over-plotted on the shared parameters (flagship frame)
-  labels_overplot.png     the 2-3 blinded labels' flagship posteriors in label-A's frame (blinds A/B/C)
-Colours are pinned by ARM (src.viz.style; --palette picks the option); only the label order of
-labels_overplot.png is randomised, so nothing about a label's provenance is encoded.
+It reads raw observation posteriors only through src.blind.standardise and writes standardised npz
+and figures. Every axis is in sigma units of some posterior, and it never prints a location.
+    PYTHONPATH=. python scripts/plot_blind_posteriors.py --blind-root <blind store> --out-dir <dir>
 """
 from __future__ import annotations
 
@@ -44,15 +27,11 @@ from src.viz import style as S  # noqa: E402
 def _arm_key(experiment: str) -> str:
     """Short arm name from the experiment name (band / nla_m / nla_m_nobgp / nla / nla_z / vd / k2)."""
     e = experiment
-    # ⚠️ `band` MUST be tested first: the M16 2-pt experiment name
-    # `gower_nle_finetune_band_nla_m_bgp_k8_r0_ens9_e150` contains "nla_m_bgp", so any later
-    # ordering silently labels the 2-pt arm as the flagship map arm.
+    # Test band first: the 2-pt name contains the field-level name.
     if "_band_" in e:
         return "band"
     if "bgpk2" in e:
         return "k2"
-    # VDQ main-analysis flagship (2026-10-09 cutover): `..._nla_m_vdq_z8_...` matches none of the
-    # no-VD patterns below (`_vdq_` != `_vd_`), so it must be named before them.
     if "nla_m_vdq" in e:
         return "nla_m"
     if "_vd_" in e:
@@ -88,9 +67,8 @@ def _chain(z, names, params, name, role="outline", colour=None, **kw):
 def _thin(z, n, seed=12345):
     """Uniform random subsample of at most `n` draws (seeded, order-preserving).
 
-    ⚠️ NEVER head-truncate (`z[:n]`): a pooled dump is the repeats CONCATENATED in order and a
-    per-repeat dump is the MCMC shards concatenated in order, so the first n draws are repeat 0 /
-    the first shards only. That bug made the 'pooled' curve repeat 0 (2026-10-09, plot D S8 shift)."""
+    Never head-truncate: a pooled dump is the repeats concatenated in order, and a per-repeat dump
+    is the MCMC shards concatenated in order."""
     z = np.asarray(z)
     if n is None or z.shape[0] <= n:
         return z
@@ -102,8 +80,7 @@ NO_TITLES = False
 
 
 def _plot(chains, out_png, title=None, figsize=None, formats=("png", "pdf"), battery=False):
-    """The paper's corner (src.viz.style.plot_chains) on standardised chains: fixed +-4 sigma
-    extents on every panel, smooth=10 on <=4-param corners (cell 11), none on full corners."""
+    """The paper's corner (src.viz.style.plot_chains) on standardised chains, with fixed +-4 sigma extents."""
     samples = {n: z for n, z, _, _ in chains}
     columns = {n: c for n, _, c, _ in chains}
     kwargs = {n: k for n, _, _, k in chains}
@@ -136,11 +113,10 @@ def main(argv=None):
     ap.add_argument("--labels", nargs="+", default=None,
                     help="restrict to these blind-store labels (default: every label found)")
     ap.add_argument("--arms", nargs="+", default=None,
-                    help="restrict to these arms (e.g. nla_m) -- keeps the 2-pt arm off a field-only figure set")
+                    help="restrict to these arms, such as nla_m, to keep the 2-pt arm off a field-only figure set")
     ap.add_argument("--no-cross-arm", action="store_true",
-                    help="never put two arms in one standardised frame: skip Plot B' and the shared corner; "
-                         "Plot B is drawn PER ARM against that arm's own matched mocks in that arm's own frame "
-                         "(user rule 2026-10-09: combine models only if standardised separately)")
+                    help="Never put two arms in one standardised frame. Plot B' and the shared corner are skipped, "
+                         "and Plot B is drawn per arm in that arm's own frame.")
     ap.add_argument("--zoom-params", nargs="+", default=["omega_m", "sigma_8", "S8", "w0"],
                     help="zoom corner per headline posterior on these parameters (those the prior leaves FREE; "
                          "w0 drops out automatically under LCDM_fixed_w0)")
@@ -208,7 +184,7 @@ def main(argv=None):
 
     for label in labels:
         lruns = [r for r in runs if r["label"] == label]
-        # ---- Plot A: everything in its own frame ------------------------------------------
+        # --- Plot A: everything in its own frame ---
         chains = []
         for i, r in enumerate(lruns):
             st = standardise_self(r["path"], r["experiment"])
@@ -224,7 +200,7 @@ def main(argv=None):
         _plot(chains, str(out / f"plotA_{label}.png"), title=f"Plot A: label {label}, each posterior standardised to N(0,1)")
         manifest["figures"].append(str(out / f"plotA_{label}.png"))
 
-        # ---- Zoom: the headline parameters of each headline posterior, self frame -------------
+        # --- Zoom: the headline parameters of each headline posterior, self frame ---
         for r in lruns:
             st = standardise_self(r["path"], r["experiment"])
             zp = [q for q in args.zoom_params if q in st.names]
@@ -236,13 +212,10 @@ def main(argv=None):
                   title=f"label {label}: {_tag(r)}, self-standardised ({', '.join(zp)})")
             manifest["figures"].append(str(fn))
 
-        # ---- Plot B-prime: all arms in the flagship frame ----------------------------------
+        # --- Plot B-prime: all arms in the flagship frame ---
         fr = flagship_run(label)
         if fr is None:
-            # Plots B and B' are the flagship-frame figures, so without a flagship run they are
-            # simply absent -- and an absent figure looks the same as a figure nobody asked for.
-            # Say so: `--flagship-experiment` defaults to the r0 experiment name, so a prior whose
-            # r0 has not landed yet (or a mistyped name) silently produced a battery with no Plot B.
+            # Without a flagship run Plots B and B' are absent, so say so.
             print("  ! label %s: no run matching --flagship-experiment %s under prior %r "
                   "(available: %s) -- Plots B and B' skipped"
                   % (label, args.flagship_experiment, args.prior,
@@ -271,10 +244,7 @@ def main(argv=None):
             _plot(chains, str(out / "battery" / f"{label}_shared_corner.png"),
                   title=f"label {label}: all arms, shared parameters, flagship frame", formats=("png",), battery=True)
 
-        # ---- Plot D: seed spread -- every repeat in the POOLED frame of its arm ------------
-        # Diagnostic for the final (pooled) posterior: pooling can only ADD spread across seeds, so
-        # the per-repeat offsets/widths in sigma of the pooled posterior show how much of the pooled
-        # width is seed disagreement. Blind-safe: everything is relative to the pooled location.
+        # --- Plot D: seed spread, every repeat in the pooled frame of its arm ---
         for pr in [r for r in lruns if r["pooled"]]:
             arm = pr["arm"]
             reps = [r for r in all_runs if r["label"] == label and not r["pooled"]
@@ -299,7 +269,7 @@ def main(argv=None):
                         + ("" if args.short_legend else " (seed spread in sigma of the pooled)"))
             manifest["figures"].append(str(out / f"plotD_{label}_{arm}.png"))
 
-        # ---- Plot B PER ARM (no cross-arm frames): each arm's headline posterior vs ITS matched mocks
+        # --- Plot B per arm: each arm's headline posterior vs its matched mocks ---
         if args.no_cross_arm and args.matched_mocks:
             for tok in args.matched_mocks:
                 marm, rest = tok.split("=", 1)
@@ -323,7 +293,7 @@ def main(argv=None):
                 _plot(chains, str(fn), title=f"Plot B: label {label}, {S.arm_name(marm)} vs its matched mocks (own mean, its std)")
                 manifest["figures"].append(str(fn))
 
-        # ---- Plot B: flagship vs matched mocks (own mean, flagship std) ------------------
+        # --- Plot B: flagship vs matched mocks (own mean, flagship std) ---
         if fr is not None and args.matched_mocks and not args.no_cross_arm:
             st_real = standardise_self(fr["path"], fr["experiment"])
             chains = [_chain(_thin(st_real.z, args.max_samples), st_real.names, [q for q in args.params if q in st_real.names],
@@ -343,7 +313,7 @@ def main(argv=None):
                   title=f"Plot B: label {label} flagship (own frame) vs matched mocks (own mean, flagship std)")
             manifest["figures"].append(str(out / f"plotB_{label}.png"))
 
-    # ---- labels over-plot: flagship posterior of every label in label-A's frame ---------------
+    # --- labels over-plot: flagship posterior of every label in label A's frame ---
     fa = flagship_run(flag_label)
     if fa is not None and len(labels) > 1:
         chains = []
