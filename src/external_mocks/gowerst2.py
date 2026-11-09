@@ -1,35 +1,8 @@
-"""External shell-cube ingestion: GowerSt2 / ``Flamingo_big`` (DMO and baryonified).
+"""External shell-cube ingestion: GowerSt2 / Flamingo_big (DMO and baryonified).
 
-The whole point of this module is that it is SMALL. ``GowerStreetSimulator`` already implements
-exactly the pattern we need -- ``_load_shells()`` builds the ``z <= zmax`` radial-window list and
-``get_matter_fields()`` lazily yields ONE shell at a time off disk -- so ingesting an external
-lightcone is **two method overrides**. Everything downstream (IA, n(z), mask, Poisson sampling
-with source clustering, shape noise, shear bias, pseudo-Cl, patches) is untouched production code.
-
-Nothing here edits protected physics: it subclasses `src.cosmology.simulators` and calls
-`src.cosmology.parameters` / `sim_utils`.
-
-Data layout (one directory, both variants, shared ``control.par``)::
-
-    control.par                     PKDGRAV3 parameters   (nSteps=100, achOutName="run", bClass=1)
-    run.log                         101 step redshifts, ascending 0 -> 49
-    class_processed_Flamingo.hdf5   CLASS cosmology (referenced RELATIVELY by control.par)
-    delta_1024.npy    (100, 12582912) f64   gravity-only  delta
-    delta_b_1024.npy  (100, 12582912) f32   FLAMINGO-baryonified delta (same phases)
-
-Audited facts that this module depends on (see
-``.claude/runs/eval-and-viz/baryonified-unblind-mock/artifacts/SHELL_AUDIT.md``):
-
-* ``sim.redshifts`` is ASCENDING from z=0, and cube row 0 is the NEAREST shell. Feeding
-  ``MultiPlaneConvergence.add_window`` in the wrong order does NOT raise -- it silently computes
-  the wrong lensing kernel -- so :func:`load_external_shells` asserts the direction.
-* The cubes are already ``delta`` (mean ~ 1e-8). The parent's trailing
-  ``arr / np.mean(arr) - 1`` therefore MUST NOT be inherited (it would divide by ~0).
-* ``delta < -1`` occurs at low z (49% of pixels in the z~0 shell, 4.5e-3 by z=0.54, none above
-  z=1.5): the cubes are counts PLUS a continuous additive component, not a pure count field.
-  This is harmless for the convergence (linear in delta) and ``glass.positions_from_delta``
-  clips the expected counts at zero before the Poisson draw, so it degrades gracefully. We warn
-  once rather than raise.
+ShellCubeSimulator subclasses GowerStreetSimulator and reads one stacked delta cube plus a
+PKDGRAV3 control.par. prepare_external_backend returns the backend dict for the master script's
+`external` simulator type.
 """
 
 from __future__ import annotations
@@ -49,32 +22,8 @@ from src.cosmology.simulators import GowerStreetSimulator
 # Our production shell stack stops at z=2 (src/KiDS/simulation_config.py).
 DEFAULT_ZMAX = 2.0
 
-#: The one external box we currently ingest. ``cosmology`` is in the model keys that
-#: ``build_cosmology`` / ``GowerStCosmologies.PARAM_MAP`` use. See artifacts/COSMOLOGY.md.
-#:
-#: sigma_8 = 0.809177. This value was challenged, changed to control.par's 0.7622848, and then
-#: CHANGED BACK when the end-to-end test rejected it. The history matters, so:
-#:
-#:   * control.par's `dNormalization` comment says "calculated from sigma_8 = 0.7622848".
-#:   * The delta cube's own angular spectra (anafast on shells 62/70 vs Limber, read at
-#:     ell = 400-600 where Limber is valid for a thin shell) imply ~0.768, near that comment.
-#:   * BUT the full-pipeline bandpower validation -- the mocks this code actually produces,
-#:     compared to CAMB/HMcode through the KiDS mixing matrix -- is decisive the other way:
-#:         sigma_8 = 0.809177 -> mean |dev| 3%,  per-bin signed dev +0.015..-0.003 (UNBIASED)
-#:         sigma_8 = 0.762    -> mean |dev| 17%, per-bin signed dev +0.144..+0.185 (theory low)
-#:     implying a best fit near 0.81, consistent with the CLASS file (0.8082) and published
-#:     FLAMINGO (0.807).
-#:
-#: So the shell-level anafast test carries an UNEXPLAINED SYSTEMATIC of order 10% in power and
-#: must not be used to set the normalisation; the end-to-end comparison is the one that counts.
-#: Do not "fix" this back to 0.762 without re-running src/validation/run_validation.py and
-#: showing it improves. The residual ell-tilt at 0.809 (band 0 low by ~11%, high-ell high by
-#: ~4%, the latter concentrated in tomographic bin 1) is a SEPARATE unresolved issue -- see
-#: artifacts/SIGMA8_INVESTIGATION.md.
-#:
-#: The rest of the cosmology is verified INDEPENDENTLY and directly: z_values.txt tabulates the
-#: chi(z) the run actually used, and it matches these Omega_m / h / w0 to 0.06%. So the
-#: background -- the only part that enters the lensing kernel -- is right.
+# Flamingo_big cosmology in the model keys of build_cosmology / GowerStCosmologies.PARAM_MAP
+# (sigma_8 and Omega_b derivations in the trailing notes).
 FLAMINGO_BIG = {
     "name": "gowerst2_flamingo",
     "data_dir": "/data/alex/external_mocks/gowerst2_flamingo",
@@ -104,16 +53,8 @@ FLAMINGO_BIG = {
 
 
 def load_external_shells(data_dir, zmax=DEFAULT_ZMAX):
-    """Return ``(rows, shells)`` for the external lightcone in ``data_dir``.
-
-    ``rows`` are **cube row indices** (not PKDGRAV3 step numbers) and ``shells`` the matching
-    ``glass.shells.RadialWindow`` list, so the two stay aligned through the ``z <= zmax`` cut.
-
-    The window construction deliberately mirrors ``GowerStreetSimulator._load_shells`` exactly
-    (uniform tophat, 100 samples, ``zeff`` = the midpoint): using the SAME window convention as
-    the Gower-Street-1 training cloud is what keeps a window-definition difference from leaking
-    into the misspecification we are trying to measure.
-    """
+    """Return (rows, shells): cube row indices and the matching glass RadialWindow list for the
+    lightcone in data_dir, ordered by increasing comoving distance."""
     sim = glass.ext.pkdgrav.load(os.path.join(data_dir, "control.par"))
     z = np.asarray(sim.redshifts, dtype=float)
 
@@ -210,21 +151,13 @@ class ShellCubeSimulator(GowerStreetSimulator):
 
 
 def prepare_external_backend(sim_num, *, rng, spec, prior_ranges, sim_grid, variant):
-    """Seam contract for an external box, mirroring ``prepare_gower_backend``.
-
-    ``matter`` is **None**: the shells are streamed by :class:`ShellCubeSimulator`, which the
-    master script constructs directly for this simulator type. ``shells`` is still returned
-    because the systematics builders need the shell edges.
-
-    The IA draw is taken FIRST, from ``rng``, exactly as ``prepare_gower_backend`` does -- that
-    ordering is part of the ``--rng-seed`` contract that pairs the DMO and BARY catalogues.
-    """
+    """Backend dict for an external box, as prepare_gower_backend. matter is None (shells are
+    streamed by ShellCubeSimulator)."""
     nuisance_params = sample_ia_params(prior_ranges, rng)
     param_dict = {**spec["cosmology"], **nuisance_params}
 
-    # DEFAULT_ZMAX (not sim_grid) so these shells are IDENTICAL to the ones ShellCubeSimulator
-    # builds; a divergence here would silently mismatch the systematics builders against the
-    # windows actually used for the convergence.
+    # DEFAULT_ZMAX (not sim_grid) so these shells are identical to the ones ShellCubeSimulator
+    # builds.
     _, shells = load_external_shells(spec["data_dir"], zmax=DEFAULT_ZMAX)
     cosmo, _pars = build_cosmology(param_dict)
 
