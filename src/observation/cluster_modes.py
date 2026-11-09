@@ -248,7 +248,7 @@ def add_score_args(parser) -> None:
     g.add_argument("--score-knn-k", type=int, default=10, help="k of the summary-space kNN (summaries.py default)")
 
 
-BLIND_SUBDIR = "unblinding_blind"     # under checkpoints/<exp>/ -- denied to the agent by guard_blind
+BLIND_SUBDIR = "unblinding_blind"     # under checkpoints/<exp>/, guarded by guard_blind
 
 
 
