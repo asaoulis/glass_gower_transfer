@@ -1,28 +1,9 @@
 #!/usr/bin/env python
-"""Bundle Euclid Stage-I (2-pt) and Stage-II (hybrid) posteriors into ONE portable .npz.
+"""Bundle Euclid Stage-I (2-pt) and Stage-II (hybrid) posteriors into one portable .npz.
 
-The eval writes, per run folder, a `posterior_samples.npz` holding EVERY test cosmology at
-10 000 draws (~250 MB/run) — too heavy to pass around. This packs the four runs into a single
-file by keeping:
-
-  * full 10 000-draw posteriors for a SUBSAMPLE of cosmologies (float16, plotting precision), and
-  * float64 per-cosmology summaries (mean / std / 16-50-84 quantiles / 68 % width) for the FULL
-    test set, so aggregate constraining-power statistics lose nothing.
-
-⭐ VERIFIED on the real eval output: all four runs share the SAME 2041-cosmology test set, in the
-same order (`apply_repeat_config` varies `split_seed`, but the test carve-out does not depend on
-it). So every comparison below is paired per cosmology, and r0 vs r1 differ only by training
-initialisation, not by test data. The intersections are kept as a cheap guard in case a future
-config changes the split.
-
-Usage:
-    python scripts/build_euclid_posterior_bundle.py --root <fetched-eval-dir> \
-        --out euclid_posterior_bundle.npz [--n-show 120]
-
-The Stage-II arm defaults to the RESUMED image-matched runs
-(`euclid_hybrid_z8_resnet_imgmatch_resume`, 310 cumulative epochs). To rebuild the earlier
-155-epoch bundle instead:
-    ... --hybrid-exp euclid_hybrid_z8_resnet_imgmatch --hybrid-run pretrain_ncosmoNone_{i}
+It keeps the full draws for a subsample of cosmologies at float16, and float64 per-cosmology
+summaries over the full test set.
+Usage: python scripts/build_euclid_posterior_bundle.py --root <fetched-eval-dir> --out <bundle.npz>
 """
 import argparse
 import json
@@ -30,13 +11,7 @@ import os
 
 import numpy as np
 
-# arm -> (experiment dir, run-folder template, human name). The run template is NOT shared:
-# `create_run_name` names a folder `pretrain_*` when the config has no `checkpoint_path` and
-# `finetune_*` when it has one, so the resumed Stage-II arm
-# (`euclid_hybrid_z8_resnet_imgmatch_resume`, which restarts from its own finished weights) lives
-# under `finetune_ncosmoNone_{i}` while every cold-start arm is `pretrain_ncosmoNone_{i}`.
-# Overridable per arm from the CLI so the earlier 155-epoch bundle stays rebuildable:
-#   --hybrid-exp euclid_hybrid_z8_resnet_imgmatch --hybrid-run pretrain_ncosmoNone_{i}
+# arm -> (experiment dir, run-folder template, human name).
 ARMS = {
     "band": ("euclid_band", "pretrain_ncosmoNone_{i}", "2-pt (bandpowers)"),
     "hybrid": ("euclid_hybrid_z8_resnet_imgmatch_resume", "finetune_ncosmoNone_{i}",
@@ -46,11 +21,7 @@ REPEATS = (0, 1)
 PARAMS = ["omega_m", "sigma_8", "w0"]
 
 
-# ⚠️ `_save_posterior_samples` dumps the flow's own coordinates, i.e. min-max SCALED [0, 1]
-# space -- the rescale to physical units happens later, inside run_evaluation_on_samples. So the
-# raw npz must be inverted here or every number downstream is meaningless (w0 would come out
-# positive). Boxes come from src.ml.data.constants.COSMO_PARAM_PRESET_MINMAX, the same preset the
-# training scalers used; the literals are a fallback so this script also runs outside the repo.
+# The sample dumps are in min-max scaled [0, 1] space. This box is the fallback outside the repo.
 _FALLBACK_BOX = {
     "omega_m": (0.1232301212, 0.4967720335),
     "sigma_8": (0.4197701053, 1.28618999),
@@ -168,10 +139,7 @@ def main():
             payload[f"{key}__simids_all"] = ids
             print(f"  {key}: N={s.shape[0]} S={s.shape[1]} D={s.shape[2]}")
 
-    # Plotted subsample, chosen per repeat from that repeat's band/hybrid shared split (in
-    # practice all four runs share one test set — see the module docstring). Ranking the full
-    # ~2000-cosmology test set by distance from fiducial is what makes the plotted examples
-    # realistic: a hard box on (S8, w, Omega_m) selects only ~1-2% of the broad Gower prior.
+    # Plotted subsample: per repeat, the shared band/hybrid cosmologies closest to the fiducial.
     i_om, i_s8, i_w = (PARAMS.index(x) for x in ("omega_m", "sigma_8", "w0"))
 
     for rep in REPEATS:
