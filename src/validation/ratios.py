@@ -167,50 +167,6 @@ def load_ratios_with_theory(
         return None
 
 
-def load_and_compute_ratios(
-    path: str,
-    nested_keys: Dict[str, Tuple[str, ...]],
-    cosmo_params,
-    *,
-    nside: int = cfg.NSIDE,
-    nbins: int = cfg.NBINS,
-    lmin_cut: int = cfg.LMIN_CUT,
-    lmax_cut: int = cfg.LMAX_CUT,
-    nbands: int = cfg.NBANDS,
-    mixing_matrix: Optional[np.ndarray] = None,
-    nonlinear: str = cfg.NONLINEAR,
-    theory_mode: str = cfg.THEORY_MODE,
-    data_dir: str = cfg.DATA_DIR,
-    empirical_key: str = "mixed_bandpowers",
-):
-    """Load one mock, compute its OWN theory bandpowers, return ratios (or None on failure).
-
-    Single-file convenience: computes theory from the file's own cosmology.  The ensemble
-    driver instead computes theory once per cosmology and calls
-    :func:`load_ratios_with_theory` — avoiding the per-augmentation recompute.
-    Returns ``{path, ratios (n_spectra, nbands), cls (nbands,), labels}``.
-    """
-    try:
-        cl_bandpowers, cls = _load_empirical(path, nested_keys, empirical_key)
-        cosmo_vec = load_numeric_cosmo_vec(path)
-        theory_bandpowers = compute_bandpower_theory_from_cosmo_vec(
-            cosmo_vec,
-            nside=nside, nbins=nbins, lmin_cut=lmin_cut, lmax_cut=lmax_cut,
-            nbands=nbands, mixing_matrix=mixing_matrix, nonlinear=nonlinear,
-            theory_mode=theory_mode, data_dir=data_dir,
-        )
-        ratios, labels = _ratios_from_theory(cl_bandpowers, theory_bandpowers, nbins)
-        return {
-            "path": path,
-            "ratios": np.array(ratios),   # (n_spectra, nbands)
-            "cls": cls,
-            "labels": labels,
-        }
-    except Exception as e:  # noqa: BLE001 - keep the batch alive, report the failure
-        print(f"[validation] ERROR processing {path}: {e}")
-        return None
-
-
 def compute_theory_by_cosmology(
     files: Sequence[str],
     nested_keys: Dict[str, Tuple[str, ...]],

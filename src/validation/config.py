@@ -5,8 +5,6 @@ The production defaults match src/KiDS/simulation_config.py. run_validation over
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 # --- survey and measurement geometry (mirrors src/KiDS/simulation_config.py) ---
 NSIDE = 1024
 LMAX = 2 * NSIDE          # 2048
@@ -29,11 +27,6 @@ SHIFT_NZ = False          # clean theory test: no photo-z shifts
 MIXING_MATRIX_PATH = "/share/gpu5/asaoulis/KiDS_Legacy_mixing_matrix_mask.npy"
 # Tomographic n(z) + priors live under this data dir (read by calculate_tomo_nz).
 DATA_DIR = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data"
-# Gower Street cosmology table (only needed for sim-id -> cosmology lookups).
-GOWER_CSV_PATH = (
-    "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/"
-    "PKDGRAV3_on_DiRAC_DES_330.csv"
-)
 
 # --- discrepancy thresholds ---
 # |median(ratio) - 1| <= OK_FRAC          -> OK
@@ -50,24 +43,6 @@ STATUS_ERROR = "ERROR"
 EXIT_PASS = 0
 EXIT_WARNINGS = 3
 EXIT_ERRORS = 4
-
-
-@dataclass(frozen=True)
-class ValidationConfig:
-    """Bundle of the knobs the driver threads through theory + ratios + diagnostics."""
-
-    nside: int = NSIDE
-    lmax: int = LMAX
-    nbins: int = NBINS
-    lmin_cut: int = LMIN_CUT
-    lmax_cut: int = LMAX_CUT
-    nbands: int = NBANDS
-    nonlinear: str = NONLINEAR
-    theory_mode: str = THEORY_MODE
-    data_dir: str = DATA_DIR
-    mixing_matrix_path: str | None = MIXING_MATRIX_PATH
-    ok_frac: float = OK_FRAC
-    warn_frac: float = WARN_FRAC
 
 
 def spectrum_labels(nbins: int = NBINS):
