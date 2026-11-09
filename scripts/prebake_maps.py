@@ -1,39 +1,9 @@
 #!/usr/bin/env python
 """Pre-bake a compact ML training store from the raw glass mock h5 files.
 
-⭐ THE STANDARD remote-training data-prep step: map training is I/O-bound, so pre-bake with this
-tool, put the compact store on /share/gpu5 (the l40s node's LOCAL disk), then `train --gpu l40s`.
-Reading maps NON-local over NFS (e.g. /share/gpu4) is ~4.5x slower (measured 30 vs 135 smp/s). See
-glass CLAUDE.md → "Data → Fast out-of-core training" and .claude/cluster/README_cluster.md.
-
-The raw mocks (~63 MB each, float64) carry 8 E/B smoothing variants x {north,south}, but a
-training run reads only ONE E variant (north+south) + bandpowers + cosmo params. This tool
-extracts just those, downcasts the maps to float16/float32, and writes them under the *bare*
-`pixelised_results/E/{north,south}` group names (so the loader reads them with eb_map_variant=None).
-
-It also DROPS truncated/corrupt source files (some downloads are partial) so downstream
-dataloaders never choke on them.
-
-Schemas (--format):
-  * h5            : one small HDF5 per sample, bare groups, maps at --dtype (default).
-  * h5_compressed : same, chunked + lzf|gzip compression (--compression) [Phase 1.5 proxy].
-
-Usage:
-  /data/alex/glass/env/bin/python scripts/prebake_maps.py \
-      --src-glob '/data/alex/glass_mocks/*.h5' --out-dir /data/alex/glass_mocks_f16 \
-      --eb-variant fwhm8 --dtype float16 [--limit-cosmos N] [--workers 8]
-
-Shear-estimator arms (dual-normalisation stores only). Which arm a training run sees is decided
-HERE -- by which prebaked store `data_patterns` points at -- not by the model config:
-
-  A0_counts   --eb-variant <tag>                             (baseline; default, unchanged)
-  A1_wht_rand --eb-variant <tag>      --noise-norm rand      (DEPLOYED)
-  A3s8        --eb-variant sc8_<tag>
-  A3s8_A1     --eb-variant sc8_<tag>  --noise-norm rand
-  B1_selfstd  any of the above + the loader-side config knob eb_noise_norm='self'
-
-The per-(variant, bin, patch) `noise_std*` scalar groups are always carried through verbatim, so
-an arm can be re-baked later without touching the raw store.
+It extracts one E variant (north and south), the bandpowers and the cosmo params, downcasts the
+maps and drops truncated or corrupt source files. --eb-variant and --noise-norm decide which
+shear-estimator arm the store serves. The noise_std* scalar groups are carried through verbatim.
 """
 from __future__ import annotations
 
@@ -73,8 +43,7 @@ def _bake_one(args):
     try:
         with h5py.File(src, "r") as f:
             pix = f["pixelised_results"]
-            # Noise-meter scalars (~288 B) for the A1 rescale. Carried through verbatim so the
-            # estimator stays ablatable from the compact store; absent in pre-dual-norm mocks.
+            # Noise-meter scalars for the A1 rescale, absent in pre-dual-norm mocks.
             noise_std = {}
             for g in pix.keys():
                 if g.startswith("noise_std"):
@@ -83,9 +52,7 @@ def _bake_one(args):
             for side in MAP_SIDES:
                 m = pix[e_group][side][()]
                 if noise_norm != "none":
-                    # A1_wht_rand: divide each tomographic bin by the std of its matched
-                    # random-rotation noise map. Applied BEFORE the cast so float16 sees an
-                    # O(1) map rather than the raw shear amplitude.
+                    # A1_wht_rand, applied before the cast so float16 sees an O(1) map.
                     if ns_group not in noise_std:
                         raise KeyError(f"--noise-norm {noise_norm} needs {ns_group}")
                     key = "all" if noise_norm == "rand" else side
@@ -104,8 +71,6 @@ def _bake_one(args):
     tmp = dst + ".tmp"
     try:
         with h5py.File(tmp, "w") as g:
-            # keep_tag preserves the source variant group name (E_<variant>) so a config with
-            # eb_map_variant=<variant> reads it; otherwise write the bare 'E' group.
             out_egroup = (f"E_{eb_variant}" if (keep_tag and eb_variant) else "E")
             pe = g.create_group("pixelised_results").create_group(out_egroup)
             for side in MAP_SIDES:
@@ -149,17 +114,12 @@ def main():
                     help="write the tagged group E_<variant> (for smoke data matching a config "
                          "with eb_map_variant set) instead of the bare 'E' group")
     ap.add_argument("--noise-norm", default="none", choices=["none", "rand", "rand_patch"],
-                    help="shear estimator arm. 'none' (default) = A0_counts, byte-identical to "
-                         "the legacy output. 'rand' = A1_wht_rand: divide each tomographic bin by "
-                         "noise_std_<variant>/all (both patches pooled). 'rand_patch' = the same "
-                         "with the per-patch (north/south) std. Combine with "
-                         "--eb-variant sc8_<tag> for the A3s8 / A3s8_A1 arms.")
+                    help="The shear-estimator arm. 'none' is A0_counts. 'rand' is A1_wht_rand, which divides "
+                         "each tomographic bin by noise_std_<variant>/all. 'rand_patch' uses the per-patch std.")
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--min-free-gb", type=float, default=100.0,
-                    help="disk-space guard on the output filesystem: stop cleanly (exit 3, resumable - "
-                         "existing outputs are skipped on re-run) if free space drops below this, or if "
-                         "the projected remaining bake would leave less than this free. The bake store "
-                         "shares a disk with live training data, so never fill it. 0 disables.")
+                    help="Stop cleanly with exit 3 when the output filesystem would keep less than this "
+                         "many GB free. A re-run resumes. 0 disables the guard.")
     args = ap.parse_args()
 
     files = sorted(glob.glob(args.src_glob))
