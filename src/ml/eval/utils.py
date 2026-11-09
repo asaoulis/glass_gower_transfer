@@ -15,10 +15,10 @@ from src.ml.data.constants import COSMO_PARAM_PRESET_MINMAX
 from ..utils import load_best_checkpoint_model, build_model
 from .loading_model import find_best_checkpoint
 from ..utils import is_ensemble_eval_active, build_ensemble_model_from_checkpoints
-from ..data.priors import (
-    train_or_load_gower_prior,
+from ..data.priors.empirical import train_or_load_gower_prior
+from ..data.priors.distributions import build_gower_paper_known_priors
+from ..data.priors.builders import (
     build_flow_with_extras_prior,
-    build_gower_paper_known_priors,
     build_analytic_prior,
     ia_marginal_priors,
     galaxy_bias_marginal_priors,
