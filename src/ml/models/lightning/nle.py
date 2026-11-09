@@ -1,3 +1,4 @@
+"""LikelihoodNDELightningModule: neural likelihood p(summary | theta), sampled by MCMC."""
 from __future__ import annotations
 
 import torch
