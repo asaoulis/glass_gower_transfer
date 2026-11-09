@@ -1,3 +1,8 @@
+"""Read one mock from an HDF5 file.
+
+unpack_data returns the requested datasets and the cosmology vector. load_cosmo_params reads
+the cosmo_dict group.
+"""
 from typing import Dict, List, Tuple, Union, Optional
 import numpy as np
 import h5py
@@ -48,9 +53,8 @@ def load_cosmo_params(
             cosmo_params = list(grp.keys())
 
         if allow_missing:
-            # Cross-variate eval: a dataset may lack some of the model's params (e.g. no b_ia
-            # in NLA/NLA-z mocks). Keep theta at the requested dimensionality; downstream
-            # metrics drop the non-finite columns.
+            # A dataset may lack some of the model's params. Theta keeps the requested length, with
+            # fill_value in the missing columns.
             vals = [
                 float(np.asarray(grp[p][()])) if p in grp else float(fill_value)
                 for p in cosmo_params
