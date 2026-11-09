@@ -1,47 +1,8 @@
-"""NLE log-likelihood of an observation (and of held-out null events) at EVERY mock's parameters.
+"""NLE log-likelihood of an observation and of held-out null events at every mock block's parameters.
 
-WHAT THIS IS FOR
-----------------
-Posterior predictive checks (PPC) of the real-data NLE posteriors
-(`.claude/runs/eval-and-viz/vdq-posterior-predictive/plan.md`). We cannot run Gower Street sims at
-new cosmologies, so the posterior predictive distribution of a statistic T is built by
-IMPORTANCE-WEIGHTING the existing mock suite. Every mock block b of sim i (one (sim, outer, rot)
-triple; its inner shape-noise files share the block's parameters) gets
-
-    log w_ib = log L(t_obs | theta_ib) + log pi(theta_ib) - log q(theta_ib)
-
-where L is the trained ensemble NLE likelihood, pi the analysis prior and q the density the suite
-was generated from. This module computes the expensive term, log L(t_e | theta_b), for the real
-observation AND for every held-out null event e (the test-lock mocks, used to calibrate the PPC
-p-value), at every block of a "theta store". The priors are evaluated here too (they are cheap and
-must match the sampler's), but the weights themselves are formed offline.
-
-THE INVARIANT
--------------
-`log L` is EXACTLY the potential the reported posterior was sampled with:
-  * the observation goes through `resolve_nle_pipeline` (training scalers injected, Stage-A
-    whitener loaded, per-member frames when persisted -- the nle-external path, not a copy);
-  * the likelihood is `build_grouped_ensemble_likelihood(members)` (logmeanexp over members, the
-    sampler's fast path) evaluated on the ensemble's own `test_dataloader` rows, which is what
-    `EnsembleLikelihoodNDELightningModule.generate_samples` feeds the MCMC;
-  * theta is put in the sampler's scaled space with the pipeline's own cosmo scaler.
-A self-check proves the theta scaling: for every null event (a mock with a truth vector) the
-loader's scaled truth must equal this module's scaled table row for the same file.
-
-OUTPUT
-------
-`{base_path}/checkpoints/<exp>/external/ppc_<tag>/ppc_loglik_<theta_store>_<match>.npz` with
-  event_files [E]           event basenames; row 0 is the observation when one is given
-  event_is_obs [E]
-  event_theta_scaled [E,D]  loader truth (NaN for the observation)
-  event_ok [E]              truth check passed (always True for the observation)
-  loglik [E,B] float32      ensemble log L(t_e | theta_b)
-  loglik_obs_members [M,B]  per-member log L for the observation (diagnostic only)
-  block_sim, block_out, block_rot [B]; block_theta_raw [B,D]; block_theta_scaled [B,D]
-  file_names [F], file_block [F]  every theta-store file and its block index
-  extra_names [K], block_extras [B,K]  every other scalar in cosmo_dict (b_g_bin*, ...)
-  logprior_<mode> [B]       analysis / gower prior log-density in scaled space (when buildable)
-plus a provenance json.
+The posterior predictive of a statistic is built by importance-weighting the existing mock suite
+with these log-likelihoods (eval.py --mode nle-loglik). log L is the potential the reported
+posterior was sampled with. Output: checkpoints/<exp>/external/ppc_<tag>/ppc_loglik_<store>_<match>.npz.
 """
 from __future__ import annotations
 
@@ -59,9 +20,7 @@ import torch
 _FNAME_RE = re.compile(r"output_(\d+)_out(\d+)_rot(\d+)_(\d+)\.h5$")
 
 
-# --------------------------------------------------------------------------------------------
-# theta table: one row per (sim, outer, rot) block of a mock store
-# --------------------------------------------------------------------------------------------
+# --- theta table: one row per (sim, outer, rot) block of a mock store ---
 def parse_mock_name(path: str):
     """`output_<sim>_out<o>_rot<r>_<k>.h5` -> (sim, o, r, k), or None for any other name."""
     m = _FNAME_RE.search(os.path.basename(str(path)))
@@ -69,8 +28,7 @@ def parse_mock_name(path: str):
 
 
 def _read_cosmo_dict(path: str) -> Optional[Dict[str, float]]:
-    """Every SCALAR numeric entry of the file's cosmo_dict (strings such as `ia_model` are dropped).
-    None when the file cannot be opened (truncated / corrupt) -- such files are excluded."""
+    """Every scalar numeric entry of the file's cosmo_dict, or None for an unreadable file."""
     import h5py
     try:
         with h5py.File(path, "r") as f:
@@ -89,8 +47,8 @@ def build_theta_table(paths: Sequence[str], param_names: Sequence[str], *, n_thr
                       atol: float = 1e-6) -> Dict[str, object]:
     """Read every file's cosmo_dict, group files into (sim, out, rot) blocks, return the block table.
 
-    The inner files of a block must share every inferred parameter (the simulator draws the
-    nuisances per block); any disagreement beyond `atol` is counted and reported, never hidden.
+    The inner files of a block share every inferred parameter. Disagreements beyond atol are
+    counted and reported.
     """
     paths = sorted(str(p) for p in paths)
     keyed = [(p, parse_mock_name(p)) for p in paths]
@@ -145,9 +103,8 @@ def build_theta_table(paths: Sequence[str], param_names: Sequence[str], *, n_thr
 
 
 def null_event_paths(kept_paths: Sequence[str], test_sim_ids: Sequence[int], inner: int = 0) -> List[str]:
-    """The Stage-B in-distribution test events of a store: every block of a test-lock sim, inner
-    realisation `inner` (the eval's `test_shape_noise_idx=[0]`). Sorted, so the order is a pure
-    function of the store."""
+    """The Stage-B test events of a store: every block of a test-lock sim at inner realisation
+    `inner`, sorted."""
     ids = set(int(i) for i in test_sim_ids)
     out = []
     for p in kept_paths:
@@ -163,9 +120,7 @@ def load_lock_ids(lock_path) -> List[int]:
     return list(d["sim_ids"] if isinstance(d, dict) else d)
 
 
-# --------------------------------------------------------------------------------------------
-# the likelihood matrix
-# --------------------------------------------------------------------------------------------
+# --- the likelihood matrix ---
 @torch.no_grad()
 def loglik_matrix(loglik_fn, X: torch.Tensor, Theta: torch.Tensor, *, chunk: int = 16384,
                   log_every: int = 200) -> np.ndarray:
@@ -193,20 +148,11 @@ def _collect_loader(loader):
     return torch.cat(xs, 0).float(), torch.cat(ths, 0).float()
 
 
-# --------------------------------------------------------------------------------------------
-# cosmology marginal by quadrature
-# --------------------------------------------------------------------------------------------
-# The design fixes only the N-body cosmology. Its (Om, s8, w0) are the parameters the posterior
-# actually constrains; everything else (mnu, h, ns, ombh2 -- prior-dominated -- and the IA
-# nuisances) is integrated out of each design point's weight with the NLE itself, so the weights
-# are the EXACT analysis-prior marginal p(Om, s8, w0 | t) at the design points and do not inherit
-# the Monte-Carlo noise of each sim's 20 random nuisance draws or the design-vs-analysis-prior
-# mismatch in h / w (the cause of the pilot's cos-ESS collapse to 1.6; log.md 2026-10-20).
+# --- cosmology marginal by quadrature over every parameter outside PHI_NAMES ---
 PHI_NAMES = ("omega_m", "sigma_8", "w0")
 
-# Node proposal g per integrated parameter, PHYSICAL units: ('u', lo, hi) or ('n', mean, sd).
-# Uniform boxes = the kids_s8_analytic supports (build_s8_box_known_priors / ia_marginal_priors),
-# so no node is wasted outside the analysis prior except through its joint (S8, omega_c) box.
+# Node proposal g per integrated parameter, physical units: ('u', lo, hi) or ('n', mean, sd).
+# The uniform boxes are the kids_s8_analytic supports.
 NODE_PROPOSALS = {
     "mnu": ("u", 0.06, 0.14), "h": ("u", 0.64, 0.78), "ns": ("u", 0.948, 0.984),
     "ombh2": ("u", 0.022, 0.0228), "b_z": ("n", -3.7, 4.3), "b_src": ("u", -0.5, 1.5),
@@ -217,11 +163,10 @@ _FORTUNA_RHO = -0.59
 
 
 def quadrature_nodes(param_names: Sequence[str], n_nodes: int, seed: int = 0):
-    """Fixed (common-random-number) nodes for every non-PHI parameter.
+    """Fixed (common-random-number) scrambled-Sobol nodes for every non-PHI parameter.
 
     -> (node_names, nodes [J, K] physical, log_g [J] physical-space proposal log-density).
-    Scrambled Sobol, so a 1-D a_ia integral is stratified. NLA-M's (a_ia, b_ia) is drawn from the
-    Fortuna Gaussian (= the analysis prior block), NLA / NLA-z / TATT a_ia from U[-6, 6]."""
+    NLA-M's (a_ia, b_ia) come from the Fortuna Gaussian, the other IA models' a_ia from U[-6, 6]."""
     from scipy.stats import norm, qmc
     names = [n for n in param_names if n not in PHI_NAMES]
     J = int(n_nodes)
@@ -258,8 +203,7 @@ def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, 
                    log_every=200, label="design"):
     """log (1/J) sum_j L(t_e|phi_c, eta_j) pi_s(phi_c, eta_j)/g(eta_j) for events X [E,k] at phi [C,3].
     -> (logmarg [E,C], node_ess [E,C], log-integrand of event 0 [C,J], node_mom) with node_mom =
-    {"mean": [E,C,K], "cov": [E,C,K,K]} the integrand-weighted moments of the integrated parameters,
-    i.e. p(eta | phi_c, t_e) -- what a nuisance-resampling PPC draws its nuisances from."""
+    {"mean": [E,C,K], "cov": [E,C,K,K]} the integrand-weighted moments of p(eta | phi_c, t_e)."""
     iphi = [param_names.index(n) for n in PHI_NAMES]
     inode = [param_names.index(n) for n in node_names]
     C, J, D = phi.shape[0], nodes.shape[0], len(param_names)
@@ -267,7 +211,7 @@ def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, 
     raw[:, :, iphi] = phi[:, None, :]
     raw[:, :, inode] = nodes[None, :, :]
     scaled = np.asarray(cosmo_scaler.transform(raw.reshape(C * J, D)), dtype=np.float64)
-    # g in the SAME scaled space as the priors: scaled density = physical density * prod(box width)
+    # g in the priors' scaled space: scaled density = physical density * prod(box width).
     width = np.asarray(cosmo_scaler.max, np.float64) - np.asarray(cosmo_scaler.min, np.float64)
     log_g_scaled = log_g + float(np.sum(np.log(width[inode])))
     Th = torch.as_tensor(scaled, dtype=torch.float32)
@@ -315,8 +259,7 @@ def _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s, node_names, 
 
 
 def phi_grid_points(cosmo_scaler, param_names, n: int, seed: int = 1) -> np.ndarray:
-    """Scrambled-Sobol points over the scaler's (Om, s8, w0) box (physical units) -- a dense,
-    design-independent grid on which the analysis-prior phi-marginal is evaluated (emulator route)."""
+    """Scrambled-Sobol points over the scaler's (Om, s8, w0) box, physical units, [n, 3]."""
     from scipy.stats import qmc
     idx = [list(param_names).index(n_) for n_ in PHI_NAMES]
     lo = np.asarray(cosmo_scaler.min, np.float64)[idx]
@@ -330,11 +273,9 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
                         n_nodes: int = 128, seed: int = 0, phi_grid: int = 0,
                         phi_grid_events: int = 0, n_obs_rows: int = 0) -> Dict[str, np.ndarray]:
     """log of  (1/J) sum_j L(t_e | phi_i, eta_j) pi_s(phi_i, eta_j) / g(eta_j)  for every event e and
-    design cosmology i  ( = log p(phi_i | t_e) + log Z_e, the analysis-prior marginal at phi_i ),
-    plus log q_D(phi_i), the design density in phi (the Gower prior with every non-PHI parameter
-    pinned to a fixed reference value: build_gower_prior factorises, so this is q_D(phi) times a
-    constant common to all i). Optionally the same marginal on a dense phi grid for the first
-    `phi_grid_events` events (the observation first)."""
+    design cosmology i  ( = log p(phi_i | t_e) + log Z_e ), plus log q_D(phi_i), the design density
+    up to a constant (the Gower prior with the non-PHI parameters pinned). Optionally the same
+    marginal on a phi grid for the first `phi_grid_events` events, the observation first."""
     param_names = list(param_names)
     iphi = [param_names.index(n) for n in PHI_NAMES]
     sims, first = np.unique(table["block_sim"], return_index=True)
@@ -344,7 +285,7 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
     logmarg, node_ess, integ0, mom = _quad_marginal(ens, X, phi, param_names, cosmo_scaler, prior_s,
                                                     node_names, nodes, log_g)
 
-    # design density: Gower prior at (phi_i, reference eta)
+    # Design density: the Gower prior at (phi_i, reference eta).
     ref = table["block_theta_raw"][first].copy()
     ref_vals = {"mnu": 0.1, "h": 0.7022, "ns": 0.9649, "ombh2": 0.02237, "a_ia": 5.74, "b_ia": 0.44,
                 "b_z": -3.7, "b_src": 0.5}
@@ -360,8 +301,7 @@ def cosmology_marginals(ens, X, table, param_names, cosmo_scaler, prior_s, prior
            "integrand_event0": integ0, "node_post_mean": mom["mean"], "node_post_cov": mom["cov"]}
     if phi_grid and phi_grid_events:
         G = phi_grid_points(cosmo_scaler, param_names, phi_grid)
-        # the observation (row 0 when given) + a STRIDED subset of the null events, so the grid null
-        # spans every cosmology (the null list is sorted by filename = by sim).
+        # The observation and a strided subset of the null events, which are sorted by sim.
         E = int(X.shape[0])
         n_obs = int(n_obs_rows)
         k = max(0, min(int(phi_grid_events) - n_obs, E - n_obs))
@@ -396,12 +336,10 @@ def run_ppc_loglik(
     dry_run: bool = False,
     summaries_only: bool = False,
 ) -> Dict[str, object]:
-    """NLE log-likelihood of the observation + null events at every block of `theta_store` (PPC weights).
+    """NLE log-likelihood of the observation and null events at every block of `theta_store`.
 
-    `summaries_only`: no likelihoods -- embed the observation and EVERY file of the theta store
-    through the same pipeline (member-0 frame, as the sampler) and write
-    ppc_summaries_<theta_store>_<match>.npz (event_files/event_is_obs/event_x + the theta table), the
-    replicate summaries of a summary-space PPC. The null set is replaced by the whole store."""
+    With summaries_only there are no likelihoods: the observation and every file of the theta store
+    are embedded (member-0 frame, as the sampler) into ppc_summaries_<theta_store>_<match>.npz."""
     from ..models.lightning.ensemble_flow import build_grouped_ensemble_likelihood
     from ..models.lightning.ensemble_nle import _EnsembleLikelihoodModel
     from .nle_external import (_jsonable, _paths_of, build_prior_for_mode, output_dir,
@@ -418,7 +356,7 @@ def run_ppc_loglik(
                                           n_cosmo=_extract_ncosmo_from_match(match_string))
     param_names = list(cfg0.cosmo_param_names)
     if theta_store is None:
-        # Default: the experiment's OWN Gower store (the suite its posterior's prior-predictive is).
+        # Default: the experiment's own Gower store.
         pats = cfg0.data_patterns if isinstance(cfg0.data_patterns, str) else list(cfg0.data_patterns)[0]
         theta_store = os.path.basename(os.path.dirname(str(pats)))
 
@@ -431,8 +369,6 @@ def run_ppc_loglik(
         if len(obs_paths) != 1:
             raise ValueError(f"obs store '{obs_store}' must hold exactly ONE file, found {len(obs_paths)}")
 
-    # The parameter names come from the experiment config; resolve it cheaply first so the theta
-    # table can be read before the (expensive) encoder pass.
     tt = build_theta_table(theta_paths, param_names, n_threads=n_threads or 16)
     table = tt["table"]
 
@@ -478,7 +414,7 @@ def run_ppc_loglik(
     cosmo_scaler = p.scalers["cosmo"] if isinstance(p.scalers, dict) else None
     theta_scaled = np.asarray(cosmo_scaler.transform(table["block_theta_raw"]), dtype=np.float64)
 
-    # SELF-CHECK: the loader's scaled truth of each null event == our scaled row for that file.
+    # Self-check: the loader's scaled truth of each null event equals our scaled row for that file.
     name_to_block = dict(zip(table["file_names"].tolist(), table["file_block"].tolist()))
     is_obs = np.array([i < len(obs_paths) for i in range(len(paths))])
     ok = np.ones(len(paths), dtype=bool)
@@ -530,7 +466,6 @@ def run_ppc_loglik(
     print(f"[ppc-loglik] loglik matrix {L.shape} in {time.time() - t0:.0f}s; "
           f"finite={np.isfinite(L).mean():.4f}", flush=True)
 
-    # ---- cosmology marginal by quadrature (the PPC cosmology weights; plan.md §M3 rev. 2) -------
     overrides = None
     try:
         overrides = _config_preset_overrides(p.config)
@@ -591,7 +526,7 @@ def run_ppc_loglik(
 
 
 def _selftest():
-    """Local checks that need no checkpoint: filename parsing, block grouping, null selection, the
+    """Checks that need no checkpoint: filename parsing, block grouping, null selection, and the
     matrix loop against a closed-form Gaussian likelihood."""
     assert parse_mock_name("/a/output_516_out0_rot3_2.h5") == (516, 0, 3, 2)
     assert parse_mock_name("/a/observation_A2.h5") is None
