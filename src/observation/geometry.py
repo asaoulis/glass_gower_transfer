@@ -1,14 +1,8 @@
-"""Survey / simulation geometry and map-variant presets for observation building.
+"""Survey and simulation geometry, and map-variant presets, for observation building.
 
-Two sources of truth are mirrored here and CHECKED against, never copied silently:
-  * ``src/KiDS/simulation_config.py`` (production nside, ell range, bands, patches);
-  * ``master_kids_legacy_simulator.py`` (the A3s8 smoothed-counts branch constants and the
-    ``patch_noise_std`` / ``eb_variant_tag`` helpers).
-
-The master module imports cleanly in a plain (non-MPI) process (~4 s, verified 2026-09-08), so the
-helpers are IMPORTED from it. The small constants are also vendored below so that a process that
-cannot import the master (e.g. a stripped eval node) still works; ``check_master_parity()`` asserts
-the vendored copies match the master's and is run by the P0 gate.
+Mirrors src/KiDS/simulation_config.py and the smoothed-counts constants and helpers of
+master_kids_legacy_simulator.py, vendored so no master import is needed at runtime.
+check_master_parity() asserts the copies match the master's.
 """
 from __future__ import annotations
 
@@ -17,9 +11,7 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
-# ----------------------------------------------------------------------------------------------
-# Vendored constants (mirrors of master_kids_legacy_simulator.py; parity-checked)
-# ----------------------------------------------------------------------------------------------
+# --- vendored constants, mirrors of master_kids_legacy_simulator.py (parity-checked) ---
 A3S8_FWHM_ARCMIN = 8.0                                  # smoothed-counts denominator FWHM
 A3S8_VARIANTS: Tuple[Tuple[float, int, int], ...] = ((4.0, 56, 1400), (8.0, 56, 1024))
 A3S8_MAP_DTYPE = np.float16
@@ -54,20 +46,16 @@ RNG_STREAM_POSTPROC = 2   # mirror of master's stream index (parity-checked)
 
 
 def block_postproc_rng(seed: int, sim_num: int, outer_idx: int, rot_idx: int):
-    """Vendored mirror of ``master_kids_legacy_simulator.build_block_rngs(...)[2]`` -- the
-    random-rotation (noise-only alm) stream of one (sim, outer, rot) block -- WITHOUT the master's
-    side effect of seeding the global numpy RNG. Kept here so nothing in ``src/observation`` needs
-    to import the master module (mpi4py, glass.ext.camb) at runtime."""
+    """Vendored mirror of master_kids_legacy_simulator.build_block_rngs(...)[2], the random-rotation
+    stream of one (sim, outer, rot) block, without the master's seeding of the global numpy RNG."""
     ss = np.random.SeedSequence([int(seed), int(sim_num), int(outer_idx), int(rot_idx)])
     children = ss.spawn(4)
     return np.random.default_rng(children[RNG_STREAM_POSTPROC])
 
 
 def master_postproc_rng(attrs: dict):
-    """Rebuild the EXACT random-rotation RNG a saved SIM catalogue's mock was post-processed with,
-    from its file attrs (``rng_seed, sim_id, outer_idx, rot_idx``). Only possible for a catalogue
-    written under ``--rng-seed`` (attr ``rng_seed`` >= 0); returns None otherwise. Used by the
-    fidelity gate to make the shape-noise debias term bit-reproducible."""
+    """Rebuild the exact random-rotation RNG a saved sim catalogue's mock was post-processed with,
+    from its attrs (rng_seed, sim_id, outer_idx, rot_idx). Returns None unless rng_seed >= 0."""
     seed = int(attrs.get("rng_seed", -1))
     if seed < 0:
         return None
@@ -85,7 +73,7 @@ def check_master_parity() -> dict:
         m.EB_SMOOTHING_VARIANTS, EB_SMOOTHING_VARIANTS_PROD)
     for f, l, c in [(4.0, 56, 1400), (8.0, None, None), (8.0, 56, None)]:
         assert m.eb_variant_tag(f, l, c) == eb_variant_tag(f, l, c)
-    # patch_noise_std: numerical parity on a random map
+    # patch_noise_std: numerical parity on a random map.
     rng = np.random.default_rng(0)
     import healpy as hp
     nside_out = 16
@@ -95,7 +83,7 @@ def check_master_parity() -> dict:
     b = patch_noise_std(maps, patches, nside_out, 0, ["south", "north"])
     for k in a:
         assert np.allclose(a[k], b[k]), k
-    # block RNG: the vendored postproc stream must equal the master's (first 1000 draws)
+    # Block RNG: the vendored postproc stream must equal the master's over the first 1000 draws.
     state0 = np.random.get_state()
     _, _, mp = m.build_block_rngs(7, 3, 1, 2)
     np.random.set_state(state0)     # undo the master's global-RNG side effect
@@ -105,9 +93,7 @@ def check_master_parity() -> dict:
             "EB_SMOOTHING_VARIANTS": EB_SMOOTHING_VARIANTS_PROD}
 
 
-# ----------------------------------------------------------------------------------------------
-# Geometry
-# ----------------------------------------------------------------------------------------------
+# --- geometry ---
 @dataclass(frozen=True)
 class Geometry:
     """Everything the observable-building sequence needs to know about the sky/ell grid."""
