@@ -1,3 +1,8 @@
+"""Training entry points.
+
+train_model runs repeats and ensemble members, fit_model configures the Lightning Trainer, and
+helpers name runs and parse repeat/ensemble indices from match strings.
+"""
 import os
 import resource
 import time
@@ -10,12 +15,9 @@ from ..utils import prepare_data_and_model, set_seed_for_repeat_and_ensemble
 
 
 class ThroughputMonitor(pl.Callback):
-    """Per-epoch throughput + peak-memory line on stdout (so it lands in the SLURM .out).
+    """Per-epoch throughput and peak-memory line on stdout, so it lands in the SLURM .out.
 
-    Added for the Euclid B1 sizing benchmark: the numbers that set `batch_size` / `epochs`
-    (samples/s, steps/epoch, peak GPU memory, peak host RSS) were otherwise only obtainable
-    from W&B system metrics, which are unavailable when the cluster job logs offline.
-    Rank-zero only, no effect on training. Enabled by `config.log_throughput`.
+    Rank zero only, enabled by config.log_throughput.
     """
 
     def __init__(self):
@@ -60,9 +62,7 @@ def create_run_name(config, match_string_logger):
 def apply_repeat_config(config, repeat_idx: int):
     """Apply the same per-repeat config logic used by training.
 
-    This mutates `config` in-place and returns (repeat_match, run_string).
-
-    Mirrors the logic previously embedded in `train_model`:
+    Mutates `config` in place and returns (repeat_match, run_string):
       - split_seed = base_seed + i
       - repeat_match = f"ncosmo{max_trainval_cosmos}_{i}" if enabled else f"_{i}"
       - run_string  = f"ncosmo{max_trainval_cosmos}_{i}" (used for logger/run naming)
@@ -113,10 +113,8 @@ def fit_model(
     val_check_interval=None,
     precision=None,
 ):
-    """`precision` (opt-in, config.precision): Lightning precision override, e.g. "32" for small models trained on
-    CPU (bf16 autocast is ~2x slower there). None keeps the default choice below."""
-    # Stage fsspec's checkpoint temp files on the models filesystem, not the
-    # compute node's small /tmp (see src/ml/tmpdir.py -- this is the errno-28 fix).
+    """`precision` (config.precision) overrides the Lightning precision. None keeps the default below."""
+    # Stage checkpoint temp files on the models filesystem, not the node's small /tmp.
     redirect_tempdir(base_path)
 
     # Accelerator / strategy
@@ -148,10 +146,8 @@ def fit_model(
     if log_throughput:
         callbacks.append(ThroughputMonitor())
 
-    # Precision: when ml_perf.amp scopes bf16 to the map encoder (model.model.amp_encoder),
-    # Lightning must run fp32 — a SECOND whole-forward autocast (precision='bf16-mixed') would
-    # push the flow's rational-quadratic spline to bf16 and crash at its index_put. The scoped
-    # autocast already gives the bf16 tensor-core/bandwidth win on the encoder (the 90% cost).
+    # bf16 scoped to the encoder (amp_encoder) means the Trainer runs fp32: a second autocast would
+    # push the flow's spline to bf16 and crash.
     amp_encoder_on = bool(getattr(getattr(model, "model", None), "amp_encoder", False))
     if precision is None:
         precision = "32" if amp_encoder_on else "bf16-mixed"
@@ -178,20 +174,9 @@ def fit_model(
 def train_model(config):
     """Train a model, optionally over multiple repeats and/or an ensemble.
 
-    Repeat behaviour:
-      - match strings (repeat_match) are bound ONLY to repeat idx (and ncosmo if enabled)
-      - split_seed is set ONLY by repeat idx
-
-    Ensemble behaviour:
-      - ensemble members share split_seed (repeat-bound)
-      - ensemble_seed is set per member, and only reshuffles train/val ordering
-        within the selected trainval_cosmos subset.
-
-    Notes
-    -----
-    Repeat selection:
-      - if `config.repeat_indices` is set (list/tuple of ints), iterate those indices
-      - else iterate `range(config.repeats)`
+    The repeat index alone sets repeat_match and split_seed. Ensemble members share split_seed,
+    and their per-member ensemble_seed only reshuffles train/val within the trainval cosmologies.
+    Repeats are config.repeat_indices when set, else range(config.repeats).
     """
     from copy import copy
 
