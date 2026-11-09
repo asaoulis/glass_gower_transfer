@@ -1,3 +1,8 @@
+"""Evaluation helpers.
+
+Gower and S8-analytic priors in scaled space, log-prob and credible-interval computation,
+best-checkpoint loading, and the posterior-sample dumps written next to each eval json.
+"""
 import os
 import torch
 import glob
@@ -24,7 +29,7 @@ from ..data.data_selection import extract_cosmo_index
 
 
 def _merged_preset(preset_overrides=None):
-    """Global preset min/max boxes with optional per-run overrides (e.g. NLA-family a_ia)."""
+    """Global preset min/max boxes with optional per-run overrides, such as the NLA-family a_ia."""
     preset = dict(COSMO_PARAM_PRESET_MINMAX)
     if preset_overrides:
         preset.update({k: tuple(v) for k, v in preset_overrides.items()})
@@ -41,8 +46,7 @@ def _config_preset_overrides(config):
 def build_s8_analytic_prior(params, scaler=None, *, return_restricted=None, preset_overrides=None):
     """Build the S8-box analytic prior in scaled space, in `params` order.
 
-    This is intended as a drop-in replacement for `build_gower_prior` when
-    running inference that needs a non-uniform analytic prior.
+    A drop-in replacement for build_gower_prior.
     """
     params = list(params)
     if scaler is None:
@@ -100,8 +104,7 @@ def compute_log_prob(model):
     return {"test_log_prob": test_log_prob}
 
 def _resolve_prior_csv(csv_path):
-    """The Gower prior CSV default is the cluster checkout path. Off-cluster (local evals), fall back to
-    $GLASS_GOWER_PRIOR_CSV, then the repo-relative copy. The cluster behaviour is unchanged (the path exists)."""
+    """Resolve the Gower prior CSV: csv_path if it exists, else $GLASS_GOWER_PRIOR_CSV, else the repo copy."""
     if csv_path and os.path.exists(csv_path):
         return csv_path
     env = os.environ.get("GLASS_GOWER_PRIOR_CSV")
@@ -113,28 +116,19 @@ def _resolve_prior_csv(csv_path):
 
 
 def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer/kids-legacy-sbi/data/gower_st/PKDGRAV3_on_DiRAC_DES_330.csv", preset_overrides=None):
-    """Build the Gower Street prior in *scaled* space ([0,1]^D).
+    """Build the Gower Street prior in scaled space ([0,1]^D).
 
-    - Empirical (flow) prior is trained/loaded for the subset of params not
-      covered by the paper's analytic priors.
-    - Known (analytic) priors from the paper are appended in the same order as
-      they appear in `params`.
+    An empirical flow covers the params without an analytic paper prior. The analytic priors
+    follow in `params` order.
     """
 
     csv_path = _resolve_prior_csv(csv_path)
     params = list(params)
     known_priors = build_gower_paper_known_priors()
-    # Model-aware IA priors override the static (NLA-M) entries: NLA / NLA-z / TATT carry
-    # different priors (and b_z / b_src), disambiguated by which companion param is present.
+    # Model-aware IA priors override the static NLA-M entries, chosen by the companion param.
     known_priors = {**known_priors, **ia_marginal_priors(params)}
-    # Marginalised galaxy bias (BGP): b_g_bin* are analytic truncated Gaussians. Without this they
-    # fall through to the empirical flow, which is trained on the Gower Street CSV — that file has
-    # no b_g columns, so this is the difference between a correct prior and a hard failure.
-    # ⚠️ kappa-AWARE. The b_g prior WIDTH is a property of the store: the simulator draws
-    # b_i ~ N(mean_i, kappa*sigma_i) truncated at +-3*kappa*sigma_i. Hardcoding kappa=1 here put
-    # 58.5 % of the kappa=2 test truths OUTSIDE the sampler's b_g support and produced a spurious
-    # 0.2476 TARP calibration error. kappa is recovered from the caller's own preset_overrides, so
-    # the prior can never disagree with the boxes the model was scaled with.
+    # b_g_bin* are analytic truncated Gaussians whose width kappa is recovered from the caller's
+    # preset_overrides, so the prior matches the model's boxes.
     _bg_kappa = _infer_galaxy_bias_kappa(preset_overrides)
     known_priors = {**known_priors, **galaxy_bias_marginal_priors(params, kappa=_bg_kappa)}
 
@@ -143,14 +137,11 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
     flow_params = [p for p in params if p not in extra_priors]
 
     preset = _merged_preset(preset_overrides)
-    # Full scaler used to scale analytic priors into [0,1]
     full_scaler = _build_cosmo_preset_scaler(preset, params)
 
-    # Every parameter analytic (e.g. a b_g-only theta): no empirical flow to train -- the prior is
-    # the product of the analytic marginals.
+    # With every parameter analytic there is no flow: the prior is the product of the marginals.
     flow = None
     if flow_params:
-        # Flow scaler only needs the flow parameter subset
         flow_scaler = _build_cosmo_preset_scaler(preset, flow_params)
         flow = train_or_load_gower_prior(
             csv_path=csv_path,
@@ -168,10 +159,7 @@ def build_gower_prior(params, csv_path = "/home/asaoulis/projects/glass_transfer
     return prior
 
 
-# ----------------------- Deterministic per-sim cosmology sampling -----------------------
-# Used by the GLASS simulator to draw a fixed cosmology per sim_id so that many analysis
-# variates (NLA-M, NLA-z, clustering, post-proc) share identical cosmologies — and so the
-# expensive CAMB Cls can be cached per sim_id (see src/cosmology/mpi_camb.compute_or_load_glass_cls).
+# --- deterministic per-sim cosmology sampling ---
 
 def _derive_cosmo_seed(base_seed, sim_num):
     """Stable 32-bit seed from (base_seed, sim_id) for reproducible per-sim cosmology draws."""
@@ -182,15 +170,10 @@ def _derive_cosmo_seed(base_seed, sim_num):
 def make_seeded_cosmo_sampler(prior, column_names, scaler):
     """Wrap a scaled-space ([0,1]^D) torch/sbi prior into a deterministic cosmology sampler.
 
-    Returns a callable ``sampler(sim_num, base_seed) -> dict[str, float]`` that:
-      - seeds torch + numpy deterministically from (base_seed, sim_id),
-      - draws ONE sample from ``prior`` (in scaled [0,1] space),
-      - un-scales each event dim to physical units via ``scaler`` (min/max looked up by name),
-        labelling the dims with ``column_names`` (the prior's event-dim order).
-
-    ``column_names`` must match the prior's event-dim order: for ``build_gower_prior`` /
-    ``build_flow_with_extras_prior`` this is ``flow_params + list(extra_priors)`` (no permutation);
-    for ``build_analytic_prior`` it is the requested ``params`` order (it wraps a PermutedDistribution).
+    Returns sampler(sim_num, base_seed) -> dict[str, float]: one draw seeded from
+    (base_seed, sim_id), un-scaled to physical units by name. column_names must follow the prior's
+    event-dim order: flow_params + list(extra_priors) for build_gower_prior, the requested params
+    for build_analytic_prior.
     """
     column_names = list(column_names)
     name_to_idx = {n: i for i, n in enumerate(scaler.parameter_names)}
@@ -224,10 +207,8 @@ def build_cosmo_param_sampler(
 ):
     """Deterministic per-sim cosmology sampler backed by the Gower Street flow prior.
 
-    Mirrors ``build_gower_prior``'s construction (analytic paper priors + empirical flow over the
-    remaining params), then wraps it via ``make_seeded_cosmo_sampler`` so a given
-    ``(sim_id, base_seed)`` always yields the same physical cosmology dict. ``params`` should be the
-    cosmology parameter names only (e.g. omega_m, sigma_8, ombh2, h, ns, w0, mnu).
+    Built as build_gower_prior and wrapped by make_seeded_cosmo_sampler. params holds the
+    cosmology parameter names only.
     """
     csv_path = _resolve_prior_csv(csv_path)
     params = list(params)
@@ -259,12 +240,7 @@ def build_cosmo_param_sampler(
 
 
 def _resolve_test_paths(test_loader):
-    """Best-effort recovery of the ordered test-file list backing a loader, so posterior samples can be
-    tagged with the sim/aug id of the test point each came from. Returns None if unavailable.
-
-    Walks common wrapper attributes: DataLoader.dataset, Subset-style ``.dataset`` AND
-    TransformingDataset's ``.base_ds`` (the original blind spot — wrapped H5 loaders never
-    resolved, so eval dumps silently lost their sim/aug ids)."""
+    """Ordered test-file list backing a loader, through .dataset and .base_ds wrappers, or None."""
     def _walk(ds, depth=0):
         if ds is None or depth > 3:
             return None
@@ -287,11 +263,10 @@ def _parse_aug_id(basename: str) -> int:
 
 
 def _save_posterior_samples(out_path, theta0s, samples, test_paths):
-    """Persist raw posterior samples + true params next to the eval json, tagged with per-test-point
-    sim/aug ids so runs can be checked for commensurability. theta0s ~ [N, D]; samples ~ [S, N, D];
-    the id arrays align with axis-N. Positional path alignment assumes NO corrupt-file skips (true for
-    the clean prebaked stores; H5CosmoDataset skips corrupt files, which would shift indices — guarded
-    by a length check). Failures are non-fatal — the metrics json is the primary artifact."""
+    """Save raw posterior samples and true params next to the eval json, with per-test-point sim/aug ids.
+
+    theta0s [N, D], samples [S, N, D], the id arrays align with axis N. Path alignment is
+    positional, guarded by a length check. Failures only warn."""
     try:
         theta_np = theta0s.detach().cpu().numpy() if hasattr(theta0s, "detach") else np.asarray(theta0s)
         samp_np = samples.detach().cpu().numpy() if hasattr(samples, "detach") else np.asarray(samples)
@@ -342,19 +317,9 @@ def evaluate_best_checkpoint(
 ):
     """Evaluate all matching run folders for an experiment.
 
-    Parameters
-    ----------
-    config : object
-        Experiment configuration (must have base_path, experiment_name, etc.).
-    test_loader : DataLoader
-        Test dataloader to attach to the model.
-    param_scaler : object
-        Cosmology parameter scaler (with inverse_transform_minmax).
-    reference_samples : np.ndarray or torch.Tensor, optional
-        Reference posterior samples for comparison.
-    model_builder : callable, optional
-        Custom function to build a model given (config, test_loader).
-        Defaults to src.ml.utils.build_model.
+    test_loader is attached to each model. param_scaler is the cosmology scaler.
+    reference_samples are optional reference posterior samples. model_builder(config, test_loader)
+    defaults to src.ml.utils.build_model.
     """
     print("Running evaluation for experiment:", config.experiment_name, flush=True)
     our_prior = build_gower_prior(
@@ -362,14 +327,11 @@ def evaluate_best_checkpoint(
         preset_overrides=_config_preset_overrides(config),
     )
     sampling_kwargs["prior"] = our_prior
-    # Optional override for the MCMC sampling pool size. Left unset (None) the sampler keeps its
-    # own default (36 workers), so every existing caller and every previously-run config is
-    # unaffected. An explicit caller-supplied `num_jobs` still wins.
+    # Optional MCMC pool size (config.sampling_num_jobs). A caller's num_jobs still wins.
     _sampling_num_jobs = getattr(config, "sampling_num_jobs", None)
     if _sampling_num_jobs is not None and "num_jobs" not in sampling_kwargs:
         sampling_kwargs["num_jobs"] = int(_sampling_num_jobs)
-    # If ensemble evaluation is active, run a single ensemble evaluation for the
-    # provided match_string (bound to repeat idx) and return early.
+    # Ensemble evaluation: one evaluation for config.match_string, then return.
     if is_ensemble_eval_active(config) and getattr(config, "match_string", None):
         match_string = config.match_string
         ensemble_model = build_ensemble_model_from_checkpoints(
@@ -392,7 +354,7 @@ def evaluate_best_checkpoint(
             metrics_payload = {**metrics, **eval_metrics}
             tarp_intervals = _pop_credible_intervals(metrics_payload)
 
-            # Save ensemble eval next to experiment folder (not per-run)
+            # The ensemble json goes in the experiment folder, not a run folder.
             experiment_path = f"{config.base_path}/checkpoints/{config.experiment_name}/"
             os.makedirs(experiment_path, exist_ok=True)
             results_path = os.path.join(
@@ -432,16 +394,13 @@ def evaluate_best_checkpoint(
         if os.path.isdir(os.path.join(experiment_path, d))
     ]
 
-    # only keep folders that have config.match_string in their name
     if hasattr(config, "match_string") and config.match_string:
         run_folders = [f for f in run_folders if config.match_string in f]
 
     print(f"Running eval on {config.experiment_name} with {len(run_folders)} runs")
 
-    # Default model builder if none provided
     if model_builder is None:
         def model_builder(cfg, loader):
-            # Build a fresh model with the given test loader
             model = build_model(cfg, test_dataloader=loader)
             model.to("cuda" if torch.cuda.is_available() else "cpu")
             model.eval()
@@ -451,19 +410,16 @@ def evaluate_best_checkpoint(
     for run_folder in run_folders:
         print(run_folder, flush=True)
 
-        # Find best checkpoint file and validation loss in this run folder
         best_checkpoint, best_val_loss = find_best_checkpoint(run_folder)
         if best_checkpoint is None:
             print(f"No valid checkpoint found in run folder: {run_folder}")
             continue
 
-        # Temporarily set checkpoint_path on a shallow copy of the config to avoid
-        # mutating the caller's config in-place across runs.
+        # A shallow copy, so the caller's config keeps its checkpoint_path across runs.
         from copy import copy
         cfg_for_run = copy(config)
         cfg_for_run.checkpoint_path = best_checkpoint
 
-        # Build and prepare model using the provided or default model_builder
         model = model_builder(cfg_for_run, test_loader)
 
         if model is None:
@@ -501,11 +457,7 @@ def evaluate_best_checkpoint(
 def load_best_model_and_build_posterior(config, ds_string_match="", data_parameters=None):
     """Load the single best model across all matching run folders.
 
-    Instead of loading a model per run folder and comparing their validation
-    losses, we now:
-      1. Scan all (matching) run folders for their best checkpoint and loss
-         using `find_best_checkpoint`.
-      2. Select the *global* best checkpoint across all these runs.
+    Only the globally best checkpoint (by find_best_checkpoint) is instantiated.
     """
     patterns = [ f"{config.base_path}/checkpoints/{config.experiment_name}/run_{config.experiment_name}",
                 f"{config.base_path}/checkpoints/{config.experiment_name}/{config.experiment_name}",
@@ -526,7 +478,6 @@ def load_best_model_and_build_posterior(config, ds_string_match="", data_paramet
     global_best_val_loss = float("inf")
     global_best_run_folder = None
 
-    # First pass: only look at checkpoint files / losses, do not instantiate models
     for run_folder in run_folders:
         if ds_string_match and ds_string_match not in run_folder:
             continue
@@ -543,7 +494,6 @@ def load_best_model_and_build_posterior(config, ds_string_match="", data_paramet
         print("No valid checkpoints found.")
         return None
 
-    # Second pass: actually construct the model only for the globally best run
     model, best_model_path, _ = load_best_checkpoint_model(
         config, global_best_run_folder, data_parameters
     )
@@ -552,7 +502,7 @@ def load_best_model_and_build_posterior(config, ds_string_match="", data_paramet
         print(
             f"Loaded best model from {best_model_path} with val loss {global_best_val_loss}"
         )
-        scalers = None  # keep previous behaviour (scalers not used/returned yet)
+        scalers = None
         return model, scalers, best_model_path
 
     print("Failed to load model for the best checkpoint.")
