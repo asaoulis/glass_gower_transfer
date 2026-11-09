@@ -1,25 +1,9 @@
-"""Tier-2: OOD score -> posterior-bias probability tables, from the production misspecification
-matrix of the NPE encoder pack ``gower_npe_finetune_nla_m_bgp_z8_ens1`` (5 independently seeded
-encoders x 7 Gower variates).
+"""Tier-2: OOD score -> posterior-bias probability tables, from the misspecification matrix of an
+NPE encoder pack (5 seeded encoders x the Gower variates).
 
-Per (variate, encoder repeat, event) row:
-  z_omega_m, z_sigma_8      (theta0 - posterior mean)/posterior std   from misspec_posterior_moments
-  z_S8                      same for S_8 = sigma_8 sqrt(Omega_m/0.3), from the FULL sample dump
-  knn_p                     that encoder's summary-space kNN right-tail p vs its ID null (summaries npz)
-  meanp                     5-encoder mean-p combiner, recalibrated (phase6 npz; event-level)
-  kl                        cross-encoder symmetric diag-Gaussian KL disagreement (event-level)
-
-Two detector axes are tabulated: ``meanp`` (kNN family) and ``kl``. For each we bin the score,
-and per bin report -- with COSMOLOGY-block bootstrap CIs (rows are ~8 correlated augmentations
-per cosmology) -- E[z], E[|z|], and P(|z| > t) for t in {0.3, 0.5, 1.0} for Omega_m, sigma_8, S_8,
-next to the in-distribution reference value of P(|z| > t) in the SAME bin (a calibrated posterior
-already has P(|z|>1) ~ 0.32; only the EXCESS is evidence of bias). Also the exceedance version
-P(|z| > t | score >= s) and the inverse reading s*(t, q): the smallest score cut at which
-P(|z| > t | score >= s*) >= q.
-
-Pooling: all variates enter with EQUAL weight per event (the mixture weights are a choice, not a
-measurement; per-variate tables are written alongside). The tables are calibrated on the NPE
-compressor's posteriors and applied as a PROXY to the NLE arms' posteriors (DECISIONS.md).
+Rows per (variate, repeat, event) carry z_omega_m, z_sigma_8, z_S8, knn_p, meanp and kl. Each
+detector is binned, and per bin E[z], E[|z|] and P(|z| > t) get cosmology-block bootstrap CIs next
+to the in-distribution value in the same bin. Variates pool with equal weight per event.
 """
 from __future__ import annotations
 
@@ -32,27 +16,11 @@ import numpy as np
 
 PARAMS_OF_INTEREST = ("omega_m", "sigma_8", "S8")
 
-# ADOPTED Tier-2 KL statistic (user decision 2026-09-10; DECISIONS T2-6, artifacts/KL_SUBSET_STUDY.md).
-# The production detector was the FULL 9-param diagonal-Gaussian KL. It is replaced by the
-# full-COVARIANCE symmetric KL over (Omega_m, sigma_8): the diagonal form discards the
-# Omega_m-sigma_8 correlation (rho ~ -0.84), which is where the kappa=2 galaxy-bias signal lives --
-# every single-dimension AUROC for that variate is ~0.5 while the correlated statistic reaches
-# 0.661. It beats the old detector on EVERY variate that carries signal with no loss anywhere
-# (nla +0.009, nla_z +0.019, gbk2 +0.124). Set to "full" to restore the previous behaviour.
 ADOPTED_KL = "om_s8_fullcov"
 
-# ...but the winner is PACK-DEPENDENT, measured 2026-09-10 (KL_SUBSET_STUDY.md sections 2 and 3).
-# On the 2-pt (bandpower) pack the FULL 9-param diagonal KL is best and every variant is worse
-# (nla 0.929 vs 0.917 for om_s8_fullcov, nla_z 0.936 vs 0.932), because the kappa=2 galaxy-bias
-# signal that om_s8_fullcov recovers on the maps is simply ABSENT from the bandpowers -- b_g
-# cancels there, so no estimator can find it (2-pt gbk2 AUROC = 0.500 under every variant).
-# Bias tables are built per pack, so the two may legitimately differ; what must never differ is a
-# table and the observation reading looked up in it (DECISIONS T2-8), which the stamp enforces.
 ADOPTED_KL_BY_PACK = {
     "gower_npe_finetune_band_nla_m_bgp_ens9": "full",     # M17, 2-pt only
-    "gower_npe_finetune_band_nla_m_vdq_ens9": "full",     # VDQ 2-pt pack, same reasoning
-    # VDQ field pack: the global default, registered EXPLICITLY (2026-10-19) so the stamp is a
-    # lookup, not a fall-through; matches obs_score_A2vdq.json kl_params.
+    "gower_npe_finetune_band_nla_m_vdq_ens9": "full",     # VDQ 2-pt pack
     "gower_npe_finetune_nla_m_vdq_z8_ens1": "om_s8_fullcov",
 }
 
@@ -90,17 +58,9 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
               match_template: str = "ncosmo300_{r}", kl_params: str = ADOPTED_KL) -> Dict[str, np.ndarray]:
     """Join everything by (variate, test_files basename). Returns column arrays.
 
-    ``match_template`` names the per-repeat filename tag; it is ``ncosmo300_{r}`` for the
-    field-level pack AND for the 2-pt M17 pack (confirmed from the misspec job log -- do NOT infer
-    it from ``match_num_cosmo``).
-
-    ``kl_params`` selects which ensemble-disagreement statistic fills the ``kl`` column:
-    ``full`` (the production default, byte-identical to reading ``kl_score`` off the npz) or any
-    key of ``src.ml.eval.kl_subsets.ALL_SCORES``. See ``artifacts/KL_SUBSET_STUDY.md``; a table
-    built with one choice must never be read against an observation scored with another.
-
-    Summaries are OPTIONAL: a KL-axis-only pack (no kNN summary extraction, e.g. M17) yields NaN
-    ``knn_score``/``knn_p``/``meanp`` and a printed warning rather than a crash.
+    match_template is the per-repeat filename tag. kl_params picks the `kl` column: 'full' (the
+    stored kl_score) or a key of kl_subsets.ALL_SCORES. A table must be read only against an
+    observation scored with the same choice. Without summaries, the kNN columns are NaN.
     """
     names, lo, hi = _scaler_box(experiment)
     iom, is8 = names.index("omega_m"), names.index("sigma_8")
@@ -109,7 +69,7 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
     for v in variates:
         mdir = os.path.join(base_dir, "misspec", v)
         sdir = os.path.join(base_dir, "summaries", v)
-        # event-level: KL disagreement + phase6 meanp
+        # Event level: KL disagreement and phase6 meanp.
         kl_by_file, meanp_by_file = {}, {}
         for f in glob.glob(os.path.join(mdir, "misspec_repeat_disagreement_*.npz")):
             d = np.load(f)
@@ -151,9 +111,7 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
                     zs = (S80 - S8.mean(0)) / S8.std(0)
                     zmap = dict(zip(sfiles[:n], zs))
                     zS8 = np.array([zmap.get(f, np.nan) for f in files])
-            # X-1: an ensemble pack writes summaries_<match>_m<j>.npz, not the bare name. Resolve the
-            # SAME member-0 representative the obs-score reading and its null use (one shared helper,
-            # src/observation/cluster_modes.py); the bare file wins when it exists (ens1 packs).
+            # An ensemble pack writes summaries_<match>_m<j>.npz: use the member-0 representative.
             from src.observation.cluster_modes import _representative_summaries
             spath = (_representative_summaries(sdir, match_template.format(r=r))
                      or os.path.join(sdir, "summaries_%s.npz" % match_template.format(r=r)))
@@ -163,8 +121,6 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
                 knn_s = dict(zip(sfiles, s["ood_knn_score"]))
                 knn_p = dict(zip(sfiles, s["ood_knn_p"]))
             else:
-                # KL-axis-only pack (no summary extraction was run): NaN the kNN family rather
-                # than crash, so the KL table can still be built.
                 print("[tier2] no summaries at %s -- knn/meanp columns will be NaN" % spath, flush=True)
                 knn_s, knn_p = {}, {}
             for i, f in enumerate(files):
@@ -184,7 +140,7 @@ def load_rows(base_dir: str, experiment: str = "gower_npe_finetune_nla_m_bgp_z8_
 
 
 def _boot_cosmo(values: np.ndarray, sim_ids: np.ndarray, stat, n_boot: int = 300, seed: int = 0):
-    """Bootstrap ``stat(values)`` by resampling COSMOLOGY blocks."""
+    """68 % bootstrap interval of stat(values), resampling cosmology blocks."""
     rng = np.random.default_rng(seed)
     sims = np.unique(sim_ids)
     idx_by = {s: np.where(sim_ids == s)[0] for s in sims}
@@ -200,9 +156,8 @@ def _boot_cosmo(values: np.ndarray, sim_ids: np.ndarray, stat, n_boot: int = 300
 def bias_table(rows: Dict[str, np.ndarray], score: str, *, edges: Optional[Sequence[float]] = None,
                n_bins: int = 6, params: Sequence[str] = PARAMS_OF_INTEREST, thresholds: Sequence[float] = THRESHOLDS,
                in_dist: str = IN_DIST, n_boot: int = 200, seed: int = 0, lower_is_ood: bool = True) -> Dict:
-    """Bin ``score`` (a p-value: LOW = OOD; or KL: HIGH = OOD, pass lower_is_ood=False) and tabulate
-    the bias statistics per bin (pooled over variates, equal weight per row) with the in-dist
-    reference in the same bin, plus exceedance P(|z| > t | more-OOD-than s)."""
+    """Bin `score` (a p-value, low = OOD, or KL with lower_is_ood=False) and tabulate the bias
+    statistics per bin with the in-distribution reference, plus P(|z| > t | more OOD than s)."""
     s = rows[score]
     ok = np.isfinite(s)
     if edges is None:
@@ -244,7 +199,7 @@ def bias_table(rows: Dict[str, np.ndarray], score: str, *, edges: Optional[Seque
                                                  "excess": (pr - ref) if np.isfinite(ref) else float("nan")}
             row["per_param"][p] = entry
         table["bins"].append(row)
-    # exceedance + inverse reading
+    # Exceedance and inverse reading.
     exc = {}
     for p in params:
         z = rows[f"z_{p}"]
@@ -269,8 +224,7 @@ def bias_table(rows: Dict[str, np.ndarray], score: str, *, edges: Optional[Seque
 
 
 def lookup(table: Dict, score_value: float) -> Dict:
-    """The row of ``table`` an observed score falls in (the 'compare against the tabulated
-    scores' step of the protocol)."""
+    """The row of `table` an observed score falls in."""
     edges = table["edges"]
     b = int(np.digitize([score_value], edges)[0] - 1)
     b = min(max(b, 0), len(table["bins"]) - 1)
