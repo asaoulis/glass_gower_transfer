@@ -1,22 +1,10 @@
 #!/usr/bin/env python
-"""The unblinding figure set: one numbered folder that walks through every tier of the protocol
-with the numbers measured on the two mock-as-real controls (T = GLASS b_g=1 catalogue, known-OOD
-for the Gower nla_m cloud; S = held-out flagship mock, in-distribution).
+"""The unblinding figure set: one numbered folder that walks through every tier of the protocol.
 
-    PYTHONPATH=. python scripts/unblinding_figures.py --out-dir /data/alex/unblinding/figures \\
-        [--palette tol-muted] [--palette-options] \\
-        [--tier1 T=/data/alex/unblinding/tier1_T S=/data/alex/unblinding/tier1_S] \\
-        [--obs-score T=<obs_score_T.json> S=<obs_score_S.json>] [--plots-dir /data/alex/unblinding/plots_pilot]
+    PYTHONPATH=. python scripts/unblinding_figures.py --out-dir <dir> [--tier1 T=<dir> ...] [--obs-score T=<json> ...]
 
-Style: `src.viz.style` -- the paper's scienceplots science+muted context (serif, LaTeX, 18 pt
-drawn at ~6 in per panel), colours pinned by role (real = black, mock ensembles = light grey,
-labels T/S and the six arms by key). `--palette` swaps the cycle without changing any role;
-`--palette-options` additionally renders the Tier-1/2 panels in every option under
-`palette_options/<name>/` plus a synthetic swatch sheet `00_style_palette_options.png`.
-Captions live in README.md (figures carry panel letters, not explanatory titles).
-
-Blind-safe by construction: every input is a Tier-1/Tier-2 scalar file, the Tier-2 row cache
-(mock rows only), or an already-standardised Tier-3 figure. No posterior sample is opened here.
+Colours are pinned by role through src.viz.style, and the captions live in README.md. Every input
+is a Tier-1/2 scalar file, the Tier-2 mock row cache or a standardised Tier-3 figure.
 """
 from __future__ import annotations
 
@@ -78,9 +66,7 @@ def _save(fig, out_dir: Path, name: str, index: list, caption: str):
     print(f"  wrote {name}")
 
 
-# ---------------------------------------------------------------------------------------------
-# 00 palette swatches (synthetic data only)
-# ---------------------------------------------------------------------------------------------
+# --- 00 palette swatches (synthetic data only) ---
 def fig_swatches(out_dir, index):
     rng = np.random.default_rng(3)
     names = list(S.PALETTES)
@@ -135,9 +121,7 @@ def fig_swatches(out_dir, index):
           "Tier-1/2 null-histogram convention). Data are synthetic Gaussians.")
 
 
-# ---------------------------------------------------------------------------------------------
-# 01 protocol overview
-# ---------------------------------------------------------------------------------------------
+# --- 01 protocol overview ---
 def fig_overview(out_dir, index):
     tiers = [
         ("Tier 0", "observation", "catalogue $\\rightarrow$ bandpowers,\nB-modes, E-maps with the\nmaster's own functions\n(bit-identity gate)\n$\\rightarrow$ baked stores per arm", R("reference")),
@@ -167,9 +151,7 @@ def fig_overview(out_dir, index):
           "The five tiers of the protocol, left to right, with the pre-registered stop rules and the blind rule.")
 
 
-# ---------------------------------------------------------------------------------------------
-# 02 tier 0 fidelity
-# ---------------------------------------------------------------------------------------------
+# --- 02 tier 0 fidelity ---
 def fig_tier0(out_dir, index):
     if GATE0_JSON:
         # one fresh gate carries both the per-dataset residuals and its own float32 jitter floor
@@ -218,9 +200,7 @@ def fig_tier0(out_dir, index):
     _save(fig, out_dir, "02_tier0_processing_fidelity.png", index, cap)
 
 
-# ---------------------------------------------------------------------------------------------
-# 03-06 tier 1
-# ---------------------------------------------------------------------------------------------
+# --- 03-06 tier 1 ---
 def fig_tier1_bandpowers(res, out_dir, index):
     labels = list(res)
     with S.context(PAL, font_size=14):
@@ -344,9 +324,7 @@ def fig_tier1_power(res, out_dir, index):
           "fixed-b_g clouds sit at chance, as the Tier-2 study found for the compressor.")
 
 
-# ---------------------------------------------------------------------------------------------
-# 07-08 tier 2
-# ---------------------------------------------------------------------------------------------
+# --- 07-08 tier 2 ---
 def _load_rows(path):
     z = np.load(path, allow_pickle=True)
     return {k: z[k] for k in z.files}
@@ -379,8 +357,6 @@ def fig_tier2_detectors(rows, scores, out_dir, index):
         kl = rows["kl"][idm]; kl = kl[np.isfinite(kl)]
         ax.hist(kl, bins=50, range=(0, 1.5), color=R("mock"), alpha=0.75, density=True, label=T("in-distribution mocks"))
         for lab, sc in scores.items():
-            # rows["kl"] is the pack's ADOPTED statistic (tier2.load_rows kl_params); the obs line must be
-            # the same one -- sc["kl"] is the full diagonal KL (fixed 2026-10-08)
             v = sc.get("kl_adopted", sc.get("kl"))
             if v is not None:
                 ax.axvline(v, color=LC(lab), lw=2.4, label=T(f"label {lab}: KL ({sc.get('kl_params', 'full')}) = {v:.2f}"))
@@ -438,9 +414,7 @@ def fig_tier2_bias(rows, scores, out_dir, index):
           "The in-distribution reference is 0.62 for a calibrated posterior.")
 
 
-# ---------------------------------------------------------------------------------------------
-# 09-12 tier 3 (copies of the standardised figures made by scripts/plot_blind_posteriors.py)
-# ---------------------------------------------------------------------------------------------
+# --- 09-12 tier 3 (copies of the standardised figures made by scripts/plot_blind_posteriors.py) ---
 TIER3 = [("plotB_S", "09_tier3_widths_vs_matched_mocks_S",
           "Tier 3, Plot B: the flagship (pooled) posterior of label S in its own standardised frame against "
           "near-fiducial matched mocks standardised with the flagship's width and their own mean. Sizes and "
@@ -503,9 +477,8 @@ def main(argv=None):
     ap.add_argument("--real-run", default=None, metavar="LABEL",
                     help="the real-data run: README/captions describe label LABEL as the real catalogue, not the T/S controls")
     ap.add_argument("--label-colours", nargs="*", default=[],
-                    help="LAB=role overrides for runs carrying more than one observation "
-                         "(roles: real, flagship, mock, reference, stop, pass, T, S). Unset "
-                         "labels keep the pinned T/S-and-black behaviour.")
+                    help="LAB=role overrides for runs with more than one observation, with roles real, "
+                         "flagship, mock, reference, stop, pass, T and S.")
     args = ap.parse_args(argv)
     global REAL_RUN, GATE0_JSON, TIER2_TABLES
     REAL_RUN, GATE0_JSON, TIER2_TABLES = args.real_run, args.gate0_json, args.tier2_tables
