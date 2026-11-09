@@ -1,3 +1,8 @@
+"""Train one named experiment: python train.py <experiment_name>.
+
+Merges every config module into the registry, builds the config from config.default plus the
+experiment's override dict, and calls train_model once per max_trainval_cosmos value.
+"""
 import sys
 from config.default import get_default_config
 from config.experiments import experiments
@@ -9,20 +14,16 @@ from config.kids_legacy_bgp import kids_legacy_bgp_experiments
 from config.kids_legacy_vdq import kids_legacy_vdq_experiments
 from config.kids_legacy_hos import kids_legacy_hos_experiments
 from src.ml.models.utils import train_model
-# import os
-# os.environ["MASTER_ADDR"] = "127.0.0.1"
-# os.environ["MASTER_PORT"] = "29500"  # or any free port
 import os
 
 experiments.update(paper_2026_experiments)
-experiments.update(kids_legacy_experiments)  # Merge KiDS-Legacy NLA-M configs
-experiments.update(kids_legacy_novd_experiments)  # Merge NO-VD production suite configs
-experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
-experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
-experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
-experiments.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
+experiments.update(kids_legacy_experiments)
+experiments.update(kids_legacy_novd_experiments)
+experiments.update(euclid_experiments)
+experiments.update(kids_legacy_bgp_experiments)
+experiments.update(kids_legacy_vdq_experiments)
+experiments.update(kids_legacy_hos_experiments)
 
-# ... rest of your code ...
 def retrieve_first_list_from_experiments(experiments):
     list_key = None
     list_values = None
@@ -48,22 +49,18 @@ if __name__ == "__main__":
     config = get_default_config()
     config.experiment_name = experiment_name
 
-    # Set all non-list values directly on the config, but skip max_trainval_cosmos
     for key, val in experiment_config.items():
         if key == "max_trainval_cosmos":
             continue
         setattr(config, key, val)
 
-    # Submit-time override: REPEAT_INDICES env (set by the gatekeeper from run_remote --repeat-indices)
-    # OVERRIDES config.repeat_indices, so the SAME experiment name can be split across multiple parallel
-    # jobs (e.g. "0,1" and "2,3") while keeping all repeats under one checkpoints/<exp>/ dir — required
-    # for correct per-repeat band loading + ensemble loading. No config edit/re-sync per split.
+    # REPEAT_INDICES (env) overrides config.repeat_indices so one experiment can run as several
+    # parallel jobs under one checkpoint dir.
     _ri = os.environ.get("REPEAT_INDICES", "").strip()
     if _ri:
         config.repeat_indices = [int(x) for x in _ri.split(",") if x.strip() != ""]
         print(f"[train.py] REPEAT_INDICES override -> repeat_indices={config.repeat_indices}")
 
-    # Handle max_trainval_cosmos separately so it can be either scalar or list in experiments.py
     max_tv = experiment_config.get("max_trainval_cosmos", None)
     if isinstance(max_tv, (list, tuple)):
         for n_cosmo in max_tv:
