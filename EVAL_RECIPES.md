@@ -7,7 +7,7 @@ extension of the misspecification mode:
 |---|---|---|
 | `list` | Standard in-distribution eval: loop experiment names, rebuild config/loaders exactly as training (same match_string/repeat logic), evaluate best checkpoints | `evaluation_results.json` + `tarp_credible_intervals.json` per run folder; `ensemble_evaluation_results_<match>.json` + `ensemble_posterior_samples_<match>.npz` at the experiment level for `ensemble_repeats>1` configs |
 | `misspec` | One trained model × the TEST split of every Gower variate dataset, with the ORIGINAL training scalers injected (never refit per variate) | per variate under `checkpoints/<exp>/misspec/<variate>/`: `misspec_evaluation_results_<match>.json`, `misspec_tarp_credible_intervals_<match>.json`, `misspec_posterior_samples_<match>.npz` |
-| `misspec --repeat-indices 0 1 …` | Full misspec pass per training repeat + per-event CROSS-REPEAT posterior disagreement (mean pairwise symmetric diag-Gaussian KL — the `ensemble_uncertainty.py` formulation) | additionally `misspec_repeat_disagreement_<matches>.{json,npz}` per variate (per-event KL scores + per-repeat posterior moments); summary lines carry `cal_full`, `cal_om_s8_w0`, `repeat_kl_mean` side by side |
+| `misspec --repeat-indices 0 1 …` | Full misspec pass per training repeat + per-event CROSS-REPEAT posterior disagreement (mean pairwise symmetric diag-Gaussian KL) | additionally `misspec_repeat_disagreement_<matches>.{json,npz}` per variate (per-event KL scores + per-repeat posterior moments); summary lines carry `cal_full`, `cal_om_s8_w0`, `repeat_kl_mean` side by side |
 
 ## CLI
 
