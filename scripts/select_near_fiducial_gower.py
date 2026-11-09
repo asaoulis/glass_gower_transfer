@@ -1,38 +1,9 @@
 #!/usr/bin/env python3
 """Pick the ~10 most near-fiducial Gower-Street cosmologies and write the lock file.
 
-WHY
----
-The Gower suite is a FIXED set of N-body runs, so "choose a realistic cosmology" means *select*
-from what exists, never sample. For the matched-nuisance comparison we want the arms compared at
-cosmologies a reader recognises as realistic: w close to -1 and (Omega_m, sigma_8) close to Planck.
-
-WHICH POOL
-----------
-The candidates are restricted to `config/fixed_test_sets/gower_test_ids_100.json`. Those 100 ids are
-a verified SUBSET of the 200-id lock, which the `nla_m` flagship held out entirely and which every
-`_hf` variate arm locks into its own test split. Selecting from the 100 therefore guarantees that
-**every arm has held out every cosmology we plot** -- no arm is being scored on something it trained
-on. Selecting from the full 193..781 range would NOT be safe.
-
-METRIC
-------
-    filter  |w + 1| <= --w-tol
-    rank    d = sqrt( ((Omega_m - 0.315)/0.05)^2 + ((sigma_8 - 0.811)/0.06)^2 )
-
-Planck-2018 TT,TE,EE+lowE+lensing central values; the denominators are deliberately loose "how many
-interesting-scale steps away" units, not error bars -- they only set the relative weight of the two
-axes in the ranking.
-
-⚠️ The other parameters (h, n_s, m_nu, Omega_b h^2) are NOT constrained: the suite is fixed, so
-whatever they are at the selected ids is what we get. Each mock carries its own `theta0`, so the
-posteriors stay correct -- but the figure must be described as "ten near-fiducial cosmologies", never
-"the same cosmology". The residual spread is printed so it can be quoted.
-
-USAGE
------
-    python scripts/select_near_fiducial_gower.py            # print only
-    python scripts/select_near_fiducial_gower.py --write    # + write the lock file
+Candidates come only from config/fixed_test_sets/gower_test_ids_100.json, which every arm holds out.
+They are filtered on |w + 1| <= --w-tol and ranked by distance from Planck-2018 (Omega_m, sigma_8).
+Usage: python scripts/select_near_fiducial_gower.py [--write]
 """
 import argparse
 import json
