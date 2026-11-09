@@ -1,40 +1,8 @@
-"""``eval.py --mode pool`` — build and score the POOLED (repeat-concatenated) posterior.
+"""eval.py --mode pool: build and score the pooled (repeat-concatenated) posterior.
 
-Why it lives behind ``eval.py``: the gatekeeper's ``eval-submit`` / ``eval-cpu-submit`` pass
-``--args`` tokens straight through under a restricted charset (``[A-Za-z0-9][A-Za-z0-9_.-]*`` or
-``--[a-z-]*``; no ``/ * =``), so every cluster-side need becomes an ``eval.py`` mode with BARE
-NAMES mapped to paths in code. Experiment names and arm names are valid tokens; paths are not.
-
-Usage (mock / production dumps)
-    eval.py --mode pool --pool-arm nla_m --repeat-indices 0 1 2
-    eval.py --mode pool --experiments gower_nle_finetune_nla_m_bgp_z8_r0_ens9 <r1> <r2>
-
-Usage (observation / external dumps — the unblinding path)
-    eval.py --mode pool --pool-arm nla_m --repeat-indices 0 1 2 \\
-            --data-tag <label> --prior-mode kids_s8_analytic
-
-Usage (gates)
-    eval.py --mode pool --pool-arm nla_m --repeat-indices 0 1 2 --pool-check
-
-⚠️ Repeats are SEPARATE EXPERIMENT DIRECTORIES (``r{r}`` is inside the experiment name), so the
-input is a list of experiments, not a repeat sweep over one. ``--pool-arm`` + ``--repeat-indices``
-is sugar over exactly that list, resolved through ``arms.py`` so the arm table has one copy.
-
-Outputs land under ``checkpoints/pooled/<label>/`` — never inside a member's directory, so a
-pooled artifact can never be mistaken for, or overwrite, a per-repeat one:
-
-    checkpoints/pooled/<label>/pooled_posterior_samples[_<prior>].npz
-    checkpoints/pooled/<label>/pooled[_<prior>]_evaluation_results.json
-    checkpoints/pooled/<label>/pooled[_<prior>]_tarp_credible_intervals.json
-    checkpoints/pooled/<label>/[external/<tag>/]...          (observation path)
-
-and are fetchable with the existing pattern, e.g.
-``run_remote.py fetch --exp pooled --rel <label>``.
-
-Resources: no GPU needed. Submit with ``run_remote.py eval --cpu --partition CORES64`` (CORES40
-jobs vanish silently) and generous ``--mem-gb``: the production TARP bootstrap materialises
-``samples[:, idx, :]`` once per iteration, and at 3 x 8000 draws over ~2000 rows that temporary is
-several GB.
+The launcher passes only bare names, so arm and experiment names are mapped to paths here.
+Example: eval.py --mode pool --pool-arm nla_m --repeat-indices 0 1 2. Outputs go under
+checkpoints/pooled/<label>/, never inside a member's directory.
 """
 from __future__ import annotations
 
@@ -68,10 +36,8 @@ def _member_experiments(args) -> List[str]:
 def _match_for(args, experiment: str, index: int) -> str:
     """The eval match_string for one member.
 
-    ⚠️ NOT constructible from the repeat index alone (the `nla_m`-era chains carry `ncosmo300_<r>`
-    and later chains `ncosmoNone_<r>`), so it comes from the arm table when an arm was named. With
-    an explicit --experiments list there is no arm to consult, so the repeat is read out of the
-    experiment name's own `_r<N>_` field -- the name is the authority in that case.
+    From the arm table when an arm is named. Otherwise the repeat is read from the experiment
+    name's `_r<N>_` field.
     """
     from .arms import arm_match_string
     import re
@@ -87,7 +53,7 @@ def _match_for(args, experiment: str, index: int) -> str:
         raise SystemExit("cannot infer the repeat index from experiment %r -- use --pool-arm, "
                          "whose table carries the match strings explicitly" % experiment)
     r = int(m.group(1))
-    # both forms exist on disk; probe rather than guess
+    # Both forms exist on disk. _resolve_member_npz probes the other one.
     return "ncosmoNone_%d" % r if "_hf" in experiment or "bgpk2" in experiment else "ncosmo300_%d" % r
 
 
@@ -118,7 +84,6 @@ def _resolve_member_npz(base_path: str, experiment: str, match: str, *,
 def _label(args, experiments: Sequence[str]) -> str:
     if getattr(args, "pool_arm", None):
         return args.pool_arm
-    # longest common prefix of the member names, trimmed to a clean token
     pref = os.path.commonprefix(list(experiments)).rstrip("_r")
     return pref or "pooled"
 
@@ -130,8 +95,7 @@ def run_pool_mode(args):
     experiments = _member_experiments(args)
     data_tag = getattr(args, "data_tag", None)
     prior_mode = getattr(args, "prior_mode", None)
-    # `--prior-mode` defaults to "gower" for the external path; on the mock path the prior comes
-    # from the experiment's own boxes, so only pass it through when a tag was actually given.
+    # The mock path takes its prior from the experiment's own boxes, so prior_mode needs a data tag.
     prior_mode = prior_mode if data_tag else None
 
     matches = [_match_for(args, exp, i) for i, exp in enumerate(experiments)]
@@ -171,7 +135,7 @@ def run_pool_mode(args):
 
 
 def _run_gates(args, base_path, experiments, matches, members, out_dir, prior_mode):
-    """⭐ Construction is not evidence. Run the new path over data whose answer is already known."""
+    """Run the gates on data whose answer is known."""
     from .pooling import gate_pool_of_one
 
     work = os.path.join(out_dir, "gates")
