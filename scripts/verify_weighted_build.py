@@ -1,27 +1,10 @@
 #!/usr/bin/env python
-"""Validation gates for the weighted shear-map normalisation (spec §6), observation side.
+"""Validation gates for the weighted shear-map normalisation, observation side.
 
-    PYTHONPATH=. python scripts/verify_weighted_build.py --fixture /data/alex/unblinding/fixtures/smoke_regen_seeded
-        [--real-catalogue <h5/fits> --column-map <json>]   # gate 5 on the real catalogue
+    PYTHONPATH=. python scripts/verify_weighted_build.py --fixture <dir> [--real-catalogue <h5/fits> --column-map <json>]
 
-Gates (named as in .claude/plans/shear_normalisation_spec.md §6):
-  0  ingestion: a weight column is filtered with the same row mask as the data (two bad rows
-     planted), aligned, summarised; `lensfit` + an UNPATCHED estimator raises (never a silent
-     unweighted build); the 1-based TOMOBIN trap raises.
-  1  bit-identity: the fixture's sim catalogue with weights=None (--exact-rng) reproduces the
-     stored mock bit-for-bit. THE §0 proof; must pass before and after the protected patch.
-  2  weighted no-op: weights = ones(n) must match gate 1 to float tolerance   [needs the patch]
-  3  scale invariance: weights = alpha*w for alpha in {1e-3, 1e3}, identical  [needs the patch]
-  3b production rescale: apply_weights(rescale='neff') -- per-BIN w~ = w*sum(w)/sum(w^2) --
-     leaves the maps identical, and sum(w~) == N_eff per bin
-  4  Eq.-11 identity: wraps .claude/plans/verify_shear_normalisation.py
-  4b weights= path: weighted mean/counts maps vs analytic S_p/W_i, S_p/D_p; ones == None
-  5  W_i check: N_eff/N_pix per bin vs the mocks' mean count per pixel,
-     n_arcmin2 * 967.39 deg^2 * 3600 / N_pix = [20.888, 19.467, 17.673, 17.206, 15.876, 12.608],
-     to four figures (rel 5e-4); also n_eff/arcmin^2 vs src/KiDS/tomo.py (real catalogue only).
-     RE-PRE-REGISTERED 2026-09-24 (user): the old literal [15.002 .. 9.054] contradicted this
-     defining formula by x0.7182 in every bin (its sum w^2/sum w = 18.663 exceeds max w = 15.56).
-Gates 2-3 report SKIPPED (with the reason) until `make_alm_shear_convergence` accepts `weights=`.
+Gates: 0 ingestion, 1 bit-identity with weights=None, 2 ones no-op, 3 and 3b scale invariance,
+4 the Eq. 11 identity and 5 the W_i check against the mocks' mean count per pixel.
 """
 from __future__ import annotations
 
@@ -50,8 +33,6 @@ from src.observation.geometry import master_postproc_rng  # noqa: E402
 from src.KiDS.tomo import n_arcmin2 as _N_ARCMIN2  # noqa: E402
 from src.observation.catalogue_io import KIDS_AREA_DEG2, KIDS_NPIX_NORM  # noqa: E402
 
-# Gate-5 reference under normalisation (b): the mocks' mean count per pixel, COMPUTED from its
-# definition (re-pre-registered 2026-09-24; the literal below was an arithmetic slip, kept for the record).
 W_REF = [float(n) * KIDS_AREA_DEG2 * 3600.0 / KIDS_NPIX_NORM for n in _N_ARCMIN2]
 W_REF_SUPERSEDED = [15.002, 13.981, 12.693, 12.357, 11.402, 9.054]
 GATE5_TOL = 5e-4                                                  # "to four figures"
@@ -160,9 +141,6 @@ def gate1(fixture: str, tmp: str, reference: str = None):
     print(f"  [1] fidelity vs stored mock: pass={rep['pass']} worst rel rms={worst:.3e} "
           f"(a float32-stored fixture: the sc8/bandpower residuals are its storage floor)")
     ok = bool(rep["pass"])
-    # The bit-identity statement proper: the per-dataset residuals must be IDENTICAL to the
-    # pre-edit reference report of the same fixture (GATE 0a), i.e. today's edits changed nothing
-    # on the unweighted path.
     if reference and os.path.exists(reference):
         ref = json.load(open(reference))["per_dataset"]
         common = [k for k in ref if k in rep["per_dataset"]]
@@ -191,11 +169,7 @@ def gate2_3(cat: Catalogue, m, ref_path: str, tmp: str) -> bool:
         d = _max_rel(base, _maps(_build(cat, m, tmp, f"g3_{alpha:g}", weights=alpha * w)))
         print(f"  [3] alpha={alpha:g}: max rel diff {d:.3e}")
         ok &= d < 1e-10
-    # [3b] the PRODUCTION rescale, apply_weights(rescale='neff'): w~ = w * sum(w)/sum(w^2) PER
-    # TOMOGRAPHIC BIN. A per-bin rescale is a strictly stronger test than the global alpha above --
-    # a different factor in every bin would expose any cross-bin coupling in the estimator, and the
-    # real build relies on the maps being untouched so that only W_i and an exported count field
-    # change scale. Also checks that sum(w~) really is N_eff, which is the whole point.
+    # [3b] The production rescale is per tomographic bin: w~ = w * sum(w)/sum(w^2).
     import copy as _copy
     wcat = Catalogue(data=cat.data, weight=w.copy(), provenance=_copy.deepcopy(cat.provenance))
     wcat.provenance.setdefault("treatment", {})
