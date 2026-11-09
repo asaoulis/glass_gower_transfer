@@ -87,34 +87,13 @@ def _build_ell_filter(lmax_in, lmax_out, fwhm_arcmin=8.0, taper_start_frac=0.95,
     return fl
 
 def filter_EB_alms_and_make_maps(alm_list, nside_out=512, lmax_out=None, fwhm_arcmin=8.0, taper_start_frac=0.95, lmin=None, lcut=None):
-    """
-    Apply anti-alias filtering to (E,B) alms per tomographic bin and synthesize
-    E and B scalar maps directly at nside_out.
+    """Filter the per-bin (E, B) alms and synthesise E and B scalar maps at nside_out.
 
-    Parameters
-    ----------
-    alm_list : list of (almE, almB)
-        One (E,B) tuple per tomographic bin as returned by make_alm_shear_convergence.
-    nside_out : int
-        Target HEALPix resolution for output maps.
-    lmax_out : int or None
-        Target bandlimit. If None, use min(lmax_in, 3*nside_out-1, 1500).
-    fwhm_arcmin : float
-        Gaussian smoothing FWHM in arcmin (mitigate near-Nyquist modes).
-    taper_start_frac : float
-        Fraction of lmax_out at which to start cosine taper.
-    lmin : int or None
-        Optional lower hard ell-cut: a sharp top-hat that zeros all ell < lmin, applied on top
-        of the Gaussian beam + cosine taper. None disables it.
-    lcut : int or None
-        Optional upper hard ell-cut: a sharp top-hat that zeros all ell > lcut, applied on top of
-        the Gaussian beam + cosine taper (a Jeffrey-et-al-2025-style hard scale cut). None
-        disables it. With both lmin and lcut None this is smoothing-only (the original behaviour).
-
-    Returns
-    -------
-    E_maps_out, B_maps_out : np.ndarray
-        Arrays of shape (nbins, hp.nside2npix(nside_out)) with filtered maps.
+    alm_list holds one (almE, almB) pair per tomographic bin. The filter is a Gaussian beam of
+    fwhm_arcmin times a cosine taper from taper_start_frac * lmax_out to lmax_out (default
+    lmax_out = min(lmax_in, 3 * nside_out - 1, 1500)), with optional hard cuts zeroing
+    ell < lmin and ell > lcut.
+    Returns (E_maps, B_maps), each (nbins, npix_out).
     """
     if len(alm_list) == 0:
         return np.array([]), np.array([])
@@ -157,41 +136,17 @@ def make_alm_shear_convergence(
     rng=None,
     weights=None,
 ):
-    """Compute spin-2 shear alms (E/B) per tomographic bin.
+    """Spin-2 shear alms (E, B) per tomographic bin from the galaxy ellipticities, plus the
+    alms of a random-rotation (noise-only) copy.
 
-    This function maps galaxy ellipticities to HEALPix shear maps and then
-    computes spin-2 spherical harmonic coefficients.
-
-    Normalization modes
-    -------------------
-    - "counts" (default): divide by the *observed* number of galaxies per pixel (per-bin).
-      DES-Y3-style (Jeffrey+25 Eq. 10); cancels the source-clustering (1+b_g*delta)
-      modulation of the shear signal at first order.
-    - "mean": divide by the mean counts per pixel (former default; Hall & Tessore 2025).
-      First-order sensitive to source clustering — leaks b_g*delta*gamma into the maps
-      (see .claude/runs/eval-and-viz/investigate-galaxy-bias-issue).
-    - "expected": divide by n_arcmin2[i] * pixel_area_arcmin2 (legacy `make_alm`).
-    - "smoothed_counts": divide by the observed count map SMOOTHED with a Gaussian of
-      `smoothed_counts_fwhm_arcmin` (floored at 5 % of the mean occupied count). Like "counts"
-      it cancels the source-clustering modulation of the signal, but because the denominator no
-      longer carries the pixel-level Poisson fluctuation it also removes the 1/N convexity that
-      makes the *noise* amplitude depend on b_g -- the leakage channel a single per-mock rescale
-      cannot fix when the misspecification is spatially structured (e.g. variable depth).
-      Arithmetic mirrors the validated offline harness candidate `A3_smooth8`
-      (scripts/shear_replay/estimators.py, mode "smoothed_counts"); see
-      .claude/runs/kids-preparation/improved-shear-processing/artifacts/DUAL_STORE_A3S8.md.
-      Used ONLY for the second (map-branch) product; bandpowers stay on "counts".
-
-    Notes
-    -----
-    - `mask` is currently not applied to the maps; it is only used for the
-      effective pixel count when `normalization="mean"`.
-    - If you pass `rng` (np.random.Generator), it is used for the random
-      rotations; otherwise, the global `np.random` is used.
-    - `weights` (optional, len == len(catalogue)): per-galaxy weights w_g. The numerator becomes
-      sum_p w (e - <e>_w,i) and the count map sum_p w (float), so every normalization mode is the
-      weighted estimator of .claude/plans/shear_normalisation_spec.md §1. `weights=None` takes
-      exactly the historical path (int counts, unweighted mean) and is bit-identical to before.
+    The shear map is the per-pixel sum of (e - <e>) divided by the normalisation: "counts"
+    (default) the observed galaxies per pixel, which cancels the source-clustering modulation
+    (1 + b_g delta) at first order (Jeffrey et al. 2025); "mean" the mean count per pixel (Hall and
+    Tessore 2025), which keeps that modulation; "expected" n_arcmin2[i] times the pixel area;
+    "smoothed_counts" the count map smoothed with a Gaussian of smoothed_counts_fwhm_arcmin,
+    which also removes the 1/N dependence of the noise amplitude on b_g.
+    Shears are de-biased by 1 / (1 + m_bias[i]). mask only sets the pixel count for "mean".
+    weights (len(catalogue)) makes every sum a weighted sum; None is the unweighted estimator.
     """
 
     if return_shear:
@@ -206,11 +161,8 @@ def make_alm_shear_convergence(
     ell, emm = hp.Alm.getlm(lmax=lmax)
     alm_size = hp.Alm.getsize(lmax)
 
-    # Denominator memo for normalization="smoothed_counts". The signal map and the
-    # random-rotation map of a tomographic bin are built from the SAME galaxies at the SAME
-    # positions, so their count maps are identical and the (~17 s at nside 1024) smoothing is
-    # done once per bin instead of twice. ONE slot only: an nside-1024 float64 denominator is
-    # ~100 MB, so caching all six bins would cost 600 MB. Keyed by bin, validated on the total.
+    # One-slot memo of the smoothed-counts denominator, keyed by bin: the signal and the
+    # random-rotation maps share the same count map.
     _sc_denom = {}
 
     def _smoothed_count_denominator(count_map, bin_idx):

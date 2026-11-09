@@ -88,12 +88,6 @@ class Rotator:
             m_flip = np.zeros_like(m_rot)
             m_flip[ipix_f] = m_rot[ipix]
             m_rot = m_flip
-        # rotator = hp.Rotator(rot=[rot[0],0,0], deg=True)
-        # m_rot = rotator.rotate_map_alms(
-        #     m_rot,
-        #     lmax=self.lmax,
-        #     use_pixel_weights=True,
-        # )
 
         return m_rot
 
@@ -256,13 +250,9 @@ class BaseSimulator(ABC):
                         # --- Rotate delta and kappa once per rotation spec ---# preallocate lists to avoid append
 
             kappa = self.convergence.kappa.copy()
-            # from_convergence is exactly linear in its input map (map2alm -> almxfl filters ->
-            # alm2map_spin), and every IA model's convergence is kappa_IA = f_tomo * delta, so
-            # G(kappa + f*delta) = G(kappa) + f*G(delta): do the two spin-2 SHTs once per shell
-            # and form the per-bin shears by scalar combination (6 SHTs/shell -> at most 2).
-            # NOTE: the identity requires BOTH transforms to use the same lmax/discretized —
-            # keep both calls on the defaults (lmax = 3*nside-1 from the shared nside).
-            gamma_kappa, = glass.lensing.from_convergence(kappa, shear=True)
+            # from_convergence is exactly linear in its input map and kappa_IA = f_tomo * delta, so
+            # G(kappa + f*delta) = G(kappa) + f*G(delta): two spin-2 transforms per shell, both at the default lmax.
+            gamma_kappa, =glass.lensing.from_convergence(kappa, shear=True)
             gamma_delta = None  # lazy: only needed when some bin has f != 0 (also TATT's s)
             # --- Now loop over tomographic bins ---
             for tomo in range(self.nbins):
@@ -287,10 +277,9 @@ class BaseSimulator(ABC):
                 else:
                     kappa_i = kappa + f_ia * delta
                     gamma_rot = gamma_kappa + f_ia * gamma_delta
-                # Shear-level IA correction (default no-op; restricted-TATT/NLA-k adds its
-                # density-weighting term here since it is not a pure convergence). Pass the
-                # hoisted G(delta) as s so TATT does not redo that SHT (None -> hook computes it).
-                gamma_rot = self.systematics.apply_intrinsic_alignments_shear(
+                # Shear-level IA term (a no-op except for restricted TATT, whose density weighting is
+                # not a pure convergence); s = G(delta) is passed so the transform is not redone.
+                gamma_rot =self.systematics.apply_intrinsic_alignments_shear(
                     delta=delta, gamma=gamma_rot, z_eff=z_eff, tomo=tomo, s=gamma_delta
                 )
 
@@ -310,11 +299,9 @@ class BaseSimulator(ABC):
                             rng=self.rng
                         ):
                             gal_z = glass.galaxies.redshifts(count,self.ws[i], rng=self.rng)
-                            # Survey-frame positions (un-rotated): footprint-tied VD/PSF/shape
-                            # lookups use these; galaxy_shear keeps the rotated lon/lat (kappa_i /
-                            # gamma_rot live in the rotated-delta frame). unrotate uses no RNG, so
-                            # moving it up is a no-op for the default path's random sequence.
-                            lon_survey, lat_survey = unrotate_longitude_points(lon, lat, mask_rot_angle)
+                            # Survey-frame (un-rotated) positions feed the footprint-tied VD, PSF and shape
+                            # look-ups; galaxy_shear keeps the rotated lon/lat, the frame of kappa_i and gamma_rot.
+                            lon_survey, lat_survey =unrotate_longitude_points(lon, lat, mask_rot_angle)
                             gal_eps = self.systematics.sample_ellipticity(
                                 tomo, lon_survey, lat_survey, count, self.sigma_e[tomo], rng=self.rng
                             )
@@ -349,20 +336,6 @@ class BaseSimulator(ABC):
         return all_catalogues_lists
 
 
-
-    # def _apply_shear_bias(self, tomo, shear, lat):
-    #     # hemisphere split
-    #     north = np.abs(lat) < 15
-    #     south = ~north
-    #     c_bias = np.zeros_like(shear)
-    #     c_bias[north] = self.shear_bias['c1_north'][tomo] + 1j*self.shear_bias['c2_north'][tomo]
-    #     c_bias[south] = self.shear_bias['c1_south'][tomo] + 1j*self.shear_bias['c2_south'][tomo]
-    #     m = self.shear_bias['m_bias'][tomo]
-    #     E1 = (1 + m)*shear.real + c_bias.real
-    #     E2 = (1 + m)*shear.imag + c_bias.imag
-    #     return E1, E2
-
-
 class GowerStreetSimulator(BaseSimulator):
     """
     Simulator reading from a data directory of lightcone files.
@@ -390,26 +363,6 @@ class GowerStreetSimulator(BaseSimulator):
             shells.append(glass.shells.RadialWindow(za, wa, 0.5*(zmin+zmax)))
             steps.append(step)
         return steps, shells
-    # COPIED FROM GLASS CODE EXAMPLES
-    # def _load_shells(self, data_dir):
-    #     zvals = np.genfromtxt(
-    #         os.path.join(data_dir, 'z_values.txt'),
-    #         delimiter=',', names=True
-    #     )[::-1]
-    #     wht = np.ones_like
-    #     dz = 0.001
-    #     steps, shells = [], []
-    #     for row in zvals:
-    #         step, zmin, zmax = int(row['Step']), row['z_near'], row['z_far']
-    #         if zmin > 2: break
-    #         n = max(round((zmax - zmin) / dz), 2)
-    #         z = np.linspace(zmin, zmax, n, dtype=np.float64)
-    #         # za = np.linspace(zmin, zmax, 100)
-    #         w = wht(z)
-    #         zeff = np.trapezoid(w * z, z) / np.trapezoid(w, z)
-    #         shells.append(glass.shells.RadialWindow(z, w, zeff.item()))
-    #         steps.append(step)
-    #     return steps, shells
 
     def get_matter_fields(self):
         for i, step in enumerate(self.steps):

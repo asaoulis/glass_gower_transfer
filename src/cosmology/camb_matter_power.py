@@ -34,10 +34,7 @@ def get_camb_matter_cls(pars, lmax, zmin, zmax, dx):
     cosmo = Cosmology.from_camb(pars)
 
     zb = glass.shells.distance_grid(cosmo, zmin, zmax, dx=dx)
-    # Linear (overlapping triangular) radial windows. The Phase H7 tophat experiment (d5e7496) was
-    # reverted: tophat-vs-linear made no material difference to the bandpower validation, and the
-    # residual was root-caused to source clustering (positions_from_delta), not the window shape.
-    # ws = glass.shells.tophat_windows(zb)
+    # Linear (overlapping triangular) radial windows.
     ws = glass.shells.linear_windows(zb)
     updated_pars = update_pars_config(pars)
     camb_cls = glass.ext.camb.matter_cls(updated_pars, lmax, ws, limber=False, limber_lmin=1600)

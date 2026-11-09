@@ -113,9 +113,8 @@ class NLASystematics(BaseSystematics):
     def apply_intrinsic_alignments_shear(self, delta, gamma, z_eff, tomo, s=None):
         if self.nla.get('model', 'nla_m') != 'tatt':
             return gamma
-        # s = unit-amplitude NLA intrinsic shear (spin-2 tidal field of delta). The NLA part
-        # f_NLA*s is already in `gamma` (added via the convergence above); here we add the
-        # restricted-TATT density-weighting term f_NLA * b_src * (delta * s).
+        # s is the unit-amplitude NLA intrinsic shear; the NLA part f_NLA * s is already in gamma.
+        # This adds the restricted-TATT density-weighting term f_NLA * b_src * (delta * s).
         if s is None:
             s, = glass.lensing.from_convergence(delta, shear=True)
         return gamma + gamma_ia_density_weight(

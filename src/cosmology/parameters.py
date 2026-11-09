@@ -2,9 +2,7 @@ import numpy as np
 import camb
 from cosmology import Cosmology
 
-# --------------------
-# Constants and Defaults
-# --------------------
+# --- Constants and defaults ---
 
 DEFAULT_PARAMS = {
     "h": 0.6736,
@@ -36,9 +34,7 @@ DEFAULT_PARAMS = {
     "nz": 256,
 
 }
-# --------------------
-# Core Functions
-# --------------------
+# --- Core functions ---
 
 def compute_omegas(params):
     h = params["h"]

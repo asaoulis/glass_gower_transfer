@@ -98,34 +98,12 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 						 vd_table="pooled"):
 	"""Construct the variable-depth (VD) look-up objects.
 
-	``dndz_scale`` multiplies the per-VD-bin n(z) normalisation so it shares the SAME overall
-	galaxy-density scale as the ``tomo_nz`` passed in (the LOS depth fraction is the ratio
-	``dndz_vardepth / tomo_nz``, which must be scale-consistent). It is 1.0 in production; the local
-	smoke scales `tomo_nz` down by `n_eff_scale`, so it must pass the same factor here.
-
-	``dz_shift`` is the realised per-tomo photo-z shift already applied to ``tomo_nz`` (None: unshifted).
-	Each VD-bin n(z) is shifted by it plus that VD bin's mean offset from the tomo-bin mean.
-
-	``vd_table`` selects the count-contrast table: ``"pooled"`` (default, A') is one table for the whole survey
-	(`vd_contrast_xbar`, `vd_contrast_neff`); ``"patch"`` uses one table per KiDS patch on tail-resolved galaxy
-	quantiles (`vd_patch_xbar`, `vd_patch_neff`, split at `vd_patch_dec_split`); ``"quadcap"`` a per-patch quadratic
-	in the tracer (`vd_quadcap_*`), constant beyond the outermost calibration bins. Everything else is identical.
-
-	Follows the reference VD driver (Kiyam/kids-legacy-sbi @ 4a22578, scripts/kids_legacy_sim_vd_cluster.py)
-	except for the count contrast, which is the A' table (`vd_contrast_xbar`, `vd_contrast_neff`) evaluated
-	on the smoothed tracer, 0 where the tracer is 0, unclipped:
-
-	- load per-tomo VD tracer maps (`vd_map`) and their smoothed version (`vd_map_smooth`);
-	- build the count-contrast functions `n_contrast_vd` (mask-normalised so <contrast>_mask = 1,
-	  guaranteeing total galaxy counts match the no-VD case per tomo bin);
-	- build the per-pixel sigma_eps model `sigma_eps_var` (clipped quadratic, rescaled so
-	  <sigma_eps>_mask = sigma_e[i]);
-	- build the per-VD-bin n(z) `dndz_vd` (shape only: the amplitude enters once, via the contrast);
-	- assemble `AngularLosVariableDepthMask` + `VariableDepthShapeDispersion`. The LOS interpolation,
-	  sigma_eps and the returned `vd_map` use the raw tracer.
-
-	Returns:
-		(var_depth_mask, vd_shapes, vd_map)
+	dndz_scale multiplies the per-VD-bin n(z) so it is on the same density scale as tomo_nz (the
+	LOS depth fraction is the ratio dndz_vardepth / tomo_nz). dz_shift is the realised per-tomo
+	photo-z shift already applied to tomo_nz. vd_table selects the count-contrast table: "pooled"
+	(one table for the survey), "patch" (one per KiDS patch), "quadcap" (per-patch quadratic in the
+	tracer, constant beyond the calibration range) or "v2pr" (the VD v2 model with galaxy weights).
+	Returns (var_depth_mask, vd_shapes, vd_map); vd_map is the raw per-tomo tracer at the run nside.
 	"""
 	import healpy as hp
 	from .variable_depth import (
@@ -167,9 +145,8 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 	else:
 		vd_map_smooth = smooth_vd_tracer(vd_map, mask)
 
-	# Count-contrast: the A' n_eff table on the smoothed tracer (0 on holes), mask-normalised so
-	# <contrast>_mask = 1. That normalisation makes Sum_pix mask*contrast = Sum_pix mask exactly,
-	# guaranteeing total galaxy counts match the no-VD case at the per-tomo level.
+	# Count contrast: the n_eff table on the smoothed tracer (0 on holes), normalised so that
+	# <contrast>_mask = 1 and the total galaxy count per tomo bin matches the no-VD case.
 	if vd_table == "pooled":
 		_contrast_raw = [
 			lambda x, i=i: np.where(x > 0, np.interp(x, vd_contrast_xbar[i], vd_contrast_neff[i]), 0.0)
@@ -211,10 +188,9 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		for i in range(nbins)
 	]
 	if vd_weights is not None:
-		# N = rho n_eff: the PR multiplies the effective mask by the per-pixel boost AFTER the mask
-		# normalisation. Folding it into the (full-sky) contrast function keeps it inside var_depth_mask,
-		# so effective_mask rotates it with the footprint exactly like the depth map.
-		_boost = [vd_weights.boost_map(i) for i in range(nbins)]
+		# N = rho n_eff: the per-pixel boost multiplies the contrast after the mask normalisation, so
+		# effective_mask rotates it with the footprint like the depth map.
+		_boost =[vd_weights.boost_map(i) for i in range(nbins)]
 		_n_contrast_v2 = n_contrast_vd
 		n_contrast_vd = [lambda x, i=i: _n_contrast_v2[i](x) * _boost[i] for i in range(nbins)]
 
@@ -238,10 +214,9 @@ def build_variable_depth(data_dir, *, mask, tomo_nz, los_z_integration, zb_tuple
 		dz_mean = np.loadtxt(f"{data_dir}/nofzs/dz/Nz_biases.txt")
 		dz_mean_vd = np.genfromtxt(f"{data_dir}/nofzs/dz_tgweights/Nz_biases.txt")[nbins:].reshape(n_vardepth_bins, nbins)
 
-	# Per-VD-bin n(z): each VD bin reads its OWN recalibrated ascii (upstream `5a7c63e`). Shape only:
-	# normalised to n_arcmin2, so `get_los_fraction` is a pure n(z)-shape ratio. Note the VD index sits
-	# AFTER the ZB label here, and the stem carries the extra `_lab_filt_lab_` segment.
-	dndz_vd = np.zeros((nbins, n_vardepth_bins, len(los_z_integration)))
+	# Per-VD-bin n(z), one recalibrated ascii file per (tomo bin, VD bin), normalised to n_arcmin2 so
+	# the LOS fraction is a pure shape ratio.
+	dndz_vd =np.zeros((nbins, n_vardepth_bins, len(los_z_integration)))
 	for i in range(nbins):
 		for j in range(n_vardepth_bins):
 			filename = (
@@ -482,13 +457,9 @@ def save_results_h5(filename, cat_idx, cls_results, pixelised_results, cosmo_dic
 	print(f"Results saved to {outname}")
 
 
-# ----------------------------- Resume / completeness helpers -----------------------------
-# A mock is one HDF5 file named output_{sim}_out{outer}_rot{rot}_{cat_idx}.h5 (see
-# save_results_h5). A sim is the product of (outer_reps x rotation_specs) (outer,rot) blocks,
-# each holding files_per_block = inner_reps * len(mask_rotation_angles) cat_idx files. The master
-# simulator uses these to skip already-complete work on restart and to clean partials before
-# recomputing. The trailing-underscore globs avoid sim/outer/rot prefix collisions (e.g.
-# output_12_* must not match output_123_*).
+# --- Resume / completeness helpers ---
+# A sim is (outer_reps x rotation_specs) blocks of inner_reps * len(mask_rotation_angles) files
+# named output_{sim}_out{outer}_rot{rot}_{cat_idx}.h5; the underscores keep output_12_* from matching output_123_*.
 
 def count_block_files(output_dir, sim_num, outer_idx, rot_idx):
 	"""How many cat_idx files already exist for one (sim, outer, rot) block."""

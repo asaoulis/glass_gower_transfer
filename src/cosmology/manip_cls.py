@@ -22,24 +22,9 @@ def denoise_shear_cls(nbins, alm, alm_rand, lmax):
 
 
 def coord2hpx(lon, lat, nside, radec=True):
-    """
-    Convert a catalogue to a HEALPix map of number counts per resolution
-    element.
+    """HEALPix map (npix,) of the number of sources per pixel.
 
-    Parameters
-    ----------
-    lon, lat : (ndarray, ndarray)
-        Coordinates of the sources in degree. If radec=True, assume input is in the icrs
-        coordinate system. Otherwise assume input is glon, glat
-
-    nside : int
-        HEALPix nside of the target map
-
-    Return
-    ------
-    hpx_map : ndarray
-        HEALPix map of the catalogue number counts in Galactic coordinates
-
+    lon, lat are source coordinates in degrees (RA, Dec when radec=True, else glon, glat).
     """
 
     npix = hp.nside2npix(nside)
@@ -94,33 +79,13 @@ import healpy as hp
 
 def cat2mask_fractional_2(catalogue, nbins, frac_mask,
                                                          nside=None, return_diagnostics=False):
-    """
-    Build bin-dependent sampling masks W_p = 1 - exp(-mu_p) using a fractional mask
-    already at the target nside.
+    """Per-bin sampling masks W_p = 1 - exp(-mu_p) from a fractional mask at the target nside.
 
-    Parameters
-    ----------
-    catalogue : structured array or dict-like
-        Fields: 'RA' (deg), 'DEC' (deg), 'ZBIN' (int from 0..nbins-1)
-    nbins : int
-        number of tomographic bins
-    frac_mask : ndarray, length = hp.nside2npix(nside)
-        fractional mask values in [0,1] at the desired nside (the "true" mask)
-    nside : int, optional
-        healpix nside of frac_mask; deduced from length if None
-    return_diagnostics : bool
-        if True return (masks, mu_maps, rho_bins, fsky_bins)
-
-    Returns
-    -------
-    masks : ndarray shape (nbins, npix)
-        sampling masks in [0,1] for each bin
-    (optionally) mu_maps : ndarray (nbins, npix)
-        expected counts per pixel mu_p
-    rho_bins : ndarray (nbins,)
-        surface density used for each bin (gal/steradian)
-    fsky_bins : ndarray (nbins,)
-        effective f_sky (sum W_p * A_pix / 4pi) for each bin
+    catalogue has fields RA, DEC (degrees) and ZBIN (0..nbins-1); frac_mask is in [0, 1] with
+    length npix (nside deduced from it when None). mu_p is the expected count per pixel from the
+    bin's surface density rho (galaxies per steradian).
+    Returns masks (nbins, npix); with return_diagnostics also mu_maps (nbins, npix), rho_bins
+    (nbins,) and fsky_bins (nbins,) = sum W_p * A_pix / 4 pi.
     """
     if nside is None:
         nside = hp.npix2nside(len(frac_mask))

@@ -236,9 +236,8 @@ def load_camb_child_pickle(out_path, remove_after_load: bool = True):
 # ---------------- Persistent per-sim_id CAMB-Cls disk cache + guard ----------------
 from pathlib import Path as _Path
 
-# Cosmology parameters that fully determine the CAMB matter Cls (everything else in a
-# param_dict — a_ia/b_ia and CAMB defaults — does not change the spectra). These are the keys
-# the guard compares between a deterministically re-derived cosmology and a cached one.
+# The parameters that determine the CAMB matter Cls (IA parameters do not): the cache guard
+# compares these between a re-derived cosmology and a cached entry.
 COSMO_GUARD_KEYS = ("omega_m", "sigma_8", "ombh2", "h", "ns", "w0", "mnu")
 # Grid parameters the CAMB Cls also depend on; cached spectra are only valid for a matching grid.
 GRID_GUARD_KEYS = ("lmax", "zmin", "zmax", "dx")

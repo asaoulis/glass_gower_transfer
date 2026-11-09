@@ -1,11 +1,7 @@
 """Variable-depth (VD) look-up classes for galaxy-catalogue sampling.
 
-These three classes are copied **VERBATIM** from the reference implementation
-``kids-legacy-sbi/kids-legacy-sbi/kids_legacy_sim/catalogue.py`` (lines 15-176) so the VD effect
-is identical to the validated reference (except: ``vardepth_los_tracer`` is per tomo bin). They are
-pure look-up / sampling helpers (no edits to the forward model) and depend only on numpy + healpy.
-Construction of instances lives in ``src/cosmology/sim_utils.py:build_variable_depth``; the constants
-live in ``src/KiDS/variable_depth_config.py``.
+The classes follow the KiDS-Legacy reference implementation (kids_legacy_sim/catalogue.py), with
+the line-of-sight tracer per tomographic bin. Instances are built by sim_utils.build_variable_depth.
 """
 import numpy as np
 import healpy as hp
