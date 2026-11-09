@@ -1,22 +1,8 @@
-"""Checkpoint evaluation entrypoint.
+"""Evaluation entry point: python eval.py --mode <mode> [options].
 
-Two modes:
-- ``list``    — the standard evaluation: loop over experiment names, rebuild config/dataloaders
-                exactly as training did (same match_string/repeat logic), and write
-                evaluation_results.json / tarp_credible_intervals.json per run (ensemble
-                variants at the experiment level). This is how the NPE ensembles are evaluated
-                in-distribution.
-- ``misspec`` — the model-misspecification driver (src/ml/eval/misspec.py): ONE trained model
-                evaluated on the TEST split of every Gower variate dataset with the ORIGINAL
-                training scalers injected; outputs under checkpoints/<exp>/misspec/<variate>/.
-
-CLI (all optional):
-    python eval.py [--mode {list,misspec}] [--experiments EXP ...] [--repeat-indices I ...]
-                   [--misspec-base EXP] [--num-samples N]
-
-NOTE: until the gatekeeper's eval-submit passes CLI args through (requires a
-bootstrap_install.sh redeploy), the cluster job runs a bare ``python eval.py`` and DEFAULT_MODE
-below decides what that does. Flip DEFAULT_MODE back to "list" once args flow end-to-end.
+mode list evaluates the best checkpoint of each named experiment in distribution. misspec evaluates
+one model on the variate stores. The other modes pool repeats, score external data and dump
+posteriors and summaries (EVAL_RECIPES.md documents each).
 """
 import os
 import argparse
@@ -34,33 +20,19 @@ from src.ml.eval.utils import evaluate_best_checkpoint
 from src.ml.eval.misspec import VARIATE_SETS
 from copy import copy
 
-# Selectable variate-dataset sets for --mode misspec (defined in src/ml/eval/misspec.py):
-# gower / glass_pretrain (VD-on era) and gower_novd / glass_pretrain_novd (the NO-VD suite).
 _VARIATE_SET_NAMES = sorted(VARIATE_SETS)
 
 experiments.update(paper_2026_experiments)
-experiments.update(kids_legacy_experiments)  # KiDS-Legacy NLA-M configs
-experiments.update(kids_legacy_novd_experiments)  # NO-VD production suite configs
-experiments.update(euclid_experiments)  # Euclid DR3 hybrid-learning suite
-experiments.update(kids_legacy_bgp_experiments)  # BGP campaign (galaxy-bias prior marginalised)
-experiments.update(kids_legacy_vdq_experiments)  # VDQ campaign (VD quadcap default; VD-final-train)
-experiments.update(kids_legacy_hos_experiments)  # beyond-2-pt HOS hybrid (hos-hybrid-training)
+experiments.update(kids_legacy_experiments)
+experiments.update(kids_legacy_novd_experiments)
+experiments.update(euclid_experiments)
+experiments.update(kids_legacy_bgp_experiments)
+experiments.update(kids_legacy_vdq_experiments)
+experiments.update(kids_legacy_hos_experiments)
 
-# What a bare `python eval.py` runs. Explicit --mode wins. The gatekeeper passes eval.py CLI
-# args through (redeployed 2026-07-08), so submissions should say --mode explicitly:
-#   run_remote.py eval --args "--mode misspec --repeat-indices 0 1 2 3 4"
+# A bare `python eval.py` runs DEFAULT_MODE.
 DEFAULT_MODE = "list"
 
-# Standard-mode default experiment list (used when --experiments is not given).
-#
-# ⚠️ Run eval on **a100 or l40s — NEVER v100**: the FoM credible-interval step OOMs a 16 GiB v100 at
-# ens9 even after 72ec561 moved the quantile computation to CPU. (An earlier version of this comment
-# said "run on v100"; that is wrong and will kill the job.)
-# evaluate_best_checkpoint skips repeats/runs with no checkpoint yet, so re-running is safe and
-# entries may be listed before their models exist.
-# ARCHIVED list from the NO-VD / counts campaigns. Kept verbatim so those rows can be re-run by
-# pointing DEFAULT_EXPERIMENTS back at it (or via --experiments); NOT evaluated by default any more,
-# because a bare `python eval.py` on the cluster walks this whole list and each row costs real time.
 _ARCHIVED_EXPERIMENTS = [
     # PRODUCTION eval: main-variate Gower NPE ens9 (all 5 repeats) + the GLASS sub-variate
     # encoder-finetunes (NPE-style compressors). Each writes evaluation_results.json /
@@ -79,26 +51,13 @@ _ARCHIVED_EXPERIMENTS = [
 ]
 
 
-# === CURRENT CAMPAIGN: the M15 compression-ceiling suite + its GLASS-side references =============
-# `evaluate_best_checkpoint` skips rows with no checkpoint yet, so the M15 entries can sit here
-# before their models exist and the same list can be re-run as the arms land.
+# evaluate_best_checkpoint skips runs with no checkpoint, so rows may be listed before their models exist.
 DEFAULT_EXPERIMENTS = [
-    # --- REFERENCES: what the EXISTING compressors already achieve on the GLASS test split -------
-    # These have never been evaluated (TALLY_evals.md has no NPE row for either), which is why the
-    # variates' GLASS-side constraining power was unknown. `kids_legacy_band_nla_m_bgp` is the
-    # BAND-ONLY model -- the pure 2-point reference the M15 hybrids have to beat.
-    # ⚠️ theta differs across these rows (8 / 9 / 9 params), so FoM is comparable only on a SHARED
-    # subset -- use FoM(omega_m,sigma_8) and the per-parameter CI68 widths, never the all-parameter
-    # FoM, which is a d-dimensional volume ratio.
+    # theta differs across these rows (8 / 9 / 9 parameters): compare FoM(omega_m, sigma_8) and
+    # CI68 widths, never the all-parameter FoM.
     "kids_legacy_band_nla_m_bgp",
     "glass_encoder_finetune_nla_bgp_z8",
     "glass_encoder_finetune_nla_z_bgp_z8",
-    # --- M15: the 2-parameter compression-ceiling suite (user directive 2026-09-01) --------------
-    # 4 arms x 3 repeats on the `nla` GLASS store, theta = (omega_m, sigma_8) only. M15a is the
-    # 2-pt ceiling; the three hybrids test whether the maps add anything on top of it, whether the
-    # band must be variate-matched, and whether the map warm start is load-bearing. Compare the
-    # arms to EACH OTHER on FoM(omega_m,sigma_8) and the CI68 widths -- all four share one store,
-    # one architecture and one split per repeat, so the comparison is clean.
     "m15a_band_nla_p2",
     "m15b_hybrid_nla_p2_newband_warmmap",
     "m15c_hybrid_nla_p2_oldband_warmmap",
@@ -113,7 +72,6 @@ def load_config(experiment_name: str):
     config = get_default_config()
     config.experiment_name = experiment_name
 
-    # Set all non-list values directly on the config, but skip max_trainval_cosmos
     for key, val in experiment_config.items():
         if key == "max_trainval_cosmos":
             continue
@@ -135,11 +93,9 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
 
         config, experiment_config = load_config(experiment_name)
 
-        # Handle max_trainval_cosmos similarly to train.py
         max_tv = experiment_config.get("max_trainval_cosmos", None)
 
-        # Keep evaluation consistent with training: evaluate across repeats. Production configs use
-        # `repeat_indices` (not `repeats`); fall back to range(repeats) for legacy configs.
+        # production configs use repeat_indices, legacy configs fall back to range(repeats)
         repeats = getattr(config, "repeats", 1)
         repeat_idxs = list(
             repeat_indices_override
@@ -148,7 +104,6 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
         )
 
         if isinstance(max_tv, (list, tuple)):
-            # Multiple cosmos: evaluate each separately
             for n_cosmo in max_tv:
                 cfg = get_default_config()
                 cfg.experiment_name = config.experiment_name
@@ -160,10 +115,9 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
                     setattr(cfg, key, val)
 
                 cfg.max_trainval_cosmos = int(n_cosmo)
-                cfg.match_num_cosmo = True  # Ensure match_string includes n_cosmo
+                cfg.match_num_cosmo = True
                 for i in repeat_idxs:
-                    cfg_copy = copy(cfg)  # Avoid mutating cfg across repeats
-                    # Apply the exact repeat match_string logic used by train_model
+                    cfg_copy = copy(cfg)
                     repeat_match, _ = apply_repeat_config(cfg_copy, i)
                     cfg_copy.match_string = repeat_match
 
@@ -175,7 +129,6 @@ def run_standard_eval(experiment_names, repeat_indices_override=None):
                     scalers, _, _, test_loader = prepare_data_parameters(cfg_copy)
                     evaluate_best_checkpoint(cfg_copy, test_loader, scalers["cosmo"])
         else:
-            # Single or no max_trainval_cosmos
             config.test_shape_noise_idx = [0]
             if max_tv is not None:
                 config.max_trainval_cosmos = int(max_tv)
@@ -219,18 +172,11 @@ def main(argv=None):
                         help="misspec mode: cap each variate's test set to ~this many mocks "
                              "(whole cosmologies, sorted by sim_id)")
     parser.add_argument("--test-shape-noise-idx", default=None,
-                        help="misspec mode: 'all' disables the per-cosmology augmentation "
-                             "subsample (default (0,(0,1)), right for the ~80-aug production "
-                             "stores but it collapses a small single-cosmology store to a "
-                             "handful of highly-correlated events)")
+                        help="misspec mode: 'all' disables the per-cosmology augmentation subsample.")
     parser.add_argument("--eb-variant", default=None,
                         help="E/B group tag for --mode ebdiff (omit for bare-E pre-baked stores)")
     parser.add_argument("--test-id-source", choices=["heldout", "shared", "all"], default="heldout",
-                        help="misspec mode: 'heldout' (default) evaluates each variate on the "
-                             "model's held-out test cosmologies only; 'shared' evaluates EVERY "
-                             "variate (reference included) on the cosmologies the OOD variates "
-                             "have on disk — many more events, matched across variates, but no "
-                             "held-out guarantee. Writes to misspec_shared/ so both can coexist.")
+                        help="misspec mode: evaluate each variate on 'heldout' (default) or 'shared' test cosmologies.")
     parser.add_argument("--variate-glob", nargs="+", default=None, metavar="NAME=GLOB",
                         help="summaries mode: ad-hoc variate(s) as NAME=GLOB (e.g. a local store or a "
                              "real-data file), used INSTEAD of --variates when given")
@@ -244,19 +190,14 @@ def main(argv=None):
                         help="summaries mode: override config.base_path (LOCAL self-tests: a dir whose "
                              "checkpoints/ holds the fetched ml-checkpoints tree)")
     parser.add_argument("--data-tag", default=None,
-                        help="--mode nle-external: names the OUTPUT dir under checkpoints/<exp>/"
-                             "external/<tag>/. Defaults to --data-store. Decoupled from the glob so "
-                             "a real-observation run can be tagged e.g. kids_legacy_dr5.")
-    # --- --mode pool: the POOLED (repeat-concatenated) posterior -------------------------------
-    # Every token here is gatekeeper-safe ([A-Za-z0-9][A-Za-z0-9_.-]* or --[a-z-]*): experiment
-    # names, arm names, integers. No paths, no globs, no '=' -- names map to paths in code.
+                        help="nle-external mode: output tag under checkpoints/<exp>/external/. Default: --data-store.")
+    # --- --mode pool: tokens are limited to [A-Za-z0-9][A-Za-z0-9_.-]* or --[a-z-]* by the launcher ---
     parser.add_argument("--pool-arm", default=None,
                         help="--mode pool: arm name (src/ml/eval/arms.py) -- resolves to one "
                              "experiment per repeat. Alternative to listing --experiments.")
     parser.add_argument("--pool-draws", type=int, default=None,
-                        help="--mode pool: subsample each member to this many draws before "
-                             "concatenating. Omit for the literal concatenation (the default); "
-                             "use it only to equalise unequal members or to cap the pooled size.")
+                        help="pool mode: subsample each member to this many draws before concatenating. "
+                             "Default: concatenate all.")
     parser.add_argument("--pool-check", action="store_true",
                         help="--mode pool: run the gates (pool-of-one identity + reproduction of "
                              "the production metrics) instead of producing a pooled posterior.")
@@ -269,28 +210,16 @@ def main(argv=None):
                              "so this is recorded in the output filename. The real-data run uses "
                              "kids_s8_analytic.")
     parser.add_argument("--num-chains", type=int, default=1,
-                        help="--mode nle-external: MCMC chains per observation. num_samples is the "
-                             "TOTAL per observation and is split across chains, so raising this "
-                             "shortens each chain -- the parallelism knob for the N=1 case.")
+                        help="nle-external mode: MCMC chains per observation (num_samples is split across them).")
     parser.add_argument("--num-jobs", type=int, default=None,
                         help="--mode nle-external: joblib pool size (work items in parallel).")
     parser.add_argument("--warmup-steps", type=int, default=500,
-                        help="--mode nle-external: MCMC warmup sweeps discarded per chain "
-                             "(sbi adds a further 50 hardcoded bracket-tuning sweeps). Every "
-                             "chain group pays this ONCE, so it is the floor on wall time.")
+                        help="nle-external mode: warmup sweeps discarded per chain.")
     parser.add_argument("--mcmc-workers", type=int, default=None,
-                        help="--mode nle-external: shards per event batch. ⭐ THE N=1 KNOB: the "
-                             "joblib fan-out is over EVENTS, so one observation = one busy core. "
-                             "K here splits that observation's SAMPLE budget over K processes, "
-                             "each running its own num_chains chains; pooling them is identical "
-                             "in distribution to K*num_chains chains in one process. Default "
-                             "None = the historical event-only parallelism.")
+                        help="nle-external mode: shards per event batch. Splits one observation's sample "
+                             "budget over processes.")
     parser.add_argument("--mcmc-threads", type=int, default=None,
-                        help="--mode nle-external: torch threads per sampling worker (also "
-                             "loky's inner_max_num_threads). 1 is normally fastest — the MCMC "
-                             "batch is only num_chains*num_members rows, where intra-op "
-                             "threading costs more than it saves — and stops --mcmc-workers "
-                             "processes from oversubscribing the node.")
+                        help="nle-external mode: torch threads per sampling worker (default 1).")
     parser.add_argument("--mcmc-seed", type=int, default=None,
                         help="--mode nle-external: base seed for the samplers (numpy global RNG "
                              "+ torch); shard i gets seed+i. Default None = unseeded, as before.")
@@ -298,14 +227,10 @@ def main(argv=None):
                         help="--mode nle-external: events per sampling work item. Smaller => more "
                              "batches => more cores busy when the event count is small.")
     parser.add_argument("--repro-check", action="store_true",
-                        help="--mode nle-external: run the REPRODUCTION GATE instead of an eval -- "
-                             "score the model's own test set through the external path and check it "
-                             "reproduces the production dump (file set, theta alignment, raw z vs "
-                             "the cached embeddings, against the measured scaler-refit floor).")
+                        help="nle-external mode: reproduction gate. Scores the model's own test set "
+                             "through the external path.")
     parser.add_argument("--max-events", type=int, default=200,
-                        help="--mode recover-scalers: events used to fit the input frame. 6 scalar "
-                             "params against n_events x z_dim residuals, so a few hundred is "
-                             "already hugely overdetermined; start small to prove convergence.")
+                        help="recover-scalers mode: number of events used to fit the input frame.")
     parser.add_argument("--recover-steps", type=int, default=40,
                         help="--mode recover-scalers: LBFGS max_iter.")
     parser.add_argument("--members", type=int, nargs="+", default=None,
@@ -317,10 +242,8 @@ def main(argv=None):
     parser.add_argument("--no-save", action="store_true",
                         help="--mode recover-scalers: fit and report but do not write scalers.pt")
     parser.add_argument("--require-member-frames", action="store_true",
-                        help="--mode nle-external: REFUSE to score unless every ensemble member has its own "
-                             "persisted input frame (scalers.pt from --mode recover-scalers). Without it a "
-                             "member with no frame silently falls back to member 0's refit frame, which "
-                             "differs per member (ensemble_seed-dependent scaler subsample).")
+                        help="nle-external mode: refuse to score unless every ensemble member has a "
+                             "persisted input frame.")
     # --- --mode nle-loglik: NLE log L(t_e | theta_b) at every mock block, for the PPC weights ----
     parser.add_argument("--ppc-theta-store", default=None,
                         help="--mode nle-loglik: store whose (sim,outer,rot) blocks supply the theta "
@@ -357,8 +280,7 @@ def main(argv=None):
     parser.add_argument("--ood-k", type=int, default=10, help="summaries mode: kNN k for the OOD scores")
     parser.add_argument("--ood-n-perm", type=int, default=200,
                         help="summaries mode: permutations for the MMD two-sample p-value")
-    # --mode hos-bake (src/ml/data/hos.py): per-mock HOS sidecars of a baked gpu5 store (--data-store), written
-    # FLAT under {base_path}/checkpoints/hos_sidecars/<store>/ (+ per-shard transfer tars in <store>_tar/ for `fetch`).
+    # --mode hos-bake: per-mock HOS sidecars of a baked store, written under {base_path}/checkpoints/hos_sidecars/<store>/.
     parser.add_argument("--hos-workers", type=int, default=30, help="--mode hos-bake: worker processes")
     parser.add_argument("--hos-shard", type=int, default=None, help="--mode hos-bake: bake only this shard index")
     parser.add_argument("--hos-nshards", type=int, default=20, help="--mode hos-bake: shard count (sim_id %% n)")
@@ -368,12 +290,10 @@ def main(argv=None):
     parser.add_argument("--hos-variant", choices=["r1ext", "x"], default="r1ext",
                         help="--mode hos-bake: 'x' also bakes the hos_x superset (src/ml/data/hos_x.py) into "
                              "hos_sidecars/<store>_hosx/ (the default r1ext bake is unchanged)")
-    # --mode hos-train (src/ml/parallel_train.py): run named CPU training waves (config/kids_legacy_hos.py:HOS_TRAIN_WAVES,
-    # named by --experiments; --repeat-indices keeps only those repeats) as concurrent pinned processes on this node.
+    # --mode hos-train: run the named CPU training waves of config/kids_legacy_hos.py:HOS_TRAIN_WAVES.
     parser.add_argument("--hos-parallel", type=int, default=None, help="--mode hos-train: concurrent tasks")
     parser.add_argument("--hos-cores-per", type=int, default=None, help="--mode hos-train: cpus per task")
-    # Unblinding front end (src/observation): catalogue -> observation -> baked per-arm stores.
-    # Fail-soft: a bug in the (independent) observation package must never break the other modes.
+    # Observation modes live in src/observation. Imported lazily so a bug there cannot break the other modes.
     try:
         from src.observation.cluster_modes import (add_observe_args, add_reference_args, add_score_args,
                                                    add_strip_args)
@@ -381,7 +301,7 @@ def main(argv=None):
         add_strip_args(parser)
         add_reference_args(parser)
         add_score_args(parser)
-    except Exception as _ex:  # pragma: no cover
+    except Exception as _ex:
         print(f"[eval] WARNING: observe-build args unavailable ({type(_ex).__name__}: {_ex})")
     args = parser.parse_args(argv)
 
@@ -404,7 +324,7 @@ def main(argv=None):
     if mode == "hos-bake":
         if not args.data_store:
             raise SystemExit("--mode hos-bake requires --data-store <gpu5 store name>")
-        from config.default import get_default_config as _default_config   # main() rebinds the name later
+        from config.default import get_default_config as _default_config
         from src.ml.data.hos import run_bake
         from src.ml.eval.misspec import _GPU5
         out_dir = os.path.join(_default_config().base_path, "checkpoints", "hos_sidecars",
@@ -414,7 +334,7 @@ def main(argv=None):
                           ext=not args.hos_no_ext, log=lambda m: print(m, flush=True), variant=args.hos_variant)
         return 0 if counts["bad"] == 0 else 1
     if mode == "hos-train":
-        from config.default import get_default_config as _default_config   # main() rebinds the name later
+        from config.default import get_default_config as _default_config
         from config.kids_legacy_hos import HOS_TRAIN_WAVES
         from src.ml.parallel_train import run_wave
         import time
@@ -431,9 +351,7 @@ def main(argv=None):
         from src.ml.eval.pool_mode import run_pool_mode
         return run_pool_mode(args)
     if mode == "ebdiff":
-        # Difference-map forensics on the paired b_g stores: no model, no training. Decides
-        # whether the surviving b_g channel is signal-sector (red, coherent with the map) or
-        # noise-sector (white). Writes under MODELS_ROOT so `fetch` can pull the JSON.
+        # --mode ebdiff: difference-map forensics on the paired b_g stores (no model).
         from src.ml.eval.ebdiff import run_ebdiff_analysis
         from config.default import get_default_config
 
@@ -446,9 +364,8 @@ def main(argv=None):
             out_root=out_root,
         )
     elif mode == "summaries":
-        # Summary-space OOD diagnostic: dump the compressor's z for train / ID-heldout / each variate
-        # (per repeat, per ensemble member) and score them (src/ml/eval/ood.py). Cheap: one encoder
-        # forward per mock, no posterior sampling.
+        # --mode summaries: dump the compressor's z for train, held-out and each variate, then score
+        # them (src/ml/eval/ood.py).
         from src.ml.eval.summaries import run_summary_extraction
 
         adhoc = None
@@ -481,16 +398,14 @@ def main(argv=None):
             max_trainval_cosmos_override=args.max_trainval_cosmos,
         )
     elif mode == "nle-external":
-        # Score a trained Stage-B NLE ensemble on an EXTERNAL dataset (a variate store, or a single
-        # real observation) with the original training scalers + whitener injected, never refit.
-        # See src/ml/eval/nle_external.py and EVAL_RECIPES.md.
+        # --mode nle-external: score a trained Stage-B ensemble on an external store with the
+        # original scalers injected, never refit.
         from src.ml.eval.nle_external import run_external_nle_eval
 
         if not args.experiments:
             raise SystemExit("--mode nle-external requires --experiments <stage_b_experiment>")
         if args.repro_check:
-            # The anti-refit proof: run over the model's OWN test set and compare with what the
-            # production eval already produced. No sampling, no external store needed.
+            # --repro-check: run over the model's own test set and compare with the production eval dump.
             from src.ml.eval.nle_external import run_reproduction_check
             for exp in args.experiments:
                 for r in (args.repeat_indices or (0,)):
@@ -519,8 +434,8 @@ def main(argv=None):
                     require_member_frames=args.require_member_frames,
                 )
     elif mode == "nle-loglik":
-        # PPC importance weights: the ensemble NLE log-likelihood of the observation (--data-store)
-        # and of the test-lock null events at every block of a mock store. src/ml/eval/ppc_loglik.py.
+        # --mode nle-loglik: PPC importance weights (ensemble NLE log-likelihood) of the observation
+        # and the null events.
         from src.ml.eval.ppc_loglik import run_ppc_loglik
         from src.ml.eval.nle_external import match_string_for
 
@@ -546,9 +461,8 @@ def main(argv=None):
                 )
         return 0
     elif mode == "recover-scalers":
-        # Recover the training-time input frame of an already-trained run and persist it per
-        # ensemble member. See src/ml/eval/scaler_recovery.py for why this is necessary and why
-        # matching z (rather than the "true" scalers) is the correct objective.
+        # --mode recover-scalers: recover each member's training-time input frame and persist it per
+        # member (src/ml/eval/scaler_recovery.py).
         from src.ml.eval.nle_external import run_frame_verification, run_scaler_recovery
 
         if not args.experiments:
