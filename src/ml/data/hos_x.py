@@ -1,15 +1,11 @@
-"""Superset of third-order map statistics beyond R1 (`hos_x/vector`).
+"""Superset of third-order map statistics beyond R1 (`hos_x/vector`), in the conventions of hos.py.
 
-Groups of features are selected by name, and bake_one writes them as per-mock sidecars next to the
-R1 vector. Conventions are those of hos.py. Each block holds the channel triples a <= b <= c:
-  R1     6 bins x Gaussian FWHM 8, 16 (112), bit-identical to `hos/vector`.
-  Geq    6 bins x Gaussian FWHM 4, 12, 24, 32 (4 x 56).
-  Gpool  kbar (mean of the 6 bins) x Gaussian 4, 8, 12, 16, 24, 32, all scale triples (56).
-  Gmrg   merged bins (b1 + b2)/2, (b3 + b4)/2, (b5 + b6)/2 x Gaussian 8, 16, 24, 32 (364).
-  Ceq    6 bins x Crittenden aperture theta 4, 8, 16, 32, equal-theta triples (4 x 56).
-  Cmrg   merged bins x Crittenden theta 4, 8, 16, 32 (364).
-  G6u    optional, 6 bins x Gaussian 8, 16, 32, triples spanning at least two scales (972).
-Scales are nominal total FWHM in arcmin: the stored map is t = 4.
+Groups are selected by name and baked as per-mock sidecars. Blocks hold channel triples a <= b <= c,
+with scales as nominal total FWHM in arcmin (the stored map is t = 4):
+  R1 6 bins x G 8, 16 (112, = `hos/vector`); Geq 6 bins x G 4, 12, 24, 32 (4 x 56)
+  Gpool kbar x G 4-32, all scale triples (56); Gmrg merged bin pairs x G 8, 16, 24, 32 (364)
+  Ceq 6 bins x Crittenden theta 4, 8, 16, 32 (4 x 56); Cmrg merged bins x Crittenden (364)
+  G6u optional, 6 bins x G 8, 16, 32, triples spanning at least two scales (972)
 """
 import itertools
 
