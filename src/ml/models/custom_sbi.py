@@ -67,20 +67,16 @@ class NeuralSplineFlow(Flow):
     ):
         """Builds an Unconditional Neural Spline Flow."""
         super().__init__(transform=None, distribution=None) # Initialize later below
-        
-        # 1. Base distribution: Unconditional Standard Normal
+
         distribution = StandardNormal(shape=[features])
 
-        # 2. Build the transforms
         transform_list = []
         for i in range(num_layers):
-            # Alternate which variables are transformed vs conditioned on
             mask = create_alternating_binary_mask(
                 features=features, even=(i % 2 == 0)
             )
 
-            # Conditioner: Predicts the spline parameters. 
-            # Note: context_features=None makes this completely unconditional.
+            # context_features=None makes the conditioner unconditional.
             def create_resnet(in_features, out_features):
                 return nets.ResidualNet(
                     in_features=in_features,
@@ -93,8 +89,6 @@ class NeuralSplineFlow(Flow):
                     use_batch_norm=use_batch_norm,
                 )
 
-            # Add the Spline Coupling transform
-            # (Note: If you have a custom patched version from sbi, replace this class name)
             coupling_transform = transforms.PiecewiseRationalQuadraticCouplingTransform(
                 mask=mask,
                 transform_net_create_fn=create_resnet,
@@ -105,21 +99,20 @@ class NeuralSplineFlow(Flow):
             )
             transform_list.append(coupling_transform)
 
-            # Mix the dimensions using LU linear transform (only useful if dim > 1)
+            # LU linear mixing, only for more than one dimension.
             if features > 1:
                 transform_list.append(
                     transforms.LULinear(features, identity_init=True)
                 )
 
-        # Combine all layers into one composite transform
         transform = CompositeTransform(transform_list)
 
-        # 3. Initialize the base Flow class
         super().__init__(transform=transform, distribution=distribution)
 
 class _DeviceSafeMADEMoGWrapper(MADEMoGWrapper):
-    """sbi's MADEMoGWrapper creates its dummy input on the CPU (unlike MADEWrapper, which passes
-    device=inputs.device) — crashes on CUDA. Override _log_prob with the device/dtype fix only."""
+    """sbi's MADEMoGWrapper with its dummy input created on the inputs' device and dtype.
+
+    The sbi version creates it on the CPU and crashes on CUDA."""
 
     def _log_prob(self, inputs, context=None):
         import numpy as np
@@ -177,27 +170,11 @@ def build_made(
     embedding_net: nn.Module = nn.Identity(),
     **kwargs,
 ) -> NFlowsFlow:
-    """Builds MADE p(x|y).
+    """Builds a MADE mixture-of-Gaussians density estimator p(x|y) (flow_type 'mdn').
 
-    Args:
-        batch_x: Batch of xs, used to infer dimensionality and (optional) z-scoring.
-        batch_y: Batch of ys, used to infer dimensionality and (optional) z-scoring.
-        z_score_x: Whether to z-score xs passing into the network, can be one of:
-            - `none`, or None: do not z-score.
-            - `independent`: z-score each dimension independently.
-            - `structured`: treat dimensions as related, therefore compute mean and std
-            over the entire batch, instead of per-dimension. Should be used when each
-            sample is, for example, a time series or an image.
-        z_score_y: Whether to z-score ys passing into the network, same options as
-            z_score_x.
-        hidden_features: Number of hidden features.
-        num_mixture_components: Number of mixture components.
-        embedding_net: Optional embedding network for y.
-        kwargs: Additional arguments that are passed by the build function but are not
-            relevant for mades and are therefore ignored.
-
-    Returns:
-        Neural network.
+    batch_x and batch_y set the dimensions and the optional z-scoring, which z_score_x and
+    z_score_y choose ('none', 'independent', 'structured' or 'transform_to_unconstrained').
+    embedding_net embeds y. Other kwargs are ignored. Returns an sbi NFlowsFlow.
     """
     check_data_device(batch_x, batch_y)
     x_numel = get_numel(batch_x, embedding_net=None)
@@ -257,42 +234,11 @@ def build_maf_rqs(
     min_derivative: float = rational_quadratic.DEFAULT_MIN_DERIVATIVE,
     **kwargs,
 ) -> NFlowsFlow:
-    """Builds MAF p(x|y), where the diffeomorphisms are rational-quadratic
-    splines (RQS).
+    """Builds MAF p(x|y) with rational-quadratic spline (RQS) transforms (flow_type 'rqs').
 
-    Args:
-        batch_x: Batch of xs, used to infer dimensionality and (optional) z-scoring.
-        batch_y: Batch of ys, used to infer dimensionality and (optional) z-scoring.
-        z_score_x: Whether to z-score xs passing into the network, can be one of:
-            - `none`, or None: do not z-score.
-            - `independent`: z-score each dimension independently.
-            - `structured`: treat dimensions as related, therefore compute mean and std
-            over the entire batch, instead of per-dimension. Should be used when each
-            sample is, for example, a time series or an image.
-        z_score_y: Whether to z-score ys passing into the network, same options as
-            z_score_x.
-        hidden_features: Number of hidden features.
-        num_transforms: Number of transforms.
-        embedding_net: Optional embedding network for y.
-        num_blocks: number of blocks used for residual net for context embedding.
-        num_bins: Number of bins of the RQS.
-        tails: Whether to use constrained or unconstrained RQS, can be one of:
-            - None: constrained RQS.
-            - 'linear': unconstrained RQS (RQS transformation is only
-            applied on domain [-B, B], with `linear` tails, outside [-B, B],
-            identity transformation is returned).
-        tail_bound: RQS transformation is applied on domain [-B, B],
-            `tail_bound` is equal to B.
-        dropout_probability: dropout probability for regularization in residual net.
-        use_batch_norm: whether to use batch norm in residual net.
-        min_bin_width: Minimum bin width.
-        min_bin_height: Minimum bin height.
-        min_derivative: Minimum derivative at knot values of bins.
-        kwargs: Additional arguments that are passed by the build function but are not
-            relevant for maf and are therefore ignored.
-
-    Returns:
-        Neural network.
+    batch_x and batch_y set the dimensions and the optional z-scoring (z_score_x, z_score_y).
+    tails=None gives a constrained RQS. 'linear' applies it on [-tail_bound, tail_bound] with the
+    identity outside. embedding_net embeds y. Other kwargs are ignored. Returns an sbi NFlowsFlow.
     """
     check_data_device(batch_x, batch_y)
     x_numel = get_numel(
@@ -367,34 +313,12 @@ def build_nsf(
     use_batch_norm: bool = False,
     **kwargs,
 ) -> NFlowsFlow:
-    """Builds NSF p(x|y).
+    """Builds NSF p(x|y) from dtype-patched RQS coupling layers and LU mixing (flow_type 'nsf').
 
-    Args:
-        batch_x: Batch of xs, used to infer dimensionality and (optional) z-scoring.
-        batch_y: Batch of ys, used to infer dimensionality and (optional) z-scoring.
-        z_score_x: Whether to z-score xs passing into the network, can be one of:
-            - `none`, or None: do not z-score.
-            - `independent`: z-score each dimension independently.
-            - `structured`: treat dimensions as related, therefore compute mean and std
-            over the entire batch, instead of per-dimension. Should be used when each
-            sample is, for example, a time series or an image.
-        z_score_y: Whether to z-score ys passing into the network, same options as
-            z_score_x.
-        hidden_features: Number of hidden features.
-        num_transforms: Number of transforms.
-        num_bins: Number of bins used for the splines.
-        embedding_net: Optional embedding network for y.
-        tail_bound: tail bound for each spline.
-        hidden_layers_spline_context: number of hidden layers of the spline context net
-            for one-dimensional x.
-        num_blocks: number of blocks used for residual net for context embedding.
-        dropout_probability: dropout probability for regularization in residual net.
-        use_batch_norm: whether to use batch norm in residual net.
-        kwargs: Additional arguments that are passed by the build function but are not
-            relevant for maf and are therefore ignored.
-
-    Returns:
-        Neural network.
+    batch_x and batch_y set the dimensions and the optional z-scoring (z_score_x, z_score_y).
+    A 1D x uses ContextSplineMap (hidden_layers_spline_context) as the conditioner, otherwise a
+    residual net of num_blocks. embedding_net embeds y. Other kwargs are ignored. Returns an sbi
+    NFlowsFlow.
     """
     check_data_device(batch_x, batch_y)
     x_numel = get_numel(batch_x, embedding_net=None)
@@ -493,15 +417,7 @@ def _prepare_y_embedding(
 
 
 class ContextSplineMap(nn.Module):
-    """
-    Neural network from `context` to the spline parameters.
-
-    We cannot use the resnet as conditioner to learn each dimension conditioned
-    on the other dimensions (because there is only one). Instead, we learn the
-    spline parameters directly. In the case of conditinal density estimation,
-    we make the spline parameters conditional on the context. This is
-    implemented in this class.
-    """
+    """Neural network from `context` to the spline parameters, for a 1D x with no other dimension."""
 
     def __init__(
         self,
