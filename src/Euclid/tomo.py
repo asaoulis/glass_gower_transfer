@@ -11,14 +11,8 @@ import numpy as np
 def build_tomo_nz(nz_path, los_z_integration, n_arcmin2_total):
     """Interpolate the Euclid DR3 n(z) table onto the line-of-sight integration grid.
 
-    The file is `z` followed by one column per tomographic bin. Each bin's share of
-    `n_arcmin2_total` is its share of the raw (unnormalised) integral of its column, so the
-    returned curves integrate to `n_arcmin2_total` in total, in gal/arcmin^2.
-
-    Returns
-    -------
-    tomo_nz : (nbins, len(los_z_integration)) array
-    n_arcmin2 : (nbins,) array -- the per-bin number densities.
+    nz_path holds z then one column per bin. The curves sum to n_arcmin2_total (gal/arcmin^2).
+    Returns tomo_nz (nbins, len(los_z_integration)) and the per-bin densities n_arcmin2 (nbins,).
     """
     data = np.loadtxt(nz_path)
     z, nz = data[:, 0], data[:, 1:]
