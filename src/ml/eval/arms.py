@@ -44,8 +44,7 @@ EXPERIMENT_OVERRIDES = {
 
 DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd",
                           # Registered ahead of their Stage B. Drop each once live.
-                          "vd2pr", "vd2pr_band",
-                          "vd2pr_p10k"})
+                          "vd2pr", "vd2pr_band"})
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
 
 DEFAULT_PRIORS = ("kids_s8_analytic", "LCDM_fixed_w0")
