@@ -301,6 +301,9 @@ GOWER_VDQ_VARIATES: List[Dict] = [
     # data-h5 n=50 errors=[] vd_code 4. The full-store `gower_vd2pr_nla_m` entry follows the re-fire (job 1405659).
     {"name": "gower_vd2pr_nla_m_p10k",
      "patterns": f"{_GPU5}/gower_vd2pr_nla_m_p10k_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
+    # VD v2 full Gower store (199 cosmologies, 14797 files).
+    {"name": "gower_vd2pr_nla_m",
+     "patterns": f"{_GPU5}/gower_vd2pr_nla_m_f16_{_BGP_EB_TAG}/output_*.h5", "exclude_params": []},
 ]
 
 
