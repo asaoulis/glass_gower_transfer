@@ -108,10 +108,7 @@ EXPERIMENT_OVERRIDES = {
 # band_nla_z went live 2026-10-21 once its Gower Stage B r0-2 existed and were evaluated (task eval-and-viz/band-nla-z-2pt-nle;
 # all three repeats under the user-rule guard-c 150 -- ep0 gaps 50.55 / 95.59 / 54.08 nats -- rev 3b04364/e21c28a; per-member test
 # -log p(z|theta) -4.9..-8.1 on the 100-id lock; TARP 0.041-0.050; member frames must be recovered per repeat before external scoring).
-DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd",
-                          # 2026-10-27: registered ahead of their Stage B (sims not yet generated); drop each once live.
-                          "vd2pr", "vd2pr_band",
-                          "vd2pr_p10k", "vd2pr_p10k_band"})
+DELAYED_ARMS = frozenset({"nla_m_nobgp", "vd"})
 # vdqctl / vdqctl_band went live 2026-11-09: Stage B r0/r1 exist on both arms (bundled evals fetched; member frames
 # recovered per repeat before external scoring). Repeats r2-4 are still training -- always pass --repeats explicitly.
 ACTIVE_ARMS = tuple(a for a in ARMS if a not in DELAYED_ARMS)
