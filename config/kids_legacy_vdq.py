@@ -1214,6 +1214,11 @@ for _r in _NLE_REPEATS:
     VDQ_NLE_SOURCES[f"gower_nle_finetune_nla_m_vd2pr_z8_k6_r{_r}_ens9_e150"] = _VD2PR_ENC
     VDQ_NLE_SOURCES[f"glass_nle_pretrain_band_nla_m_vd2pr_k6_r{_r}"] = _VD2PR_BAND
     VDQ_NLE_SOURCES[f"gower_nle_finetune_band_nla_m_vd2pr_k6_r{_r}_ens9_e150"] = _VD2PR_BAND
+# 2-pt r0 reroll (Stage A + Stage B) at the same index, identical recipe, own checkpoint dirs.
+kids_legacy_vdq_experiments["glass_nle_pretrain_band_nla_m_vd2pr_rr_k6_r0"] = _variate_nle_a_vdq_k6(_VD2PR_GLASS, 0, _COSMO_9_NLAM)
+kids_legacy_vdq_experiments["gower_nle_finetune_band_nla_m_vd2pr_rr_k6_r0_ens9_e150"] = _variate_nle_b_vdq("glass_nle_pretrain_band_nla_m_vd2pr_rr_k6_r0", _VD2PR_GOWER, 0, _COSMO_9_NLAM, None)
+VDQ_NLE_SOURCES["glass_nle_pretrain_band_nla_m_vd2pr_rr_k6_r0"] = _VD2PR_BAND
+VDQ_NLE_SOURCES["gower_nle_finetune_band_nla_m_vd2pr_rr_k6_r0_ens9_e150"] = _VD2PR_BAND
 assert set(VDQ_VARIATE_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
 assert set(VDQ_NLE_SOURCES) <= set(kids_legacy_vdq_experiments)
 
